@@ -46,21 +46,44 @@ export async function POST(
       return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
     }
 
-    const message = messages.create(id, 'user', content);
+    const addressed = addressedBots(String(content), mentionedBotId ? String(mentionedBotId) : undefined);
+    const handoffIds = addressed.map(bot => bot.id);
+    const message = messages.create(id, 'user', content, undefined, handoffIds);
+    const queued = new Set<string>();
+    const enqueueBot = (conversationId: string, botId: string) => {
+      const key = conversationId + ':' + botId;
+      if (queued.has(key)) return;
+      queued.add(key);
+      queue.enqueue(conversationId, botId);
+    };
 
-    if (conversation.type === 'bot' && conversation.bot_id) {
-      queue.enqueue(id, conversation.bot_id);
-    } else if (conversation.type === 'group' && conversation.group_id) {
-      const members = groups.getMembers(conversation.group_id);
-      
-      if (mentionedBotId) {
-        const mentioned = members.find(b => b.id === mentionedBotId);
-        if (mentioned) {
-          queue.enqueue(id, mentioned.id);
+    if (addressed.length > 0) {
+      if (conversation.type === 'group' && conversation.group_id) {
+        const members = groups.getMembers(conversation.group_id);
+        for (const bot of addressed) {
+          if (members.some(member => member.id === bot.id)) {
+            enqueueBot(id, bot.id);
+          } else {
+            const target = conversations.getByBotId(bot.id);
+            if (!target) continue;
+            if (target.id !== id) messages.create(target.id, 'user', content, undefined, handoffIds);
+            enqueueBot(target.id, bot.id);
+          }
         }
-      } else if (members.length > 0) {
-        queue.enqueue(id, members[0].id);
+      } else {
+        for (const bot of addressed) {
+          const target = conversations.getByBotId(bot.id);
+          if (!target) continue;
+          if (target.id !== id) messages.create(target.id, 'user', content, undefined, handoffIds);
+          enqueueBot(target.id, bot.id);
+        }
       }
+    } else if (conversation.type === 'bot' && conversation.bot_id) {
+      enqueueBot(id, conversation.bot_id);
+    } else if (conversation.type === 'group' && conversation.group_id) {
+      // No fixed member. Every member is queued and decides in the agent.
+      const members = groups.getMembers(conversation.group_id);
+      for (const member of members) enqueueBot(id, member.id);
     }
 
     processQueue().catch(console.error);
@@ -70,4 +93,31 @@ export async function POST(
     console.error('Error sending message:', error);
     return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
   }
+}
+
+function mentionAt(content: string, name: string): boolean {
+  const needle = '@' + name;
+  let from = 0;
+  while (from < content.length) {
+    const at = content.indexOf(needle, from);
+    if (at < 0) return false;
+    const after = content[at + needle.length];
+    if (!after || /[\s.,!?:;]/.test(after)) return true;
+    from = at + needle.length;
+  }
+  return false;
+}
+
+function addressedBots(content: string, explicitId?: string) {
+  const all = bots.getAll();
+  const found = new Map<string, (typeof all)[number]>();
+  if (explicitId) {
+    const explicit = all.find(bot => bot.id === explicitId);
+    if (explicit) found.set(explicit.id, explicit);
+  }
+  const sorted = [...all].sort((a, b) => b.name.length - a.name.length);
+  for (const bot of sorted) {
+    if (mentionAt(content, bot.name)) found.set(bot.id, bot);
+  }
+  return [...found.values()];
 }
