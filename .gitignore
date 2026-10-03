@@ -1,0 +1,9 @@
+node_modules
+.next
+botmancers.db
+botmancers.db-shm
+botmancers.db-wal
+.env.local
+.env
+*.log
+.temporal
