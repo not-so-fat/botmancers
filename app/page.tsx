@@ -2,13 +2,24 @@
 
 import { useState, useEffect, useRef } from 'react';
 
-function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; output?: string } | null {
+function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; output?: string; html?: string } | null {
   const match = content.match(/^\s*\[run\]\s*([\s\S]*)$/);
   if (!match) return null;
   try {
     const parsed = JSON.parse(match[1]);
-    if (parsed?.state === 'running' || parsed?.state === 'stopped') return { state: parsed.state };
-    if (parsed?.state === 'done' && typeof parsed.output === 'string') return { state: 'done', output: parsed.output };
+    if (parsed?.state === 'running' || parsed?.state === 'stopped') {
+      return {
+        state: parsed.state,
+        html: typeof parsed.html === 'string' ? parsed.html : undefined
+      };
+    }
+    if (parsed?.state === 'done' && typeof parsed.output === 'string') {
+      return {
+        state: 'done',
+        output: parsed.output,
+        html: typeof parsed.html === 'string' ? parsed.html : undefined
+      };
+    }
   } catch {
     // not valid JSON
   }
@@ -443,7 +454,11 @@ export default function Home() {
       )}
 
       {showComputerPreview && (
-        <ComputerPreview pageContent={previewPageContent} />
+        <ComputerPreview 
+          pageContent={previewPageContent} 
+          runningMessage={previewRunningMessage}
+          onStop={(msgId) => stopRun(msgId)}
+        />
       )}
     </div>
   );
@@ -451,9 +466,15 @@ export default function Home() {
 
 interface ComputerPreviewProps {
   pageContent: string | null;
+  runningMessage: Message | null;
+  onStop: (messageId: string) => void;
 }
 
-function ComputerPreview({ pageContent }: ComputerPreviewProps) {
+function ComputerPreview({ pageContent, runningMessage, onStop }: ComputerPreviewProps) {
+  const run = runningMessage ? parseRun(runningMessage.content) : null;
+  const displayContent = run ? runLine(run) : '';
+  const isRunning = run?.state === 'running';
+
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
       <div className="relative w-full max-w-5xl h-full max-h-[90vh] rounded-lg shadow-2xl overflow-hidden">
@@ -475,7 +496,23 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
           <div className="w-16"></div>
         </div>
         
-        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
+        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none">
+          {runningMessage && (
+            <div className="h-full flex items-center px-4">
+              <div className="text-sm text-gray-300 opacity-70">
+                {displayContent}
+                {isRunning && (
+                  <button
+                    onClick={() => onStop(runningMessage.id)}
+                    className="ml-3 px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 pointer-events-auto"
+                  >
+                    Stop
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
         
         <div 
           className="absolute top-[6.75rem] left-0 right-0 bottom-0 overflow-auto pointer-events-none"
