@@ -247,13 +247,16 @@ export function beginPublicPageReadRun(messageId: string, seconds: number, url?:
           return;
         }
         messages.replaceContent(messageId, serializeRun({ state: 'running', html }));
+        
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
         if (live.stopped || !stillRunning(messageId, live)) {
           if (live.stopped) markStopped(messageId);
           return;
         }
         const title = extractPageTitle(html);
         if (title && stillRunning(messageId, live)) {
-          messages.replaceContent(messageId, serializeRun({ state: 'done', output: title }));
+          messages.replaceContent(messageId, serializeRun({ state: 'done', output: title, html }));
         }
       } else {
         const html = await fetchPublicPage('https://example.com', 'example.com');

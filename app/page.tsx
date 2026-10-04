@@ -15,20 +15,6 @@ function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; out
   return null;
 }
 
-function isPageTitleCommand(userMessage: string): boolean {
-  const trimmed = userMessage.trim().replace(/\.$/, '');
-  if (/^Open https:\/\/[^\s]+ and reply with the page title( wait \d+ seconds)?$/.test(trimmed)) {
-    return true;
-  }
-  return false;
-}
-
-function extractUrlFromPageTitleCommand(userMessage: string): string | null {
-  const trimmed = userMessage.trim().replace(/\.$/, '');
-  const match = trimmed.match(/^Open (https:\/\/[^\s]+) and reply with the page title/);
-  return match ? match[1] : null;
-}
-
 function runLine(run: { state: 'running' | 'done' | 'stopped'; output?: string }): string {
   if (run.state === 'done') return run.output ?? '';
   if (run.state === 'stopped') return 'The command was stopped.';
@@ -76,7 +62,6 @@ export default function Home() {
   const [importError, setImportError] = useState<string | null>(null);
   const [showComputerPreview, setShowComputerPreview] = useState(false);
   const [previewPageContent, setPreviewPageContent] = useState<string | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewRunningMessage, setPreviewRunningMessage] = useState<Message | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -139,7 +124,6 @@ export default function Home() {
     if (!activeConversation || activeConversation.type !== 'bot') {
       setShowComputerPreview(false);
       setPreviewPageContent(null);
-      setPreviewUrl(null);
       setPreviewRunningMessage(null);
       return;
     }
@@ -148,46 +132,30 @@ export default function Home() {
     if (bot.name.toLowerCase() !== 'chief-of-staff') {
       setShowComputerPreview(false);
       setPreviewPageContent(null);
-      setPreviewUrl(null);
-      setPreviewRunningMessage(null);
-      return;
-    }
-
-    const lastUserMessage = [...messages].reverse().find(m => m.sender_type === 'user');
-    if (!lastUserMessage || !isPageTitleCommand(lastUserMessage.content)) {
-      setShowComputerPreview(false);
-      setPreviewPageContent(null);
-      setPreviewUrl(null);
-      setPreviewRunningMessage(null);
-      return;
-    }
-
-    const lastBotMessage = [...messages].reverse().find(m => m.sender_type === 'bot');
-    if (!lastBotMessage) {
-      setShowComputerPreview(false);
-      setPreviewPageContent(null);
-      setPreviewUrl(null);
-      setPreviewRunningMessage(null);
-      return;
-    }
-
-    const run = parseRun(lastBotMessage.content);
-    if (!run) {
-      setShowComputerPreview(false);
-      setPreviewPageContent(null);
-      setPreviewUrl(null);
       setPreviewRunningMessage(null);
       return;
     }
 
     setShowComputerPreview(true);
-    setPreviewRunningMessage(lastBotMessage);
 
-    if (run.state === 'stopped') {
-      setPreviewPageContent(null);
-    } else if (run.html) {
-      setPreviewPageContent(run.html);
+    const lastBotMessage = [...messages].reverse().find(m => {
+      if (m.sender_type !== 'bot') return false;
+      return parseRun(m.content) !== null;
+    });
+
+    if (lastBotMessage) {
+      const run = parseRun(lastBotMessage.content);
+      setPreviewRunningMessage(lastBotMessage);
+      
+      if (run && run.state === 'stopped') {
+        setPreviewPageContent(null);
+      } else if (run && run.html) {
+        setPreviewPageContent(run.html);
+      } else {
+        setPreviewPageContent(null);
+      }
     } else {
+      setPreviewRunningMessage(null);
       setPreviewPageContent(null);
     }
   }, [messages, activeConversation]);
@@ -474,12 +442,8 @@ export default function Home() {
         />
       )}
 
-      {showComputerPreview && previewRunningMessage && (
-        <ComputerPreview 
-          pageContent={previewPageContent} 
-          runningMessage={previewRunningMessage}
-          onStop={() => stopRun(previewRunningMessage.id)}
-        />
+      {showComputerPreview && (
+        <ComputerPreview pageContent={previewPageContent} />
       )}
     </div>
   );
@@ -487,15 +451,9 @@ export default function Home() {
 
 interface ComputerPreviewProps {
   pageContent: string | null;
-  runningMessage: Message;
-  onStop: () => void;
 }
 
-function ComputerPreview({ pageContent, runningMessage, onStop }: ComputerPreviewProps) {
-  const run = parseRun(runningMessage.content);
-  const displayContent = run ? runLine(run) : '';
-  const isRunning = run?.state === 'running';
-
+function ComputerPreview({ pageContent }: ComputerPreviewProps) {
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
       <div className="relative w-full max-w-5xl h-full max-h-[90vh] rounded-lg shadow-2xl overflow-hidden">
@@ -517,19 +475,7 @@ function ComputerPreview({ pageContent, runningMessage, onStop }: ComputerPrevie
           <div className="w-16"></div>
         </div>
         
-        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 flex items-center px-4 pointer-events-none">
-          <div className="text-sm text-gray-300 opacity-70">
-            {displayContent}
-            {isRunning && (
-              <button
-                onClick={onStop}
-                className="ml-3 px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 pointer-events-auto"
-              >
-                Stop
-              </button>
-            )}
-          </div>
-        </div>
+        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
         
         <div 
           className="absolute top-[6.75rem] left-0 right-0 bottom-0 overflow-auto pointer-events-none"

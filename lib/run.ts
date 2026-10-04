@@ -70,14 +70,20 @@ export function parseRun(content: string): FileRun | null {
       html: typeof row.html === 'string' ? row.html : undefined
     };
   }
-  if (row.state === 'done' && typeof row.output === 'string') return { state: 'done', output: row.output };
+  if (row.state === 'done' && typeof row.output === 'string') {
+    return {
+      state: 'done',
+      output: row.output,
+      html: typeof row.html === 'string' ? row.html : undefined
+    };
+  }
   return null;
 }
 
 export function serializeRun(run: FileRun): string {
   const payload: { state: RunState; output?: string; html?: string } = { state: run.state };
   if (run.state === 'done' && typeof run.output === 'string') payload.output = run.output;
-  if (run.state === 'running' && typeof run.html === 'string') payload.html = run.html;
+  if (typeof run.html === 'string') payload.html = run.html;
   return '[run]\n' + JSON.stringify(payload);
 }
 
