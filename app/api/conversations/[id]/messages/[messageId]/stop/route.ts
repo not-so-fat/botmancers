@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { stopFileReadRun, stopPublicPageReadRun } from '@/lib/run-child';
+import { stopFileReadRun, stopPublicPageReadRun, stopCodingLimbRun } from '@/lib/run-child';
 
 export async function POST(
   request: Request,
@@ -10,6 +10,7 @@ export async function POST(
     
     stopFileReadRun(messageId);
     stopPublicPageReadRun(messageId);
+    stopCodingLimbRun(messageId);
     
     return NextResponse.json({ success: true });
   } catch (error) {

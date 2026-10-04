@@ -52,6 +52,15 @@ export function parsePublicPageReadAsk(text: string): { seconds: number; url?: s
   return null;
 }
 
+export function parseCodingLimbAsk(text: string): { seconds: number } | null {
+  let trimmed = text.trim();
+  if (trimmed.endsWith('.')) trimmed = trimmed.slice(0, -1).trim();
+  
+  if (trimmed === 'Ask the coding limb which file holds parsePublicPageReadAsk and reply with that path') return { seconds: 4 };
+  if (trimmed === 'Ask the coding limb which file holds parsePublicPageReadAsk and reply with that path wait 20 seconds') return { seconds: 20 };
+  return null;
+}
+
 export function parseRun(content: string): FileRun | null {
   const match = content.match(/^\s*\[run\]\s*([\s\S]*)$/);
   if (!match) return null;
