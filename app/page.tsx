@@ -496,7 +496,7 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
             </svg>
             <span>Teach a task</span>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M4 8l4-4m0 0l4 4m-4-4v12M20 16l-4 4m0 0l-4-4m4 4V8" />
+              <path d="M15 3h6m0 0v6m0-6l-7 7M9 21H3m0 0v-6m0 6l7-7" />
             </svg>
           </div>
           <div className="w-16"></div>
