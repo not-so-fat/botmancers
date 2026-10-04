@@ -134,13 +134,14 @@ export default function Home() {
       setTimeout(() => {
         const messageElement = runningMessageRef.current;
         const container = messagesContainerRef.current;
-        if (!messageElement || !container) return;
+        const darkBand = document.getElementById('computer-preview-dark-band');
+        if (!messageElement || !container || !darkBand) return;
         
         const messageRect = messageElement.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
+        const darkBandRect = darkBand.getBoundingClientRect();
         
-        const darkBandTop = 70;
-        const targetPosition = darkBandTop - containerRect.top;
+        const targetPosition = darkBandRect.top - containerRect.top;
         const currentMessagePosition = messageRect.top - containerRect.top;
         const scrollAdjustment = currentMessagePosition - targetPosition;
         
@@ -508,10 +509,10 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
           <div className="w-16"></div>
         </div>
         
-        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
+        <div id="computer-preview-dark-band" className="absolute top-11 left-0 right-0 h-28 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
         
         <div 
-          className="absolute top-[6.75rem] left-0 right-0 bottom-0 overflow-auto pointer-events-none"
+          className="absolute top-[9.75rem] left-0 right-0 bottom-0 overflow-auto pointer-events-none"
           style={{
             backgroundImage: 'url(/wallpaper_1c49.png)',
             backgroundSize: 'cover',
