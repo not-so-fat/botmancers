@@ -362,10 +362,6 @@ export default function Home() {
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
               {messages.map(msg => {
-                if (showComputerPreview && previewRunningMessage && msg.id === previewRunningMessage.id) {
-                  return null;
-                }
-                
                 const run = msg.sender_type === 'bot' ? parseRun(msg.content) : null;
                 const displayContent = run ? runLine(run) : msg.content;
                 
@@ -458,11 +454,7 @@ export default function Home() {
       )}
 
       {showComputerPreview && (
-        <ComputerPreview 
-          pageContent={previewPageContent} 
-          runningMessage={previewRunningMessage}
-          onStop={(msgId) => stopRun(msgId)}
-        />
+        <ComputerPreview pageContent={previewPageContent} />
       )}
     </div>
   );
@@ -470,15 +462,9 @@ export default function Home() {
 
 interface ComputerPreviewProps {
   pageContent: string | null;
-  runningMessage: Message | null;
-  onStop: (messageId: string) => void;
 }
 
-function ComputerPreview({ pageContent, runningMessage, onStop }: ComputerPreviewProps) {
-  const run = runningMessage ? parseRun(runningMessage.content) : null;
-  const displayContent = run ? runLine(run) : '';
-  const isRunning = run?.state === 'running';
-
+function ComputerPreview({ pageContent }: ComputerPreviewProps) {
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
       <div className="relative w-full max-w-5xl h-full max-h-[90vh] rounded-lg shadow-2xl overflow-hidden">
@@ -500,26 +486,7 @@ function ComputerPreview({ pageContent, runningMessage, onStop }: ComputerPrevie
           <div className="w-16"></div>
         </div>
         
-        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 flex items-center px-4 pointer-events-none">
-          {runningMessage && (
-            <div className="max-w-[80%] rounded-lg p-3 bg-white border text-gray-800">
-              {runningMessage.sender_name && (
-                <div className="text-xs font-semibold text-gray-500 mb-1">
-                  {runningMessage.sender_name}
-                </div>
-              )}
-              <div className="whitespace-pre-wrap">{displayContent}</div>
-              {isRunning && (
-                <button
-                  onClick={() => onStop(runningMessage.id)}
-                  className="mt-2 px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 pointer-events-auto"
-                >
-                  Stop
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
         
         <div 
           className="absolute top-[6.75rem] left-0 right-0 bottom-0 overflow-auto pointer-events-none"
