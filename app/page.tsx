@@ -74,6 +74,7 @@ export default function Home() {
   const [showComputerPreview, setShowComputerPreview] = useState(false);
   const [previewPageContent, setPreviewPageContent] = useState<string | null>(null);
   const [previewRunningMessage, setPreviewRunningMessage] = useState<Message | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const runningMessageRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -129,10 +130,24 @@ export default function Home() {
   }, [activeConversation]);
 
   useEffect(() => {
-    if (showComputerPreview && runningMessageRef.current) {
-      runningMessageRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } else {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (showComputerPreview && runningMessageRef.current && messagesContainerRef.current) {
+      setTimeout(() => {
+        const messageElement = runningMessageRef.current;
+        const container = messagesContainerRef.current;
+        if (!messageElement || !container) return;
+        
+        const messageRect = messageElement.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        
+        const darkBandTop = 70;
+        const targetPosition = darkBandTop - containerRect.top;
+        const currentMessagePosition = messageRect.top - containerRect.top;
+        const scrollAdjustment = currentMessagePosition - targetPosition;
+        
+        container.scrollTop += scrollAdjustment;
+      }, 100);
+    } else if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, showComputerPreview]);
 
@@ -365,7 +380,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3">
               {messages.map(msg => {
                 const run = msg.sender_type === 'bot' ? parseRun(msg.content) : null;
                 const displayContent = run ? runLine(run) : msg.content;
