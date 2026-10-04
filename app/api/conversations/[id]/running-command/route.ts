@@ -3,9 +3,9 @@ import { runningCommands } from '@/lib/db';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  const conversationId = params.id;
+  const { id: conversationId } = await params;
   const activeCommand = runningCommands.getActiveByConversation(conversationId);
   
   if (activeCommand) {

@@ -179,13 +179,20 @@ async function processQueueItem(item: QueueItem) {
       messages.create(item.conversation_id, 'bot', 'The command is running', bot.id);
 
       (async () => {
-        await new Promise(resolve => setTimeout(resolve, pageRead.waitSeconds * 1000));
+        const startTime = Date.now();
+        const waitMs = pageRead.waitSeconds * 1000;
+        
+        while (Date.now() - startTime < waitMs) {
+          const current = runningCommands.getById(cmd.id);
+          if (!current || current.status === 'stopped') {
+            messages.create(item.conversation_id, 'bot', 'The command was stopped.', bot.id);
+            return;
+          }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
 
         const current = runningCommands.getById(cmd.id);
         if (!current || current.status !== 'running') {
-          if (current && current.status === 'stopped') {
-            messages.create(item.conversation_id, 'bot', 'The command was stopped.', bot.id);
-          }
           return;
         }
 
