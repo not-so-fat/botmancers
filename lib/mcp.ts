@@ -57,7 +57,6 @@ export async function mcpTurn(
     let nextId = 1;
     const pending = new Map<number, (msg: JsonRpc) => void>();
     let settled = false;
-    let timer: ReturnType<typeof setTimeout>;
 
     const fail = (error: Error) => {
       if (settled) return;
@@ -75,7 +74,7 @@ export async function mcpTurn(
       resolve(value);
     };
 
-    timer = setTimeout(() => fail(new Error('MCP server timed out')), 8000);
+    const timer = setTimeout(() => fail(new Error('MCP server timed out')), 8000);
 
     child.stdin.on('error', () => undefined);
     child.on('error', (error) => fail(error));

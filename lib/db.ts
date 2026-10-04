@@ -83,6 +83,29 @@ if (!botColumns.some(column => column.name === 'color')) {
 if (!botColumns.some(column => column.name === 'pinned')) {
   db.exec('ALTER TABLE bots ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
 }
+if (!botColumns.some(column => column.name === 'source_provider')) {
+  db.exec('ALTER TABLE bots ADD COLUMN source_provider TEXT');
+}
+if (!botColumns.some(column => column.name === 'template_id')) {
+  db.exec('ALTER TABLE bots ADD COLUMN template_id TEXT');
+}
+if (!botColumns.some(column => column.name === 'template_url')) {
+  db.exec('ALTER TABLE bots ADD COLUMN template_url TEXT');
+}
+if (!botColumns.some(column => column.name === 'import_schema_version')) {
+  db.exec('ALTER TABLE bots ADD COLUMN import_schema_version TEXT');
+}
+if (!botColumns.some(column => column.name === 'import_operation_id')) {
+  db.exec('ALTER TABLE bots ADD COLUMN import_operation_id TEXT');
+}
+if (!botColumns.some(column => column.name === 'import_timestamp')) {
+  db.exec('ALTER TABLE bots ADD COLUMN import_timestamp INTEGER');
+}
+
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_import_operation 
+  ON bots(import_operation_id) WHERE import_operation_id IS NOT NULL
+`);
 
 db.prepare('UPDATE bots SET color = ? WHERE id = ?').run(BOT_COLORS[0], CEDAR_ID);
 db.prepare('UPDATE bots SET color = ? WHERE id = ?').run(BOT_COLORS[1], PINE_ID);
@@ -109,6 +132,21 @@ export interface Bot {
   color: string;
   pinned?: number;
   created_at: number;
+  source_provider?: string | null;
+  template_id?: string | null;
+  template_url?: string | null;
+  import_schema_version?: string | null;
+  import_operation_id?: string | null;
+  import_timestamp?: number | null;
+}
+
+export interface ImportProvenance {
+  source_provider: string;
+  template_id: string;
+  template_url: string;
+  import_schema_version: string;
+  import_operation_id: string;
+  import_timestamp: number;
 }
 
 const messageColumns = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
@@ -174,6 +212,46 @@ export const bots = {
     ).run(conversationId, 'bot', bot.id, bot.created_at);
     
     return bot;
+  },
+
+  createFromImport: (
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp'>,
+    provenance: ImportProvenance
+  ): Bot => {
+    const bot: Bot = {
+      id: randomUUID(),
+      ...data,
+      color: nextBotColor(),
+      created_at: Date.now(),
+      source_provider: provenance.source_provider,
+      template_id: provenance.template_id,
+      template_url: provenance.template_url,
+      import_schema_version: provenance.import_schema_version,
+      import_operation_id: provenance.import_operation_id,
+      import_timestamp: provenance.import_timestamp,
+    };
+    db.prepare(
+      `INSERT INTO bots (
+        id, name, title, description, avatar, color, created_at,
+        source_provider, template_id, template_url, import_schema_version,
+        import_operation_id, import_timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color, bot.created_at,
+      bot.source_provider, bot.template_id, bot.template_url, bot.import_schema_version,
+      bot.import_operation_id, bot.import_timestamp
+    );
+    
+    const conversationId = randomUUID();
+    db.prepare(
+      'INSERT INTO conversations (id, type, bot_id, created_at) VALUES (?, ?, ?, ?)'
+    ).run(conversationId, 'bot', bot.id, bot.created_at);
+    
+    return bot;
+  },
+
+  getByImportOperationId: (operationId: string): Bot | undefined => {
+    return db.prepare('SELECT * FROM bots WHERE import_operation_id = ?').get(operationId) as Bot | undefined;
   },
   
   getAll: (): Bot[] => {

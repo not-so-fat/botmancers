@@ -214,7 +214,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
     return;
   }
   
-  const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*(.+)/s);
+  const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);
   
   if (wakeMatch) {
     const [, target, message] = wakeMatch;
