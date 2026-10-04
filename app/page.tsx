@@ -77,6 +77,7 @@ export default function Home() {
   const [showComputerPreview, setShowComputerPreview] = useState(false);
   const [previewPageContent, setPreviewPageContent] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewRunningMessage, setPreviewRunningMessage] = useState<Message | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -139,6 +140,7 @@ export default function Home() {
       setShowComputerPreview(false);
       setPreviewPageContent(null);
       setPreviewUrl(null);
+      setPreviewRunningMessage(null);
       return;
     }
 
@@ -147,6 +149,7 @@ export default function Home() {
       setShowComputerPreview(false);
       setPreviewPageContent(null);
       setPreviewUrl(null);
+      setPreviewRunningMessage(null);
       return;
     }
 
@@ -155,6 +158,7 @@ export default function Home() {
       setShowComputerPreview(false);
       setPreviewPageContent(null);
       setPreviewUrl(null);
+      setPreviewRunningMessage(null);
       return;
     }
 
@@ -163,6 +167,7 @@ export default function Home() {
       setShowComputerPreview(false);
       setPreviewPageContent(null);
       setPreviewUrl(null);
+      setPreviewRunningMessage(null);
       return;
     }
 
@@ -171,17 +176,17 @@ export default function Home() {
       setShowComputerPreview(false);
       setPreviewPageContent(null);
       setPreviewUrl(null);
+      setPreviewRunningMessage(null);
       return;
     }
 
     setShowComputerPreview(true);
-    const url = extractUrlFromPageTitleCommand(lastUserMessage.content);
-    setPreviewUrl(url);
+    setPreviewRunningMessage(lastBotMessage);
 
     if (run.state === 'stopped') {
       setPreviewPageContent(null);
-    } else if (url) {
-      setPreviewPageContent(url);
+    } else if (run.html) {
+      setPreviewPageContent(run.html);
     } else {
       setPreviewPageContent(null);
     }
@@ -469,8 +474,12 @@ export default function Home() {
         />
       )}
 
-      {showComputerPreview && (
-        <ComputerPreview pageContent={previewPageContent} />
+      {showComputerPreview && previewRunningMessage && (
+        <ComputerPreview 
+          pageContent={previewPageContent} 
+          runningMessage={previewRunningMessage}
+          onStop={() => stopRun(previewRunningMessage.id)}
+        />
       )}
     </div>
   );
@@ -478,9 +487,15 @@ export default function Home() {
 
 interface ComputerPreviewProps {
   pageContent: string | null;
+  runningMessage: Message;
+  onStop: () => void;
 }
 
-function ComputerPreview({ pageContent }: ComputerPreviewProps) {
+function ComputerPreview({ pageContent, runningMessage, onStop }: ComputerPreviewProps) {
+  const run = parseRun(runningMessage.content);
+  const displayContent = run ? runLine(run) : '';
+  const isRunning = run?.state === 'running';
+
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
       <div className="relative w-full max-w-5xl h-full max-h-[90vh] rounded-lg shadow-2xl overflow-hidden">
@@ -491,8 +506,8 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
             <div className="w-3 h-3 rounded-full bg-green-500"></div>
           </div>
           <div className="flex items-center gap-2 text-gray-300 text-sm">
-            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10" />
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" />
             </svg>
             <span>Teach a task</span>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -502,38 +517,46 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
           <div className="w-16"></div>
         </div>
         
-        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
+        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 flex items-center px-4 pointer-events-none">
+          <div className="text-sm text-gray-300 opacity-70">
+            {displayContent}
+            {isRunning && (
+              <button
+                onClick={onStop}
+                className="ml-3 px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 pointer-events-auto"
+              >
+                Stop
+              </button>
+            )}
+          </div>
+        </div>
         
-        <div className="absolute top-[6.75rem] left-0 right-0 bottom-0 bg-gradient-to-br from-gray-300 to-gray-400 overflow-auto pointer-events-none">
+        <div 
+          className="absolute top-[6.75rem] left-0 right-0 bottom-0 overflow-auto pointer-events-none"
+          style={{
+            backgroundImage: 'url(/wallpaper_1c49.png)',
+            backgroundSize: 'cover',
+            backgroundPosition: 'center'
+          }}
+        >
           {pageContent ? (
             <iframe
-              src={pageContent}
-              className="w-full h-full border-0 pointer-events-auto"
-              sandbox="allow-scripts allow-same-origin"
+              srcDoc={pageContent}
+              className="w-full h-full border-0 pointer-events-none"
+              sandbox="allow-same-origin"
               title="Preview"
             />
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-end pb-6">
               <div className="flex gap-3">
-                <div className="w-16 h-16 rounded-xl bg-white shadow-lg flex items-center justify-center">
-                  <svg className="w-10 h-10" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" fill="#4285F4"/>
-                    <circle cx="12" cy="12" r="7" fill="#EA4335"/>
-                    <circle cx="12" cy="12" r="5" fill="#FBBC05"/>
-                    <circle cx="12" cy="12" r="3" fill="#34A853"/>
-                    <circle cx="12" cy="12" r="1.5" fill="#4285F4"/>
-                  </svg>
+                <div className="w-16 h-16 rounded-xl overflow-hidden shadow-lg">
+                  <img src="/dock-chrome_c5c1.png" alt="Chrome" className="w-full h-full object-contain" />
                 </div>
-                <div className="w-16 h-16 rounded-xl bg-white shadow-lg flex items-center justify-center">
-                  <svg className="w-10 h-10" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="1.5">
-                    <rect x="5" y="7" width="14" height="10" rx="1"/>
-                    <path d="M9 11h6M9 14h4"/>
-                  </svg>
+                <div className="w-16 h-16 rounded-xl overflow-hidden shadow-lg">
+                  <img src="/dock-gray_6226.png" alt="App" className="w-full h-full object-contain" />
                 </div>
-                <div className="w-16 h-16 rounded-xl bg-gray-900 shadow-lg flex items-center justify-center">
-                  <svg className="w-8 h-8 text-green-400" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M3 3h7v7H3zM3 14h7v7H3zM14 3h7v7h-7zM17 14h4v1h-4zM17 16h4v1h-4zM17 18h4v1h-4zM17 20h4v1h-4z"/>
-                  </svg>
+                <div className="w-16 h-16 rounded-xl overflow-hidden shadow-lg">
+                  <img src="/dock-terminal_166d.png" alt="Terminal" className="w-full h-full object-contain" />
                 </div>
               </div>
             </div>

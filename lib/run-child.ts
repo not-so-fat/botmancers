@@ -240,9 +240,13 @@ export function beginPublicPageReadRun(messageId: string, seconds: number, url?:
 
     try {
       if (url) {
-        // New page title extraction
         const parsedUrl = new URL(url);
         const html = await fetchPublicPage(url, parsedUrl.hostname);
+        if (live.stopped || !stillRunning(messageId, live)) {
+          if (live.stopped) markStopped(messageId);
+          return;
+        }
+        messages.replaceContent(messageId, serializeRun({ state: 'running', html }));
         if (live.stopped || !stillRunning(messageId, live)) {
           if (live.stopped) markStopped(messageId);
           return;
@@ -252,7 +256,6 @@ export function beginPublicPageReadRun(messageId: string, seconds: number, url?:
           messages.replaceContent(messageId, serializeRun({ state: 'done', output: title }));
         }
       } else {
-        // Legacy one-word extraction from example.com
         const html = await fetchPublicPage('https://example.com', 'example.com');
         if (live.stopped || !stillRunning(messageId, live)) {
           if (live.stopped) markStopped(messageId);
