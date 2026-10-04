@@ -429,7 +429,7 @@ export default function Home() {
                 );
               })}
               {showComputerPreview && previewRunningMessage && (
-                <div style={{ height: '200px' }} />
+                <div style={{ height: '100vh' }} />
               )}
               <div ref={messagesEndRef} />
             </div>
