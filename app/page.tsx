@@ -15,6 +15,20 @@ function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; out
   return null;
 }
 
+function isPageTitleCommand(userMessage: string): boolean {
+  const trimmed = userMessage.trim().replace(/\.$/, '');
+  if (/^Open https:\/\/[^\s]+ and reply with the page title( wait \d+ seconds)?$/.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+function extractUrlFromPageTitleCommand(userMessage: string): string | null {
+  const trimmed = userMessage.trim().replace(/\.$/, '');
+  const match = trimmed.match(/^Open (https:\/\/[^\s]+) and reply with the page title/);
+  return match ? match[1] : null;
+}
+
 function runLine(run: { state: 'running' | 'done' | 'stopped'; output?: string }): string {
   if (run.state === 'done') return run.output ?? '';
   if (run.state === 'stopped') return 'The command was stopped.';
@@ -60,6 +74,9 @@ export default function Home() {
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [importError, setImportError] = useState<string | null>(null);
+  const [showComputerPreview, setShowComputerPreview] = useState(false);
+  const [previewPageContent, setPreviewPageContent] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -116,6 +133,60 @@ export default function Home() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (!activeConversation || activeConversation.type !== 'bot') {
+      setShowComputerPreview(false);
+      setPreviewPageContent(null);
+      setPreviewUrl(null);
+      return;
+    }
+
+    const bot = activeConversation.details as Bot;
+    if (bot.name.toLowerCase() !== 'chief-of-staff') {
+      setShowComputerPreview(false);
+      setPreviewPageContent(null);
+      setPreviewUrl(null);
+      return;
+    }
+
+    const lastUserMessage = [...messages].reverse().find(m => m.sender_type === 'user');
+    if (!lastUserMessage || !isPageTitleCommand(lastUserMessage.content)) {
+      setShowComputerPreview(false);
+      setPreviewPageContent(null);
+      setPreviewUrl(null);
+      return;
+    }
+
+    const lastBotMessage = [...messages].reverse().find(m => m.sender_type === 'bot');
+    if (!lastBotMessage) {
+      setShowComputerPreview(false);
+      setPreviewPageContent(null);
+      setPreviewUrl(null);
+      return;
+    }
+
+    const run = parseRun(lastBotMessage.content);
+    if (!run) {
+      setShowComputerPreview(false);
+      setPreviewPageContent(null);
+      setPreviewUrl(null);
+      return;
+    }
+
+    setShowComputerPreview(true);
+    const url = extractUrlFromPageTitleCommand(lastUserMessage.content);
+    setPreviewUrl(url);
+
+    if (run.state === 'done' && run.output && url) {
+      fetch(url)
+        .then(res => res.text())
+        .then(html => setPreviewPageContent(html))
+        .catch(() => setPreviewPageContent(null));
+    } else {
+      setPreviewPageContent(null);
+    }
+  }, [messages, activeConversation]);
 
   const loadBots = async () => {
     const res = await fetch('/api/bots');
@@ -208,7 +279,7 @@ export default function Home() {
   };
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="relative flex h-screen bg-gray-50">
       <div className={`${showSidebar ? 'w-full sm:w-80' : 'hidden'} sm:block sm:${showSidebar ? 'w-80' : 'w-0'} bg-white border-r transition-all duration-200 overflow-hidden`}>
         <div className="p-4 border-b">
           <h1 className="text-xl font-bold text-gray-800">Botmancers</h1>
@@ -398,6 +469,75 @@ export default function Home() {
           }}
         />
       )}
+
+      {showComputerPreview && (
+        <ComputerPreview pageContent={previewPageContent} />
+      )}
+    </div>
+  );
+}
+
+interface ComputerPreviewProps {
+  pageContent: string | null;
+}
+
+function ComputerPreview({ pageContent }: ComputerPreviewProps) {
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
+      <div className="relative w-full max-w-5xl h-full max-h-[90vh] rounded-lg shadow-2xl overflow-hidden">
+        <div className="absolute top-0 left-0 right-0 h-11 bg-gray-800 flex items-center justify-between px-4 pointer-events-auto">
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded-full bg-red-500"></div>
+            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+            <div className="w-3 h-3 rounded-full bg-green-500"></div>
+          </div>
+          <div className="flex items-center gap-2 text-gray-300 text-sm">
+            <span>Teach a task</span>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </div>
+          <div className="w-16"></div>
+        </div>
+        
+        <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
+        
+        <div className="absolute top-[6.75rem] left-0 right-0 bottom-0 bg-gradient-to-br from-gray-300 to-gray-400 overflow-auto pointer-events-auto">
+          {pageContent ? (
+            <iframe
+              srcDoc={pageContent}
+              className="w-full h-full border-0"
+              sandbox="allow-same-origin"
+              title="Preview"
+            />
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-end pb-6">
+              <div className="flex gap-3">
+                <div className="w-16 h-16 rounded-xl bg-white shadow-lg flex items-center justify-center">
+                  <svg className="w-10 h-10" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" fill="#4285F4"/>
+                    <circle cx="12" cy="12" r="7" fill="#EA4335"/>
+                    <circle cx="12" cy="12" r="5" fill="#FBBC05"/>
+                    <circle cx="12" cy="12" r="3" fill="#34A853"/>
+                    <circle cx="12" cy="12" r="1.5" fill="#4285F4"/>
+                  </svg>
+                </div>
+                <div className="w-16 h-16 rounded-xl bg-white shadow-lg flex items-center justify-center">
+                  <svg className="w-10 h-10" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="1.5">
+                    <rect x="5" y="7" width="14" height="10" rx="1"/>
+                    <path d="M9 11h6M9 14h4"/>
+                  </svg>
+                </div>
+                <div className="w-16 h-16 rounded-xl bg-gray-900 shadow-lg flex items-center justify-center">
+                  <svg className="w-8 h-8 text-green-400" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M3 3h7v7H3zM3 14h7v7H3zM14 3h7v7h-7zM17 14h4v1h-4zM17 16h4v1h-4zM17 18h4v1h-4zM17 20h4v1h-4z"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
