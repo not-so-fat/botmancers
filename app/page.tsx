@@ -40,6 +40,7 @@ export default function Home() {
   const [showBotModal, setShowBotModal] = useState(false);
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [hasRunningCommand, setHasRunningCommand] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -87,6 +88,19 @@ export default function Home() {
     const res = await fetch(`/api/conversations/${activeConversation.id}/messages`);
     const data = await res.json();
     setMessages(data);
+    
+    const cmdRes = await fetch(`/api/conversations/${activeConversation.id}/running-command`);
+    const cmdData = await cmdRes.json();
+    setHasRunningCommand(cmdData.hasRunningCommand || false);
+  };
+
+  const stopCommand = async () => {
+    if (!activeConversation) return;
+    await fetch(`/api/conversations/${activeConversation.id}/stop-command`, {
+      method: 'POST',
+    });
+    setHasRunningCommand(false);
+    loadMessages();
   };
 
   const openConversation = async (type: 'bot' | 'group', id: string) => {
@@ -249,12 +263,21 @@ export default function Home() {
                   placeholder="Type a message..."
                   className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
-                <button
-                  onClick={sendMessage}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
-                  Send
-                </button>
+                {hasRunningCommand ? (
+                  <button
+                    onClick={stopCommand}
+                    className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    onClick={sendMessage}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    Send
+                  </button>
+                )}
               </div>
             </div>
           </>

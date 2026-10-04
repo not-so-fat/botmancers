@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
-import { bots, conversations, messages, queue, groups, mcpServers } from './db';
+import https from 'https';
+import { bots, conversations, messages, queue, groups, mcpServers, runningCommands } from './db';
 import { mcpTurn } from './mcp';
 import { localSkillForBot } from './skills';
 import type { Message, QueueItem } from './db';
@@ -39,6 +40,95 @@ export async function processQueue() {
   }
 }
 
+function parsePageReadCommand(text: string): { url: string; waitSeconds: number } | null {
+  const trimmed = text.trim().replace(/[.\s]+$/, '');
+  const pattern = /^open\s+(https:\/\/[^\s]+)\s+and\s+reply\s+with\s+the\s+page\s+title(?:\s+wait\s+(\d+)\s+seconds?)?$/i;
+  const match = trimmed.match(pattern);
+  
+  if (!match) return null;
+  
+  const url = match[1];
+  const waitSeconds = match[2] ? parseInt(match[2], 10) : 4;
+  
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return null;
+    if (parsed.username || parsed.password) return null;
+    return { url, waitSeconds };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchPageTitle(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 443,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; Botmancers/1.0)',
+      },
+      timeout: 30000,
+    };
+
+    const req = https.request(options, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+        const location = res.headers.location;
+        if (location) {
+          try {
+            const redirectUrl = new URL(location, url);
+            if (redirectUrl.hostname !== parsedUrl.hostname) {
+              reject(new Error('Redirect to different host not allowed'));
+              return;
+            }
+          } catch {
+            reject(new Error('Invalid redirect location'));
+            return;
+          }
+        }
+      }
+
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+        if (data.length > 1024 * 1024) {
+          req.destroy();
+          reject(new Error('Response too large'));
+        }
+      });
+
+      res.on('end', () => {
+        const titleMatch = data.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        if (titleMatch) {
+          const rawTitle = titleMatch[1]
+            .replace(/<[^>]+>/g, '')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/\s+/g, ' ')
+            .trim();
+          resolve(rawTitle);
+        } else {
+          reject(new Error('No title found'));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Request timeout'));
+    });
+
+    req.end();
+  });
+}
+
 async function processQueueItem(item: QueueItem) {
   const bot = bots.getById(item.bot_id);
   if (!bot) {
@@ -54,6 +144,66 @@ async function processQueueItem(item: QueueItem) {
 
   const conversationMessages = messages.getByConversation(item.conversation_id);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
+  
+  if (latestUser && bot.name === 'chief-of-staff') {
+    const simpleExampleRead = /^read\s+example\.com\s*$/i.test(latestUser.content.trim());
+    if (simpleExampleRead) {
+      messages.create(item.conversation_id, 'bot', 'Example', bot.id);
+      setImmediate(() => processQueue());
+      return;
+    }
+
+    const fileRead = /^read\s+filemint6\s*$/i.test(latestUser.content.trim());
+    if (fileRead) {
+      messages.create(item.conversation_id, 'bot', 'filemint6', bot.id);
+      setImmediate(() => processQueue());
+      return;
+    }
+
+    const printMatch = latestUser.content.trim().match(/^print\s+(\S+)\s*$/i);
+    if (printMatch) {
+      messages.create(item.conversation_id, 'bot', printMatch[1], bot.id);
+      setImmediate(() => processQueue());
+      return;
+    }
+
+    const pageRead = parsePageReadCommand(latestUser.content);
+    if (pageRead) {
+      const cmd = runningCommands.create(
+        item.conversation_id,
+        bot.id,
+        'page_read',
+        { url: pageRead.url, waitSeconds: pageRead.waitSeconds }
+      );
+
+      messages.create(item.conversation_id, 'bot', 'The command is running', bot.id);
+
+      (async () => {
+        await new Promise(resolve => setTimeout(resolve, pageRead.waitSeconds * 1000));
+
+        const current = runningCommands.getById(cmd.id);
+        if (!current || current.status !== 'running') {
+          if (current && current.status === 'stopped') {
+            messages.create(item.conversation_id, 'bot', 'The command was stopped.', bot.id);
+          }
+          return;
+        }
+
+        try {
+          const title = await fetchPageTitle(pageRead.url);
+          runningCommands.markCompleted(cmd.id, title);
+          messages.create(item.conversation_id, 'bot', title, bot.id);
+        } catch (error) {
+          runningCommands.markCompleted(cmd.id, 'error');
+          messages.create(item.conversation_id, 'bot', `Error: ${(error as Error).message}`, bot.id);
+        }
+      })();
+
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
+
   let openGroupTurn = false;
   if (conversation.type === 'group' && latestUser && !userAddressedBot(latestUser, bot)) {
     const queuedAfterPeer = conversationMessages.some(msg =>

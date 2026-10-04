@@ -70,6 +70,22 @@ db.exec(`
     args TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS running_commands (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    command_type TEXT NOT NULL,
+    command_data TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    result TEXT,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+    FOREIGN KEY (bot_id) REFERENCES bots(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_running_commands_status ON running_commands(conversation_id, status);
 `);
 
 const BOT_COLORS = ['#C6F54A', '#F0A05A', '#E85D75', '#C9A0FF', '#F2E36B'];
@@ -478,6 +494,58 @@ export interface McpServer {
   args: string;
   created_at: number;
 }
+
+export interface RunningCommand {
+  id: string;
+  conversation_id: string;
+  bot_id: string;
+  command_type: string;
+  command_data: string;
+  status: 'running' | 'completed' | 'stopped';
+  created_at: number;
+  completed_at?: number;
+  result?: string;
+}
+
+export const runningCommands = {
+  create: (conversationId: string, botId: string, commandType: string, commandData: unknown): RunningCommand => {
+    const cmd: RunningCommand = {
+      id: randomUUID(),
+      conversation_id: conversationId,
+      bot_id: botId,
+      command_type: commandType,
+      command_data: JSON.stringify(commandData),
+      status: 'running',
+      created_at: Date.now(),
+    };
+    db.prepare(
+      'INSERT INTO running_commands (id, conversation_id, bot_id, command_type, command_data, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(cmd.id, cmd.conversation_id, cmd.bot_id, cmd.command_type, cmd.command_data, cmd.status, cmd.created_at);
+    return cmd;
+  },
+
+  getActiveByConversation: (conversationId: string): RunningCommand | undefined => {
+    return db.prepare(
+      'SELECT * FROM running_commands WHERE conversation_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(conversationId, 'running') as RunningCommand | undefined;
+  },
+
+  getById: (id: string): RunningCommand | undefined => {
+    return db.prepare('SELECT * FROM running_commands WHERE id = ?').get(id) as RunningCommand | undefined;
+  },
+
+  markStopped: (id: string): void => {
+    db.prepare(
+      'UPDATE running_commands SET status = ?, completed_at = ? WHERE id = ?'
+    ).run('stopped', Date.now(), id);
+  },
+
+  markCompleted: (id: string, result: string): void => {
+    db.prepare(
+      'UPDATE running_commands SET status = ?, completed_at = ?, result = ? WHERE id = ?'
+    ).run('completed', Date.now(), result, id);
+  },
+};
 
 export const mcpServers = {
   create: (name: string, command: string, args: string[]): McpServer => {
