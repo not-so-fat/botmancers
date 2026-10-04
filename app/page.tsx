@@ -49,7 +49,7 @@ export default function Home() {
     loadGroups();
     
     const urlParams = new URLSearchParams(window.location.search);
-    const importedBotId = urlParams.get('imported_bot_id');
+    const importedBotId = urlParams.get('imported');
     
     if (importedBotId) {
       handleImportReturn(importedBotId);
@@ -164,21 +164,18 @@ export default function Home() {
     setImportError(null);
     
     try {
-      const response = await fetch('/api/clone-market-url');
+      const statusResponse = await fetch('/api/marketplace-handoff/status');
+      const { configured } = await statusResponse.json();
       
-      if (!response.ok) {
+      if (!configured) {
         setImportError('CLONE_MARKET_URL is not configured. Please contact your administrator.');
         return;
       }
       
-      const { url: cloneMarketUrl } = await response.json();
-      
       const returnPath = window.location.origin + window.location.pathname;
-      const url = new URL(cloneMarketUrl);
-      url.searchParams.set('target', 'botmancers');
-      url.searchParams.set('return', returnPath);
+      const handoffUrl = `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}`;
       
-      window.location.href = url.toString();
+      window.location.href = handoffUrl;
     } catch (error) {
       setImportError('Failed to initiate import. Please try again.');
     }

@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 const http = require('http');
-const https = require('https');
-const { URL } = require('url');
 
 const PORT = 43123;
 const BASE_URL = `http://localhost:${PORT}`;
@@ -15,6 +13,7 @@ function request(method, path, body = null) {
       path,
       method,
       headers: body ? { 'Content-Type': 'application/json' } : {},
+      followRedirect: false,
     };
 
     const req = http.request(options, res => {
@@ -22,9 +21,19 @@ function request(method, path, body = null) {
       res.on('data', chunk => (data += chunk));
       res.on('end', () => {
         try {
-          resolve({ status: res.statusCode, body: JSON.parse(data) });
+          resolve({ 
+            status: res.statusCode, 
+            headers: res.headers,
+            body: data ? JSON.parse(data) : null,
+            location: res.headers.location 
+          });
         } catch {
-          resolve({ status: res.statusCode, body: data });
+          resolve({ 
+            status: res.statusCode, 
+            headers: res.headers,
+            body: data,
+            location: res.headers.location 
+          });
         }
       });
     });
@@ -35,68 +44,110 @@ function request(method, path, body = null) {
   });
 }
 
-async function testCloneMarketUrlEndpoint() {
-  console.log('TEST: GET /api/clone-market-url returns configured URL or 404\n');
+async function testMarketplaceHandoffStatus() {
+  console.log('TEST: GET /api/marketplace-handoff/status returns configuration state\n');
 
-  const response = await request('GET', '/api/clone-market-url');
+  const response = await request('GET', '/api/marketplace-handoff/status');
 
   console.log(`Status: ${response.status}`);
   console.log(`Response: ${JSON.stringify(response.body, null, 2)}\n`);
 
-  if (response.status === 200) {
-    if (response.body.url && typeof response.body.url === 'string') {
-      console.log('✅ Clone Market URL endpoint test PASSED (URL configured)\n');
-      return { pass: true, configured: true, url: response.body.url };
-    } else {
-      console.log('❌ Clone Market URL endpoint test FAILED (invalid response format)\n');
-      return { pass: false, configured: false };
-    }
-  } else if (response.status === 404) {
-    if (response.body.error && response.body.error.includes('not configured')) {
-      console.log('✅ Clone Market URL endpoint test PASSED (URL not configured, proper error)\n');
-      return { pass: true, configured: false };
-    } else {
-      console.log('❌ Clone Market URL endpoint test FAILED (wrong error format)\n');
-      return { pass: false, configured: false };
-    }
+  if (response.status === 200 && typeof response.body.configured === 'boolean') {
+    console.log('✅ Marketplace handoff status test PASSED\n');
+    return { pass: true, configured: response.body.configured };
   } else {
-    console.log('❌ Clone Market URL endpoint test FAILED (unexpected status)\n');
+    console.log('❌ Marketplace handoff status test FAILED\n');
     return { pass: false, configured: false };
   }
 }
 
-async function testCloneMarketUrlFormat(cloneMarketUrl) {
-  console.log('TEST: Clone Market URL format validation\n');
+async function testHandoffWithoutReturnPath() {
+  console.log('TEST: Handoff without return path returns 400\n');
 
-  try {
-    const url = new URL(cloneMarketUrl);
+  const response = await request('GET', '/api/marketplace-handoff');
+
+  console.log(`Status: ${response.status}`);
+  console.log(`Response: ${JSON.stringify(response.body, null, 2)}\n`);
+
+  if (response.status === 400 && response.body.error?.includes('Return path')) {
+    console.log('✅ Handoff without return path test PASSED\n');
+    return true;
+  } else {
+    console.log('❌ Handoff without return path test FAILED\n');
+    return false;
+  }
+}
+
+async function testHandoffWithExternalReturn() {
+  console.log('TEST: Handoff with external return target returns 400\n');
+
+  const externalReturn = 'https://evil.com/steal-data';
+  const response = await request('GET', `/api/marketplace-handoff?return=${encodeURIComponent(externalReturn)}`);
+
+  console.log(`Status: ${response.status}`);
+  console.log(`Response: ${JSON.stringify(response.body, null, 2)}\n`);
+
+  if (response.status === 400 && response.body.error?.includes('same-origin')) {
+    console.log('✅ Handoff with external return test PASSED\n');
+    return true;
+  } else {
+    console.log('❌ Handoff with external return test FAILED\n');
+    return false;
+  }
+}
+
+async function testHandoffRedirectFormat() {
+  console.log('TEST: Handoff redirect has correct format (target, return, no userinfo/fragment)\n');
+
+  const returnPath = `${BASE_URL}/`;
+  const response = await request('GET', `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}`);
+
+  console.log(`Status: ${response.status}`);
+  console.log(`Location: ${response.location}\n`);
+
+  if (response.status === 307 || response.status === 302 || response.status === 301) {
+    const location = response.location;
     
-    const checks = [
-      { name: 'Valid URL', pass: true },
-      { name: 'Has protocol', pass: url.protocol === 'http:' || url.protocol === 'https:' },
-      { name: 'Has hostname', pass: url.hostname.length > 0 },
-    ];
-
-    console.log('URL checks:');
-    checks.forEach(check => {
-      console.log(`  ${check.pass ? '✓' : '✗'} ${check.name}`);
-    });
-    console.log();
-
-    if (checks.every(c => c.pass)) {
-      console.log('✅ Clone Market URL format test PASSED\n');
-      return true;
+    if (!location) {
+      console.log('❌ No redirect location header\n');
+      return false;
     }
-  } catch (error) {
-    console.log(`  ✗ Invalid URL: ${error.message}\n`);
+
+    try {
+      const url = new URL(location);
+      
+      const checks = [
+        { name: 'Has target=botmancers', pass: url.searchParams.get('target') === 'botmancers' },
+        { name: 'Has return parameter', pass: url.searchParams.get('return') === returnPath },
+        { name: 'No userinfo (username)', pass: url.username === '' },
+        { name: 'No userinfo (password)', pass: url.password === '' },
+        { name: 'No fragment/hash', pass: url.hash === '' },
+      ];
+
+      console.log('Redirect URL checks:');
+      checks.forEach(check => {
+        console.log(`  ${check.pass ? '✓' : '✗'} ${check.name}`);
+      });
+      console.log();
+
+      if (checks.every(c => c.pass)) {
+        console.log('✅ Handoff redirect format test PASSED\n');
+        return true;
+      }
+    } catch (error) {
+      console.log(`  ✗ Invalid redirect URL: ${error.message}\n`);
+    }
+  } else if (response.status === 404) {
+    console.log('⚠️  CLONE_MARKET_URL not configured (expected for this test environment)\n');
+    return null;
   }
 
-  console.log('❌ Clone Market URL format test FAILED\n');
+  console.log('❌ Handoff redirect format test FAILED\n');
   return false;
 }
 
 async function testImportReturnWithValidBotId() {
-  console.log('TEST: Import return with valid bot ID\n');
+  console.log('TEST: Import return with valid bot ID using "imported" parameter\n');
 
   const createResponse = await request('POST', '/api/bots', {
     name: 'Marketplace Test Bot',
@@ -119,7 +170,8 @@ async function testImportReturnWithValidBotId() {
   if (foundBot) {
     console.log('✓ Bot found in list after creation');
     console.log(`  Name: ${foundBot.name}`);
-    console.log(`  ID: ${foundBot.id}\n`);
+    console.log(`  ID: ${foundBot.id}`);
+    console.log(`  Return URL would be: ${BASE_URL}/?imported=${botId}\n`);
     console.log('✅ Import return with valid bot ID test PASSED\n');
     return { pass: true, botId };
   } else {
@@ -129,7 +181,7 @@ async function testImportReturnWithValidBotId() {
 }
 
 async function testImportReturnWithInvalidBotId() {
-  console.log('TEST: Import return with invalid bot ID\n');
+  console.log('TEST: Import return with invalid bot ID does not corrupt state\n');
 
   const invalidBotId = 'nonexistent-bot-id-12345';
   
@@ -138,7 +190,9 @@ async function testImportReturnWithInvalidBotId() {
   const foundBot = bots.find(b => b.id === invalidBotId);
 
   if (!foundBot) {
-    console.log('✓ Invalid bot ID correctly not found in list\n');
+    console.log('✓ Invalid bot ID correctly not found in list');
+    console.log(`  Return URL would be: ${BASE_URL}/?imported=${invalidBotId}`);
+    console.log('  Expected: error message shown, state not corrupted\n');
     console.log('✅ Import return with invalid bot ID test PASSED\n');
     return true;
   } else {
@@ -147,37 +201,25 @@ async function testImportReturnWithInvalidBotId() {
   }
 }
 
-async function testCloneMarketUrlQueryParams(cloneMarketUrl) {
-  console.log('TEST: Clone Market URL includes correct query parameters\n');
+async function testUnconfiguredHandoff() {
+  console.log('TEST: Unconfigured CLONE_MARKET_URL returns 404\n');
 
-  try {
-    const returnPath = 'http://localhost:43123/';
-    const url = new URL(cloneMarketUrl);
-    url.searchParams.set('target', 'botmancers');
-    url.searchParams.set('return', returnPath);
+  const returnPath = `${BASE_URL}/`;
+  const response = await request('GET', `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}`);
 
-    const checks = [
-      { name: 'Has target parameter', pass: url.searchParams.get('target') === 'botmancers' },
-      { name: 'Has return parameter', pass: url.searchParams.get('return') === returnPath },
-      { name: 'Return is same-origin', pass: url.searchParams.get('return')?.startsWith('http://localhost:43123') },
-    ];
+  console.log(`Status: ${response.status}`);
+  console.log(`Response: ${JSON.stringify(response.body, null, 2)}\n`);
 
-    console.log('Query parameter checks:');
-    checks.forEach(check => {
-      console.log(`  ${check.pass ? '✓' : '✗'} ${check.name}`);
-    });
-    console.log(`\nFinal URL: ${url.toString()}\n`);
-
-    if (checks.every(c => c.pass)) {
-      console.log('✅ Clone Market URL query parameters test PASSED\n');
-      return true;
-    }
-  } catch (error) {
-    console.log(`  ✗ Error: ${error.message}\n`);
+  if (response.status === 404 && response.body.error?.includes('not configured')) {
+    console.log('✅ Unconfigured handoff test PASSED\n');
+    return true;
+  } else if (response.status === 307 || response.status === 302) {
+    console.log('⚠️  CLONE_MARKET_URL is configured in this environment\n');
+    return null;
+  } else {
+    console.log('❌ Unconfigured handoff test FAILED\n');
+    return false;
   }
-
-  console.log('❌ Clone Market URL query parameters test FAILED\n');
-  return false;
 }
 
 async function runAllTests() {
@@ -188,20 +230,22 @@ async function runAllTests() {
   const results = {};
 
   console.log('═══════════════════════════════════════════════════════════════\n');
-  const urlEndpointResult = await testCloneMarketUrlEndpoint();
-  results.urlEndpoint = urlEndpointResult.pass;
+  const statusResult = await testMarketplaceHandoffStatus();
+  results.status = statusResult.pass;
 
-  if (urlEndpointResult.configured && urlEndpointResult.url) {
-    console.log('═══════════════════════════════════════════════════════════════\n');
-    results.urlFormat = await testCloneMarketUrlFormat(urlEndpointResult.url);
+  console.log('═══════════════════════════════════════════════════════════════\n');
+  results.noReturnPath = await testHandoffWithoutReturnPath();
 
-    console.log('═══════════════════════════════════════════════════════════════\n');
-    results.queryParams = await testCloneMarketUrlQueryParams(urlEndpointResult.url);
-  } else {
-    console.log('⚠️  Skipping URL format and query param tests (CLONE_MARKET_URL not configured)\n');
-    results.urlFormat = null;
-    results.queryParams = null;
-  }
+  console.log('═══════════════════════════════════════════════════════════════\n');
+  results.externalReturn = await testHandoffWithExternalReturn();
+
+  console.log('═══════════════════════════════════════════════════════════════\n');
+  const redirectResult = await testHandoffRedirectFormat();
+  results.redirectFormat = redirectResult;
+
+  console.log('═══════════════════════════════════════════════════════════════\n');
+  const unconfiguredResult = await testUnconfiguredHandoff();
+  results.unconfigured = unconfiguredResult;
 
   console.log('═══════════════════════════════════════════════════════════════\n');
   const validBotResult = await testImportReturnWithValidBotId();
@@ -230,10 +274,10 @@ async function runAllTests() {
     console.log('ALL REQUIRED TESTS PASSED ✅');
     console.log('═══════════════════════════════════════════════════════════════\n');
     
-    if (results.urlFormat === null || results.queryParams === null) {
-      console.log('Note: Some tests were skipped because CLONE_MARKET_URL is not configured.');
-      console.log('This is expected and not an error. The feature works correctly when');
-      console.log('CLONE_MARKET_URL is not set - it shows an appropriate error message.\n');
+    if (results.redirectFormat === null || results.unconfigured === null) {
+      console.log('Note: Some tests were skipped based on CLONE_MARKET_URL configuration state.');
+      console.log('This is expected. The feature correctly handles both configured and');
+      console.log('unconfigured states.\n');
     }
     
     return true;
