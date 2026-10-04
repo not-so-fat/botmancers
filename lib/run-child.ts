@@ -283,97 +283,23 @@ export function stopPublicPageReadRun(messageId: string) {
 }
 
 const globalCodingLimbRuns = globalThis as typeof globalThis & {
-  __botmancerCodingLimbRuns?: Map<string, Live & { bcId?: string }>;
+  __botmancerCodingLimbRuns?: Map<string, Live & { agentId?: string; runId?: string }>;
 };
 
 if (!globalCodingLimbRuns.__botmancerCodingLimbRuns) globalCodingLimbRuns.__botmancerCodingLimbRuns = new Map();
-const codingLimbRuns: Map<string, Live & { bcId?: string }> = globalCodingLimbRuns.__botmancerCodingLimbRuns;
+const codingLimbRuns: Map<string, Live & { agentId?: string; runId?: string }> = globalCodingLimbRuns.__botmancerCodingLimbRuns;
 
 function dropCodingLimbRun(messageId: string, child: ChildProcess) {
   const live = codingLimbRuns.get(messageId);
   if (live?.child === child) codingLimbRuns.delete(messageId);
 }
 
-async function callCursorCloudAgent(prompt: string): Promise<string> {
-  const apiKey = process.env.CURSOR_API_KEY;
-  if (!apiKey) {
-    return 'Error: CURSOR_API_KEY not set';
-  }
-
-  try {
-    const createResponse = await fetch('https://api.cursor.com/v1/cloud-agent', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        repository: 'https://github.com/not-so-fat/botmancers',
-        ref: 'main',
-        prompt,
-        mode: 'plan',
-        autoCreatePR: false,
-      }),
-    });
-
-    if (!createResponse.ok) {
-      const errorText = await createResponse.text().catch(() => 'Unknown error');
-      return `Cursor API error: ${createResponse.status} ${errorText.slice(0, 100)}`;
-    }
-
-    const createData = await createResponse.json();
-    const bcId = createData.bcId;
-
-    if (!bcId) {
-      return 'Error: No bcId returned from Cursor API';
-    }
-
-    let pollAttempts = 0;
-    const maxPollAttempts = 120;
-
-    while (pollAttempts < maxPollAttempts) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      pollAttempts++;
-
-      const statusResponse = await fetch(`https://api.cursor.com/v1/cloud-agent/${bcId}`, {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-        },
-      });
-
-      if (!statusResponse.ok) {
-        return `Cursor API polling error: ${statusResponse.status}`;
-      }
-
-      const statusData = await statusResponse.json();
-
-      if (statusData.state === 'completed') {
-        if (statusData.transcript && Array.isArray(statusData.transcript)) {
-          const lastMessage = statusData.transcript[statusData.transcript.length - 1];
-          if (lastMessage?.text) {
-            return lastMessage.text.trim();
-          }
-        }
-        return 'Error: Agent completed but no transcript found';
-      }
-
-      if (statusData.state === 'failed' || statusData.state === 'cancelled') {
-        return `Agent ${statusData.state}`;
-      }
-    }
-
-    return 'Error: Agent timeout';
-  } catch (error) {
-    return `Network error: ${error instanceof Error ? error.message.slice(0, 100) : 'Unknown'}`;
-  }
-}
-
-async function cancelCursorCloudAgent(bcId: string): Promise<void> {
+async function cancelCursorCloudAgent(agentId: string, runId: string): Promise<void> {
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey) return;
 
   try {
-    await fetch(`https://api.cursor.com/v1/cloud-agent/${bcId}/cancel`, {
+    await fetch(`https://api.cursor.com/v1/agents/${agentId}/runs/${runId}/cancel`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -391,7 +317,12 @@ export function beginCodingLimbRun(messageId: string, seconds: number) {
   const parsed = current ? parseRun(current.content) : null;
   if (!parsed || parsed.state !== 'running') return;
 
-  const live: Live & { bcId?: string } = { child: undefined as unknown as ChildProcess, stopped: false, bcId: undefined };
+  const live: Live & { agentId?: string; runId?: string } = { 
+    child: undefined as unknown as ChildProcess, 
+    stopped: false, 
+    agentId: undefined, 
+    runId: undefined 
+  };
   const sleep = spawn('/bin/sleep', [String(seconds)], { stdio: 'ignore' });
   live.child = sleep;
   codingLimbRuns.set(messageId, live);
@@ -414,7 +345,7 @@ export function beginCodingLimbRun(messageId: string, seconds: number) {
       return;
     }
 
-    const prompt = 'Which file holds parsePublicPageReadAsk? Reply with that path. Do not edit, commit, push, or open a pull request.';
+    const promptText = 'Which file holds parsePublicPageReadAsk in not-so-fat/botmancers? Reply with the path. Do not edit, commit, push, or open a pull request.';
 
     try {
       const apiKey = process.env.CURSOR_API_KEY;
@@ -425,18 +356,24 @@ export function beginCodingLimbRun(messageId: string, seconds: number) {
         return;
       }
 
-      const createResponse = await fetch('https://api.cursor.com/v1/cloud-agent', {
+      const createResponse = await fetch('https://api.cursor.com/v1/agents', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          repository: 'https://github.com/not-so-fat/botmancers',
-          ref: 'main',
-          prompt,
-          mode: 'plan',
+          prompt: {
+            text: promptText
+          },
+          repos: [
+            {
+              url: 'https://github.com/not-so-fat/botmancers',
+              startingRef: 'main'
+            }
+          ],
           autoCreatePR: false,
+          mode: 'plan'
         }),
       });
 
@@ -446,30 +383,31 @@ export function beginCodingLimbRun(messageId: string, seconds: number) {
       }
 
       if (!createResponse.ok) {
-        const errorText = await createResponse.text().catch(() => 'Unknown error');
         if (!live.stopped && stillRunning(messageId, live)) {
           messages.replaceContent(
             messageId,
-            serializeRun({ state: 'done', output: `Cursor API error: ${createResponse.status}` })
+            serializeRun({ state: 'done', output: `Create failed: ${createResponse.status}` })
           );
         }
         return;
       }
 
       const createData = await createResponse.json();
-      const bcId = createData.bcId;
+      const agentId = createData.agent?.id;
+      const runId = createData.run?.id;
 
-      if (!bcId) {
+      if (!agentId || !runId) {
         if (!live.stopped && stillRunning(messageId, live)) {
-          messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: No bcId returned' }));
+          messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: No agent or run ID returned' }));
         }
         return;
       }
 
-      live.bcId = bcId;
+      live.agentId = agentId;
+      live.runId = runId;
 
       if (live.stopped || !stillRunning(messageId, live)) {
-        await cancelCursorCloudAgent(bcId);
+        await cancelCursorCloudAgent(agentId, runId);
         if (live.stopped) markStopped(messageId);
         return;
       }
@@ -482,12 +420,12 @@ export function beginCodingLimbRun(messageId: string, seconds: number) {
         pollAttempts++;
 
         if (live.stopped || !stillRunning(messageId, live)) {
-          await cancelCursorCloudAgent(bcId);
+          await cancelCursorCloudAgent(agentId, runId);
           if (live.stopped) markStopped(messageId);
           return;
         }
 
-        const statusResponse = await fetch(`https://api.cursor.com/v1/cloud-agent/${bcId}`, {
+        const statusResponse = await fetch(`https://api.cursor.com/v1/agents/${agentId}/runs/${runId}`, {
           headers: {
             'Authorization': `Bearer ${apiKey}`,
           },
@@ -497,7 +435,7 @@ export function beginCodingLimbRun(messageId: string, seconds: number) {
           if (!live.stopped && stillRunning(messageId, live)) {
             messages.replaceContent(
               messageId,
-              serializeRun({ state: 'done', output: `Polling error: ${statusResponse.status}` })
+              serializeRun({ state: 'done', output: `Poll failed: ${statusResponse.status}` })
             );
           }
           return;
@@ -506,39 +444,36 @@ export function beginCodingLimbRun(messageId: string, seconds: number) {
         const statusData = await statusResponse.json();
 
         if (live.stopped || !stillRunning(messageId, live)) {
-          await cancelCursorCloudAgent(bcId);
+          await cancelCursorCloudAgent(agentId, runId);
           if (live.stopped) markStopped(messageId);
           return;
         }
 
-        if (statusData.state === 'completed') {
-          if (statusData.transcript && Array.isArray(statusData.transcript)) {
-            const lastMessage = statusData.transcript[statusData.transcript.length - 1];
-            if (lastMessage?.text && stillRunning(messageId, live)) {
-              messages.replaceContent(messageId, serializeRun({ state: 'done', output: lastMessage.text.trim() }));
-              return;
-            }
+        if (statusData.status === 'FINISHED') {
+          if (typeof statusData.result === 'string' && stillRunning(messageId, live)) {
+            messages.replaceContent(messageId, serializeRun({ state: 'done', output: statusData.result }));
+            return;
           }
           if (!live.stopped && stillRunning(messageId, live)) {
-            messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: No transcript' }));
+            messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: No result in response' }));
           }
           return;
         }
 
-        if (statusData.state === 'failed' || statusData.state === 'cancelled') {
+        if (statusData.status === 'FAILED' || statusData.status === 'CANCELLED') {
           if (!live.stopped && stillRunning(messageId, live)) {
-            messages.replaceContent(messageId, serializeRun({ state: 'done', output: `Agent ${statusData.state}` }));
+            messages.replaceContent(messageId, serializeRun({ state: 'done', output: `Run ${statusData.status.toLowerCase()}` }));
           }
           return;
         }
       }
 
       if (!live.stopped && stillRunning(messageId, live)) {
-        messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: Agent timeout' }));
+        messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Timeout waiting for result' }));
       }
     } catch (error) {
       if (!live.stopped && stillRunning(messageId, live)) {
-        const errorMsg = error instanceof Error ? error.message.slice(0, 50) : 'Unknown error';
+        const errorMsg = error instanceof Error ? error.message.slice(0, 40) : 'Unknown';
         messages.replaceContent(messageId, serializeRun({ state: 'done', output: `Network error: ${errorMsg}` }));
       }
     }
@@ -549,8 +484,8 @@ export function stopCodingLimbRun(messageId: string) {
   const live = codingLimbRuns.get(messageId);
   if (live) {
     live.stopped = true;
-    if (live.bcId) {
-      cancelCursorCloudAgent(live.bcId).catch(() => {});
+    if (live.agentId && live.runId) {
+      cancelCursorCloudAgent(live.agentId, live.runId).catch(() => {});
     }
   }
   markStopped(messageId);
