@@ -2,6 +2,25 @@
 
 import { useState, useEffect, useRef } from 'react';
 
+function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; output?: string } | null {
+  const match = content.match(/^\s*\[run\]\s*([\s\S]*)$/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (parsed?.state === 'running' || parsed?.state === 'stopped') return { state: parsed.state };
+    if (parsed?.state === 'done' && typeof parsed.output === 'string') return { state: 'done', output: parsed.output };
+  } catch {
+    // not valid JSON
+  }
+  return null;
+}
+
+function runLine(run: { state: 'running' | 'done' | 'stopped'; output?: string }): string {
+  if (run.state === 'done') return run.output ?? '';
+  if (run.state === 'stopped') return 'The command was stopped.';
+  return 'The command is running';
+}
+
 interface Bot {
   id: string;
   name: string;
@@ -159,6 +178,13 @@ export default function Home() {
     setInputMessage('');
     loadMessages();
   };
+
+  const stopRun = async (messageId: string) => {
+    await fetch(`/api/conversations/${activeConversation?.id}/messages/${messageId}/stop`, {
+      method: 'POST',
+    });
+    loadMessages();
+  };
   
   const handleImportFromMarketplace = async () => {
     setImportError(null);
@@ -281,27 +307,40 @@ export default function Home() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {messages.map(msg => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.sender_type === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
+              {messages.map(msg => {
+                const run = msg.sender_type === 'bot' ? parseRun(msg.content) : null;
+                const displayContent = run ? runLine(run) : msg.content;
+                
+                return (
                   <div
-                    className={`max-w-[80%] rounded-lg p-3 ${
-                      msg.sender_type === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-white border text-gray-800'
-                    }`}
+                    key={msg.id}
+                    className={`flex ${msg.sender_type === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
-                    {msg.sender_type === 'bot' && msg.sender_name && (
-                      <div className="text-xs font-semibold text-gray-500 mb-1">
-                        {msg.sender_name}
-                      </div>
-                    )}
-                    <div className="whitespace-pre-wrap">{msg.content}</div>
+                    <div
+                      className={`max-w-[80%] rounded-lg p-3 ${
+                        msg.sender_type === 'user'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white border text-gray-800'
+                      }`}
+                    >
+                      {msg.sender_type === 'bot' && msg.sender_name && (
+                        <div className="text-xs font-semibold text-gray-500 mb-1">
+                          {msg.sender_name}
+                        </div>
+                      )}
+                      <div className="whitespace-pre-wrap">{displayContent}</div>
+                      {run && run.state === 'running' && (
+                        <button
+                          onClick={() => stopRun(msg.id)}
+                          className="mt-2 px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                        >
+                          Stop
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               <div ref={messagesEndRef} />
             </div>
 
