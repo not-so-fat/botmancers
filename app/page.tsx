@@ -2,13 +2,24 @@
 
 import { useState, useEffect, useRef } from 'react';
 
-function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; output?: string } | null {
+function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; output?: string; html?: string } | null {
   const match = content.match(/^\s*\[run\]\s*([\s\S]*)$/);
   if (!match) return null;
   try {
     const parsed = JSON.parse(match[1]);
-    if (parsed?.state === 'running' || parsed?.state === 'stopped') return { state: parsed.state };
-    if (parsed?.state === 'done' && typeof parsed.output === 'string') return { state: 'done', output: parsed.output };
+    if (parsed?.state === 'running' || parsed?.state === 'stopped') {
+      return {
+        state: parsed.state,
+        html: typeof parsed.html === 'string' ? parsed.html : undefined
+      };
+    }
+    if (parsed?.state === 'done' && typeof parsed.output === 'string') {
+      return {
+        state: 'done',
+        output: parsed.output,
+        html: typeof parsed.html === 'string' ? parsed.html : undefined
+      };
+    }
   } catch {
     // not valid JSON
   }
@@ -60,7 +71,12 @@ export default function Home() {
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [importError, setImportError] = useState<string | null>(null);
+  const [showComputerPreview, setShowComputerPreview] = useState(false);
+  const [previewPageContent, setPreviewPageContent] = useState<string | null>(null);
+  const [previewRunningMessage, setPreviewRunningMessage] = useState<Message | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const runningMessageRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -114,8 +130,77 @@ export default function Home() {
   }, [activeConversation]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (showComputerPreview && previewRunningMessage && runningMessageRef.current && messagesContainerRef.current) {
+      const attemptScroll = () => {
+        const messageElement = runningMessageRef.current;
+        const container = messagesContainerRef.current;
+        const darkBand = document.getElementById('computer-preview-dark-band');
+        const desktop = document.getElementById('computer-preview-desktop');
+        if (!messageElement || !container || !darkBand || !desktop) return;
+        
+        const messageRect = messageElement.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const darkBandRect = darkBand.getBoundingClientRect();
+        
+        const messageHeight = messageRect.height;
+        darkBand.style.height = `${messageHeight}px`;
+        
+        const desktopStart = 44 + messageHeight;
+        desktop.style.top = `${desktopStart}px`;
+        
+        const targetPosition = darkBandRect.top - containerRect.top;
+        const currentMessagePosition = messageRect.top - containerRect.top;
+        const scrollAdjustment = currentMessagePosition - targetPosition;
+        
+        container.scrollTop += scrollAdjustment;
+      };
+      
+      const timeoutId = setTimeout(attemptScroll, 100);
+      return () => clearTimeout(timeoutId);
+    } else if (!showComputerPreview && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, showComputerPreview, previewRunningMessage]);
+
+  useEffect(() => {
+    if (!activeConversation || activeConversation.type !== 'bot') {
+      setShowComputerPreview(false);
+      setPreviewPageContent(null);
+      setPreviewRunningMessage(null);
+      return;
+    }
+
+    const bot = activeConversation.details as Bot;
+    if (bot.name.toLowerCase() !== 'chief-of-staff') {
+      setShowComputerPreview(false);
+      setPreviewPageContent(null);
+      setPreviewRunningMessage(null);
+      return;
+    }
+
+    setShowComputerPreview(true);
+
+    const lastBotMessage = [...messages].reverse().find(m => {
+      if (m.sender_type !== 'bot') return false;
+      return parseRun(m.content) !== null;
+    });
+
+    if (lastBotMessage) {
+      const run = parseRun(lastBotMessage.content);
+      setPreviewRunningMessage(lastBotMessage);
+      
+      if (run && run.state === 'stopped') {
+        setPreviewPageContent(null);
+      } else if (run && run.html) {
+        setPreviewPageContent(run.html);
+      } else {
+        setPreviewPageContent(null);
+      }
+    } else {
+      setPreviewRunningMessage(null);
+      setPreviewPageContent(null);
+    }
+  }, [messages, activeConversation]);
 
   const loadBots = async () => {
     const res = await fetch('/api/bots');
@@ -208,7 +293,7 @@ export default function Home() {
   };
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="relative flex h-screen bg-gray-50">
       <div className={`${showSidebar ? 'w-full sm:w-80' : 'hidden'} sm:block sm:${showSidebar ? 'w-80' : 'w-0'} bg-white border-r transition-all duration-200 overflow-hidden`}>
         <div className="p-4 border-b">
           <h1 className="text-xl font-bold text-gray-800">Botmancers</h1>
@@ -306,14 +391,16 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3">
               {messages.map(msg => {
                 const run = msg.sender_type === 'bot' ? parseRun(msg.content) : null;
                 const displayContent = run ? runLine(run) : msg.content;
+                const isRunningMessage = previewRunningMessage && msg.id === previewRunningMessage.id;
                 
                 return (
                   <div
                     key={msg.id}
+                    ref={isRunningMessage ? runningMessageRef : null}
                     className={`flex ${msg.sender_type === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
@@ -341,6 +428,9 @@ export default function Home() {
                   </div>
                 );
               })}
+              {showComputerPreview && previewRunningMessage && (
+                <div style={{ height: '100vh' }} />
+              )}
               <div ref={messagesEndRef} />
             </div>
 
@@ -398,6 +488,76 @@ export default function Home() {
           }}
         />
       )}
+
+      {showComputerPreview && (
+        <ComputerPreview pageContent={previewPageContent} />
+      )}
+    </div>
+  );
+}
+
+interface ComputerPreviewProps {
+  pageContent: string | null;
+}
+
+function ComputerPreview({ pageContent }: ComputerPreviewProps) {
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
+      <div className="relative w-full max-w-5xl h-full max-h-[90vh] rounded-lg shadow-2xl overflow-hidden">
+        <div className="absolute top-0 left-0 right-0 h-11 bg-gray-800 flex items-center justify-between px-4 pointer-events-none">
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded-full bg-red-500"></div>
+            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+            <div className="w-3 h-3 rounded-full bg-green-500"></div>
+          </div>
+          <div className="flex items-center gap-2 text-gray-300 text-sm">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <span>Teach a task</span>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M15 3h6m0 0v6m0-6l-7 7M9 21H3m0 0v-6m0 6l7-7" />
+            </svg>
+          </div>
+          <div className="w-16"></div>
+        </div>
+        
+        <div id="computer-preview-dark-band" className="absolute top-11 left-0 right-0 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
+        
+        <div 
+          id="computer-preview-desktop"
+          className="absolute left-0 right-0 bottom-0 overflow-auto pointer-events-none"
+          style={{
+            top: '156px',
+            backgroundImage: 'url(/wallpaper_1c49.png)',
+            backgroundSize: 'cover',
+            backgroundPosition: 'center'
+          }}
+        >
+          {pageContent ? (
+            <iframe
+              srcDoc={pageContent}
+              className="w-full h-full border-0 pointer-events-none"
+              sandbox="allow-same-origin"
+              title="Preview"
+            />
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-end pb-6">
+              <div className="flex gap-3">
+                <div className="w-16 h-16 rounded-xl overflow-hidden shadow-lg">
+                  <img src="/dock-chrome_c5c1.png" alt="Chrome" className="w-full h-full object-contain" />
+                </div>
+                <div className="w-16 h-16 rounded-xl overflow-hidden shadow-lg">
+                  <img src="/dock-gray_6226.png" alt="App" className="w-full h-full object-contain" />
+                </div>
+                <div className="w-16 h-16 rounded-xl overflow-hidden shadow-lg">
+                  <img src="/dock-terminal_166d.png" alt="Terminal" className="w-full h-full object-contain" />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

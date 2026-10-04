@@ -3,6 +3,7 @@ export type RunState = 'running' | 'done' | 'stopped';
 export interface FileRun {
   state: RunState;
   output?: string;
+  html?: string;
 }
 
 export function parseFileReadAsk(text: string): { seconds: number } | null {
@@ -72,14 +73,26 @@ export function parseRun(content: string): FileRun | null {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const row = parsed as Record<string, unknown>;
-  if (row.state === 'running' || row.state === 'stopped') return { state: row.state };
-  if (row.state === 'done' && typeof row.output === 'string') return { state: 'done', output: row.output };
+  if (row.state === 'running' || row.state === 'stopped') {
+    return {
+      state: row.state,
+      html: typeof row.html === 'string' ? row.html : undefined
+    };
+  }
+  if (row.state === 'done' && typeof row.output === 'string') {
+    return {
+      state: 'done',
+      output: row.output,
+      html: typeof row.html === 'string' ? row.html : undefined
+    };
+  }
   return null;
 }
 
 export function serializeRun(run: FileRun): string {
-  const payload: { state: RunState; output?: string } = { state: run.state };
+  const payload: { state: RunState; output?: string; html?: string } = { state: run.state };
   if (run.state === 'done' && typeof run.output === 'string') payload.output = run.output;
+  if (typeof run.html === 'string') payload.html = run.html;
   return '[run]\n' + JSON.stringify(payload);
 }
 
