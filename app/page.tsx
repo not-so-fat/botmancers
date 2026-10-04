@@ -130,27 +130,37 @@ export default function Home() {
   }, [activeConversation]);
 
   useEffect(() => {
-    if (showComputerPreview && runningMessageRef.current && messagesContainerRef.current) {
-      setTimeout(() => {
+    if (showComputerPreview && previewRunningMessage && runningMessageRef.current && messagesContainerRef.current) {
+      const attemptScroll = () => {
         const messageElement = runningMessageRef.current;
         const container = messagesContainerRef.current;
         const darkBand = document.getElementById('computer-preview-dark-band');
-        if (!messageElement || !container || !darkBand) return;
+        const desktop = document.getElementById('computer-preview-desktop');
+        if (!messageElement || !container || !darkBand || !desktop) return;
         
         const messageRect = messageElement.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
         const darkBandRect = darkBand.getBoundingClientRect();
+        
+        const messageHeight = messageRect.height;
+        darkBand.style.height = `${messageHeight}px`;
+        
+        const desktopStart = 44 + messageHeight;
+        desktop.style.top = `${desktopStart}px`;
         
         const targetPosition = darkBandRect.top - containerRect.top;
         const currentMessagePosition = messageRect.top - containerRect.top;
         const scrollAdjustment = currentMessagePosition - targetPosition;
         
         container.scrollTop += scrollAdjustment;
-      }, 100);
-    } else if (messagesEndRef.current) {
+      };
+      
+      const timeoutId = setTimeout(attemptScroll, 100);
+      return () => clearTimeout(timeoutId);
+    } else if (!showComputerPreview && messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, showComputerPreview]);
+  }, [messages, showComputerPreview, previewRunningMessage]);
 
   useEffect(() => {
     if (!activeConversation || activeConversation.type !== 'bot') {
@@ -418,6 +428,9 @@ export default function Home() {
                   </div>
                 );
               })}
+              {showComputerPreview && previewRunningMessage && (
+                <div style={{ height: '200px' }} />
+              )}
               <div ref={messagesEndRef} />
             </div>
 
@@ -509,11 +522,13 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
           <div className="w-16"></div>
         </div>
         
-        <div id="computer-preview-dark-band" className="absolute top-11 left-0 right-0 h-28 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
+        <div id="computer-preview-dark-band" className="absolute top-11 left-0 right-0 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
         
         <div 
-          className="absolute top-[9.75rem] left-0 right-0 bottom-0 overflow-auto pointer-events-none"
+          id="computer-preview-desktop"
+          className="absolute left-0 right-0 bottom-0 overflow-auto pointer-events-none"
           style={{
+            top: '156px',
             backgroundImage: 'url(/wallpaper_1c49.png)',
             backgroundSize: 'cover',
             backgroundPosition: 'center'
