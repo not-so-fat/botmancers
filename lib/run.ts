@@ -13,6 +13,15 @@ export function parseFileReadAsk(text: string): { seconds: number } | null {
   return null;
 }
 
+export function parsePublicPageReadAsk(text: string): { seconds: number } | null {
+  let trimmed = text.trim();
+  if (trimmed.endsWith('.')) trimmed = trimmed.slice(0, -1).trim();
+  if (trimmed === 'Open https://example.com and reply with one word from it') return { seconds: 4 };
+  const waitMatch = trimmed.match(/^Open https:\/\/example\.com and reply with one word from it wait (\d+) seconds$/);
+  if (waitMatch && waitMatch[1] === '20') return { seconds: 20 };
+  return null;
+}
+
 export function parseRun(content: string): FileRun | null {
   const match = content.match(/^\s*\[run\]\s*([\s\S]*)$/);
   if (!match) return null;

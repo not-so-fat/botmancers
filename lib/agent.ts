@@ -5,8 +5,8 @@ import { bots, conversations, messages, queue, groups, mcpServers } from './db';
 import { mcpTurn } from './mcp';
 import { localSkillForBot } from './skills';
 import type { Message, QueueItem } from './db';
-import { parseFileReadAsk, serializeRun } from './run';
-import { beginFileReadRun } from './run-child';
+import { parseFileReadAsk, parsePublicPageReadAsk, serializeRun } from './run';
+import { beginFileReadRun, beginPublicPageReadRun } from './run-child';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -62,6 +62,13 @@ async function processQueueItem(item: QueueItem) {
     if (fileReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginFileReadRun(runMessage.id, fileReadAsk.seconds);
+      setImmediate(() => processQueue());
+      return;
+    }
+    const publicPageReadAsk = parsePublicPageReadAsk(latestUser.content);
+    if (publicPageReadAsk) {
+      const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
+      beginPublicPageReadRun(runMessage.id, publicPageReadAsk.seconds);
       setImmediate(() => processQueue());
       return;
     }
