@@ -75,6 +75,7 @@ export default function Home() {
   const [previewPageContent, setPreviewPageContent] = useState<string | null>(null);
   const [previewRunningMessage, setPreviewRunningMessage] = useState<Message | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const runningMessageRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -128,8 +129,12 @@ export default function Home() {
   }, [activeConversation]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (showComputerPreview && runningMessageRef.current) {
+      runningMessageRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, showComputerPreview]);
 
   useEffect(() => {
     if (!activeConversation || activeConversation.type !== 'bot') {
@@ -364,10 +369,12 @@ export default function Home() {
               {messages.map(msg => {
                 const run = msg.sender_type === 'bot' ? parseRun(msg.content) : null;
                 const displayContent = run ? runLine(run) : msg.content;
+                const isRunningMessage = previewRunningMessage && msg.id === previewRunningMessage.id;
                 
                 return (
                   <div
                     key={msg.id}
+                    ref={isRunningMessage ? runningMessageRef : null}
                     className={`flex ${msg.sender_type === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
