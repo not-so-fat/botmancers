@@ -69,7 +69,7 @@ async function testHandoffWithoutReturnPath() {
   console.log(`Status: ${response.status}`);
   console.log(`Response: ${JSON.stringify(response.body, null, 2)}\n`);
 
-  if (response.status === 400 && response.body.error?.includes('Return path')) {
+  if (response.status === 400 && (response.body.error?.includes('Return path') || response.body.error?.includes('Only return parameter'))) {
     console.log('✅ Handoff without return path test PASSED\n');
     return true;
   } else {
@@ -96,6 +96,54 @@ async function testHandoffWithExternalReturn() {
   }
 }
 
+async function testHandoffWithExtraParameters() {
+  console.log('TEST: Handoff with client-supplied marketplace URL or extra params returns 400\n');
+
+  const returnPath = `${BASE_URL}/`;
+  
+  const testCases = [
+    {
+      name: 'marketplace parameter',
+      url: `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}&marketplace=https://evil.com`,
+    },
+    {
+      name: 'destination parameter',
+      url: `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}&destination=https://evil.com`,
+    },
+    {
+      name: 'url parameter',
+      url: `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}&url=https://evil.com`,
+    },
+    {
+      name: 'extra parameter',
+      url: `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}&extra=value`,
+    },
+  ];
+
+  let allPassed = true;
+
+  for (const testCase of testCases) {
+    const response = await request('GET', testCase.url);
+    console.log(`  Test: ${testCase.name}`);
+    console.log(`  Status: ${response.status}`);
+    
+    if (response.status === 400) {
+      console.log(`  ✓ Rejected\n`);
+    } else {
+      console.log(`  ✗ Not rejected (expected 400, got ${response.status})\n`);
+      allPassed = false;
+    }
+  }
+
+  if (allPassed) {
+    console.log('✅ Handoff with extra parameters test PASSED\n');
+    return true;
+  } else {
+    console.log('❌ Handoff with extra parameters test FAILED\n');
+    return false;
+  }
+}
+
 async function testHandoffRedirectFormat() {
   console.log('TEST: Handoff redirect has correct format (target, return, no userinfo/fragment)\n');
 
@@ -115,10 +163,12 @@ async function testHandoffRedirectFormat() {
 
     try {
       const url = new URL(location);
+      const paramKeys = Array.from(url.searchParams.keys());
       
       const checks = [
         { name: 'Has target=botmancers', pass: url.searchParams.get('target') === 'botmancers' },
-        { name: 'Has return parameter', pass: url.searchParams.get('return') === returnPath },
+        { name: 'Has return parameter', pass: url.searchParams.get('return') !== null },
+        { name: 'Only target and return params', pass: paramKeys.length === 2 && paramKeys.includes('target') && paramKeys.includes('return') },
         { name: 'No userinfo (username)', pass: url.username === '' },
         { name: 'No userinfo (password)', pass: url.password === '' },
         { name: 'No fragment/hash', pass: url.hash === '' },
@@ -143,6 +193,62 @@ async function testHandoffRedirectFormat() {
   }
 
   console.log('❌ Handoff redirect format test FAILED\n');
+  return false;
+}
+
+async function testReturnPathCleanup() {
+  console.log('TEST: Return path userinfo and fragment are stripped\n');
+
+  const dirtyReturnPath = `http://user:pass@localhost:43123/path#fragment`;
+  const response = await request('GET', `/api/marketplace-handoff?return=${encodeURIComponent(dirtyReturnPath)}`);
+
+  console.log(`Status: ${response.status}`);
+  console.log(`Location: ${response.location}\n`);
+
+  if (response.status === 307 || response.status === 302 || response.status === 301) {
+    const location = response.location;
+    
+    if (!location) {
+      console.log('❌ No redirect location header\n');
+      return false;
+    }
+
+    try {
+      const url = new URL(location);
+      const returnParam = url.searchParams.get('return');
+      
+      if (!returnParam) {
+        console.log('❌ No return parameter in redirect\n');
+        return false;
+      }
+      
+      const returnUrl = new URL(returnParam);
+      
+      const checks = [
+        { name: 'Return URL has no username', pass: returnUrl.username === '' },
+        { name: 'Return URL has no password', pass: returnUrl.password === '' },
+        { name: 'Return URL has no fragment', pass: returnUrl.hash === '' },
+      ];
+
+      console.log('Return path cleanup checks:');
+      checks.forEach(check => {
+        console.log(`  ${check.pass ? '✓' : '✗'} ${check.name}`);
+      });
+      console.log(`  Cleaned return URL: ${returnParam}\n`);
+
+      if (checks.every(c => c.pass)) {
+        console.log('✅ Return path cleanup test PASSED\n');
+        return true;
+      }
+    } catch (error) {
+      console.log(`  ✗ Invalid return URL: ${error.message}\n`);
+    }
+  } else if (response.status === 404) {
+    console.log('⚠️  CLONE_MARKET_URL not configured (expected for this test environment)\n');
+    return null;
+  }
+
+  console.log('❌ Return path cleanup test FAILED\n');
   return false;
 }
 
@@ -240,8 +346,15 @@ async function runAllTests() {
   results.externalReturn = await testHandoffWithExternalReturn();
 
   console.log('═══════════════════════════════════════════════════════════════\n');
+  results.extraParameters = await testHandoffWithExtraParameters();
+
+  console.log('═══════════════════════════════════════════════════════════════\n');
   const redirectResult = await testHandoffRedirectFormat();
   results.redirectFormat = redirectResult;
+
+  console.log('═══════════════════════════════════════════════════════════════\n');
+  const returnCleanupResult = await testReturnPathCleanup();
+  results.returnCleanup = returnCleanupResult;
 
   console.log('═══════════════════════════════════════════════════════════════\n');
   const unconfiguredResult = await testUnconfiguredHandoff();

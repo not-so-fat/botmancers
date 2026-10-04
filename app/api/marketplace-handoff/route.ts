@@ -3,6 +3,15 @@ import { URL } from 'url';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
+  
+  const paramKeys = Array.from(searchParams.keys());
+  if (paramKeys.length !== 1 || !paramKeys.includes('return')) {
+    return NextResponse.json(
+      { error: 'Only return parameter is allowed' },
+      { status: 400 }
+    );
+  }
+  
   const returnPath = searchParams.get('return');
 
   if (!returnPath) {
@@ -12,6 +21,7 @@ export async function GET(request: Request) {
     );
   }
 
+  let cleanedReturnPath: string;
   try {
     const returnUrl = new URL(returnPath);
     const requestUrl = new URL(request.url);
@@ -22,6 +32,11 @@ export async function GET(request: Request) {
         { status: 400 }
       );
     }
+    
+    returnUrl.username = '';
+    returnUrl.password = '';
+    returnUrl.hash = '';
+    cleanedReturnPath = returnUrl.toString();
   } catch (error) {
     return NextResponse.json(
       { error: 'Invalid return path' },
@@ -44,9 +59,10 @@ export async function GET(request: Request) {
     marketplaceUrl.username = '';
     marketplaceUrl.password = '';
     marketplaceUrl.hash = '';
+    marketplaceUrl.search = '';
     
     marketplaceUrl.searchParams.set('target', 'botmancers');
-    marketplaceUrl.searchParams.set('return', returnPath);
+    marketplaceUrl.searchParams.set('return', cleanedReturnPath);
     
     return NextResponse.redirect(marketplaceUrl.toString());
   } catch (error) {
