@@ -68,7 +68,7 @@ async function processQueueItem(item: QueueItem) {
     const publicPageReadAsk = parsePublicPageReadAsk(latestUser.content);
     if (publicPageReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
-      beginPublicPageReadRun(runMessage.id, publicPageReadAsk.seconds);
+      beginPublicPageReadRun(runMessage.id, publicPageReadAsk.seconds, publicPageReadAsk.url);
       setImmediate(() => processQueue());
       return;
     }

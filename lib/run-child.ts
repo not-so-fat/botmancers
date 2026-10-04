@@ -132,15 +132,15 @@ function dropPageRun(messageId: string, child: ChildProcess) {
   if (live?.child === child) pageRuns.delete(messageId);
 }
 
-function fetchPublicPage(url: string): Promise<string> {
+function fetchPublicPage(url: string, allowedHostname: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: 10000 }, res => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
         const location = res.headers.location;
         if (location) {
           try {
             const redirectUrl = new URL(location, url);
-            if (redirectUrl.hostname !== 'example.com') {
+            if (redirectUrl.hostname !== allowedHostname) {
               reject(new Error('Redirect to different host not allowed'));
               return;
             }
@@ -190,7 +190,25 @@ function extractFirstWordFromHtml(html: string): string | null {
   return null;
 }
 
-export function beginPublicPageReadRun(messageId: string, seconds: number) {
+function extractPageTitle(html: string): string | null {
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!titleMatch) return null;
+  
+  const rawTitle = titleMatch[1]
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  return rawTitle || null;
+}
+
+export function beginPublicPageReadRun(messageId: string, seconds: number, url?: string) {
   if (seconds !== 4 && seconds !== 20) return;
   if (pageRuns.has(messageId)) return;
   const current = messages.getById(messageId);
@@ -221,14 +239,29 @@ export function beginPublicPageReadRun(messageId: string, seconds: number) {
     }
 
     try {
-      const html = await fetchPublicPage('https://example.com');
-      if (live.stopped || !stillRunning(messageId, live)) {
-        if (live.stopped) markStopped(messageId);
-        return;
-      }
-      const word = extractFirstWordFromHtml(html);
-      if (word === 'Example' && stillRunning(messageId, live)) {
-        messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Example' }));
+      if (url) {
+        // New page title extraction
+        const parsedUrl = new URL(url);
+        const html = await fetchPublicPage(url, parsedUrl.hostname);
+        if (live.stopped || !stillRunning(messageId, live)) {
+          if (live.stopped) markStopped(messageId);
+          return;
+        }
+        const title = extractPageTitle(html);
+        if (title && stillRunning(messageId, live)) {
+          messages.replaceContent(messageId, serializeRun({ state: 'done', output: title }));
+        }
+      } else {
+        // Legacy one-word extraction from example.com
+        const html = await fetchPublicPage('https://example.com', 'example.com');
+        if (live.stopped || !stillRunning(messageId, live)) {
+          if (live.stopped) markStopped(messageId);
+          return;
+        }
+        const word = extractFirstWordFromHtml(html);
+        if (word === 'Example' && stillRunning(messageId, live)) {
+          messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Example' }));
+        }
       }
     } catch (error) {
       console.error('Public page fetch failed:', error);
