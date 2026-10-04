@@ -377,6 +377,14 @@ export const messages = {
     
     return message;
   },
+
+  getById: (id: string): Message | undefined => {
+    return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Message | undefined;
+  },
+
+  replaceContent: (id: string, content: string): void => {
+    db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, id);
+  },
   
   getByConversation: (conversationId: string): Message[] => {
     return db.prepare(
