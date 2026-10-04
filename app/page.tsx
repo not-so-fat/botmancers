@@ -178,11 +178,10 @@ export default function Home() {
     const url = extractUrlFromPageTitleCommand(lastUserMessage.content);
     setPreviewUrl(url);
 
-    if (run.state === 'done' && run.output && url) {
-      fetch(url)
-        .then(res => res.text())
-        .then(html => setPreviewPageContent(html))
-        .catch(() => setPreviewPageContent(null));
+    if (run.state === 'stopped') {
+      setPreviewPageContent(null);
+    } else if (url) {
+      setPreviewPageContent(url);
     } else {
       setPreviewPageContent(null);
     }
@@ -485,16 +484,19 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-none">
       <div className="relative w-full max-w-5xl h-full max-h-[90vh] rounded-lg shadow-2xl overflow-hidden">
-        <div className="absolute top-0 left-0 right-0 h-11 bg-gray-800 flex items-center justify-between px-4 pointer-events-auto">
+        <div className="absolute top-0 left-0 right-0 h-11 bg-gray-800 flex items-center justify-between px-4 pointer-events-none">
           <div className="flex items-center gap-1.5">
             <div className="w-3 h-3 rounded-full bg-red-500"></div>
             <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
             <div className="w-3 h-3 rounded-full bg-green-500"></div>
           </div>
           <div className="flex items-center gap-2 text-gray-300 text-sm">
+            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" />
+            </svg>
             <span>Teach a task</span>
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M4 8l4-4m0 0l4 4m-4-4v12M20 16l-4 4m0 0l-4-4m4 4V8" />
             </svg>
           </div>
           <div className="w-16"></div>
@@ -502,12 +504,12 @@ function ComputerPreview({ pageContent }: ComputerPreviewProps) {
         
         <div className="absolute top-11 left-0 right-0 h-16 bg-gray-900 bg-opacity-30 pointer-events-none"></div>
         
-        <div className="absolute top-[6.75rem] left-0 right-0 bottom-0 bg-gradient-to-br from-gray-300 to-gray-400 overflow-auto pointer-events-auto">
+        <div className="absolute top-[6.75rem] left-0 right-0 bottom-0 bg-gradient-to-br from-gray-300 to-gray-400 overflow-auto pointer-events-none">
           {pageContent ? (
             <iframe
-              srcDoc={pageContent}
-              className="w-full h-full border-0"
-              sandbox="allow-same-origin"
+              src={pageContent}
+              className="w-full h-full border-0 pointer-events-auto"
+              sandbox="allow-scripts allow-same-origin"
               title="Preview"
             />
           ) : (
