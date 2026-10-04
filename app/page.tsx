@@ -40,13 +40,41 @@ export default function Home() {
   const [showBotModal, setShowBotModal] = useState(false);
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [importError, setImportError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     loadBots();
     loadGroups();
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const importedBotId = urlParams.get('imported');
+    
+    if (importedBotId) {
+      handleImportReturn(importedBotId);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
   }, []);
+  
+  const handleImportReturn = async (botId: string) => {
+    await loadBots();
+    
+    const bot = bots.find(b => b.id === botId);
+    if (!bot) {
+      const refreshedBots = await fetch('/api/bots').then(r => r.json());
+      const foundBot = refreshedBots.find((b: Bot) => b.id === botId);
+      
+      if (foundBot) {
+        setBots(refreshedBots);
+        openConversation('bot', botId);
+      } else {
+        setImportError('Imported bot not found. The bot may not have been created successfully.');
+      }
+    } else {
+      openConversation('bot', botId);
+    }
+  };
 
   useEffect(() => {
     if (activeConversation) {
@@ -131,6 +159,27 @@ export default function Home() {
     setInputMessage('');
     loadMessages();
   };
+  
+  const handleImportFromMarketplace = async () => {
+    setImportError(null);
+    
+    try {
+      const statusResponse = await fetch('/api/marketplace-handoff/status');
+      const { configured } = await statusResponse.json();
+      
+      if (!configured) {
+        setImportError('CLONE_MARKET_URL is not configured. Please contact your administrator.');
+        return;
+      }
+      
+      const returnPath = window.location.origin + window.location.pathname;
+      const handoffUrl = `/api/marketplace-handoff?return=${encodeURIComponent(returnPath)}`;
+      
+      window.location.href = handoffUrl;
+    } catch (error) {
+      setImportError('Failed to initiate import. Please try again.');
+    }
+  };
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -145,12 +194,29 @@ export default function Home() {
               + New Bot
             </button>
             <button
+              onClick={handleImportFromMarketplace}
+              className="w-full py-2 px-3 border border-blue-600 text-blue-600 rounded-lg text-sm hover:bg-blue-50"
+            >
+              Import from Grok Marketplace
+            </button>
+            <button
               onClick={() => setShowGroupModal(true)}
               className="w-full py-2 px-3 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700"
             >
               + New Group
             </button>
           </div>
+          {importError && (
+            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              {importError}
+              <button
+                onClick={() => setImportError(null)}
+                className="ml-2 underline hover:no-underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
         </div>
         
         <div className="overflow-y-auto" style={{ height: 'calc(100vh - 140px)' }}>
