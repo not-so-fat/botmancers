@@ -5,6 +5,8 @@ import { bots, conversations, messages, queue, groups, mcpServers } from './db';
 import { mcpTurn } from './mcp';
 import { localSkillForBot } from './skills';
 import type { Message, QueueItem } from './db';
+import { parseFileReadAsk, serializeRun } from './run';
+import { beginFileReadRun } from './run-child';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -54,6 +56,16 @@ async function processQueueItem(item: QueueItem) {
 
   const conversationMessages = messages.getByConversation(item.conversation_id);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
+
+  if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
+    const fileReadAsk = parseFileReadAsk(latestUser.content);
+    if (fileReadAsk) {
+      const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
+      beginFileReadRun(runMessage.id, fileReadAsk.seconds);
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
   let openGroupTurn = false;
   if (conversation.type === 'group' && latestUser && !userAddressedBot(latestUser, bot)) {
     const queuedAfterPeer = conversationMessages.some(msg =>
