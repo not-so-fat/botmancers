@@ -5,8 +5,8 @@ import { bots, conversations, messages, queue, groups, mcpServers } from './db';
 import { mcpTurn } from './mcp';
 import { localSkillForBot } from './skills';
 import type { Message, QueueItem } from './db';
-import { parseFileReadAsk, parsePublicPageReadAsk, serializeRun } from './run';
-import { beginFileReadRun, beginPublicPageReadRun } from './run-child';
+import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
+import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -69,6 +69,13 @@ async function processQueueItem(item: QueueItem) {
     if (publicPageReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginPublicPageReadRun(runMessage.id, publicPageReadAsk.seconds, publicPageReadAsk.url);
+      setImmediate(() => processQueue());
+      return;
+    }
+    const codingLimbAsk = parseCodingLimbAsk(latestUser.content);
+    if (codingLimbAsk) {
+      const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
+      beginCodingLimbRun(runMessage.id, codingLimbAsk.seconds);
       setImmediate(() => processQueue());
       return;
     }

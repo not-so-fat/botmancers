@@ -281,3 +281,219 @@ export function stopPublicPageReadRun(messageId: string) {
   }
   dropPageRun(messageId, live.child);
 }
+
+const globalCodingLimbRuns = globalThis as typeof globalThis & {
+  __botmancerCodingLimbRuns?: Map<string, Live & { agentId?: string; runId?: string }>;
+};
+
+if (!globalCodingLimbRuns.__botmancerCodingLimbRuns) globalCodingLimbRuns.__botmancerCodingLimbRuns = new Map();
+const codingLimbRuns: Map<string, Live & { agentId?: string; runId?: string }> = globalCodingLimbRuns.__botmancerCodingLimbRuns;
+
+function dropCodingLimbRun(messageId: string, child: ChildProcess) {
+  const live = codingLimbRuns.get(messageId);
+  if (live?.child === child) codingLimbRuns.delete(messageId);
+}
+
+async function cancelCursorCloudAgent(agentId: string, runId: string): Promise<void> {
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey) return;
+
+  try {
+    await fetch(`https://api.cursor.com/v1/agents/${agentId}/runs/${runId}/cancel`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    });
+  } catch {
+    // Best effort cancellation
+  }
+}
+
+export function beginCodingLimbRun(messageId: string, seconds: number) {
+  if (seconds !== 4 && seconds !== 20) return;
+  if (codingLimbRuns.has(messageId)) return;
+  const current = messages.getById(messageId);
+  const parsed = current ? parseRun(current.content) : null;
+  if (!parsed || parsed.state !== 'running') return;
+
+  const live: Live & { agentId?: string; runId?: string } = { 
+    child: undefined as unknown as ChildProcess, 
+    stopped: false, 
+    agentId: undefined, 
+    runId: undefined 
+  };
+  const sleep = spawn('/bin/sleep', [String(seconds)], { stdio: 'ignore' });
+  live.child = sleep;
+  codingLimbRuns.set(messageId, live);
+
+  sleep.on('error', () => {
+    live.stopped = true;
+    dropCodingLimbRun(messageId, sleep);
+    markStopped(messageId);
+  });
+
+  sleep.on('exit', async (code, signal) => {
+    dropCodingLimbRun(messageId, sleep);
+    if (live.stopped || !stillRunning(messageId, live) || signal || code !== 0) {
+      if (live.stopped) markStopped(messageId);
+      return;
+    }
+
+    if (live.stopped || !stillRunning(messageId, live)) {
+      if (live.stopped) markStopped(messageId);
+      return;
+    }
+
+    const promptText = 'Which file holds parsePublicPageReadAsk in not-so-fat/botmancers? Reply with the path. Do not edit, commit, push, or open a pull request.';
+
+    try {
+      const apiKey = process.env.CURSOR_API_KEY;
+      if (!apiKey) {
+        if (!live.stopped && stillRunning(messageId, live)) {
+          messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: CURSOR_API_KEY not set' }));
+        }
+        return;
+      }
+
+      const createResponse = await fetch('https://api.cursor.com/v1/agents', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: {
+            text: promptText
+          },
+          repos: [
+            {
+              url: 'https://github.com/not-so-fat/botmancers',
+              startingRef: 'main'
+            }
+          ],
+          autoCreatePR: false,
+          mode: 'plan'
+        }),
+      });
+
+      if (live.stopped || !stillRunning(messageId, live)) {
+        if (live.stopped) markStopped(messageId);
+        return;
+      }
+
+      if (!createResponse.ok) {
+        if (!live.stopped && stillRunning(messageId, live)) {
+          messages.replaceContent(
+            messageId,
+            serializeRun({ state: 'done', output: `Create failed: ${createResponse.status}` })
+          );
+        }
+        return;
+      }
+
+      const createData = await createResponse.json();
+      const agentId = createData.agent?.id;
+      const runId = createData.run?.id;
+
+      if (!agentId || !runId) {
+        if (!live.stopped && stillRunning(messageId, live)) {
+          messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: No agent or run ID returned' }));
+        }
+        return;
+      }
+
+      live.agentId = agentId;
+      live.runId = runId;
+
+      if (live.stopped || !stillRunning(messageId, live)) {
+        await cancelCursorCloudAgent(agentId, runId);
+        if (live.stopped) markStopped(messageId);
+        return;
+      }
+
+      let pollAttempts = 0;
+      const maxPollAttempts = 120;
+
+      while (pollAttempts < maxPollAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        pollAttempts++;
+
+        if (live.stopped || !stillRunning(messageId, live)) {
+          await cancelCursorCloudAgent(agentId, runId);
+          if (live.stopped) markStopped(messageId);
+          return;
+        }
+
+        const statusResponse = await fetch(`https://api.cursor.com/v1/agents/${agentId}/runs/${runId}`, {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+          },
+        });
+
+        if (!statusResponse.ok) {
+          if (!live.stopped && stillRunning(messageId, live)) {
+            messages.replaceContent(
+              messageId,
+              serializeRun({ state: 'done', output: `Poll failed: ${statusResponse.status}` })
+            );
+          }
+          return;
+        }
+
+        const statusData = await statusResponse.json();
+
+        if (live.stopped || !stillRunning(messageId, live)) {
+          await cancelCursorCloudAgent(agentId, runId);
+          if (live.stopped) markStopped(messageId);
+          return;
+        }
+
+        if (statusData.status === 'FINISHED') {
+          if (typeof statusData.result === 'string' && stillRunning(messageId, live)) {
+            messages.replaceContent(messageId, serializeRun({ state: 'done', output: statusData.result }));
+            return;
+          }
+          if (!live.stopped && stillRunning(messageId, live)) {
+            messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Error: No result in response' }));
+          }
+          return;
+        }
+
+        if (statusData.status === 'FAILED' || statusData.status === 'CANCELLED') {
+          if (!live.stopped && stillRunning(messageId, live)) {
+            messages.replaceContent(messageId, serializeRun({ state: 'done', output: `Run ${statusData.status.toLowerCase()}` }));
+          }
+          return;
+        }
+      }
+
+      if (!live.stopped && stillRunning(messageId, live)) {
+        messages.replaceContent(messageId, serializeRun({ state: 'done', output: 'Timeout waiting for result' }));
+      }
+    } catch (error) {
+      if (!live.stopped && stillRunning(messageId, live)) {
+        const errorMsg = error instanceof Error ? error.message.slice(0, 40) : 'Unknown';
+        messages.replaceContent(messageId, serializeRun({ state: 'done', output: `Network error: ${errorMsg}` }));
+      }
+    }
+  });
+}
+
+export function stopCodingLimbRun(messageId: string) {
+  const live = codingLimbRuns.get(messageId);
+  if (live) {
+    live.stopped = true;
+    if (live.agentId && live.runId) {
+      cancelCursorCloudAgent(live.agentId, live.runId).catch(() => {});
+    }
+  }
+  markStopped(messageId);
+  if (!live) return;
+  try {
+    live.child.kill('SIGTERM');
+  } catch {
+    // The child already exited.
+  }
+  dropCodingLimbRun(messageId, live.child);
+}
