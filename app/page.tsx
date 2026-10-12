@@ -275,6 +275,14 @@ export default function Home() {
     });
     loadMessages();
   };
+
+  const stopDelegation = async () => {
+    if (!activeConversation) return;
+    await fetch(`/api/conversations/${activeConversation.id}/stop`, {
+      method: 'POST',
+    });
+    loadMessages();
+  };
   
   const handleImportFromMarketplace = async () => {
     setImportError(null);
@@ -375,33 +383,44 @@ export default function Home() {
       <div className="flex-1 flex flex-col">
         {activeConversation ? (
           <>
-            <div className="p-4 border-b bg-white flex items-center">
-              <button
-                onClick={() => setShowSidebar(!showSidebar)}
-                className="sm:hidden mr-3 p-2 hover:bg-gray-100 rounded"
-              >
-                ☰
-              </button>
-              <div>
-                <h2 className="font-semibold text-gray-800">
-                  {activeConversation.type === 'bot'
-                    ? (activeConversation.details as Bot).name
-                    : (activeConversation.details as Group).name}
-                </h2>
-                <p className="text-xs text-gray-500">
-                  {activeConversation.type === 'bot'
-                    ? (activeConversation.details as Bot).title
-                    : `${(activeConversation.details as Group).members.length} members`}
-                </p>
-              </div>
-              {activeConversation.type === 'bot' && (
-                <Link
-                  href={`/bots/${(activeConversation.details as Bot).id}/config`}
-                  className="ml-auto text-sm text-blue-600 hover:underline"
+            <div className="p-4 border-b bg-white flex items-center justify-between">
+              <div className="flex items-center">
+                <button
+                  onClick={() => setShowSidebar(!showSidebar)}
+                  className="sm:hidden mr-3 p-2 hover:bg-gray-100 rounded"
                 >
-                  Config
-                </Link>
-              )}
+                  ☰
+                </button>
+                <div>
+                  <h2 className="font-semibold text-gray-800">
+                    {activeConversation.type === 'bot'
+                      ? (activeConversation.details as Bot).name
+                      : (activeConversation.details as Group).name}
+                  </h2>
+                  <p className="text-xs text-gray-500">
+                    {activeConversation.type === 'bot'
+                      ? (activeConversation.details as Bot).title
+                      : `${(activeConversation.details as Group).members.length} members`}
+                  </p>
+                </div>
+              </div>
+              <div className="ml-auto flex items-center gap-3">
+                {activeConversation.type === 'bot' && (
+                  <Link
+                    href={`/bots/${(activeConversation.details as Bot).id}/config`}
+                    className="text-sm text-blue-600 hover:underline"
+                  >
+                    Config
+                  </Link>
+                )}
+                <button
+                  onClick={stopDelegation}
+                  title="Stop delegated turns in this thread"
+                  className="px-3 py-1 text-sm border border-red-600 text-red-600 rounded hover:bg-red-50"
+                >
+                  Stop
+                </button>
+              </div>
             </div>
 
             <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3">
