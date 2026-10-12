@@ -3,6 +3,14 @@ import path from 'path';
 import https from 'https';
 import { messages } from './db';
 import { parseRun, serializeRun } from './run';
+import {
+  COMMAND_OUTPUT_MAX_BYTES,
+  commandRunPage,
+  commandTimeoutMs,
+  resolveCommand,
+  validateCommandRequest,
+  type CommandRequest,
+} from './commands';
 
 type Live = {
   child: ChildProcess;
@@ -246,7 +254,7 @@ export function beginPublicPageReadRun(messageId: string, seconds: number, url?:
           if (live.stopped) markStopped(messageId);
           return;
         }
-        messages.replaceContent(messageId, serializeRun({ state: 'running', html }));
+        messages.replaceContent(messageId, serializeRun({ state: 'running', page: html }));
         
         await new Promise(resolve => setTimeout(resolve, 3000));
         
@@ -256,7 +264,7 @@ export function beginPublicPageReadRun(messageId: string, seconds: number, url?:
         }
         const title = extractPageTitle(html);
         if (title && stillRunning(messageId, live)) {
-          messages.replaceContent(messageId, serializeRun({ state: 'done', output: title, html }));
+          messages.replaceContent(messageId, serializeRun({ state: 'done', output: title, page: html }));
         }
       } else {
         const html = await fetchPublicPage('https://example.com', 'example.com');
@@ -502,4 +510,143 @@ export function stopCodingLimbRun(messageId: string) {
     // The child already exited.
   }
   dropCodingLimbRun(messageId, live.child);
+}
+
+const globalCommandRuns = globalThis as typeof globalThis & {
+  __botmancerCommandRuns?: Map<string, Live & { timer?: NodeJS.Timeout }>;
+};
+
+if (!globalCommandRuns.__botmancerCommandRuns) globalCommandRuns.__botmancerCommandRuns = new Map();
+const commandRuns: Map<string, Live & { timer?: NodeJS.Timeout }> = globalCommandRuns.__botmancerCommandRuns;
+
+function dropCommandRun(messageId: string, child: ChildProcess) {
+  const live = commandRuns.get(messageId);
+  if (live?.child === child) {
+    if (live.timer) clearTimeout(live.timer);
+    commandRuns.delete(messageId);
+  }
+}
+
+function killCommandChild(live: { child: ChildProcess }) {
+  try {
+    live.child.kill('SIGTERM');
+  } catch {
+    // The child already exited.
+  }
+  // Escalate: a child ignoring SIGTERM must not outlive the run.
+  setTimeout(() => {
+    try {
+      live.child.kill('SIGKILL');
+    } catch {
+      // The child already exited.
+    }
+  }, 2000).unref?.();
+}
+
+export interface CommandRunOptions {
+  // Test overrides; production always uses the allowlist constants.
+  timeoutMs?: number;
+  outputMaxBytes?: number;
+}
+
+// Runs an allowlisted command after the requested wait: sleep(wait), then
+// spawn argv with no shell, capture stdout up to the cap, and move the [run]
+// message from running to done. The computer page rides in `page` in both
+// states. Stop kills the current child and marks the run stopped; the hard
+// timeout does the same. Anything outside the allowlist is refused before
+// any child spawns.
+export function beginCommandRun(messageId: string, request: CommandRequest, opts: CommandRunOptions = {}) {
+  const valid = validateCommandRequest({
+    command: request.command,
+    args: request.args,
+    waitSeconds: request.waitSeconds,
+  });
+  const resolved = resolveCommand({ command: valid.command, args: valid.args });
+  if (commandRuns.has(messageId)) return;
+  const current = messages.getById(messageId);
+  const parsed = current ? parseRun(current.content) : null;
+  if (!parsed || parsed.state !== 'running') return;
+
+  const timeoutMs = opts.timeoutMs ?? commandTimeoutMs(valid.waitSeconds);
+  const outputMaxBytes = opts.outputMaxBytes ?? COMMAND_OUTPUT_MAX_BYTES;
+
+  const live: Live & { timer?: NodeJS.Timeout } = { child: undefined as unknown as ChildProcess, stopped: false };
+  const sleep = spawn('/bin/sleep', [String(valid.waitSeconds)], { stdio: 'ignore' });
+  live.child = sleep;
+  commandRuns.set(messageId, live);
+
+  const fail = () => {
+    live.stopped = true;
+    dropCommandRun(messageId, live.child);
+    markStopped(messageId);
+  };
+  const kill = () => killCommandChild(live);
+
+  live.timer = setTimeout(() => {
+    // Hard timeout: kill whatever phase the run is in and stop it.
+    kill();
+    fail();
+  }, timeoutMs);
+  live.timer.unref?.();
+
+  // The running page shows the command while the wait elapses.
+  messages.replaceContent(messageId, serializeRun({ state: 'running', page: commandRunPage(valid, null) }));
+
+  sleep.on('error', () => {
+    kill();
+    fail();
+  });
+
+  sleep.on('exit', (code, signal) => {
+    if (live.stopped || !stillRunning(messageId, live) || signal || code !== 0) {
+      if (live.stopped) {
+        dropCommandRun(messageId, sleep);
+        markStopped(messageId);
+      }
+      return;
+    }
+    let out = '';
+    let truncated = false;
+    const child = spawn(resolved.bin, resolved.argv, { stdio: ['ignore', 'pipe', 'ignore'] });
+    live.child = child;
+    commandRuns.set(messageId, live);
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (truncated) return;
+      out += chunk.toString('utf8');
+      if (Buffer.byteLength(out, 'utf8') > outputMaxBytes) {
+        truncated = true;
+        out = Buffer.from(out, 'utf8').subarray(0, outputMaxBytes).toString('utf8');
+        killCommandChild({ child });
+      }
+    });
+    child.on('error', () => {
+      kill();
+      fail();
+    });
+    child.on('close', (childCode, childSignal) => {
+      dropCommandRun(messageId, child);
+      if (live.stopped || !stillRunning(messageId, live)) {
+        if (live.stopped) markStopped(messageId);
+        return;
+      }
+      if ((childSignal || childCode !== 0) && !truncated) {
+        markStopped(messageId);
+        return;
+      }
+      const page = commandRunPage(valid, out);
+      messages.replaceContent(messageId, serializeRun({ state: 'done', output: out, page }));
+    });
+    if (live.stopped || !stillRunning(messageId, live)) {
+      kill();
+    }
+  });
+}
+
+export function stopCommandRun(messageId: string) {
+  const live = commandRuns.get(messageId);
+  if (live) live.stopped = true;
+  markStopped(messageId);
+  if (!live) return;
+  killCommandChild(live);
+  dropCommandRun(messageId, live.child);
 }

@@ -26,7 +26,8 @@ import {
 import type { HermesConfig } from './hermes';
 import type { Bot, Conversation, Message, OneShot, QueueItem, Routine } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
-import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
+import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun, beginCommandRun } from './run-child';
+import { commandRunPage, parseCommandAsk } from './commands';
 import { handleCosBirthRequest } from './birth';
 import {
   createPendingQuestion,
@@ -1040,6 +1041,18 @@ async function processQueueItem(item: QueueItem) {
   }
 
   if (!askResume && bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
+    const commandAsk = parseCommandAsk(latestUser.content);
+    if (commandAsk) {
+      const runMessage = messages.create(
+        item.conversation_id,
+        'bot',
+        serializeRun({ state: 'running', page: commandRunPage(commandAsk, null) }),
+        bot.id
+      );
+      beginCommandRun(runMessage.id, commandAsk);
+      chainProcessQueue();
+      return;
+    }
     const fileReadAsk = parseFileReadAsk(latestUser.content);
     if (fileReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);

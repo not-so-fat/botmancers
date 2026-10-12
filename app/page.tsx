@@ -66,7 +66,7 @@ function computerPageHtml(list: Message[]): string | null {
     const run = parseRun(list[i].content);
     if (!run) continue;
     if (run.state === 'stopped') return null;
-    return run.html || null;
+    return run.page || run.html || null;
   }
   return null;
 }
@@ -1188,9 +1188,9 @@ export default function Home() {
                     <iframe className="computer-page" sandbox="" srcDoc={computerHtml} tabIndex={-1} />
                   ) : null}
                   <div className="computer-dock">
-                    <img src="/dock-chrome_c5c1.png" alt="" />
-                    <img src="/dock-gray_6226.png" alt="" />
-                    <img src="/dock-terminal_166d.png" alt="" />
+                    <img src="/computer/dock-chrome.png" alt="" />
+                    <img src="/computer/dock-gray.png" alt="" />
+                    <img src="/computer/dock-terminal.png" alt="" />
                   </div>
                 </div>
               </div>
