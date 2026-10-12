@@ -52,6 +52,14 @@ import {
   setApprovalMessage,
   ApprovalActionRefused,
 } from './approvals';
+import {
+  delegateCodingViaDeck,
+  parseDeckDirective,
+  parseDeckRuntime,
+  resolveDeckForCwd,
+  DECK_REVIEW_FOCUS_DEFAULT,
+} from './agent-deck-run';
+import type { DeckDelegationResult } from './agent-deck-run';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -1511,7 +1519,9 @@ The standing rules decide the whole reply. If they require one short sentence, w
     return;
   }
 
-  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent))) {
+  // A DECK directive on an open group turn violates that turn's no-handoff
+  // instruction the same way a canned WAKE does, so it is dropped silently.
+  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent) || parseDeckDirective(responseContent))) {
     chainProcessQueue();
     return;
   }
@@ -1650,6 +1660,89 @@ The standing rules decide the whole reply. If they require one short sentence, w
         return;
       }
     }
+  }
+
+  // Deck coding delegation (NOT-395): a `DECK <runtime>: <task>` directive
+  // in the model reply routes this turn through the agent-deck adapter
+  // (implement, review, resume) instead of another bot. It consumes one
+  // handoff of the existing depth budget on top of this turn's already
+  // counted delegated turn, refuses with the same depth reason when
+  // exhausted, and honours Stop before, during (via the adapter's stopped
+  // callback), and after the sequence. The deck comes from the working
+  // directory's own agent-deck assignment, so no second copy of it lives
+  // on bot records. On success or adapter-reported failure the
+  // caller-managed return below still applies, so a delegate's DECK turn
+  // reports back to its caller like any other delegated turn.
+  const deckDirective = parseDeckDirective(responseContent);
+  if (deckDirective) {
+    const deckMatchAt = responseContent.search(/DECK\s+\S+\s*:\s*\S/i);
+    const deckPrefix = (deckMatchAt >= 0 ? responseContent.slice(0, deckMatchAt) : '').trim();
+    if (deckPrefix) {
+      recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, deckPrefix), bot.id));
+    }
+    if (chain?.stopped) {
+      chainProcessQueue();
+      return;
+    }
+    let deckClient;
+    try {
+      deckClient = parseDeckRuntime(deckDirective.client);
+    } catch {
+      messages.create(
+        item.conversation_id,
+        'bot',
+        `[Deck failed] runtime=${deckDirective.client} deck=unknown error=Invalid agent-deck runtime.`,
+        bot.id
+      );
+      chainProcessQueue();
+      return;
+    }
+    if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
+      messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
+      chainProcessQueue();
+      return;
+    }
+    const deckCwd = process.env.BOTMANCERS_DECK_CWD || process.cwd();
+    let deckId: string;
+    try {
+      deckId = resolveDeckForCwd(deckCwd);
+    } catch (error) {
+      messages.create(
+        item.conversation_id,
+        'bot',
+        `[Deck failed] runtime=${deckClient} deck=unknown error=${String(error).slice(0, 300)}`,
+        bot.id
+      );
+      chainProcessQueue();
+      return;
+    }
+    if (chain) chain.handoffs += 1;
+    let deckDelegation: DeckDelegationResult | null = null;
+    let deckFailed = false;
+    try {
+      deckDelegation = await delegateCodingViaDeck({
+        conversationId: item.conversation_id,
+        botId: bot.id,
+        deck: deckId,
+        client: deckClient,
+        cwd: deckCwd,
+        task: deckDirective.task,
+        reviewFocus: DECK_REVIEW_FOCUS_DEFAULT,
+        isStopped: () => chain?.stopped ?? false,
+      });
+    } catch {
+      // [Deck failed] is already in the thread; the caller-managed return
+      // below still runs so the caller can report it.
+      deckFailed = true;
+    }
+    // A Stop-silent null (neither result nor failure) suppresses the
+    // return, like every other stopped path.
+    if ((deckDelegation || deckFailed) && chain && !chain.stopped) {
+      const callerId = popCaller(chain, bot.id);
+      if (callerId) queue.enqueue(item.conversation_id, callerId);
+    }
+    chainProcessQueue();
+    return;
   }
 
   const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);

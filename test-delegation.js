@@ -282,6 +282,13 @@ async function main() {
     !!resumeStart && resumeStart.includes('ses-deck-impl'),
     'resume receives the original session ID (session-reuse)'
   );
+  assert(!!delegation, 'delegation completes with a result');
+  const followArgv = deckRecorded.find(a => a[1] === 'run' && a[2] === 'log' && a.includes('--follow'));
+  assert(!!followArgv, 'completion comes from run log --follow, not adapter polling');
+  assert(
+    !!deckRecorded.find(a => a[1] === 'run' && a[2] === 'status' && a[3] === 'run-deck-3'),
+    'resume run status is read, so the session is honored from status rather than the fallback'
+  );
   assert(
     delegation.implSessionId === 'ses-deck-impl' && delegation.resumedSessionId === 'ses-deck-impl',
     'resumed session ID is unchanged from the implementation session ID'
@@ -291,6 +298,228 @@ async function main() {
     'bound run/session observation correlates run ID and session ID'
   );
   assert(queue.countPending(conv.id) === 0, 'no queue residue from the deck delegation');
+
+  // Scenario 6: conversation-loop DECK directive. The model reply carries
+  // `DECK codex: <task>`; the agent loop resolves the folder's deck from
+  // its own agent-deck assignment, drives implement/review/resume through
+  // the seam, and returns to the caller for its report. Depth accounting
+  // consumes the deck delegation like any other handoff.
+  log('\nScenario 6: conversation-loop DECK directive via the queue');
+  const deckCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-deck-cwd-'));
+  fs.mkdirSync(path.join(deckCwd, '.agent-deck'), { recursive: true });
+  fs.writeFileSync(
+    path.join(deckCwd, '.agent-deck', 'use.json'),
+    JSON.stringify({ version: 3, deckId: 'deck-id-9', deckName: 'planner' })
+  );
+  process.env.BOTMANCERS_DECK_CWD = deckCwd;
+  const deckRecorded6 = [];
+  let deckRuns6 = 0;
+  deckRun.setDeckRunProcess(async argv => {
+    deckRecorded6.push(argv);
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+      const runId = argv[3];
+      const sessionId = runId === 'run-deck-2' ? `ses-for-${runId}` : 'ses-deck-impl';
+      return {
+        stdout: JSON.stringify({
+          runId, deck: 'deck-id-9', client: 'codex', state: 'ended', sessionId,
+          startedAt: '2026-10-12T00:00:00.000Z', lastLogTs: '2026-10-12T00:01:00.000Z',
+          logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
+        }),
+        stderr: '', exitCode: 0,
+      };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+      const runId = argv[3];
+      const body = runId === 'run-deck-2' ? 'review says: add the venue' : `output of ${runId}`;
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, subtype: 'success', result: body }),
+        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+      deckRuns6++;
+      const runId = `run-deck-${deckRuns6}`;
+      return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
+  });
+  const calls6 = {};
+  agent.setDelegationChatStub(ctx => {
+    calls6[ctx.botName] = (calls6[ctx.botName] || 0) + 1;
+    if (ctx.botName === 'Origin' && calls6.Origin === 1) return 'WAKE A: Please build the widget.';
+    if (ctx.botName === 'A') return 'DECK codex: Implement the widget.';
+    if (ctx.botName === 'Origin') return 'REPORT: widget built via deck.';
+    return 'No response';
+  });
+  const user6 = messages.create(conv.id, 'user', 'Build the widget through the coding agent.');
+  queue.enqueue(conv.id, origin.id);
+  await drain();
+  delete process.env.BOTMANCERS_DECK_CWD;
+  deckRun.setDeckRunProcess(null);
+
+  const thread6 = chainAfter(conv.id, user6.id);
+  const observed6 = thread6
+    .filter(m => m.sender_type === 'bot' && m.sender_id === botA.id)
+    .map(m => (m.content.match(/^\[(Deck [a-z]+)\]/) || [])[1])
+    .filter(Boolean);
+  log(`  observation types: ${observed6.join(' -> ')}`);
+  assert(
+    JSON.stringify(observed6) === JSON.stringify(['Deck handoff', 'Deck run', 'Deck review', 'Deck resume', 'Deck result']),
+    'loop-driven delegation posts the ordered deck observations'
+  );
+  assert(
+    !!thread6.find(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('REPORT: widget built via deck.')),
+    'caller-managed return: the caller reports after the deck sequence'
+  );
+  const implStart6 = deckRecorded6.find(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'deck-id-9');
+  assert(
+    !!implStart6 && implStart6.includes('/repo/checkout') === false && deckRecorded6.some(a => a.includes(deckCwd)),
+    'loop passes the folder deck id and working directory exactly'
+  );
+  const resumeStart6 = deckRecorded6.find(a => a[1] === 'run' && a.includes('--resume'));
+  assert(!!resumeStart6 && resumeStart6.includes('ses-deck-impl'), 'loop-driven resume reuses the original session ID');
+  const chain6 = agent.getDelegationState(conv.id);
+  assert(!!chain6 && chain6.handoffs === 2, `deck delegation consumes depth like a handoff (handoffs=${chain6 ? chain6.handoffs : '?'})`);
+  assert(thread6.every(m => m.conversation_id === conv.id), 'all loop-driven deck observations stay in the originating thread');
+  assert(queue.countPending(conv.id) === 0, 'queue drained after the loop-driven deck sequence');
+  try { fs.rmSync(deckCwd, { recursive: true, force: true }); } catch { /* best effort */ }
+
+  // Scenario 7: Stop halts an in-flight deck sequence. The status wait is
+  // gated; Stop lands while it is gated; the sequence returns null
+  // silently with no review/resume runs and no late observations.
+  log('\nScenario 7: Stop during a deck sequence');
+  let gateResolve7 = null;
+  const gate7 = new Promise(resolve => { gateResolve7 = resolve; });
+  let gateOpen7 = false;
+  const deckRecorded7 = [];
+  let deckRuns7 = 0;
+  deckRun.setDeckRunProcess(async argv => {
+    deckRecorded7.push(argv);
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+      if (!gateOpen7) await gate7;
+      const runId = argv[3];
+      return {
+        stdout: JSON.stringify({
+          runId, deck: 'planner', client: 'codex', state: 'ended', sessionId: 'ses-deck-impl',
+          startedAt: '2026-10-12T00:00:00.000Z', lastLogTs: '2026-10-12T00:01:00.000Z',
+          logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
+        }),
+        stderr: '', exitCode: 0,
+      };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+      const runId = argv[3];
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, subtype: 'success', result: `output of ${runId}` }),
+        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+      deckRuns7++;
+      const runId = `run-deck-${deckRuns7}`;
+      return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
+  });
+  const user7 = messages.create(conv.id, 'user', 'Build the slow widget via the coding agent.');
+  queue.enqueue(conv.id, origin.id); // gives Stop something queued to cancel, like a real mid-chain Stop
+  const pending7 = deckRun.delegateCodingViaDeck({
+    conversationId: conv.id,
+    botId: origin.id,
+    deck: 'planner',
+    client: 'codex',
+    cwd: '/repo/checkout',
+    task: 'Implement the slow widget.',
+    reviewFocus: 'Check the edge cases.',
+    isStopped: () => (agent.getDelegationState(conv.id)?.stopped ?? false),
+  });
+  for (let i = 0; i < 400 && !deckRecorded7.some(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'planner'); i++) {
+    await sleep(5);
+  }
+  assert(deckRecorded7.some(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'planner'), 'implementation run started before Stop');
+  const stopped7 = agent.stopDelegation(conv.id);
+  assert(stopped7 === true, 'stopDelegation reports something stopped');
+  gateOpen7 = true;
+  gateResolve7();
+  const delegation7 = await pending7;
+  deckRun.setDeckRunProcess(null);
+  assert(delegation7 === null, 'stopped deck sequence returns null silently');
+  const starts7 = deckRecorded7.filter(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] !== 'status' && a[2] !== 'log');
+  assert(starts7.length === 1, `no review/resume run starts after Stop (starts=${starts7.length})`);
+  const thread7 = chainAfter(conv.id, user7.id);
+  const deckMsgs7 = thread7.filter(m => m.sender_type === 'bot' && m.content.startsWith('[Deck'));
+  assert(
+    deckMsgs7.length === 1 && deckMsgs7[0].content.startsWith('[Deck handoff]'),
+    'only the handoff predates Stop; Stop promises no late messages'
+  );
+  assert(thread7.some(m => m.content.includes('Delegation stopped')), 'stopped notice in thread');
+  await drain();
+  assert(queue.countPending(conv.id) === 0, 'queue drained after Stop');
+
+  // Scenario 8: a resumed run that forks the session fails closed: the
+  // adapter throws, posts [Deck failed] naming the fork, and posts no
+  // resume observation and no final result.
+  log('\nScenario 8: resumed session fork fails closed');
+  const deckRecorded8 = [];
+  let deckRuns8 = 0;
+  deckRun.setDeckRunProcess(async argv => {
+    deckRecorded8.push(argv);
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+      const runId = argv[3];
+      const sessionId = runId === 'run-deck-3' ? 'ses-FORKED' : 'ses-deck-impl';
+      return {
+        stdout: JSON.stringify({
+          runId, deck: 'planner', client: 'codex', state: 'ended', sessionId,
+          startedAt: '2026-10-12T00:00:00.000Z', lastLogTs: '2026-10-12T00:01:00.000Z',
+          logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
+        }),
+        stderr: '', exitCode: 0,
+      };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+      const runId = argv[3];
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, subtype: 'success', result: `output of ${runId}` }),
+        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+      deckRuns8++;
+      const runId = `run-deck-${deckRuns8}`;
+      return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
+  });
+  const user8 = messages.create(conv.id, 'user', 'Build the forking widget via the coding agent.');
+  let forkError = null;
+  try {
+    await deckRun.delegateCodingViaDeck({
+      conversationId: conv.id,
+      botId: origin.id,
+      deck: 'planner',
+      client: 'codex',
+      cwd: '/repo/checkout',
+      task: 'Implement the forking widget.',
+      reviewFocus: 'Check the edge cases.',
+    });
+  } catch (error) {
+    forkError = error;
+  }
+  deckRun.setDeckRunProcess(null);
+  assert(!!forkError && /fork/i.test(String(forkError)), 'forked resume throws a session-fork error');
+  const thread8 = chainAfter(conv.id, user8.id);
+  assert(
+    thread8.some(m => m.content.startsWith('[Deck failed]') && /fork/i.test(m.content)),
+    '[Deck failed] names the fork'
+  );
+  assert(!thread8.some(m => m.content.startsWith('[Deck resume]')), 'no resume observation after a fork');
+  assert(!thread8.some(m => m.content.startsWith('[Deck result]')), 'no final result after a fork');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

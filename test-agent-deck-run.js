@@ -56,6 +56,9 @@ deck.setDeckRunProcess(async argv => {
   if ((argv[0] === 'claude' || argv[0] === 'cursor' || argv[0] === 'muse') && argv[1] === '--version') {
     return { stdout: '', stderr: `command not found: ${argv[0]}`, exitCode: 127 };
   }
+  if (argv[0] === 'agent-deck' && argv[1] === '--version') {
+    return { stdout: 'agent-deck 2.1.0\n', stderr: '', exitCode: 0 };
+  }
   if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
     const runId = argv[3];
     return {
@@ -75,6 +78,22 @@ deck.setDeckRunProcess(async argv => {
   }
   if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
     const runId = argv[3];
+    // Fail-closed fixtures: a stream with no terminal line, and a stream
+    // carrying an error line. awaitDeckRunEnd must refuse both.
+    if (runId === 'run-noend') {
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'result', sessionId: 'ses-opaque-for-run-noend', subtype: 'success', result: 'partial' }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (runId === 'run-errlog') {
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'error', message: 'runtime exploded' }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
     const lines = [
       JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
       JSON.stringify({ t: 'result', sessionId: `ses-opaque-for-${runId}`, subtype: 'success', result: `done by ${runId}` }),
@@ -173,7 +192,34 @@ async function main() {
   }
   assert(probeRejected, 'capability probe fails closed on invalid runtime');
 
+  // Completion wait and fail-closed terminal handling.
+  log('\nCompletion wait (CLI --follow, no adapter polling)');
+  const awaited = await deck.awaitDeckRunEnd('run-fake-1');
+  const followArgv = recorded.find(a => a[1] === 'run' && a[2] === 'log' && a.includes('--follow'));
+  assert(!!followArgv && followArgv[3] === 'run-fake-1', 'await reads completion through run log --follow (CLI completion signal)');
+  assert(awaited.result === 'done by run-fake-1', 'awaited result comes from the followed log stream');
+  assert(awaited.sessionId === 'ses-opaque-for-run-fake-1', 'awaited session ID is the opaque status value');
+  assert(awaited.status.state === 'ended', 'await confirms the terminal state via run status');
+  let noEndThrew = false;
+  try {
+    await deck.awaitDeckRunEnd('run-noend');
+  } catch {
+    noEndThrew = true;
+  }
+  assert(noEndThrew, 'await fails closed when the log never reaches a terminal event');
+  let errLogThrew = false;
+  try {
+    await deck.awaitDeckRunEnd('run-errlog');
+  } catch {
+    errLogThrew = true;
+  }
+  assert(errLogThrew, 'await fails closed on a log error event');
+
   const available = await deck.listAvailableDeckRuntimes();
+  assert(
+    recorded.some(a => a[0] === 'agent-deck' && a[1] === '--version'),
+    'capability probe verifies the agent-deck launch path alongside the runtime binary'
+  );
   assert(available.includes('codex'), 'capability probe advertises the verified codex launch path');
   assert(
     !available.includes('claude') && !available.includes('cursor') && !available.includes('muse'),
