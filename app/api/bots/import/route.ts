@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { bots, conversations, queue } from '@/lib/db';
-import { processQueue } from '@/lib/agent';
+import { bots } from '@/lib/db';
 import { IMPORT_SCHEMA_VERSION } from '@/app/api/import-capabilities/route';
 import { createHash } from 'crypto';
 
@@ -108,7 +107,7 @@ function validateImportRequest(body: unknown): { valid: false; errors: string[] 
     }
   }
 
-  const topLevelUnsupportedFields = ['marketplace_data', 'grok_metadata', 'raw_payload'];
+  const topLevelUnsupportedFields = ['marketplace_data', 'grok_metadata', 'raw_payload', 'skills', 'memories', 'routines', 'integrations'];
   for (const field of topLevelUnsupportedFields) {
     if (req[field] !== undefined) {
       errors.push(`Field "${field}" is not supported. Use only Botmancers-compatible import format`);
@@ -245,12 +244,8 @@ export async function POST(request: Request) {
       }
     );
 
-    const conversation = conversations.getByBotId(bot.id);
-    if (conversation) {
-      queue.enqueue(conversation.id, bot.id);
-      processQueue().catch(console.error);
-    }
-
+    // No greeting enqueue: verification must not call a model or add a message,
+    // and import-born bots keep an empty conversation. POST /api/bots still greets.
     return NextResponse.json({
       bot,
       created: true,
