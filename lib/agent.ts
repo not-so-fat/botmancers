@@ -973,6 +973,29 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
+  // Approval hook (NOT-416): a direct-thread instruction asking for approval
+  // (a gated file read, a gated command, or a plain approve-by-code ask)
+  // raises a pending request and posts its card instead of calling the model.
+  // Runs ahead of the ask-first hook below (snapshot order): an approval ask
+  // also names asking and waiting, so it must be claimed here first. The
+  // pending action never runs here; only the approve route executes it,
+  // exactly once. Refused asks (path traversal, invalid shapes) raise
+  // nothing and run nothing. A retry for an already-raised task posts no
+  // second card.
+  if (!askResume && conversation.type === 'bot' && latestUser) {
+    const raised = raiseApprovalFromUserInstruction({
+      conversationId: item.conversation_id,
+      botId: bot.id,
+      botName: bot.name,
+      userMessage: latestUser,
+      thread: conversationMessages,
+    });
+    if (raised) {
+      chainProcessQueue();
+      return;
+    }
+  }
+
   // Ask-first hook (NOT-415): the user's request says to ask one question
   // and wait. The question is stored durably and posted as an ordinary bot
   // card; the bot parks without calling the model. Single asker per task:
@@ -998,27 +1021,6 @@ async function processQueueItem(item: QueueItem) {
       const posted = messages.create(item.conversation_id, 'bot', requested, bot.id);
       setQuestionMessage(row.id, posted.id);
       recordApprovalIfPresent(item.conversation_id, posted);
-      chainProcessQueue();
-      return;
-    }
-  }
-
-  // Approval hook (NOT-416): a direct-thread instruction asking for approval
-  // (a gated file read, a gated command, or a plain approve-by-code ask)
-  // raises a pending request and posts its card instead of calling the model.
-  // The pending action never runs here; only the approve route executes it,
-  // exactly once. Refused asks (path traversal, invalid shapes) raise
-  // nothing and run nothing. A retry for an already-raised task posts no
-  // second card.
-  if (!askResume && conversation.type === 'bot' && latestUser) {
-    const raised = raiseApprovalFromUserInstruction({
-      conversationId: item.conversation_id,
-      botId: bot.id,
-      botName: bot.name,
-      userMessage: latestUser,
-      thread: conversationMessages,
-    });
-    if (raised) {
       chainProcessQueue();
       return;
     }

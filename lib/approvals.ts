@@ -157,7 +157,7 @@ export const APPROVAL_ACTIONS: Record<ApprovalActionType, ApprovalActionHandler>
     validate: args => {
       readFileArgs(args);
     },
-    run: (args, _ctx) => {
+    run: (args) => {
       const name = readFileArgs(args);
       const filePath = path.join(path.resolve(process.cwd(), 'files'), name);
       const contents = fs.readFileSync(filePath, 'utf8');
@@ -175,7 +175,7 @@ export const APPROVAL_ACTIONS: Record<ApprovalActionType, ApprovalActionHandler>
     validate: args => {
       runCommandArgs(args);
     },
-    run: (args, _ctx) => {
+    run: (args) => {
       const word = runCommandArgs(args);
       const output = execFileSync('printf', ['%s', word], { encoding: 'utf8' });
       return {
@@ -192,7 +192,7 @@ export const APPROVAL_ACTIONS: Record<ApprovalActionType, ApprovalActionHandler>
     validate: args => {
       sendDraftArgs(args);
     },
-    run: (args, _ctx) => {
+    run: (args) => {
       // Recorded in the thread only; sending real external messages stays out
       // of scope (non-goal).
       const { recipient, body } = sendDraftArgs(args);
