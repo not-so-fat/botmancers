@@ -483,8 +483,10 @@ function resolveWakeTargets(
 // specialist's reply lands once in the caller's thread (so the caller-managed
 // report turn sees it as peer context) and once in the specialist's own
 // thread behind a [From caller] handoff line (so the specialist thread keeps
-// its continuity). Content checks make every write idempotent: no duplicate
-// message in either thread, even if a poke is retried.
+// its continuity). Duplicate detection is scoped to the current delegation
+// round: only an identical reply posted after this round's handoff marker
+// suppresses the write, so a later round may legitimately post the same text
+// again while a retried poke never double-posts.
 export function mirrorSpecialistReply(args: {
   callerConversationId: string;
   caller: Bot;
@@ -496,27 +498,49 @@ export function mirrorSpecialistReply(args: {
   let callerMessageId: string | null = null;
   let targetMessageId: string | null = null;
 
+  // Round boundary: this round's handoff marker in the caller thread. Each
+  // wake turn posts a fresh marker, so the latest match always opens the
+  // current round; a retried poke reuses it instead of opening a new one.
+  const handoffLine = `[Handing off to ${target.name}]\n${taskMessage}`;
+  const callerHistory = messages.getByConversation(callerConversationId);
+  const handoffMsg = [...callerHistory].reverse().find(
+    msg => msg.sender_type === 'bot' && msg.sender_id === caller.id && msg.content === handoffLine
+  );
+  const roundAt = handoffMsg ? handoffMsg.created_at : 0;
+
   const targetConversation = conversations.getByBotId(target.id);
   if (targetConversation && targetConversation.id !== callerConversationId) {
-    const targetHistory = messages.getByConversation(targetConversation.id);
     const fromLine = `[From ${caller.name}]\n${taskMessage}`;
-    const hasFromLine = targetHistory.some(
-      msg => msg.sender_type === 'bot' && msg.sender_id === caller.id && msg.content === fromLine
+    let targetHistory = messages.getByConversation(targetConversation.id);
+    let fromMsg = [...targetHistory].reverse().find(
+      msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === caller.id &&
+        msg.content === fromLine &&
+        msg.created_at >= roundAt
     );
-    if (!hasFromLine) {
-      messages.create(targetConversation.id, 'bot', fromLine, caller.id);
+    if (!fromMsg) {
+      fromMsg = messages.create(targetConversation.id, 'bot', fromLine, caller.id);
+      targetHistory = messages.getByConversation(targetConversation.id);
     }
-    const hasReply = messages.getByConversation(targetConversation.id).some(
-      msg => msg.sender_type === 'bot' && msg.sender_id === target.id && msg.content === reply
+    const hasReply = targetHistory.some(
+      msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === target.id &&
+        msg.content === reply &&
+        msg.created_at >= fromMsg.created_at
     );
     if (!hasReply) {
       targetMessageId = messages.create(targetConversation.id, 'bot', reply, target.id).id;
     }
   }
 
-  const callerHistory = messages.getByConversation(callerConversationId);
   const hasMirror = callerHistory.some(
-    msg => msg.sender_type === 'bot' && msg.sender_id === target.id && msg.content === reply
+    msg =>
+      msg.sender_type === 'bot' &&
+      msg.sender_id === target.id &&
+      msg.content === reply &&
+      msg.created_at >= roundAt
   );
   if (!hasMirror) {
     callerMessageId = messages.create(callerConversationId, 'bot', reply, target.id).id;

@@ -20,6 +20,7 @@ export async function GET(
       bot_id: row.bot_id,
       created_at: row.created_at,
       hash: row.hash,
+      transport: row.transport,
       snapshot: JSON.parse(row.snapshot),
     }));
     return NextResponse.json({ bot, skill, currentHash, snapshots });

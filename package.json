@@ -11,6 +11,7 @@
     "test:marketplace-import": "node test-import-marketplace-ui.js",
     "test:snapshot": "node test-snapshot.js",
     "test:delegation": "node test-delegation.js",
+    "test:hermes-wake": "node test-hermes-wake.js",
     "test:agent-loop-extras": "node test-agent-loop-extras.js",
     "test:unread": "node test-unread.js",
     "test:thread-actions": "node test-thread-actions.js",

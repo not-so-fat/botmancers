@@ -30,6 +30,7 @@ interface SnapshotRow {
   bot_id: string;
   created_at: number;
   hash: string;
+  transport?: string | null;
   snapshot: Record<string, string | string[] | boolean | null>;
 }
 
@@ -583,6 +584,7 @@ export default function BotConfigPage() {
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-sm text-gray-800">
                             {formatDateTime(row.created_at)} · {row.id.slice(0, 4)}
+                            {row.transport ? ` · ${row.transport}` : null}
                           </p>
                           <button
                             onClick={() => setExpanded(prev => ({ ...prev, [row.id]: !prev[row.id] }))}
