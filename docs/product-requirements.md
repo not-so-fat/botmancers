@@ -8,27 +8,39 @@ choices belong in [the implementation plan](implementation-plan.md).
 
 ## Goal
 
-The end goal is a Grok-like teammate app: a person tells a bot a task in one
-conversation, and bots delegate to each other, ask back, or answer in that same
-conversation with no workflow UI or forms. Conversational delegation between
-bots is the core engine. Botmancers exists to make that delegation trustworthy
-through transparent per-bot configuration of skills, rules, and template source.
+Botmancers is a conversational delegation layer for local coding agents. A
+person talks to one persistent bot in one conversation. That bot can hand
+implementation to a configured local coding agent on the person's Mac through
+Agent Deck, hand the result to a reviewer agent, resume the original coding
+session with the review, and return the revised result in the same
+conversation.
 
-Let a person or registered agent delegate work to another configured agent,
-have Botmancers launch or contact that agent, preserve the relevant session and
-working context, and route the result back without manual prompt copying.
+The person does not copy prompts, results, run identifiers, or session
+identifiers between tools and does not configure a workflow form.
 
-The motivating workflow is casual conversational delegation: while brainstorming
-with a personal agent, the person asks it to send implementation to one
-specialist and review to another specialist, then continue the original
-conversation with the result. The builder -> reviewer -> resumed-builder coding
-loop reaches that end goal through the same conversational path: the calling
-agent runs the delegation steps in conversation rather than through a
-control-plane workflow policy. Hermes is one optional runtime for a bot, not
-the product itself.
+Hermes is the default persistent runtime for a bot's ongoing conversation. A
+bot's coding-agent path is configured separately and contains:
 
-This goal starts from the owner's repeated personal workflow. That is useful
-problem evidence, but it is not yet evidence of a market or willingness to pay.
+* runtime: `codex`, `claude`, `cursor`, or `muse`;
+* Agent Deck deck name;
+* working directory.
+
+Botmancers launches coding agents through `agent-deck run`. A runtime may be
+offered in the UI only when its local launch path is real and available.
+Botmancers does not embed or require an OpenAI-compatible example model loop.
+
+The primary user story is:
+
+> As a developer working with one persistent bot, I want that bot to hand
+> coding work to a configured local coding agent, have another agent review the
+> result, resume the original coding session with the review, and show the
+> entire handoff in our existing conversation, so I can complete reviewed
+> coding work without operating several agent sessions myself.
+
+The roster and per-bot configuration surface must show the bot's persistent
+runtime and its coding runtime plus deck. The thread must make the handoff,
+launched run/session, review, resume, final result, and failure visible without
+turning the conversation into a workflow UI.
 
 ## Initial buyer hypothesis and evidence status
 
@@ -72,19 +84,19 @@ defensibility must be demonstrated rather than assumed.
 
 ### Bot
 
-A bot is a launchable worker configuration. Its identity includes the agent
-runtime, configuration source, execution target, and the policies needed to run
-it.
+A bot is a persistent conversational identity with a separately configured
+coding-agent path.
 
-Concrete examples include:
+Its persistent runtime defaults to Hermes. Its coding-agent path identifies a
+runtime (`codex`, `claude`, `cursor`, or `muse`), an Agent Deck deck, and a
+working directory. Coding work always launches through Agent Deck.
 
-- Claude configured with one Agent Deck deck;
-- Codex configured with one Agent Deck deck;
-- one provider-managed Grok Bot agent;
-- one Hermes persistent agent configuration.
+Existing or imported bots without a trustworthy coding path remain explicitly
+unconfigured. Botmancers must not invent a deck or working directory for them.
 
-A bot is stable across work sessions. A session is an execution/conversation
-owned by that bot.
+A bot is stable across work sessions. A session is an execution or
+conversation owned by that bot. Hermes conversation sessions and delegated
+coding-agent sessions are distinct and must not be silently conflated.
 
 ### Session
 
@@ -290,47 +302,27 @@ descendant-cascade behavior is post-gate.
 
 ## Acceptance scenarios
 
-### A — Builder and reviewer
+### A — Delegated implementation, review, and resume
 
-1. In an existing personal-agent conversation, a person asks for a prototype to
-   be delegated and reviewed.
-2. The personal agent creates one idempotent Botmancers task. The original
-   conversation receives its task ID plus useful queued, running, blocked, and
-   failure updates without opening a separate orchestration UI.
-3. Botmancers resolves the registered builder and persists the exact launch
-   snapshot before starting an attempt.
-4. Botmancers launches the builder, records a launch or run ID, and binds the
-   runtime's native session reference when one is available.
-5. The builder returns a commit, files, or another inspectable final artifact
-   with an artifact manifest.
-6. The calling personal agent delegates the builder artifact to the reviewer
-   bot as a child task, passing the artifact reference. Botmancers records the
-   reviewer child task with its own assignee and links it to the builder task;
-   the builder task waits while review is outstanding.
-7. The calling agent consumes the reviewer's terminal result. In this scenario
-   the reviewer returns `revise`, so the calling agent resumes the same builder
-   task with the review feedback, routing feedback to the selected builder
-   session when resumable. The resumed builder produces a revised artifact or
-   an explicit failure.
-8. The revised result and trace return to the original conversation.
+1. A user creates a bot with Hermes as its persistent runtime and selects an
+   available coding runtime, Agent Deck deck, and working directory.
+2. The roster and configuration page show `Chat: Hermes` and
+   `Code: <runtime> · <deck>`. A runtime without a real launch path is not
+   offered as a selectable option.
+3. In the existing conversation, the user asks the bot to implement a change
+   and have it reviewed.
+4. The bot launches the configured coding agent through `agent-deck run` and
+   records the returned run and session references.
+5. When implementation finishes, the bot hands the result to a configured
+   reviewer agent in the same conversation.
+6. The reviewer returns its result. When revision is required, Botmancers
+   resumes the original coding-agent session with that feedback rather than
+   starting an unrelated session.
+7. The revised result returns to the original conversation.
 
-The initial builder artifact alone does not complete the parent task. The
-reviewer returns a typed `approve`, `revise`, or `reject` result. `Approve`
-completes the parent with the initial final artifact, `revise` requires a
-successful resumed-builder attempt and final artifact, and `reject` fails the
-parent. A failed or blocked child leaves the parent blocked or causes the
-calling agent to fail it; it never implies successful parent completion. The
-calling agent owns selection of the bots, child-task creation, review-result
-consumption, and any resumed-attempt creation. Botmancers records lineage and
-routes results; no control-plane workflow policy creates children or consumes
-reviews in this scenario.
-
-No step requires copying a prompt or session identifier by hand.
-
-The first real slice must retain enough evidence to inspect the resolved
-configuration, every attempt ID, native session reference, artifact, review
-feedback, resumed-builder output, and final return-to-origin delivery. Record
-observed successes and failures before adding more runtime adapters.
+The thread visibly identifies the handoff, bound session, review, resume, final
+result, and any failure. No step requires the user to copy a prompt, result,
+run identifier, or session identifier by hand.
 
 ### B — Resume an older session
 

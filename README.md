@@ -1,50 +1,35 @@
 # Botmancers
 
-Botmancers is a registry, launcher, and session router for configured agents.
-A bot binds an identity to a runtime, configuration source, execution target,
-and launch policy. Registered bots can request work from one another while
-Botmancers tracks the task, launches or resumes the target agent, and routes the
-result back.
+Botmancers lets a developer stay in one conversation while a persistent bot
+delegates coding work to local coding agents on the Mac.
 
-The end goal is a Grok-like teammate app: a person tells a bot a task in one
-conversation, and bots delegate to each other, ask back, or answer in that same
-conversation with no workflow UI or forms. Conversational delegation between
-bots is the core engine. Botmancers exists to make that delegation trustworthy
-through transparent per-bot configuration of skills, rules, and template source.
-The builder -> reviewer -> resumed-builder coding loop is the first slice toward
-that end goal: a personal agent delegating implementation to Claude, review to
-Codex, and revision back to the original Claude session without manual prompt
-copying. Hermes is one optional runtime for a bot, not the product itself.
+The user's bot runs persistently on Hermes. Each bot also has a coding-agent
+path consisting of a runtime (`codex`, `claude`, `cursor`, or `muse`), an Agent
+Deck deck, and a working directory. Botmancers launches that path through
+`agent-deck run`.
 
-This is currently a product hypothesis grounded in the owner's repeated manual
-workflow, not a validated market or moat claim. The initial buyer hypothesis is
-developers and small teams already using multiple coding-agent runtimes. The
-first proof is repeat use and active sharing of a complete delegation/review
-loop, not the amount of registry or protocol infrastructure built.
+When asked to implement and review a change, the bot hands implementation to
+the configured coding agent, hands its result to a reviewer agent, resumes the
+original coding session with the review, and returns the revised result in the
+same conversation. The user does not copy prompts or session identifiers and
+does not configure a workflow form.
 
-The chosen wedge is cross-runtime implementation and review inside the agent
-conversation the developer already uses. Full agent hosting, a generic agent
-chat room, and a configuration marketplace are adjacent possibilities, but they
-are not the current product. The implementation must test whether this wedge is
-urgent before coding-agent hosts absorb it as a feature.
+The roster and per-bot configuration page show the persistent runtime and the
+coding runtime plus deck. Only runtimes with a real, available launch path are
+offered. The thread shows the handoff, launched run/session, review, resume,
+final result, and failure as conversational events.
 
-[Todos](https://todos.dev/) is the closest known product-level substitute: it
-already orchestrates multiple coding-agent runtimes, machines, persistent task
-context, and independent review. Botmancers should proceed only if direct trials
-show that configuration-faithful bots, agent-initiated delegation, and returning
-work to an existing agent conversation solve needs that a Todos-style workspace
-does not.
+The embedded OpenAI-compatible example loop is legacy and is being removed. It
+is not part of the Botmancers execution architecture and has no replacement
+generic-model role.
 
-The repository separates intended behavior from technical proposals:
+This remains a product hypothesis grounded in the owner's repeated manual
+workflow. The first proof is repeat use of the complete
+implementation → review → resumed-implementation loop from the conversation
+the developer already uses.
 
-- [Product requirements](docs/product-requirements.md) records the agreed goal,
-  definitions, requirements, acceptance scenarios, and non-requirements.
-- [Implementation plan](docs/implementation-plan.md) records the proposed
-  architecture, candidate integrations, schema, and migration sequence.
-- [Runtime contract v0](docs/runtime-contract-v0.md) records the provisional
-  typed boundary required before implementing the first real adapter.
-- [Caller contract v0](docs/control-plane-contract-v0.md) records the
-  provisional MCP/API surface used by personal agents and people.
+See [Product requirements](<docs/product-requirements.md>) for the complete
+behavioral contract.
 
 ## Current status
 
