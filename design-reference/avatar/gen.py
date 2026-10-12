@@ -13,7 +13,7 @@ def hands(k,b):
   s=shade(b,1.12);o=f'fill="{s}" stroke="{shade(b,.8)}" stroke-width="1.5"'
   if k=="reach": return f'<rect x="96" y="118" width="84" height="15" rx="7.5" {o}/><rect x="96" y="140" width="76" height="15" rx="7.5" {o}/>'
   if k=="wave": return f'<rect x="96" y="132" width="70" height="15" rx="7.5" {o}/><g transform="rotate(-55 150 120)"><rect x="140" y="112" width="60" height="15" rx="7.5" {o}/></g>'
-  if k=="hold": return f'<rect x="60" y="134" width="80" height="22" rx="11" fill="{shade(b,.75)}" opacity=".9"/><circle cx="82" cy="138" r="11" {o}/><circle cx="118" cy="138" r="11" {o}/>'
+  if k=="fold": return f'<g transform="rotate(14 100 140)"><rect x="56" y="132" width="88" height="16" rx="8" {o}/></g><g transform="rotate(-14 100 140)"><rect x="56" y="132" width="88" height="16" rx="8" {o}/></g>'
 def acc(k):
   if k=="none": return ""
   if k=="crown": return '<path d="M78 42 L76 18 L89 30 L100 12 L111 30 L124 18 L122 42Z" fill="#f5c542" stroke="#b8860b" stroke-width="2" stroke-linejoin="round"/><circle cx="100" cy="32" r="3.5" fill="#e0457b"/>'
@@ -34,8 +34,8 @@ def sheet(name,title,items,cols=4):
   open(name+".svg","w").write(s);cairosvg.svg2png(bytestring=s.encode(),write_to=name+".png")
 sheet("sheet-colors","Colors (8)",[(c,dict(color=c)) for c in C])
 sheet("sheet-eyes","Eyes (4)",[(l,dict(eye=e)) for l,e in [("round dots","round"),("sleepy","sleepy"),("happy arcs","happy"),("wide ovals","wide")]])
-sheet("sheet-hands","Hands (3)",[(l,dict(hand=h)) for l,h in [("reaching","reach"),("waving","wave"),("holding","hold")]],3)
+sheet("sheet-hands","Hands (3)",[(l,dict(hand=h)) for l,h in [("reaching","reach"),("waving","wave"),("folded arms","fold")]],3)
 sheet("sheet-accessories","Accessories (6)",[(a,dict(a=a)) for a in ["none","crown","glasses","headset","hat","bow"]],3)
 sheet("sheet-examples","Example bots",[("Chief of Staff",dict(color="purple",a="crown")),("Researcher",dict(color="teal",a="glasses",eye="wide")),
  ("Designer",dict(color="pink",a="bow",eye="happy",hand="wave")),("Engineer",dict(color="blue",a="headset")),
- ("Ops / Scheduler",dict(color="amber",a="hat",eye="sleepy",hand="hold")),("Support",dict(color="green",eye="happy",hand="wave"))],3)
+ ("Ops / Scheduler",dict(color="amber",a="hat",eye="sleepy",hand="fold")),("Support",dict(color="green",eye="happy",hand="wave"))],3)
