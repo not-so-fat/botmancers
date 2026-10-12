@@ -42,11 +42,14 @@ assert.strictEqual(hashSnapshot(reordered), hashSnapshot(first), 'key order must
 const keys = Object.keys(JSON.parse(canonicalJson(first)));
 assert.deepStrictEqual(keys, [...keys].sort(), 'canonical JSON keys must be sorted');
 assert.deepStrictEqual(keys, [
+  'coding_runtime',
+  'deck_name',
   'description',
   'import_operation_id',
   'import_schema_version',
   'memories',
   'name',
+  'persistent_runtime',
   'skill_content',
   'skill_path',
   'skill_present',
@@ -54,6 +57,7 @@ assert.deepStrictEqual(keys, [
   'template_id',
   'template_url',
   'title',
+  'working_directory',
 ]);
 console.log('PASS: hash is stable under key reordering with sorted canonical keys');
 passed += 1;
@@ -78,4 +82,41 @@ assert.notStrictEqual(hashSnapshot(first), hashSnapshot(readEmpty), 'null facts 
 console.log('PASS: same facts give the same hash, a changed fact gives a different hash');
 passed += 1;
 
-console.log(`\ntest:snapshot: ${passed}/4 assertions passing`);
+// 5. NOT-433: the immutable snapshot contains the effective persistent
+// runtime, coding runtime, deck name, and working directory used for the
+// launch. A legacy bot (no path keys at all) records Hermes with null
+// coding fields: explicitly unconfigured, never invented.
+const legacyInput = buildSnapshotInput(bot(), skill());
+assert.strictEqual(legacyInput.persistent_runtime, 'hermes', 'legacy snapshot must default the persistent runtime to hermes');
+console.log('PASS: snapshot-field assertion: persistent_runtime defaults to hermes for legacy bots');
+passed += 1;
+
+assert.strictEqual(legacyInput.coding_runtime, null, 'legacy snapshot must not invent a coding runtime');
+console.log('PASS: snapshot-field assertion: coding_runtime is null for legacy bots');
+passed += 1;
+
+assert.strictEqual(legacyInput.deck_name, null, 'legacy snapshot must not invent a deck name');
+assert.strictEqual(legacyInput.working_directory, null, 'legacy snapshot must not invent a working directory');
+console.log('PASS: snapshot-field assertion: deck_name and working_directory are null for legacy bots');
+passed += 1;
+
+// A configured bot records the resolved path verbatim, and a changed deck
+// changes the hash, so past launches remain inspectable.
+const configuredInput = buildSnapshotInput(
+  bot({ persistent_runtime: 'hermes', coding_runtime: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/relay-work' }),
+  skill()
+);
+assert.strictEqual(configuredInput.persistent_runtime, 'hermes', 'snapshot must record the effective persistent runtime');
+assert.strictEqual(configuredInput.coding_runtime, 'codex', 'snapshot must record the coding runtime');
+assert.strictEqual(configuredInput.deck_name, 'relay-deck', 'snapshot must record the deck name');
+assert.strictEqual(configuredInput.working_directory, '/tmp/relay-work', 'snapshot must record the working directory');
+assert.notStrictEqual(hashSnapshot(legacyInput), hashSnapshot(configuredInput), 'coding path must be part of the hashed input');
+const redecked = buildSnapshotInput(
+  bot({ persistent_runtime: 'hermes', coding_runtime: 'codex', deck_name: 'other-deck', working_directory: '/tmp/relay-work' }),
+  skill()
+);
+assert.notStrictEqual(hashSnapshot(configuredInput), hashSnapshot(redecked), 'a changed deck must change the hash');
+console.log('PASS: snapshot-field assertion: configured path round-trips and changes the launch hash');
+passed += 1;
+
+console.log(`\ntest:snapshot: ${passed}/8 assertions passing`);

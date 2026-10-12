@@ -212,6 +212,22 @@ if (!botColumns.some(column => column.name === 'import_timestamp')) {
 if (!botColumns.some(column => column.name === 'hermes_profile')) {
   db.exec('ALTER TABLE bots ADD COLUMN hermes_profile TEXT');
 }
+// NOT-433: persisted runtime path. persistent_runtime defaults to Hermes
+// for pre-migration rows (the product default, not an invented coding
+// path). coding_runtime/deck_name/working_directory stay NULL until the
+// owner supplies them: never guessed for existing or imported bots.
+if (!botColumns.some(column => column.name === 'persistent_runtime')) {
+  db.exec("ALTER TABLE bots ADD COLUMN persistent_runtime TEXT NOT NULL DEFAULT 'hermes'");
+}
+if (!botColumns.some(column => column.name === 'coding_runtime')) {
+  db.exec('ALTER TABLE bots ADD COLUMN coding_runtime TEXT');
+}
+if (!botColumns.some(column => column.name === 'deck_name')) {
+  db.exec('ALTER TABLE bots ADD COLUMN deck_name TEXT');
+}
+if (!botColumns.some(column => column.name === 'working_directory')) {
+  db.exec('ALTER TABLE bots ADD COLUMN working_directory TEXT');
+}
 
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_import_operation 
@@ -253,6 +269,10 @@ export interface Bot {
   import_operation_id?: string | null;
   import_timestamp?: number | null;
   hermes_profile?: string | null;
+  persistent_runtime?: string | null;
+  coding_runtime?: string | null;
+  deck_name?: string | null;
+  working_directory?: string | null;
 }
 
 export interface ImportProvenance {
@@ -326,8 +346,16 @@ export const bots = {
       created_at: overrides?.created_at ?? Date.now(),
     };
     db.prepare(
-      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color, bot.hermes_profile || null, bot.created_at);
+      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, persistent_runtime, coding_runtime, deck_name, working_directory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color,
+      bot.hermes_profile || null,
+      bot.persistent_runtime || 'hermes',
+      bot.coding_runtime || null,
+      bot.deck_name || null,
+      bot.working_directory || null,
+      bot.created_at
+    );
     
     const conversationId = randomUUID();
     db.prepare(
@@ -338,7 +366,7 @@ export const bots = {
   },
 
   createFromImport: (
-    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile'>,
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile' | 'persistent_runtime' | 'coding_runtime' | 'deck_name' | 'working_directory'>,
     provenance: ImportProvenance
   ): Bot => {
     const bot: Bot = {
@@ -404,6 +432,39 @@ export const bots = {
   setHermesProfile: (id: string, profile: string | null): void => {
     const value = profile && profile.trim() ? profile.trim() : null;
     db.prepare('UPDATE bots SET hermes_profile = ? WHERE id = ?').run(value, id);
+  },
+
+  // NOT-433: owner-supplied runtime path. Null/blank clears a coding field
+  // back to unconfigured; persistent_runtime defaults to Hermes.
+  updateRuntimePath: (
+    id: string,
+    fields: { persistent_runtime?: string | null; coding_runtime?: string | null; deck_name?: string | null; working_directory?: string | null }
+  ): void => {
+    const current = bots.getById(id);
+    if (!current) return;
+    const persistent = fields.persistent_runtime === undefined
+      ? current.persistent_runtime || 'hermes'
+      : fields.persistent_runtime && fields.persistent_runtime.trim()
+        ? fields.persistent_runtime.trim()
+        : 'hermes';
+    const coding = fields.coding_runtime === undefined
+      ? current.coding_runtime || null
+      : fields.coding_runtime && String(fields.coding_runtime).trim()
+        ? String(fields.coding_runtime).trim()
+        : null;
+    const deck = fields.deck_name === undefined
+      ? current.deck_name || null
+      : fields.deck_name && String(fields.deck_name).trim()
+        ? String(fields.deck_name).trim()
+        : null;
+    const cwd = fields.working_directory === undefined
+      ? current.working_directory || null
+      : fields.working_directory && String(fields.working_directory).trim()
+        ? String(fields.working_directory).trim()
+        : null;
+    db.prepare(
+      'UPDATE bots SET persistent_runtime = ?, coding_runtime = ?, deck_name = ?, working_directory = ? WHERE id = ?'
+    ).run(persistent, coding, deck, cwd, id);
   },
 
   touchSeen: (): void => {
