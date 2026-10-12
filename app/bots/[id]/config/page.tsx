@@ -3,6 +3,14 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import {
+  AVAILABILITY_ERROR_COPY,
+  CONFIG_AVAILABILITY_EMPTY_COPY,
+  STORED_UNVERIFIED_NOTE,
+  configCodingPathLines,
+  runtimeOptions,
+  type AvailabilityState,
+} from '@/lib/bot-runtime-ui';
 
 interface Bot {
   id: string;
@@ -16,6 +24,11 @@ interface Bot {
   import_schema_version?: string | null;
   import_operation_id?: string | null;
   import_timestamp?: number | null;
+  persistent_runtime?: string | null;
+  coding_runtime?: string | null;
+  deck_name?: string | null;
+  working_directory?: string | null;
+  coding_configured?: boolean;
 }
 
 interface SkillStateDto {
@@ -109,6 +122,16 @@ export default function BotConfigPage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [copiedKey, setCopiedKey] = useState('');
 
+  const [availability, setAvailability] = useState<AvailabilityState>({ status: 'loading', runtimes: [] });
+  const [availabilityToken, setAvailabilityToken] = useState(0);
+  const [codingEditing, setCodingEditing] = useState(false);
+  const [codingRuntime, setCodingRuntime] = useState('');
+  const [codingDeck, setCodingDeck] = useState('');
+  const [codingDir, setCodingDir] = useState('');
+  const [codingPhase, setCodingPhase] = useState<Phase>('clean');
+  const [codingError, setCodingError] = useState('');
+  const [codingConfirmedAt, setCodingConfirmedAt] = useState(0);
+
   function retryLoad(): void {
     setLoading(true);
     setLoadFailed(false);
@@ -145,11 +168,45 @@ export default function BotConfigPage() {
     };
   }, [id, reloadToken]);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/bots/availability', { cache: 'no-store' })
+      .then(async res => {
+        if (cancelled) return;
+        if (!res.ok) throw new Error('request failed');
+        const payload = await res.json().catch(() => null);
+        if (cancelled) return;
+        const options = runtimeOptions(payload);
+        setAvailability(options.length > 0
+          ? { status: 'ready', runtimes: options }
+          : { status: 'empty', runtimes: [] });
+      })
+      .catch(() => {
+        if (!cancelled) setAvailability({ status: 'error', runtimes: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [availabilityToken]);
+
+  function retryAvailability(): void {
+    setAvailability({ status: 'loading', runtimes: [] });
+    setAvailabilityToken(token => token + 1);
+  }
+
   const storedRules = data?.bot.description ?? '';
   const rulesDirty = rulesText !== null && rulesText !== storedRules;
   const storedSkill = data?.skill.content ?? '';
   const skillDirty = skillEditing && skillText !== storedSkill;
-  const anyDirty = rulesDirty || skillDirty;
+  const storedCodingRuntime = data?.bot.coding_runtime ?? '';
+  const storedCodingDeck = data?.bot.deck_name ?? '';
+  const storedCodingDir = data?.bot.working_directory ?? '';
+  const codingDirty = codingEditing && (
+    codingRuntime !== storedCodingRuntime ||
+    codingDeck !== storedCodingDeck ||
+    codingDir !== storedCodingDir
+  );
+  const anyDirty = rulesDirty || skillDirty || codingDirty;
 
   useEffect(() => {
     if (!anyDirty) return;
@@ -212,6 +269,61 @@ export default function BotConfigPage() {
     setRulesText(storedRules);
     setRulesPhase('clean');
     setRulesError('');
+  }
+
+  function startCodingEdit(): void {
+    setCodingRuntime(data?.bot.coding_runtime ?? '');
+    setCodingDeck(data?.bot.deck_name ?? '');
+    setCodingDir(data?.bot.working_directory ?? '');
+    setCodingEditing(true);
+    setCodingPhase('clean');
+    setCodingError('');
+  }
+
+  function discardCoding(): void {
+    setCodingEditing(false);
+    setCodingPhase('clean');
+    setCodingError('');
+  }
+
+  async function saveCoding(): Promise<void> {
+    if (!data) return;
+    setCodingPhase('saving');
+    setCodingError('');
+    try {
+      const res = await fetch('/api/bots', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: data.bot.id,
+          coding_runtime: codingRuntime,
+          deck_name: codingDeck,
+          working_directory: codingDir,
+        }),
+      });
+      if (!res.ok) {
+        let reason = 'request failed';
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body.error) reason = body.error;
+        } catch {
+          // keep default reason
+        }
+        throw new Error(reason);
+      }
+      const refreshed = await fetch(`/api/bots/${encodeURIComponent(id)}/config`);
+      if (!refreshed.ok) throw new Error('request failed');
+      setData((await refreshed.json()) as ConfigData);
+      setCodingEditing(false);
+      setCodingPhase('confirmed');
+      setCodingConfirmedAt(Date.now());
+      setTimeout(() => {
+        setCodingPhase(current => (current === 'confirmed' ? 'clean' : current));
+      }, 5000);
+    } catch (error) {
+      setCodingPhase('error');
+      setCodingError(error instanceof Error ? error.message : 'request failed');
+    }
   }
 
   function startSkillEdit(): void {
@@ -297,7 +409,7 @@ export default function BotConfigPage() {
   }
 
   if (loadFailed && !data) {
-    const errorSections = ['Skills', 'Rules', 'Template source'];
+    const errorSections = ['Skills', 'Rules', 'Coding path', 'Template source'];
     return (
       <div className="cfg-page">
         <div className="max-w-6xl mx-auto">
@@ -380,6 +492,20 @@ export default function BotConfigPage() {
       </span>
     ) : skillPhase === 'confirmed' ? (
       <span className="text-sm cfg-faint">Saved {formatClock(skillConfirmedAt)}</span>
+    ) : (
+      <span className="text-sm cfg-faint">Saved</span>
+    );
+
+  const codingStateLine =
+    codingPhase === 'saving' ? (
+      <span className="text-sm cfg-faint">Saving…</span>
+    ) : codingDirty || codingPhase === 'error' ? (
+      <span className="text-sm cfg-dirty">
+        <span className="inline-block w-2 h-2 rounded-full cfg-dot-amber mr-1" />
+        Unsaved changes
+      </span>
+    ) : codingPhase === 'confirmed' ? (
+      <span className="text-sm cfg-faint">Saved {formatClock(codingConfirmedAt)}</span>
     ) : (
       <span className="text-sm cfg-faint">Saved</span>
     );
@@ -549,6 +675,145 @@ export default function BotConfigPage() {
                   Discard
                 </button>
               </div>
+            </section>
+
+            <section className="cfg-card">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="cfg-title">Coding path</h2>
+                {codingStateLine}
+              </div>
+              {(() => {
+                const lines = configCodingPathLines(bot);
+                const storedUnverified =
+                  Boolean(storedCodingRuntime) &&
+                  (availability.status === 'ready' || availability.status === 'empty') &&
+                  !availability.runtimes.includes(storedCodingRuntime);
+                if (!codingEditing) {
+                  return (
+                    <>
+                      <p className="text-sm cfg-muted">{lines.chat}</p>
+                      <p className="text-sm cfg-muted mt-1">{lines.code}</p>
+                      {lines.workingDirectory ? (
+                        <p className="text-sm cfg-muted mt-1 break-all">
+                          Working directory: {lines.workingDirectory}
+                        </p>
+                      ) : (
+                        <p className="text-sm cfg-muted mt-1">
+                          No coding runtime, deck, or working directory has been set, so nothing
+                          is shown as selectable.{' '}
+                          <button onClick={startCodingEdit} className="cfg-link">
+                            Add a coding path
+                          </button>
+                        </p>
+                      )}
+                      {lines.workingDirectory ? (
+                        <button
+                          onClick={startCodingEdit}
+                          className="mt-3 cfg-btn-ghost text-sm w-full sm:w-auto"
+                        >
+                          Edit
+                        </button>
+                      ) : null}
+                    </>
+                  );
+                }
+                return (
+                  <>
+                    <p className="text-sm cfg-muted mb-2">Chat: Hermes (fixed)</p>
+                    <p className="text-sm cfg-muted mb-2">Coding runtime</p>
+                    {availability.status === 'loading' ? (
+                      <p className="text-sm cfg-muted">Checking available runtimes…</p>
+                    ) : (
+                      <div role="radiogroup" aria-label="Coding runtime">
+                        {availability.runtimes.map(runtime => (
+                          <label key={runtime} className="block text-sm cfg-muted">
+                            <input
+                              type="radio"
+                              name="coding-runtime"
+                              value={runtime}
+                              checked={codingRuntime === runtime}
+                              onChange={() => setCodingRuntime(runtime)}
+                            />
+                            {' ' + runtime}
+                          </label>
+                        ))}
+                        {storedUnverified ? (
+                          <p className="text-sm cfg-muted mt-1">
+                            {storedCodingRuntime} (stored) — {STORED_UNVERIFIED_NOTE}
+                          </p>
+                        ) : null}
+                        <label className="block text-sm cfg-muted">
+                          <input
+                            type="radio"
+                            name="coding-runtime"
+                            value=""
+                            checked={codingRuntime === ''}
+                            onChange={() => setCodingRuntime('')}
+                          />
+                          {' None — chat only'}
+                        </label>
+                      </div>
+                    )}
+                    {availability.status === 'empty' ? (
+                      <p className="text-sm cfg-muted mt-2">{CONFIG_AVAILABILITY_EMPTY_COPY}</p>
+                    ) : null}
+                    {availability.status === 'error' ? (
+                      <p className="text-sm cfg-muted mt-2">
+                        {AVAILABILITY_ERROR_COPY}{' '}
+                        <button onClick={retryAvailability} className="cfg-link">
+                          Retry
+                        </button>
+                      </p>
+                    ) : null}
+                    <label className="block text-sm cfg-muted mt-3 mb-1" htmlFor="cfg-deck">
+                      Deck name
+                    </label>
+                    <input
+                      id="cfg-deck"
+                      type="text"
+                      value={codingDeck}
+                      onChange={e => setCodingDeck(e.target.value)}
+                      placeholder="planner"
+                      className="cfg-input text-sm"
+                    />
+                    <label className="block text-sm cfg-muted mt-3 mb-1" htmlFor="cfg-workdir">
+                      Working directory
+                    </label>
+                    <input
+                      id="cfg-workdir"
+                      type="text"
+                      value={codingDir}
+                      onChange={e => setCodingDir(e.target.value)}
+                      placeholder="/Users/you/workspace/codes/botmancers"
+                      className="cfg-input text-sm"
+                    />
+                    {codingPhase === 'error' && (
+                      <p className="mt-2 text-sm cfg-error">
+                        Couldn&apos;t save: {codingError}.{' '}
+                        <button onClick={saveCoding} className="underline hover:no-underline">
+                          Retry
+                        </button>
+                      </p>
+                    )}
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={saveCoding}
+                        disabled={!codingDirty || codingPhase === 'saving'}
+                        className="flex-1 sm:flex-none cfg-btn-primary text-sm"
+                      >
+                        {codingPhase === 'saving' ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        onClick={discardCoding}
+                        disabled={!codingDirty || codingPhase === 'saving'}
+                        className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
             </section>
 
             <section className="cfg-card">
