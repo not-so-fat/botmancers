@@ -37,3 +37,32 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Failed to create group' }, { status: 500 });
   }
 }
+
+export async function PATCH(request: Request) {
+  try {
+    const body = await request.json().catch(() => null);
+    const { id, name } = body ?? {};
+
+    if (typeof id !== 'string' || !id) {
+      return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    }
+    if (typeof name !== 'string' || !name.trim()) {
+      return NextResponse.json({ error: 'name is required' }, { status: 400 });
+    }
+
+    const group = groups.getById(id);
+    if (!group) {
+      return NextResponse.json({ error: 'Group not found' }, { status: 404 });
+    }
+
+    groups.rename(id, name.trim());
+    const updated = groups.getById(id);
+    return NextResponse.json({
+      ...updated,
+      members: groups.getMembers(id),
+    });
+  } catch (error) {
+    console.error('Error renaming group:', error);
+    return NextResponse.json({ error: 'Failed to rename group' }, { status: 500 });
+  }
+}

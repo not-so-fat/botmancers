@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { messages, conversations, queue, groups, bots } from '@/lib/db';
+import { messages, conversations, queue, groups, bots, draftActions, approvals } from '@/lib/db';
+import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { processQueue } from '@/lib/agent';
 
 export async function GET(
@@ -9,16 +10,25 @@ export async function GET(
   try {
     const { id } = await params;
     const conversationMessages = messages.getByConversation(id);
-    
+
     const enrichedMessages = conversationMessages.map(msg => {
+      const draft = parseDraft(msg.content);
+      const draftRow = draft ? draftActions.get(msg.id) : undefined;
+      const code = parseApprovalCode(msg.content);
+      const approvalRow = code ? approvals.get(id, code) : undefined;
+      const cardStatus = {
+        draftStatus: draft ? (draftRow?.status ?? 'open') : null,
+        approvalStatus: code ? (approvalRow?.status ?? 'pending') : null,
+      };
       if (msg.sender_type === 'bot' && msg.sender_id) {
         const bot = bots.getById(msg.sender_id);
         return {
           ...msg,
+          ...cardStatus,
           sender_name: bot?.name,
         };
       }
-      return msg;
+      return { ...msg, ...cardStatus };
     });
 
     const conversation = conversations.getById(id);
