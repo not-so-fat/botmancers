@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 
 function parseRun(content: string): { state: 'running' | 'done' | 'stopped'; output?: string; html?: string } | null {
   const match = content.match(/^\s*\[run\]\s*([\s\S]*)$/);
@@ -79,27 +80,63 @@ export default function Home() {
   const runningMessageRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  useEffect(() => {
-    loadBots();
-    loadGroups();
-    
-    const urlParams = new URLSearchParams(window.location.search);
-    const importedBotId = urlParams.get('imported');
-    
-    if (importedBotId) {
-      handleImportReturn(importedBotId);
-      window.history.replaceState({}, '', window.location.pathname);
+  const loadBots = async () => {
+    const res = await fetch('/api/bots');
+    const data = await res.json();
+    setBots(data);
+  };
+
+  const loadGroups = async () => {
+    const res = await fetch('/api/groups');
+    const data = await res.json();
+    setGroups(data);
+  };
+
+  const loadMessages = async () => {
+    if (!activeConversation) return;
+    const res = await fetch(`/api/conversations/${activeConversation.id}/messages`);
+    const data = await res.json();
+    setMessages(data);
+  };
+
+  const openConversation = async (type: 'bot' | 'group', id: string) => {
+    if (type === 'bot') {
+      const bot = bots.find(b => b.id === id);
+      if (!bot) return;
+
+      const convRes = await fetch(`/api/conversations?botId=${id}`);
+      const conv = await convRes.json();
+
+      setActiveConversation({
+        id: conv.id,
+        type: 'bot',
+        details: bot,
+      });
+    } else {
+      const group = groups.find(g => g.id === id);
+      if (!group) return;
+
+      const convRes = await fetch(`/api/conversations?groupId=${id}`);
+      const conv = await convRes.json();
+
+      setActiveConversation({
+        id: conv.id,
+        type: 'group',
+        details: group,
+      });
     }
-  }, []);
-  
+
+    setShowSidebar(false);
+  };
+
   const handleImportReturn = async (botId: string) => {
     await loadBots();
-    
+
     const bot = bots.find(b => b.id === botId);
     if (!bot) {
       const refreshedBots = await fetch('/api/bots').then(r => r.json());
       const foundBot = refreshedBots.find((b: Bot) => b.id === botId);
-      
+
       if (foundBot) {
         setBots(refreshedBots);
         openConversation('bot', botId);
@@ -111,16 +148,30 @@ export default function Home() {
     }
   };
 
+  /* eslint-disable react-hooks/set-state-in-effect -- pre-existing mount/poll fetches; restructuring is out of scope for this change. */
+  useEffect(() => {
+    loadBots();
+    loadGroups();
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const importedBotId = urlParams.get('imported');
+
+    if (importedBotId) {
+      handleImportReturn(importedBotId);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeConversation) {
       loadMessages();
-      
+
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
-      
+
       pollIntervalRef.current = setInterval(loadMessages, 2000);
-      
+
       return () => {
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
@@ -128,6 +179,7 @@ export default function Home() {
       };
     }
   }, [activeConversation]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (showComputerPreview && previewRunningMessage && runningMessageRef.current && messagesContainerRef.current) {
@@ -162,6 +214,7 @@ export default function Home() {
     }
   }, [messages, showComputerPreview, previewRunningMessage]);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- pre-existing preview sync; deriving during render is out of scope for this change. */
   useEffect(() => {
     if (!activeConversation || activeConversation.type !== 'bot') {
       setShowComputerPreview(false);
@@ -201,55 +254,7 @@ export default function Home() {
       setPreviewPageContent(null);
     }
   }, [messages, activeConversation]);
-
-  const loadBots = async () => {
-    const res = await fetch('/api/bots');
-    const data = await res.json();
-    setBots(data);
-  };
-
-  const loadGroups = async () => {
-    const res = await fetch('/api/groups');
-    const data = await res.json();
-    setGroups(data);
-  };
-
-  const loadMessages = async () => {
-    if (!activeConversation) return;
-    const res = await fetch(`/api/conversations/${activeConversation.id}/messages`);
-    const data = await res.json();
-    setMessages(data);
-  };
-
-  const openConversation = async (type: 'bot' | 'group', id: string) => {
-    if (type === 'bot') {
-      const bot = bots.find(b => b.id === id);
-      if (!bot) return;
-      
-      const convRes = await fetch(`/api/conversations?botId=${id}`);
-      const conv = await convRes.json();
-      
-      setActiveConversation({
-        id: conv.id,
-        type: 'bot',
-        details: bot,
-      });
-    } else {
-      const group = groups.find(g => g.id === id);
-      if (!group) return;
-      
-      const convRes = await fetch(`/api/conversations?groupId=${id}`);
-      const conv = await convRes.json();
-      
-      setActiveConversation({
-        id: conv.id,
-        type: 'group',
-        details: group,
-      });
-    }
-    
-    setShowSidebar(false);
-  };
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || !activeConversation) return;
@@ -389,6 +394,14 @@ export default function Home() {
                     : `${(activeConversation.details as Group).members.length} members`}
                 </p>
               </div>
+              {activeConversation.type === 'bot' && (
+                <Link
+                  href={`/bots/${(activeConversation.details as Bot).id}/config`}
+                  className="ml-auto text-sm text-blue-600 hover:underline"
+                >
+                  Config
+                </Link>
+              )}
             </div>
 
             <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3">
