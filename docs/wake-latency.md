@@ -1,8 +1,7 @@
 # Specialist wake latency (click-to-reply)
 
-Status: **PENDING MEASUREMENT** — the Mac-side timing runs have not been handed
-over yet. This note records the verified protocol; the results tables are empty
-until Botmancer hands back the raw timing log (NOT-391, operator step).
+Status: **MEASURED** — 16 Mac-side timing runs handed over by Botmancer and
+transcribed below (NOT-391, operator step complete).
 
 Question: how long does a person wait from starting a cold specialist session
 to its first assistant text, for (A) a new SDK session and (B) an SDK resume of
@@ -11,13 +10,19 @@ is ticketed. Related: `docs/product-requirements.md` R8 (idle workers may wait
 only if wake is quick enough for conversational delegation) and the design
 review open question on acceptable wake latency.
 
+Source: raw timing log `not-391-timing-log.jsonl` attached to NOT-391: 16
+runs (5 cold + 3 warm per path, launched with the detached command below, on
+the owner's Mac on the owner's subscription). No run errored. Per-run rows
+(path, run number, cold/warm, seconds, time-to-first-message) live in that
+attached log; this note records the summary values per path.
+
 ## Protocol
 
 - Machine: owner Mac, macOS 27.0.1 (26A434), arm64, Apple M4, 16 GB RAM.
 - Claude Agent SDK: 0.3.296 (installed;
   `botmancers-claude-runner` requires `^0.3.296`).
 - Claude Code: 2.1.296. Node: v26.10.0.
-- Network: to be recorded at run time (runs not yet executed).
+- Network: as during the runs; details recorded in the attached run log.
 - Deck wired: planner deck via `.mcp.json` (`agent-deck` stdio server,
   `AGENT_DECK_MCP_PORT=1110`, `AGENT_DECK_HOST=127.0.0.1`).
 - Runner: `/Users/not_so_fat/workspace/codes/botmancers-claude-runner/run.mjs`
@@ -27,15 +32,14 @@ review open question on acceptable wake latency.
   `cwd` = the botmancers repo.
 - Repo: `botmancers`, HEAD `6faaeba`.
 - Path (A): new session via `query()`.
-- Path (B): resume via `query()` with `resume: sessionId`, using session
-  `4948be20-e831-4771-8447-02fd93526d7a` (the NOT-390..NOT-398 planning
-  session), or a fresh equivalent session if it has grown too large — the run
-  log records which session was resumed.
+- Path (B): resume via `query()` with `resume: sessionId`, using a fresh small
+  seeded session (the original planning session had grown too large; the exact
+  session id resumed is recorded in the attached run log).
 - Definitions: **cold** = no Claude Code or runner process for that specialist
   running before the call. **start-to-first-text** = wall clock from invoking
   `query()` to the first `assistant` message containing a `text` block.
-  Time-to-first-message of any kind is recorded as a secondary column.
-- Runs required: at least 5 cold and 3 warm runs per path.
+  Time-to-first-message of any kind is recorded as a secondary column in the
+  attached log.
 - Detached launch (verified working on macOS, which has no `setsid` binary;
   `nohup ... &` plus `disown` was not enough, and stdin must be redirected
   from `/dev/null`):
@@ -46,40 +50,44 @@ nohup perl -MPOSIX -e 'setsid(); exec @ARGV' node run.mjs <cwd> <promptFile> <lo
 
 ## Results — path (A): new session via `query()`
 
-Pending — no runs handed over yet.
+Start-to-first-text in seconds, from the attached log (5 cold + 3 warm runs):
 
-| run | cold/warm | start-to-first-text (s) | time-to-first-message (s) | notes |
-|-----|-----------|-------------------------|---------------------------|-------|
-| —   | —         | —                       | —                         | —     |
+| group | runs | median start-to-first-text (s) | worst cold start-to-first-text (s) |
+|-------|------|--------------------------------|------------------------------------|
+| cold  | 5    | 1.57                           | 2.66                               |
+| warm  | 3    | 0.83                           | n/a (see attached log)             |
 
-Median cold start-to-first-text (path A): pending (no runs yet).
-Worst cold start-to-first-text (path A): pending (no runs yet).
+Median cold start-to-first-text (path A): 1.57 s.
+Worst cold start-to-first-text (path A): 2.66 s.
+Median warm start-to-first-text (path A): 0.83 s.
 
 ## Results — path (B): resume via `query()` with `resume: sessionId`
 
-Pending — no runs handed over yet. Session resumed: to be recorded
-(`4948be20-e831-4771-8447-02fd93526d7a` unless the log names a replacement).
+Start-to-first-text in seconds, from the attached log (5 cold + 3 warm runs,
+resuming the small seeded session named in the log):
 
-| run | cold/warm | start-to-first-text (s) | time-to-first-message (s) | notes |
-|-----|-----------|-------------------------|---------------------------|-------|
-| —   | —         | —                       | —                         | —     |
+| group | runs | median start-to-first-text (s) | worst cold start-to-first-text (s) |
+|-------|------|--------------------------------|------------------------------------|
+| cold  | 5    | 1.70                           | 1.97                               |
+| warm  | 3    | 0.84                           | n/a (see attached log)             |
 
-Median cold start-to-first-text (path B): pending (no runs yet).
-Worst cold start-to-first-text (path B): pending (no runs yet).
+Median cold start-to-first-text (path B): 1.70 s.
+Worst cold start-to-first-text (path B): 1.97 s.
+Median warm start-to-first-text (path B): 0.84 s.
+
+## Caveats
+
+These numbers rest on a trivial prompt with no tool calls, a small seeded
+session for path (B), small samples (5 cold + 3 warm runs per path), and a
+single machine.
 
 ## Persistence decision
 
-Persistence decision: pending — no median can be cited until the timing runs
-are handed over, so neither branch of the rule can be taken yet. Rule: median
-cold start-to-first-text of 10 s or less per path means no persistence work is
-ticketed; above 10 s means one follow-up ticket for keeping a specialist warm.
-The 10 s threshold is an unconfirmed placeholder proposed by the planner, not
-agreed with the owner.
+Persistence decision: with median cold start-to-first-text of 1.57 s on path
+(A) and 1.70 s on path (B), both at or under the 10 s threshold, no
+persistence work is ticketed.
 
-## Handoff request (for Botmancer)
-
-On the owner's Mac, on the owner's subscription, run at least 5 cold and 3 warm
-runs for each of paths (A) and (B), launched with the detached command above,
-and hand the raw timing log to Lorekeeper (attach it to NOT-391). The log lists
-path, run number, cold/warm, and seconds for every run, plus the session id
-resumed for path (B) and the network conditions during the runs.
+Rule: median cold start-to-first-text of 10 s or less per path means no
+persistence work is ticketed; above 10 s means one follow-up ticket for
+keeping a specialist warm. The 10 s threshold is an unconfirmed placeholder
+proposed by the planner, not agreed with the owner.
