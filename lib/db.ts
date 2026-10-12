@@ -219,12 +219,12 @@ export interface QueueItem {
 }
 
 export const bots = {
-  create: (data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned'>): Bot => {
+  create: (data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned'>, overrides?: { id?: string; created_at?: number }): Bot => {
     const bot: Bot = {
-      id: randomUUID(),
+      id: overrides?.id || randomUUID(),
       ...data,
       color: nextBotColor(),
-      created_at: Date.now(),
+      created_at: overrides?.created_at ?? Date.now(),
     };
     db.prepare(
       'INSERT INTO bots (id, name, title, description, avatar, color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -331,13 +331,13 @@ export const bots = {
 };
 
 export const groups = {
-  create: (name: string, botIds: string[], ownerId?: string): Group => {
+  create: (name: string, botIds: string[], ownerId?: string, overrides?: { created_at?: number }): Group => {
     const owner = ownerId && botIds.includes(ownerId) ? ownerId : botIds[0];
     const group: Group = {
       id: randomUUID(),
       name,
       owner_bot_id: owner,
-      created_at: Date.now(),
+      created_at: overrides?.created_at ?? Date.now(),
     };
     
     const insertGroup = db.prepare(
