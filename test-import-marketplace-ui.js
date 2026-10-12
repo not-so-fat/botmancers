@@ -2,7 +2,7 @@
 
 const http = require('http');
 
-const PORT = 43123;
+const PORT = Number(process.env.BOTMANCERS_TEST_PORT) || 43123;
 const BASE_URL = `http://localhost:${PORT}`;
 
 function request(method, path, body = null) {
@@ -199,7 +199,7 @@ async function testHandoffRedirectFormat() {
 async function testReturnPathCleanup() {
   console.log('TEST: Return path userinfo and fragment are stripped\n');
 
-  const dirtyReturnPath = `http://user:pass@localhost:43123/path#fragment`;
+  const dirtyReturnPath = `http://user:pass@localhost:${PORT}/path#fragment`;
   const response = await request('GET', `/api/marketplace-handoff?return=${encodeURIComponent(dirtyReturnPath)}`);
 
   console.log(`Status: ${response.status}`);
