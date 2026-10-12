@@ -32,7 +32,7 @@ const db = jiti('../lib/db.ts');
 const { serializeRun } = jiti('../lib/run.ts');
 const { serializeDraft } = jiti('../lib/draft.ts');
 
-const { bots, conversations, groups, messages } = db;
+const { bots, conversations, groups, messages, routines } = db;
 
 // Same hardcoded IDs as lib/db.ts: only these rows keep the lime (Cedar) and
 // orange (Pine) colors when the module-load recolor runs under `npm run dev`.
@@ -115,6 +115,12 @@ messages.create(
   chiefOfStaff.id
 );
 
+// NOT-411: a taught-style routine row on the chief-of-staff thread (the
+// reference taught routinemint2 there). No new bots or messages, so the
+// NOT-409 screens seed identically; on `npm run dev` the loop arms it and
+// posts `[routine] routinemint2` ~8s after start, then every 60s.
+routines.create(cosConv, chiefOfStaff.id, 'routinemint2', Date.now() + 8000, 60000);
+
 // Two groups, newest first: "ClickproofGrove @Pine" then "Research Team".
 // Research Team keeps a null owner so the row renders the plain group name.
 let grove = null;
@@ -187,5 +193,6 @@ if (grove) {
 if (cardMint) {
   console.log(`  - thread-card demo thread on CardMint (${cardMint.id}): draft, approval cardmint1, file, handoff reveal`);
 }
+console.log('  - routine routinemint2 on chief-of-staff (posts ~8s after dev start, every 60s)');
 console.log('Working state is client-side: open the chief-of-staff thread and send a message to capture it.');
 console.log(`Run: BOTMANCERS_DB_PATH=${DB_PATH} npm run dev`);

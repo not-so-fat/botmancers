@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { bots, launchSnapshots } from '@/lib/db';
+import { bots, launchSnapshots, memories } from '@/lib/db';
 import { readSkillState } from '@/lib/skills';
 import { buildSnapshotInput, hashSnapshot } from '@/lib/snapshot';
 
@@ -14,7 +14,7 @@ export async function GET(
       return NextResponse.json({ error: 'Bot not found' }, { status: 404 });
     }
     const skill = readSkillState(bot.name);
-    const currentHash = hashSnapshot(buildSnapshotInput(bot, skill));
+    const currentHash = hashSnapshot(buildSnapshotInput(bot, skill, memories.latestFacts(bot.id)));
     const snapshots = launchSnapshots.listByBot(id).map(row => ({
       id: row.id,
       bot_id: row.bot_id,

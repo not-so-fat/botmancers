@@ -99,6 +99,35 @@ db.exec(`
     resolved_at INTEGER,
     PRIMARY KEY (conversation_id, code)
   );
+
+  CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    fact TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (bot_id) REFERENCES bots(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_memories_bot ON memories(bot_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS one_shots (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    due_at INTEGER NOT NULL,
+    fired INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS routines (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    word TEXT NOT NULL,
+    next_due_at INTEGER NOT NULL,
+    every_ms INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 const BOT_COLORS = ['#C6F54A', '#F0A05A', '#E85D75', '#C9A0FF', '#F2E36B'];
@@ -342,6 +371,9 @@ export const bots = {
       db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
+      db.prepare('DELETE FROM memories WHERE bot_id = ?').run(id);
+      db.prepare('DELETE FROM one_shots WHERE bot_id = ?').run(id);
+      db.prepare('DELETE FROM routines WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM bots WHERE id = ?').run(id);
     })();
   },
@@ -713,6 +745,170 @@ export const mcpServers = {
 
   list: (): McpServer[] => {
     return db.prepare('SELECT * FROM mcp_servers ORDER BY created_at ASC').all() as McpServer[];
+  },
+};
+
+export interface Memory {
+  id: string;
+  bot_id: string;
+  fact: string;
+  created_at: number;
+}
+
+const MEMORY_CAP = 20;
+
+function isBareQuestion(text: string): boolean {
+  if (/^(who|what|when|where|why|how|which|whose|whom)\b/i.test(text)) {
+    if (/^(what|how|why|where|when|who)\s+i\b/i.test(text)) return false;
+    return true;
+  }
+  if (/^(do|does|did|can|could|would|will|should|shall|is|are|am|was|were|have|has)\s+(you|i|we|they|he|she|it|there|the|a|an|my|your|our)\b/i.test(text)) {
+    return true;
+  }
+  if (/^(tell me|please tell)\b/i.test(text)) return true;
+  return false;
+}
+
+export function isRememberableStatement(content: string): boolean {
+  const text = content.trim();
+  if (!text) return false;
+  if (/[?？]\s*$/.test(text)) return false;
+  if (/^\[mcp\]/i.test(text)) return false;
+  if (/^\[tool (?:call|result)\]/i.test(text)) return false;
+  if (/^\[Handing off to\b/i.test(text)) return false;
+  if (/^\[From [^\]]+\]/i.test(text)) return false;
+  if (/^Peer handoff:/i.test(text)) return false;
+  if (/reply with exactly\b/i.test(text)) return false;
+  if (isBareQuestion(text)) return false;
+  return true;
+}
+
+export const memories = {
+  rememberStatement: (botId: string, content: string): void => {
+    if (!botId || !isRememberableStatement(content)) return;
+    const fact = content.trim();
+    db.prepare(
+      'INSERT INTO memories (id, bot_id, fact, created_at) VALUES (?, ?, ?, ?)'
+    ).run(randomUUID(), botId, fact, Date.now());
+    db.prepare(`
+      DELETE FROM memories
+      WHERE bot_id = ?
+        AND id NOT IN (
+          SELECT id FROM (
+            SELECT id FROM memories
+            WHERE bot_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+          )
+        )
+    `).run(botId, botId, MEMORY_CAP);
+  },
+
+  latestFacts: (botId: string, limit: number = MEMORY_CAP): string[] => {
+    const cap = limit > 0 ? Math.min(limit, MEMORY_CAP) : MEMORY_CAP;
+    const rows = db.prepare(
+      'SELECT fact FROM memories WHERE bot_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?'
+    ).all(botId, cap) as { fact: string }[];
+    return rows.map(row => row.fact).reverse();
+  },
+};
+
+export interface OneShot {
+  id: string;
+  conversation_id: string;
+  bot_id: string;
+  due_at: number;
+  fired: number;
+  created_at: number;
+}
+
+export const oneShots = {
+  create: (conversationId: string, botId: string, dueAt: number): OneShot => {
+    const row: OneShot = {
+      id: randomUUID(),
+      conversation_id: conversationId,
+      bot_id: botId,
+      due_at: dueAt,
+      fired: 0,
+      created_at: Date.now(),
+    };
+    db.prepare(
+      'INSERT INTO one_shots (id, conversation_id, bot_id, due_at, fired, created_at) VALUES (?, ?, ?, ?, 0, ?)'
+    ).run(row.id, row.conversation_id, row.bot_id, row.due_at, row.created_at);
+    return row;
+  },
+
+  pending: (conversationId: string): OneShot | undefined => {
+    return db.prepare(
+      'SELECT * FROM one_shots WHERE conversation_id = ? AND fired = 0 ORDER BY due_at ASC LIMIT 1'
+    ).get(conversationId) as OneShot | undefined;
+  },
+
+  unfired: (): OneShot[] => {
+    return db.prepare(
+      'SELECT * FROM one_shots WHERE fired = 0 ORDER BY due_at ASC'
+    ).all() as OneShot[];
+  },
+
+  claim: (id: string): boolean => {
+    const result = db.prepare(
+      'UPDATE one_shots SET fired = 1 WHERE id = ? AND fired = 0'
+    ).run(id);
+    return result.changes === 1;
+  },
+};
+
+export interface Routine {
+  id: string;
+  conversation_id: string;
+  bot_id: string;
+  word: string;
+  next_due_at: number;
+  every_ms: number;
+  created_at: number;
+}
+
+export const routines = {
+  create: (conversationId: string, botId: string, word: string, nextDueAt: number, everyMs: number): Routine => {
+    const row: Routine = {
+      id: randomUUID(),
+      conversation_id: conversationId,
+      bot_id: botId,
+      word,
+      next_due_at: nextDueAt,
+      every_ms: everyMs,
+      created_at: Date.now(),
+    };
+    db.prepare(
+      'INSERT INTO routines (id, conversation_id, bot_id, word, next_due_at, every_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(row.id, row.conversation_id, row.bot_id, row.word, row.next_due_at, row.every_ms, row.created_at);
+    return row;
+  },
+
+  forConversation: (conversationId: string): Routine | undefined => {
+    return db.prepare(
+      'SELECT * FROM routines WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 1'
+    ).get(conversationId) as Routine | undefined;
+  },
+
+  all: (): Routine[] => {
+    return db.prepare(
+      'SELECT * FROM routines ORDER BY next_due_at ASC'
+    ).all() as Routine[];
+  },
+
+  postIfDue: (id: string, now: number): boolean => {
+    const run = db.transaction(() => {
+      const row = db.prepare('SELECT * FROM routines WHERE id = ?').get(id) as Routine | undefined;
+      if (!row || row.next_due_at > now) return false;
+      const advanced = db.prepare(
+        'UPDATE routines SET next_due_at = next_due_at + every_ms WHERE id = ? AND next_due_at = ?'
+      ).run(id, row.next_due_at);
+      if (advanced.changes !== 1) return false;
+      messages.create(row.conversation_id, 'bot', '[routine]\n' + row.word, row.bot_id);
+      return true;
+    });
+    return run();
   },
 };
 

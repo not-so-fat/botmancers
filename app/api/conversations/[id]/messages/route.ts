@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { messages, conversations, queue, groups, bots, draftActions, approvals } from '@/lib/db';
+import { messages, conversations, queue, groups, bots, draftActions, approvals, memories } from '@/lib/db';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { processQueue } from '@/lib/agent';
 
@@ -99,6 +99,18 @@ export async function POST(
       // No fixed member. Every member is queued and decides in the agent.
       const members = groups.getMembers(conversation.group_id);
       for (const member of members) enqueueBot(id, member.id);
+    }
+
+    // Per-bot memory (NOT-411): a direct thread teaches its own bot, unless
+    // the message addresses another bot or carries a WAKE handoff (reference
+    // guard). Learning never breaks sending.
+    const wakeLineCount = String(content).split(/\r?\n/).filter(line => /WAKE\s+\w+\s*:/.test(line)).length;
+    if (conversation.type === 'bot' && conversation.bot_id && handoffIds.length === 0 && wakeLineCount < 2) {
+      try {
+        memories.rememberStatement(conversation.bot_id, String(content));
+      } catch (error) {
+        console.error('Error remembering statement:', error);
+      }
     }
 
     processQueue().catch(console.error);

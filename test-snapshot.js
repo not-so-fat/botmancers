@@ -45,6 +45,7 @@ assert.deepStrictEqual(keys, [
   'description',
   'import_operation_id',
   'import_schema_version',
+  'memories',
   'name',
   'skill_content',
   'skill_path',
@@ -63,4 +64,18 @@ assert.notStrictEqual(hashSnapshot(first), hashSnapshot(changedRule), 'changed r
 console.log('PASS: one changed rule yields a different hash');
 passed += 1;
 
-console.log(`\ntest:snapshot: ${passed}/3 assertions passing`);
+// 4. Remembered facts are part of the input: same facts give the same hash,
+// a changed fact gives a different hash, and unread facts (null) differ
+// from read-but-empty ([]) so early-return launches stay distinguishable.
+const withFacts = buildSnapshotInput(bot(), skill(), ['I like green tea.', 'My dog is named Biscuit.']);
+const withFactsAgain = buildSnapshotInput(bot(), skill(), ['I like green tea.', 'My dog is named Biscuit.']);
+assert.strictEqual(hashSnapshot(withFacts), hashSnapshot(withFactsAgain), 'same facts must give same hash');
+const changedFact = buildSnapshotInput(bot(), skill(), ['I like black tea.', 'My dog is named Biscuit.']);
+assert.notStrictEqual(hashSnapshot(withFacts), hashSnapshot(changedFact), 'changed fact must give a different hash');
+assert.notStrictEqual(hashSnapshot(first), hashSnapshot(withFacts), 'facts must change the hash vs never-read');
+const readEmpty = buildSnapshotInput(bot(), skill(), []);
+assert.notStrictEqual(hashSnapshot(first), hashSnapshot(readEmpty), 'null facts must differ from an empty list');
+console.log('PASS: same facts give the same hash, a changed fact gives a different hash');
+passed += 1;
+
+console.log(`\ntest:snapshot: ${passed}/4 assertions passing`);

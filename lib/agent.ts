@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
-import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, approvals } from './db';
+import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, approvals, memories, oneShots, routines } from './db';
 import { parseApprovalCode, parseFileNames, isSafeFileName, outboundDraftFromUser, serializeDraft } from './draft';
 import { mcpTurn } from './mcp';
 import { readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
-import type { Bot, Message, QueueItem } from './db';
+import type { Bot, Message, OneShot, QueueItem, Routine } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
 
@@ -123,6 +123,204 @@ export function resetDelegationForTests(): void {
   delegationChatStub = null;
 }
 
+export const ONE_SHOT_MESSAGE = '[one-shot]';
+
+// True when the thread's latest user message belongs to a stopped chain.
+// Timer arming checks this so a stopped routine does not enqueue a
+// suppressed launch on every poll; a later user message starts a fresh
+// chain and the timers resume.
+function chainStoppedForLatestUser(conversationId: string): boolean {
+  const conversationMessages = messages.getByConversation(conversationId);
+  const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
+  if (!latestUser) return false;
+  const chain = delegationChains.get(conversationId);
+  return !!chain && chain.userMessageId === latestUser.id && chain.stopped;
+}
+
+// True when the thread's latest user message belongs to a chain whose
+// delegation budget is spent. Timer arming checks this (like the stopped
+// check above) so an exhausted budget defers ticks instead of enqueueing a
+// budget-refused launch on every heartbeat; the next user message starts a
+// fresh chain and the preserved tick fires then.
+function chainBudgetExhaustedForLatestUser(conversationId: string): boolean {
+  const conversationMessages = messages.getByConversation(conversationId);
+  const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
+  if (!latestUser) return false;
+  const chain = delegationChains.get(conversationId);
+  return !!chain && chain.userMessageId === latestUser.id && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS;
+}
+
+// True while the latest user message has no bot reply after it, so a tick
+// never steals a user's turn.
+function userAwaitingReply(conversationMessages: Message[], latestUser: Message | null): boolean {
+  if (!latestUser) return false;
+  const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
+  return userIdx >= 0 && !conversationMessages.slice(userIdx + 1).some(msg =>
+    msg.sender_type === 'bot'
+  );
+}
+
+// Tick launches use this instead of userAwaitingReply directly. A
+// taught-timer phrase is answered by the arming itself: teaching is silent
+// by design (the tick is the reply), so in a direct bot thread it must not
+// block ticks. Without this bypass a taught routine/one-shot never posts:
+// the tick launch sees the unanswered teaching message, falls through to
+// the teaching hook, and re-arms the already-due row with wait 0 in a
+// tight loop. Scoped to bot threads, the only place the teaching hook runs.
+function tickBlockedByUserTurn(
+  conversationId: string,
+  conversationMessages: Message[],
+  latestUser: Message | null
+): boolean {
+  if (!latestUser) return false;
+  if (!userAwaitingReply(conversationMessages, latestUser)) return false;
+  const conversation = conversations.getById(conversationId);
+  if (conversation?.type !== 'bot') return true;
+  return routineTeachWord(latestUser.content) === null && oneShotTeachDelayMs(latestUser.content) === null;
+}
+
+// Non-consuming twin of consumeDueTimerTick: true when this launch would
+// consume a due one-shot or routine tick for the owning bot.
+function peekDueTimerTick(
+  conversationId: string,
+  botId: string,
+  conversationMessages: Message[],
+  latestUser: Message | null
+): boolean {
+  if (tickBlockedByUserTurn(conversationId, conversationMessages, latestUser)) return false;
+  const now = Date.now();
+  const pendingOneShot = oneShots.pending(conversationId);
+  if (pendingOneShot && pendingOneShot.bot_id === botId && pendingOneShot.due_at <= now) return true;
+  const routine = routines.forConversation(conversationId);
+  if (routine && routine.bot_id === botId && routine.next_due_at <= now) return true;
+  return false;
+}
+
+// Claims one due one-shot or routine tick for this launch and posts it.
+// Returns true when the launch is fully consumed by the tick. Only the
+// owning bot's launch consumes a row, and only when no user message is
+// still awaiting a reply, so a tick never steals a user's turn.
+function consumeDueTimerTick(
+  conversationId: string,
+  botId: string,
+  conversationMessages: Message[],
+  latestUser: Message | null
+): boolean {
+  if (tickBlockedByUserTurn(conversationId, conversationMessages, latestUser)) return false;
+  const now = Date.now();
+  const pendingOneShot = oneShots.pending(conversationId);
+  if (
+    pendingOneShot &&
+    pendingOneShot.bot_id === botId &&
+    pendingOneShot.due_at <= now &&
+    oneShots.claim(pendingOneShot.id)
+  ) {
+    messages.create(conversationId, 'bot', ONE_SHOT_MESSAGE, botId);
+    return true;
+  }
+  const routine = routines.forConversation(conversationId);
+  if (routine && routine.bot_id === botId && routine.next_due_at <= now) {
+    return routines.postIfDue(routine.id, now);
+  }
+  return false;
+}
+
+const durableOneShotTimers = new Set<string>();
+const routineTimers = new Set<string>();
+
+// A timer tick only enqueues a launch; the launch itself claims and posts
+// the tick, so Stop and the delegation limits apply to it unchanged.
+function fireTimerTick(conversationId: string, botId: string): void {
+  if (chainStoppedForLatestUser(conversationId)) return;
+  if (chainBudgetExhaustedForLatestUser(conversationId)) return;
+  if (queue.countPending(conversationId) > 0) return;
+  queue.enqueue(conversationId, botId);
+  chainProcessQueue();
+}
+
+function armDurableOneShot(row: OneShot): void {
+  if (row.fired || durableOneShotTimers.has(row.id)) return;
+  if (chainStoppedForLatestUser(row.conversation_id)) return;
+  if (chainBudgetExhaustedForLatestUser(row.conversation_id)) return;
+  if (queue.countPending(row.conversation_id) > 0) return;
+  durableOneShotTimers.add(row.id);
+  const wait = Math.max(0, row.due_at - Date.now());
+  setTimeout(() => {
+    durableOneShotTimers.delete(row.id);
+    fireTimerTick(row.conversation_id, row.bot_id);
+  }, wait);
+}
+
+function armRoutine(row: Routine): void {
+  if (routineTimers.has(row.id)) return;
+  if (chainStoppedForLatestUser(row.conversation_id)) return;
+  if (chainBudgetExhaustedForLatestUser(row.conversation_id)) return;
+  if (queue.countPending(row.conversation_id) > 0) return;
+  routineTimers.add(row.id);
+  const wait = Math.max(0, row.next_due_at - Date.now());
+  setTimeout(() => {
+    routineTimers.delete(row.id);
+    fireTimerTick(row.conversation_id, row.bot_id);
+  }, wait);
+}
+
+// Re-arm timers for all stored one-shots and routines. Called on process
+// start and on the heartbeat interval; the extras test calls it directly.
+export function resumeLoopTimers(): void {
+  for (const row of oneShots.unfired()) armDurableOneShot(row);
+  for (const row of routines.all()) armRoutine(row);
+}
+
+const ROUTINE_EVERY_MS = 24 * 60 * 60 * 1000;
+const ROUTINE_FIRST_DUE_MS = 8000;
+const ONE_SHOT_DEFAULT_DELAY_MS = 60_000;
+
+// Test hook: the extras test shortens the taught-routine first due so
+// Scenario 5 can wait past it without an 8s sleep. Default unchanged.
+function taughtRoutineFirstDueMs(): number {
+  const override = Number(process.env.BOTMANCERS_ROUTINE_FIRST_DUE_MS);
+  if (Number.isFinite(override) && override >= 0) return override;
+  return ROUTINE_FIRST_DUE_MS;
+}
+
+// Taught timers (NOT-411): the reference's fixed teaching phrases,
+// generalised. `Reply with the word <word>` teaches any word (the reference
+// only taught routinemint2 to chief-of-staff); `Set a one-shot[ in N
+// seconds]` teaches a durable one-shot with a chosen delay. Full-string
+// matches so `Reply with exactly the word X` and longer one-shot sentences
+// never collide.
+function routineTeachWord(text: string): string | null {
+  const match = text.trim().match(/^reply with the word (\S+?)\.?$/i);
+  if (!match) return null;
+  const word = match[1].replace(/^[`"'"]+|[`"'"]+$/g, '');
+  return word || null;
+}
+
+function oneShotTeachDelayMs(text: string): number | null {
+  const match = text.trim().match(/^set a one-shot(?: in (\d+) seconds?)?\.?$/i);
+  if (!match) return null;
+  if (match[1]) return Number(match[1]) * 1000;
+  return ONE_SHOT_DEFAULT_DELAY_MS;
+}
+
+function scheduleTaughtRoutine(conversationId: string, botId: string, word: string): void {
+  const existing = routines.forConversation(conversationId);
+  if (existing) {
+    armRoutine(existing);
+    return;
+  }
+  armRoutine(routines.create(conversationId, botId, word, Date.now() + taughtRoutineFirstDueMs(), ROUTINE_EVERY_MS));
+}
+
+function scheduleTaughtOneShot(conversationId: string, botId: string, delayMs: number): void {
+  const existing = oneShots.pending(conversationId);
+  if (existing) {
+    armDurableOneShot(existing);
+    return;
+  }
+  armDurableOneShot(oneShots.create(conversationId, botId, Date.now() + delayMs));
+}
+
 const AUTO_PROCESS = process.env.BOTMANCERS_NO_AUTOPROCESS !== '1';
 
 function chainProcessQueue(): void {
@@ -139,9 +337,10 @@ const pendingSnapshots = new Map<string, { json: string; hash: string }>();
 function holdSnapshot(
   item: QueueItem,
   bot: Bot,
-  skill: { path: string | null; present: boolean | null; content: string | null }
+  skill: { path: string | null; present: boolean | null; content: string | null },
+  facts: string[] | null = null
 ): void {
-  const input = buildSnapshotInput(bot, skill);
+  const input = buildSnapshotInput(bot, skill, facts);
   pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input) });
 }
 
@@ -216,6 +415,35 @@ async function processQueueItem(item: QueueItem) {
   const delegatingCallerId = callerFor(chain, bot.id);
   const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
 
+  // Timer-tick hook (NOT-411): a due one-shot or routine makes this launch
+  // post its word instead of calling the model. Runs here, right behind the
+  // Stop check and before any content-triggered hook, so a tick never
+  // re-runs the draft, run, or MCP hooks with the stale latest user message.
+  // Consumes one delegation turn like any other launch, and the budget
+  // check inside refuses it once exhausted, so a tick never bypasses the
+  // depth/budget limits or Stop. Delegated turns never consume a tick: a
+  // WAKE handoff's launch answers the delegation, and the tick waits for its
+  // own timer launch. A launch never consumes a tick while its user message
+  // still awaits a reply.
+  if (
+    !isDelegatedTurn &&
+    peekDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)
+  ) {
+    if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
+      messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+      queue.cancelPending(item.conversation_id);
+      chainProcessQueue();
+      return;
+    }
+    if (consumeDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)) {
+      if (chain) chain.turns += 1;
+      chainProcessQueue();
+      return;
+    }
+    chainProcessQueue();
+    return;
+  }
+
   // Outbound-draft hook (NOT-410): a direct-thread ask mentioning email or
   // slack creates a draft card instead of a model reply. Runs behind the
   // stopped check above, consumes no delegation budget, and never fires
@@ -231,6 +459,26 @@ async function processQueueItem(item: QueueItem) {
       if (!alreadyReplied) {
         messages.create(item.conversation_id, 'bot', serializeDraft(draft), bot.id);
       }
+      chainProcessQueue();
+      return;
+    }
+  }
+
+  // Taught-timer hook (NOT-411): a direct thread teaches its own bot a
+  // durable one-shot or a recurring routine via the generalised reference
+  // phrases. Silent like the reference: the tick itself is the reply.
+  // Idempotent: an existing row is just re-armed. Runs behind the tick
+  // check above, so a due tick never re-enters here.
+  if (conversation.type === 'bot' && latestUser) {
+    const oneShotDelay = oneShotTeachDelayMs(latestUser.content);
+    if (oneShotDelay !== null) {
+      scheduleTaughtOneShot(item.conversation_id, bot.id, oneShotDelay);
+      chainProcessQueue();
+      return;
+    }
+    const routineWord = routineTeachWord(latestUser.content);
+    if (routineWord) {
+      scheduleTaughtRoutine(item.conversation_id, bot.id, routineWord);
       chainProcessQueue();
       return;
     }
@@ -354,11 +602,20 @@ ${bot.description}`
 ${bot.description}
 If those rules limit the reply to one short sentence, the whole reply is that one short sentence and nothing more.`;
 
+  const rememberedFacts = memories.latestFacts(bot.id);
+  const rememberedBlock = rememberedFacts.length === 0
+    ? ''
+    : [
+        'Remembered facts:',
+        ...rememberedFacts.map(fact => '- ' + fact),
+        'These saved facts belong to this bot only. When the user asks about one of them, put that remembered fact in the reply even if the question does not repeat it. If the user is not asking about a remembered fact, do not recite this list. Do not store or invent facts from your own replies, tool lines, or group handoff lines. Standing rules and open-group instructions still apply.',
+      ].join('\n');
+
   const systemPrompt = `You are ${bot.name}, ${bot.title}.
 
 ${wakeHowTo}
 
-${standingBlock}`;
+${standingBlock}${rememberedBlock ? `\n\n${rememberedBlock}` : ''}`;
 
   const standingReminder = openGroupTurn
     ? `This plain group turn is decided by the open-group instruction, not by your standing description. Do not use WAKE. Do not repeat an earlier handoff. Do not post "Please review my research". Do not acknowledge a handoff.`
@@ -379,8 +636,11 @@ The standing rules decide the whole reply. If they require one short sentence, w
     ...chatMessages,
     { role: 'system' as const, content: standingReminder },
   ];
+  if (rememberedBlock) {
+    sent.push({ role: 'system' as const, content: rememberedBlock });
+  }
   const skillState = readSkillState(bot.name);
-  holdSnapshot(item, bot, skillState);
+  holdSnapshot(item, bot, skillState, rememberedFacts);
   const localSkill = skillState.content;
   if (localSkill) {
     sent.push({ role: 'system' as const, content: localSkill });
@@ -699,8 +959,10 @@ function appendPromptLog(entry: { bot: string; conversation_id: string; messages
 
 if (AUTO_PROCESS) {
   bots.touchSeen();
+  resumeLoopTimers();
   setInterval(() => {
     bots.touchSeen();
+    resumeLoopTimers();
     processQueue().catch(console.error);
   }, 2000);
 }
