@@ -106,15 +106,18 @@ async function main() {
   // Case 1: draft send once.
   log('\nCase 1: draft send once');
   const draftMsg = messages.create(
-    conv.id, 'bot', draftLib.serializeDraft('alice@example.com', 'Hello Alice'), drafter.id
+    conv.id, 'bot', draftLib.serializeDraft({ channel: 'email', recipient: 'alice@example.com', body: 'Hello Alice', state: 'open' }), drafter.id
   );
-  assert(draftLib.parseDraft(draftMsg.content).recipient === 'alice@example.com', 'draft parses with recipient');
-  assert(draftLib.draftTitle('alice@example.com') === 'Draft to alice@example.com', 'draft title renders');
+  const parsed1 = draftLib.parseDraft(draftMsg.content);
+  assert(parsed1 && parsed1.channel === 'email' && parsed1.recipient === 'alice@example.com', 'draft parses with channel and recipient');
+  assert(draftLib.draftTitle('email') === 'New Email', 'email draft title renders');
+  assert(draftLib.draftTitle('slack') === 'New Slack Message', 'slack draft title renders');
   const sendRes = await post(draftRoute, { id: conv.id }, {
     messageId: draftMsg.id, action: 'send', recipient: 'bob@example.com', body: 'Hi Bob',
   });
   assert(sendRes.status === 200, `send returns 200 (got ${sendRes.status})`);
   assert((await bodyJson(sendRes)).status === 'sent', 'send returns status sent');
+  assert(draftLib.parseDraft(messages.getById(draftMsg.id).content).state === 'sent', 'send flips stored draft to sent');
   const thread1 = messages.getByConversation(conv.id);
   const sent = thread1.filter(m => m.content.startsWith('[Sent to bob@example.com]'));
   assert(sent.length === 1 && sent[0].content.includes('Hi Bob'), 'send records edited send in the thread only');
@@ -127,11 +130,12 @@ async function main() {
   // Case 2: draft discard once.
   log('\nCase 2: draft discard once');
   const draftMsg2 = messages.create(
-    conv.id, 'bot', draftLib.serializeDraft('carol@example.com', 'Hello Carol'), drafter.id
+    conv.id, 'bot', draftLib.serializeDraft({ channel: 'slack', recipient: 'carol', body: 'Hello Carol', state: 'open' }), drafter.id
   );
-  const discardRes = await post(draftRoute, { id: conv.id }, { messageId: draftMsg2.id, action: 'discard' });
+  const discardRes = await post(draftRoute, { id: conv.id }, { messageId: draftMsg2.id, action: 'discard', recipient: 'carol', body: 'Hello Carol' });
   assert(discardRes.status === 200, `discard returns 200 (got ${discardRes.status})`);
   assert((await bodyJson(discardRes)).status === 'discarded', 'discard returns status discarded');
+  assert(draftLib.parseDraft(messages.getById(draftMsg2.id).content).state === 'discarded', 'discard flips stored draft to discarded');
   const discardAgain = await post(draftRoute, { id: conv.id }, { messageId: draftMsg2.id, action: 'discard' });
   assert(discardAgain.status === 409, `second discard rejected with 409 (got ${discardAgain.status})`);
   const sendAfterDiscard = await post(draftRoute, { id: conv.id }, { messageId: draftMsg2.id, action: 'send' });
@@ -265,6 +269,27 @@ async function main() {
   await drain();
   assert(!fs.existsSync(path.join(process.cwd(), `evil-${process.pid}.txt`)), 'unsafe [file] name never written');
   assert(!fs.existsSync(path.join(process.cwd(), 'files', `evil-${process.pid}.txt`)), 'unsafe [file] name never materialized');
+  agent.setDelegationChatStub(null);
+
+  // Case 9: agent-loop draft hook (no stub output consumed).
+  log('\nCase 9: agent-loop draft hook');
+  assert(draftLib.outboundDraftFromUser('Please email Alice that says hello there')?.channel === 'email', 'email ask maps to email draft');
+  assert(draftLib.outboundDraftFromUser('Please slack Bob saying standup moved')?.channel === 'slack', 'slack ask maps to slack draft');
+  assert(draftLib.outboundDraftFromUser('Just say hi.') === null, 'plain ask creates no draft');
+  let stubCalls = 0;
+  agent.setDelegationChatStub(() => { stubCalls++; return 'should not be used'; });
+  const hookBot = bots.create({ name: 'HookDrafter', title: '', description: 'Draft hook.' });
+  const hookConv = conversations.getByBotId(hookBot.id);
+  messages.create(hookConv.id, 'user', 'Please email Alice that says hello there');
+  db.queue.enqueue(hookConv.id, hookBot.id);
+  await drain();
+  const hookDrafts = messages.getByConversation(hookConv.id).filter(m => draftLib.parseDraft(m.content));
+  assert(hookDrafts.length === 1, 'email ask creates exactly one draft card');
+  assert(hookDrafts[0] && draftLib.parseDraft(hookDrafts[0].content).body.includes('hello there'), 'draft body comes from the ask');
+  assert(stubCalls === 0, 'draft hook answers without calling the model');
+  db.queue.enqueue(hookConv.id, hookBot.id);
+  await drain();
+  assert(messages.getByConversation(hookConv.id).filter(m => draftLib.parseDraft(m.content)).length === 1, 'draft hook never fires twice for the same ask');
   agent.setDelegationChatStub(null);
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);

@@ -17,7 +17,7 @@ export async function GET(
       const code = parseApprovalCode(msg.content);
       const approvalRow = code ? approvals.get(id, code) : undefined;
       const cardStatus = {
-        draftStatus: draft ? (draftRow?.status ?? 'open') : null,
+        draftStatus: draft ? (draft.state !== 'open' ? draft.state : (draftRow?.status ?? 'open')) : null,
         approvalStatus: code ? (approvalRow?.status ?? 'pending') : null,
       };
       if (msg.sender_type === 'bot' && msg.sender_id) {

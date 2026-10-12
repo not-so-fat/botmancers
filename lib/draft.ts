@@ -1,35 +1,95 @@
 // Thread-card markers (NOT-410): message drafts, approval codes, file artifacts,
-// and handoff comments. Ported from the reference-only thread interactions.
+// and handoff comments. Draft format ported from the reference-only thread
+// interactions; approval/file/handoff helpers stay local.
 //
 // Pure functions only: this module is shared by the server routes, the agent
 // loop, and the client thread UI, so it must stay free of node-only imports.
 
+export type DraftChannel = 'email' | 'slack';
+export type DraftState = 'open' | 'sent' | 'discarded';
+
 export interface Draft {
+  channel: DraftChannel;
   recipient: string;
   body: string;
+  state: DraftState;
 }
 
-// A draft is a bot message carrying a `[draft to RECIPIENT]` marker line. The
-// body is the marker line's trailing text plus every line after it.
-export function parseDraft(content: string): Draft | null {
-  const lines = content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^\s*\[draft to ([^\]]+)\]\s*(.*)$/i);
-    if (!match) continue;
-    const recipient = match[1].trim();
-    if (!recipient) return null;
-    const body = [match[2], ...lines.slice(i + 1)].join('\n').trim();
-    return { recipient, body };
+function hasWord(text: string, word: string): boolean {
+  return new RegExp('\\b' + word + '\\b', 'i').test(text);
+}
+
+function draftBody(text: string): string {
+  if (text.toLowerCase().includes('one-line note')) return 'One-line note.';
+  const lower = text.toLowerCase();
+  const markers = ['that says', 'saying', 'note:'];
+  let at = -1;
+  let marker = '';
+  for (const item of markers) {
+    const found = lower.indexOf(item);
+    if (found >= 0 && (at < 0 || found < at)) {
+      at = found;
+      marker = item;
+    }
   }
-  return null;
+  if (at < 0) return '';
+  return text.slice(at + marker.length).trim();
 }
 
-export function draftTitle(recipient: string): string {
-  return `Draft to ${recipient}`;
+// A user ask mentioning email or slack creates an outbound draft card instead
+// of a model reply. Returns null for anything else (including specialist
+// birth requests, which must not become drafts).
+export function outboundDraftFromUser(text: string): Draft | null {
+  const trimmed = text.trim();
+  if (trimmed.startsWith('Create a specialist') || trimmed.startsWith('Duplicate')) return null;
+  let channel: DraftChannel | null = null;
+  if (hasWord(text, 'email')) channel = 'email';
+  else if (hasWord(text, 'slack')) channel = 'slack';
+  if (!channel) return null;
+  return {
+    channel,
+    recipient: '',
+    body: draftBody(text),
+    state: 'open',
+  };
 }
 
-export function serializeDraft(recipient: string, body: string): string {
-  return `[draft to ${recipient}]\n${body}`;
+// A draft is a bot message whose content is `[draft]` followed by JSON
+// `{channel, recipient, body, state}`. The state lives in the content so a
+// Send or Discard flips the stored message read-only.
+export function parseDraft(content: string): Draft | null {
+  const match = content.match(/^\s*\[draft\]\s*([\s\S]*)$/);
+  if (!match) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const row = parsed as Record<string, unknown>;
+  if (row.channel !== 'email' && row.channel !== 'slack') return null;
+  if (row.state !== 'open' && row.state !== 'sent' && row.state !== 'discarded') return null;
+  if (typeof row.recipient !== 'string' || typeof row.body !== 'string') return null;
+  return {
+    channel: row.channel,
+    recipient: row.recipient,
+    body: row.body,
+    state: row.state,
+  };
+}
+
+export function draftTitle(channel: DraftChannel): string {
+  return channel === 'email' ? 'New Email' : 'New Slack Message';
+}
+
+export function serializeDraft(draft: Draft): string {
+  return '[draft]\n' + JSON.stringify({
+    channel: draft.channel,
+    recipient: draft.recipient,
+    body: draft.body,
+    state: draft.state,
+  });
 }
 
 // An approval request is a bot message containing

@@ -1311,12 +1311,17 @@ function DraftCard({ message, conversationId, status, onDone }: {
   const [recipient, setRecipient] = useState(parsed?.recipient ?? '');
   const [body, setBody] = useState(parsed?.body ?? '');
   const [busy, setBusy] = useState(false);
-  const closed = useRef(status !== 'open');
+  const [closed, setClosed] = useState(status !== 'open');
+  const closedRef = useRef(status !== 'open');
   if (!parsed) return null;
-  const readOnly = status !== 'open';
+  const locked = status !== 'open' || closed;
+  const shownRecipient = locked ? parsed.recipient : recipient;
+  const shownBody = locked ? parsed.body : body;
   const act = async (action: 'send' | 'discard') => {
-    if (closed.current || busy) return;
-    closed.current = true;
+    if (locked || closedRef.current || busy) return;
+    if (action === 'send' && recipient.trim() === '') return;
+    closedRef.current = true;
+    setClosed(true);
     setBusy(true);
     try {
       const res = await fetch(`/api/conversations/${conversationId}/draft`, {
@@ -1324,7 +1329,10 @@ function DraftCard({ message, conversationId, status, onDone }: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messageId: message.id, action, recipient, body }),
       });
-      if (!res.ok) closed.current = false;
+      if (!res.ok) {
+        closedRef.current = false;
+        setClosed(false);
+      }
     } finally {
       setBusy(false);
       onDone();
@@ -1332,49 +1340,50 @@ function DraftCard({ message, conversationId, status, onDone }: {
   };
   return (
     <div className="draft-card">
-      <p className="draft-title">{draftTitle(parsed.recipient)}</p>
-      {readOnly ? (
-        <div className="msg-body">
-          <div>To: {parsed.recipient}</div>
-          <div>{parsed.body}</div>
-          <span className="draft-mark">{status === 'sent' ? 'Sent' : 'Discarded'}</span>
-        </div>
-      ) : (
-        <>
-          <input
-            aria-label="Recipient"
-            value={recipient}
-            onChange={e => setRecipient(e.target.value)}
-            disabled={busy}
-          />
-          <textarea
-            aria-label="Draft body"
-            rows={3}
-            value={body}
-            onChange={e => setBody(e.target.value)}
-            disabled={busy}
-          />
-          <span className="draft-mark">
-            <button
-              type="button"
-              className="approve-control"
-              disabled={busy}
-              onClick={() => { void act('send'); }}
-            >
-              Send
-            </button>
-            {' '}
-            <button
-              type="button"
-              className="attach-word"
-              disabled={busy}
-              onClick={() => { void act('discard'); }}
-            >
-              Discard
-            </button>
-          </span>
-        </>
-      )}
+      <div className="draft-title">{draftTitle(parsed.channel)}</div>
+      <input
+        type="text"
+        aria-label="Recipient"
+        value={shownRecipient}
+        readOnly={locked}
+        disabled={busy}
+        onChange={e => {
+          if (!locked) setRecipient(e.target.value);
+        }}
+      />
+      <textarea
+        rows={3}
+        aria-label="Draft body"
+        value={shownBody}
+        readOnly={locked}
+        disabled={busy}
+        onChange={e => {
+          if (!locked) setBody(e.target.value);
+        }}
+      />
+      {status === 'sent' ? <span className="draft-mark">Sent</span> : null}
+      {status === 'discarded' ? <span className="draft-mark">Discarded</span> : null}
+      {status !== 'discarded' ? (
+        <button
+          type="button"
+          className="approve-control"
+          disabled={busy}
+          onClick={() => { void act('send'); }}
+        >
+          Send
+        </button>
+      ) : null}
+      {status === 'open' ? (
+        <button
+          type="button"
+          className="approve-control"
+          style={{ marginLeft: 8 }}
+          disabled={busy}
+          onClick={() => { void act('discard'); }}
+        >
+          Discard
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import { conversations, messages, draftActions } from '@/lib/db';
-import { parseDraft } from '@/lib/draft';
+import { parseDraft, serializeDraft } from '@/lib/draft';
 
-// One-shot draft actions. Send records the send in the thread only (no real
-// external message); Discard only closes the card. Either way the card goes
-// read-only and a second action on the same draft is rejected.
+// One-shot draft actions. Send records the send in the thread only (the draft
+// flips to sent plus a [Sent to X] line; no real external message); Discard
+// flips the draft to discarded. Either way the card goes read-only and a
+// second action on the same draft is rejected. The state lives in the draft
+// content (reference format) with the draft_actions row as a second guard.
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -35,6 +37,12 @@ export async function POST(
       return NextResponse.json({ error: 'Message is not a draft' }, { status: 400 });
     }
 
+    if (draft.state !== 'open') {
+      return NextResponse.json(
+        { error: `Draft already ${draft.state}`, status: draft.state },
+        { status: 409 }
+      );
+    }
     const existing = draftActions.get(messageId);
     if (existing) {
       return NextResponse.json(
@@ -56,6 +64,12 @@ export async function POST(
       if (!recorded) {
         return NextResponse.json({ error: 'Draft already acted on', status: 'sent' }, { status: 409 });
       }
+      messages.replaceContent(messageId, serializeDraft({
+        channel: draft.channel,
+        recipient: to,
+        body: text,
+        state: 'sent',
+      }));
       const sent = messages.create(id, 'bot', `[Sent to ${to}]\n${text}`, message.sender_id ?? undefined);
       return NextResponse.json({ status: 'sent', message: sent });
     }
@@ -64,6 +78,12 @@ export async function POST(
     if (!recorded) {
       return NextResponse.json({ error: 'Draft already acted on', status: 'discarded' }, { status: 409 });
     }
+    messages.replaceContent(messageId, serializeDraft({
+      channel: draft.channel,
+      recipient: typeof recipient === 'string' ? recipient : draft.recipient,
+      body: typeof draftBody === 'string' ? draftBody : draft.body,
+      state: 'discarded',
+    }));
     return NextResponse.json({ status: 'discarded' });
   } catch (error) {
     console.error('Error acting on draft:', error);

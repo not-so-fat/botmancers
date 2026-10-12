@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, approvals } from './db';
-import { parseApprovalCode, parseFileNames, isSafeFileName } from './draft';
+import { parseApprovalCode, parseFileNames, isSafeFileName, outboundDraftFromUser, serializeDraft } from './draft';
 import { mcpTurn } from './mcp';
 import { readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
@@ -215,6 +215,26 @@ async function processQueueItem(item: QueueItem) {
   const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
   const delegatingCallerId = callerFor(chain, bot.id);
   const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
+
+  // Outbound-draft hook (NOT-410): a direct-thread ask mentioning email or
+  // slack creates a draft card instead of a model reply. Runs behind the
+  // stopped check above, consumes no delegation budget, and never fires
+  // twice for the same user message. Position-based (not timestamp-based)
+  // so a same-millisecond draft still counts as a reply.
+  if (conversation.type === 'bot' && latestUser) {
+    const draft = outboundDraftFromUser(latestUser.content);
+    if (draft) {
+      const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
+      const alreadyReplied = userIdx >= 0 && conversationMessages.slice(userIdx + 1).some(msg =>
+        msg.sender_type === 'bot'
+      );
+      if (!alreadyReplied) {
+        messages.create(item.conversation_id, 'bot', serializeDraft(draft), bot.id);
+      }
+      chainProcessQueue();
+      return;
+    }
+  }
 
   if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
     const fileReadAsk = parseFileReadAsk(latestUser.content);

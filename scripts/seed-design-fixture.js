@@ -30,6 +30,7 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
 const db = jiti('../lib/db.ts');
 const { serializeRun } = jiti('../lib/run.ts');
+const { serializeDraft } = jiti('../lib/draft.ts');
 
 const { bots, conversations, groups, messages } = db;
 
@@ -139,7 +140,7 @@ if (THREAD_CARDS) {
   cardMint = makeBot('CardMint', '', 'Thread-card demo.', 7);
   const convId = threadOf(cardMint);
   messages.create(convId, 'user', 'Show me the thread cards.');
-  messages.create(convId, 'bot', '[draft to Alice]\nHello Alice, this draft is ready to send.', cardMint.id);
+  messages.create(convId, 'bot', serializeDraft({ channel: 'email', recipient: 'Alice', body: 'Hello Alice, this draft is ready to send.', state: 'open' }), cardMint.id);
   messages.create(convId, 'bot', 'Please approve using the code cardmint1 to continue.', cardMint.id);
   messages.create(convId, 'bot', '[file] filemint6.txt\nThe launch code is filemint6.', cardMint.id);
   messages.create(convId, 'user', 'Ask Alice to check this.');
