@@ -185,8 +185,17 @@ amber `Unsaved changes` if any section is dirty, otherwise `Saved`.
 A launch is one `processing_queue` item for this bot reaching a terminal
 state (`completed` or `failed`) — that is, one `processQueueItem` run in
 `lib/agent.ts`, including the greeting run enqueued at bot creation. The
-snapshot captures the effective configuration that run used, recorded when
-the item is marked terminal, and is immutable afterwards. There is no
+snapshot captures the effective configuration that run used: the builder
+captures the hash-input values at config read time (bot-row fields when
+the run reads the bot row, skill fields when it reads the skill file
+before the model call), holds them for the run, and writes them when the
+item is marked terminal; the written row is immutable afterwards. A
+rules/skill edit during an in-flight run therefore never changes that
+run's recorded snapshot. Runs that return before the config read point
+(bot not found, conversation not found, chief-of-staff delegated runs,
+and other pre-model early returns) record a row with the fields actually
+read and null for fields never read; a bot-not-found run records no row
+on any bot page because no bot identity exists to attach it to. There is no
 de-duplication: every launch records a row even when its hash equals the
 previous row's, and failed launches record the same snapshot fields (the
 failure does not change the configuration used). The launch id is the
