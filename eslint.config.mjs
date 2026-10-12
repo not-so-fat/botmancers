@@ -12,8 +12,6 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Test files use CommonJS:
-    "test-*.js",
   ]),
 ]);
 

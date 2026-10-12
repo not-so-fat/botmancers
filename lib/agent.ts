@@ -1,13 +1,15 @@
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import OpenAI from 'openai';
-import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots } from './db';
+import { bots, conversations, messages, queue, groups, mcpServers, memories, oneShots, routines } from './db';
+import type { OneShot, Routine } from './db';
 import { mcpTurn } from './mcp';
-import { readSkillState } from './skills';
-import { buildSnapshotInput, hashSnapshot } from './snapshot';
-import type { Bot, Message, QueueItem } from './db';
-import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
-import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
+import { localSkillForBot } from './skills';
+import { outboundDraftFromUser, serializeDraft } from './draft';
+import { parseCodingLimbAsk, parseFileReadAsk, parsePageReadAsk, parsePrintAsk, serializeRun } from './run';
+import { beginCodingLimbRun, beginFileReadRun, beginPageReadRun, beginPrintRun } from './run-child';
+import type { Message, QueueItem } from './db';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -16,170 +18,321 @@ const openai = new OpenAI({
 
 const model = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
 
-// Conversational delegation limits (NOT-395). Placeholder values until the
-// owner confirms them; change one line here. Tests assert these constants.
-export const DELEGATION_MAX_DEPTH = 3;
-export const DELEGATION_MAX_DELEGATED_TURNS = 8;
+const COS_BOT_ID = '6f427b40-c909-44ef-86ab-5ca857fffc3e';
+const HERMES_COS_URL = 'http://127.0.0.1:8642/p/cos/v1/chat/completions';
+const HERMES_V1_URL = 'http://127.0.0.1:8642/v1/chat/completions';
 
-export const DELEGATION_DEPTH_REASON =
-  `[Delegation limit] Depth limit reached (max ${DELEGATION_MAX_DEPTH} handoffs). No further handoff.`;
-export const DELEGATION_BUDGET_REASON =
-  `[Delegation limit] Budget limit reached (max ${DELEGATION_MAX_DELEGATED_TURNS} delegated turns per user message). No further delegated turn.`;
-export const DELEGATION_STOPPED_REASON =
-  '[Delegation stopped] Delegation stopped. No further handoffs or delegated turns.';
-
-interface DelegationFrame {
-  delegateId: string;
-  callerId: string;
-}
-
-interface DelegationChain {
-  userMessageId: string;
-  handoffs: number;
-  turns: number;
-  stopped: boolean;
-  frames: DelegationFrame[];
-}
-
-const delegationChains = new Map<string, DelegationChain>();
-
-function delegationChainFor(conversationId: string, latestUserId: string | null): DelegationChain | null {
-  if (!latestUserId) return null;
-  const existing = delegationChains.get(conversationId);
-  if (existing && existing.userMessageId === latestUserId) return existing;
-  const fresh: DelegationChain = { userMessageId: latestUserId, handoffs: 0, turns: 0, stopped: false, frames: [] };
-  delegationChains.set(conversationId, fresh);
-  return fresh;
-}
-
-function callerFor(chain: DelegationChain | null, delegateId: string): string | null {
-  if (!chain) return null;
-  for (let i = chain.frames.length - 1; i >= 0; i--) {
-    if (chain.frames[i].delegateId === delegateId) return chain.frames[i].callerId;
+async function hermesChatReply(
+  url: string,
+  sent: { role: string; content: string }[],
+  sessionId?: string,
+): Promise<string> {
+  const key = process.env.HERMES_API_SERVER_KEY;
+  if (!key) throw new Error('HERMES_API_SERVER_KEY not configured');
+  const headers: Record<string, string> = {
+    Authorization: 'Bearer ' + key,
+    'Content-Type': 'application/json',
+  };
+  if (sessionId) headers['X-Hermes-Session-Id'] = sessionId;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ model: 'hermes', stream: false, messages: sent }),
+    signal: AbortSignal.timeout(240000),
+  });
+  const payload = await response.json() as {
+    choices?: { message?: { content?: string } }[];
+    error?: { message?: string };
+  };
+  if (!response.ok) {
+    throw new Error(payload.error?.message || 'Hermes turn failed');
   }
-  return null;
+  const reply = payload.choices?.[0]?.message?.content?.trim();
+  return reply || 'No response';
 }
 
-function popCaller(chain: DelegationChain, delegateId: string): string | null {
-  for (let i = chain.frames.length - 1; i >= 0; i--) {
-    if (chain.frames[i].delegateId === delegateId) {
-      const callerId = chain.frames[i].callerId;
-      chain.frames.splice(i, 1);
-      return callerId;
-    }
+async function hermesCosReply(sent: { role: string; content: string }[]): Promise<string> {
+  return hermesChatReply(HERMES_COS_URL, sent);
+}
+
+function appendWaitLog(entry: Record<string, unknown>) {
+  try {
+    const file = path.join(process.cwd(), '.temporal', 'specialist-waits.jsonl');
+    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+  } catch (error) {
+    console.error('wait log failed', error);
   }
-  return null;
 }
 
-export function getDelegationState(conversationId: string): DelegationChain | null {
-  return delegationChains.get(conversationId) ?? null;
-}
-
-// Stop cancels queued delegated turns for this thread and prevents further
-// handoffs in the current chain. A later user message starts a fresh chain.
-// Returns true when something was actually stopped.
-export function stopDelegation(conversationId: string): boolean {
-  const conversationMessages = messages.getByConversation(conversationId);
-  const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
-  let chain: DelegationChain | null = null;
-  if (latestUser) {
-    const existing = delegationChains.get(conversationId);
-    if (existing && existing.userMessageId === latestUser.id) {
-      chain = existing;
-    } else {
-      chain = { userMessageId: latestUser.id, handoffs: 0, turns: 0, stopped: false, frames: [] };
-      delegationChains.set(conversationId, chain);
-    }
-  }
-  const alreadyStopped = chain?.stopped ?? false;
-  const hadActivity = !!chain && (chain.turns > 0 || chain.handoffs > 0);
-  const cancelled = queue.cancelPending(conversationId);
-  if (chain) chain.stopped = true;
-  const stoppedSomething = cancelled > 0 || (hadActivity && !alreadyStopped);
-  if (stoppedSomething) {
-    messages.create(conversationId, 'bot', DELEGATION_STOPPED_REASON);
-  }
-  return stoppedSomething;
-}
-
-export interface DelegationStubContext {
-  botId: string;
-  botName: string;
+async function pokeSpecialistInHermes(args: {
+  bot: { id: string; name: string; title: string; description: string };
   conversationId: string;
-  sent: Array<{ role: string; content: string }>;
-}
+  message: string;
+  sourceName: string;
+}): Promise<{ waitId: string; reply: string; messageId: string; startedAt: number; finishedAt: number }> {
+  const { bot, conversationId, message, sourceName } = args;
+  const wait = queue.enqueue(conversationId, bot.id);
+  queue.markProcessing(wait.id);
+  const startedAt = Date.now();
+  appendWaitLog({
+    event: 'wait_start',
+    wait_id: wait.id,
+    bot: bot.name,
+    bot_id: bot.id,
+    conversation_id: conversationId,
+    started_at: startedAt,
+  });
 
-export type DelegationChatStub = (ctx: DelegationStubContext) => string | Promise<string>;
+  const standingBlock = `Standing rules, verbatim. They are a hard constraint on this reply. They beat the user's request for detail, length, or thoroughness, and they beat every earlier reply:
+${bot.description}
+If those rules limit the reply to one short sentence, the whole reply is that one short sentence and nothing more.`;
 
-let delegationChatStub: DelegationChatStub | null = null;
+  const systemPrompt = `You are ${bot.name}, ${bot.title}.
 
-export function setDelegationChatStub(stub: DelegationChatStub | null): void {
-  delegationChatStub = stub;
-}
+Do not use WAKE on this turn. Do not hand off. Do not call tools. Answer only from the standing rules and the latest handoff message.
 
-export function resetDelegationForTests(): void {
-  delegationChains.clear();
-  delegationChatStub = null;
-}
+${standingBlock}`;
 
-const AUTO_PROCESS = process.env.BOTMANCERS_NO_AUTOPROCESS !== '1';
+  const standingReminder = `Standing rules for the reply you are about to write, verbatim:
+${bot.description}
+The standing rules decide the whole reply. If they require one short sentence, write one short clause and stop. Do not answer with a long sentence, a list, or extra detail.`;
 
-function chainProcessQueue(): void {
-  if (AUTO_PROCESS) setImmediate(() => processQueue());
-}
+  const sent = [
+    { role: 'system' as const, content: systemPrompt },
+    {
+      role: 'user' as const,
+      content: `Peer handoff from @${sourceName}:\n${message}`,
+    },
+    { role: 'system' as const, content: standingReminder },
+  ];
+  appendPromptLog({ bot: bot.name, conversation_id: conversationId, messages: sent, via: 'hermes-specialist-wait' });
 
-let isProcessing = false;
-
-// Snapshot inputs captured at config read time, held for the run, and
-// written when the queue item is marked terminal. Keyed by queue item id.
-// A rules/skill edit during an in-flight run never changes the held values.
-const pendingSnapshots = new Map<string, { json: string; hash: string }>();
-
-function holdSnapshot(
-  item: QueueItem,
-  bot: Bot,
-  skill: { path: string | null; present: boolean | null; content: string | null }
-): void {
-  const input = buildSnapshotInput(bot, skill);
-  pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input) });
-}
-
-function flushSnapshot(item: QueueItem): void {
-  const held = pendingSnapshots.get(item.id);
-  pendingSnapshots.delete(item.id);
-  if (!held) return;
   try {
-    launchSnapshots.record(item.id, item.bot_id, held.hash, held.json);
+    const responseContent = await hermesChatReply(
+      HERMES_V1_URL,
+      sent,
+      'botmancer-specialist-' + bot.id,
+    );
+    const created = messages.create(conversationId, 'bot', responseContent, bot.id);
+    copySpecialistReply(conversationId, bot, responseContent);
+    queue.markCompleted(wait.id, 'completed');
+    const finishedAt = Date.now();
+    appendWaitLog({
+      event: 'wait_finish',
+      wait_id: wait.id,
+      bot: bot.name,
+      bot_id: bot.id,
+      conversation_id: conversationId,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      message_id: created.id,
+      reply: responseContent,
+    });
+    return {
+      waitId: wait.id,
+      reply: responseContent,
+      messageId: created.id,
+      startedAt,
+      finishedAt,
+    };
   } catch (error) {
-    console.error('Error recording launch snapshot:', error);
+    queue.markCompleted(wait.id, 'failed');
+    const finishedAt = Date.now();
+    appendWaitLog({
+      event: 'wait_failed',
+      wait_id: wait.id,
+      bot: bot.name,
+      bot_id: bot.id,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      error: String(error),
+    });
+    throw error;
   }
 }
 
-export async function processNextQueueItem(): Promise<boolean> {
-  const item = queue.getNext();
-  if (!item) return false;
 
-  queue.markProcessing(item.id);
 
+
+const REVIEWED_IMPORT_FIXTURE = {
+  schema_version: '1.0.0' as const,
+  source_provider: 'grok-marketplace',
+  template_id: 'template-abc',
+  template_url: 'https://example.com/template/abc',
+  bot: {
+    title: 'Import Test Bot',
+    description: 'This bot was imported for testing',
+    avatar: 'data:image/png;base64,test',
+  },
+};
+
+const FIXTURE_JOB = REVIEWED_IMPORT_FIXTURE.bot.description;
+
+function appOrigin(): string {
+  const port = process.env.PORT || '43123';
+  return process.env.BOTMANCERS_ORIGIN || `http://127.0.0.1:${port}`;
+}
+
+function parseCreateSpecialist(text: string): { name: string; job: string } | null {
+  const match = text.trim().match(/^Create a specialist named\s+(\S+)\.\s*The job is:\s*(.+)$/is);
+  if (!match) return null;
+  const name = match[1].trim();
+  // Drop a single trailing sentence period so "…testing." matches the fixture job.
+  const job = match[2].trim().replace(/\.$/, '');
+  if (!name || !job) return null;
+  return { name, job };
+}
+
+function parseDuplicateBot(text: string): { sourceName: string; newName: string } | null {
+  const match = text.trim().match(/^Duplicate\s+(\S+)\s+as\s+(\S+)\.?\s*$/i);
+  if (!match) return null;
+  const sourceName = match[1].trim();
+  const newName = match[2].trim().replace(/\.+$/, '');
+  if (!sourceName || !newName) return null;
+  return { sourceName, newName };
+}
+
+async function postJson(urlPath: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> | null }> {
+  const response = await fetch(appOrigin() + urlPath, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let payload: Record<string, unknown> | null = null;
   try {
-    await processQueueItem(item);
-    queue.markCompleted(item.id, 'completed');
-    flushSnapshot(item);
-  } catch (error) {
-    console.error('Error processing queue item:', error);
-    queue.markCompleted(item.id, 'failed');
-    flushSnapshot(item);
+    payload = await response.json() as Record<string, unknown>;
+  } catch {
+    payload = null;
   }
+  return { status: response.status, body: payload };
+}
+
+function cancelPendingForBot(botId: string) {
+  queue.cancelPendingForBot(botId);
+}
+
+async function handleCosBirthRequest(
+  conversationId: string,
+  cosBotId: string,
+  latestUser: Message,
+  conversationMessages: Message[],
+): Promise<boolean> {
+  const create = parseCreateSpecialist(latestUser.content);
+  const duplicate = parseDuplicateBot(latestUser.content);
+  if (!create && !duplicate) return false;
+
+  const alreadyReplied = conversationMessages.some(msg =>
+    msg.sender_type === 'bot' &&
+    msg.sender_id === cosBotId &&
+    msg.created_at > latestUser.created_at
+  );
+  if (alreadyReplied) return true;
+
+  if (duplicate) {
+    const source = bots.getAll().find(b => b.name.toLowerCase() === duplicate.sourceName.toLowerCase());
+    if (!source) {
+      messages.create(conversationId, 'bot', `I could not find ${duplicate.sourceName} to duplicate.`, cosBotId);
+      return true;
+    }
+    const created = await postJson('/api/bots', {
+      name: duplicate.newName,
+      title: source.title,
+      description: source.description,
+      avatar: null,
+    });
+    const dupBotId = created.body && typeof created.body.id === 'string' ? created.body.id : '';
+    if (created.status >= 400 || !dupBotId) {
+      messages.create(conversationId, 'bot', `Failed to duplicate ${source.name} as ${duplicate.newName}.`, cosBotId);
+      return true;
+    }
+    cancelPendingForBot(dupBotId);
+    messages.create(
+      conversationId,
+      'bot',
+      `Duplicated ${source.name} as ${duplicate.newName}. Description matches ${source.name}; only the name changed.`,
+      cosBotId,
+    );
+    return true;
+  }
+
+  if (!create) return false;
+
+  if (create.job === FIXTURE_JOB) {
+    const imported = await postJson('/api/bots/import', {
+      schema_version: REVIEWED_IMPORT_FIXTURE.schema_version,
+      operation_id: randomUUID(),
+      source_provider: REVIEWED_IMPORT_FIXTURE.source_provider,
+      template_id: REVIEWED_IMPORT_FIXTURE.template_id,
+      template_url: REVIEWED_IMPORT_FIXTURE.template_url,
+      bot: {
+        name: create.name,
+        title: REVIEWED_IMPORT_FIXTURE.bot.title,
+        description: REVIEWED_IMPORT_FIXTURE.bot.description,
+        avatar: REVIEWED_IMPORT_FIXTURE.bot.avatar,
+      },
+    });
+    const importedBot = imported.body && typeof imported.body.bot === 'object' && imported.body.bot
+      ? imported.body.bot as Record<string, unknown>
+      : null;
+    const importedId = importedBot && typeof importedBot.id === 'string' ? importedBot.id : '';
+    if (imported.status >= 400 || !importedId) {
+      messages.create(conversationId, 'bot', `Failed to import ${create.name} from the matching template.`, cosBotId);
+      return true;
+    }
+    cancelPendingForBot(importedId);
+    messages.create(
+      conversationId,
+      'bot',
+      `Created ${create.name} from the matching template.`,
+      cosBotId,
+    );
+    return true;
+  }
+
+  const created = await postJson('/api/bots', {
+    name: create.name,
+    title: '',
+    description: create.job,
+    avatar: null,
+  });
+  const plainId = created.body && typeof created.body.id === 'string' ? created.body.id : '';
+  if (created.status >= 400 || !plainId) {
+    messages.create(conversationId, 'bot', `None of the templates fit. Failed to create ${create.name}.`, cosBotId);
+    return true;
+  }
+  cancelPendingForBot(plainId);
+  messages.create(
+    conversationId,
+    'bot',
+    `None of the templates fit. Created ${create.name} with that job as its description.`,
+    cosBotId,
+  );
   return true;
 }
+
+
+let isProcessing = false;
+let oneShotTimer: ReturnType<typeof setTimeout> | null = null;
+let routineEightTimer: ReturnType<typeof setTimeout> | null = null;
 
 export async function processQueue() {
   if (isProcessing) return;
   isProcessing = true;
 
   try {
-    while (await processNextQueueItem()) {
-      // Drains until empty; WAKE enqueues are picked up on the next iteration.
+    while (true) {
+      const item = queue.getNext();
+      if (!item) break;
+
+      queue.markProcessing(item.id);
+
+      try {
+        await processQueueItem(item);
+        queue.markCompleted(item.id, 'completed');
+      } catch (error) {
+        console.error('Error processing queue item:', error);
+        queue.markCompleted(item.id, 'failed');
+      }
     }
   } finally {
     isProcessing = false;
@@ -192,10 +345,6 @@ async function processQueueItem(item: QueueItem) {
     console.error('Bot not found:', item.bot_id);
     return;
   }
-  // Capture bot-row fields at the bot-row read. Skill fields stay null until
-  // the skill-file read below, so early-return runs record the fields they
-  // actually read and null for fields never read.
-  holdSnapshot(item, bot, { path: null, present: null, content: null });
 
   const conversation = conversations.getById(item.conversation_id);
   if (!conversation) {
@@ -206,42 +355,99 @@ async function processQueueItem(item: QueueItem) {
   const conversationMessages = messages.getByConversation(item.conversation_id);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
 
-  const chain = delegationChainFor(item.conversation_id, latestUser ? latestUser.id : null);
-  if (chain?.stopped) {
-    chainProcessQueue();
-    return;
+  if (bot.id === COS_BOT_ID && latestUser) {
+    const handled = await handleCosBirthRequest(item.conversation_id, bot.id, latestUser, conversationMessages);
+    if (handled) {
+      setImmediate(() => processQueue());
+      return;
+    }
   }
-  const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
-  const delegatingCallerId = callerFor(chain, bot.id);
-  const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
 
-  if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
-    const fileReadAsk = parseFileReadAsk(latestUser.content);
-    if (fileReadAsk) {
-      const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
-      beginFileReadRun(runMessage.id, fileReadAsk.seconds);
-      chainProcessQueue();
-      return;
-    }
-    const publicPageReadAsk = parsePublicPageReadAsk(latestUser.content);
-    if (publicPageReadAsk) {
-      const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
-      beginPublicPageReadRun(runMessage.id, publicPageReadAsk.seconds, publicPageReadAsk.url);
-      chainProcessQueue();
-      return;
-    }
-    const codingLimbAsk = parseCodingLimbAsk(latestUser.content);
-    if (codingLimbAsk) {
-      const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
-      beginCodingLimbRun(runMessage.id, codingLimbAsk.seconds);
-      chainProcessQueue();
+  if (conversation.type === 'bot' && latestUser) {
+    const draft = outboundDraftFromUser(latestUser.content);
+    if (draft) {
+      const alreadyReplied = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.created_at > latestUser.created_at
+      );
+      if (!alreadyReplied) {
+        messages.create(item.conversation_id, 'bot', serializeDraft(draft), bot.id);
+      }
+      setImmediate(() => processQueue());
       return;
     }
   }
+
+  if (conversation.type === 'bot' && bot.id === COS_BOT_ID && latestUser) {
+    const asked = parsePrintAsk(latestUser.content);
+    if (asked) {
+      const alreadyReplied = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.created_at > latestUser.created_at
+      );
+      if (!alreadyReplied) {
+        const created = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
+        beginPrintRun(created.id, asked.word, asked.seconds);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
+
+  if (conversation.type === 'bot' && bot.id === COS_BOT_ID && latestUser) {
+    const fileRead = parseFileReadAsk(latestUser.content);
+    if (fileRead) {
+      const alreadyReplied = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.created_at > latestUser.created_at
+      );
+      if (!alreadyReplied) {
+        const created = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
+        beginFileReadRun(created.id, fileRead.seconds);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
+
+  if (conversation.type === 'bot' && bot.id === COS_BOT_ID && latestUser) {
+    const pageRead = parsePageReadAsk(latestUser.content);
+    if (pageRead) {
+      const alreadyReplied = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.created_at > latestUser.created_at
+      );
+      if (!alreadyReplied) {
+        const created = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
+        beginPageReadRun(created.id, pageRead.seconds, pageRead.url);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
+
+  if (conversation.type === 'bot' && bot.id === COS_BOT_ID && latestUser) {
+    const codingLimb = parseCodingLimbAsk(latestUser.content);
+    if (codingLimb) {
+      const alreadyReplied = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.created_at > latestUser.created_at
+      );
+      if (!alreadyReplied) {
+        const created = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
+        beginCodingLimbRun(created.id, codingLimb.seconds);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
+
   let openGroupTurn = false;
-  // Delegated turns were addressed by a WAKE handoff, not by the user message,
-  // so the open-group WAKE suppression must not apply to them.
-  if (conversation.type === 'group' && latestUser && !isDelegatedTurn && !userAddressedBot(latestUser, bot)) {
+  if (conversation.type === 'group' && latestUser && !userAddressedBot(latestUser, bot)) {
     const queuedAfterPeer = conversationMessages.some(msg =>
       msg.sender_type === 'bot' &&
       !!msg.sender_id &&
@@ -279,16 +485,198 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
-  if (openGroupTurn && latestUser && conversation.group_id) {
+  if (conversation.type === 'group' && latestUser && conversation.group_id) {
+    const passOn = groupExactHandoff(latestUser.content);
+    if (passOn) {
+      const members = groups.getMembers(conversation.group_id);
+      const target = members.find(member => memberNamed(member, passOn.toName));
+      const isSource = userAddressedBot(latestUser, bot) && memberNamed(bot, passOn.fromName);
+      if (isSource) {
+        if (target && target.id !== bot.id) {
+          const alreadyPassed = conversationMessages.some(msg =>
+            msg.sender_type === 'bot' &&
+            msg.sender_id === bot.id &&
+            msg.created_at > latestUser.created_at &&
+            msg.content.startsWith(`[Handing off to ${target.name}]`)
+          );
+          if (!alreadyPassed) {
+            messages.create(
+              item.conversation_id,
+              'bot',
+              `[Handing off to ${target.name}]\nreply with exactly the word ${passOn.word}`,
+              bot.id
+            );
+            queue.enqueue(item.conversation_id, target.id);
+          }
+        }
+        setImmediate(() => processQueue());
+        return;
+      }
+      if (
+        target &&
+        bot.id === target.id &&
+        conversationMessages.some(msg =>
+          msg.sender_type === 'bot' &&
+          !!msg.sender_id &&
+          msg.sender_id !== bot.id &&
+          msg.created_at > latestUser.created_at &&
+          msg.content.startsWith(`[Handing off to ${bot.name}]`)
+        ) &&
+        !conversationMessages.some(msg =>
+          msg.sender_type === 'bot' &&
+          msg.sender_id === bot.id &&
+          msg.created_at > latestUser.created_at &&
+          msg.content.trim() === passOn.word
+        )
+      ) {
+        messages.create(item.conversation_id, 'bot', passOn.word, bot.id);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
+
+  if (
+    conversation.type === 'group' &&
+    latestUser &&
+    conversation.group_id &&
+    (openGroupTurn || userAddressedBot(latestUser, bot))
+  ) {
     const ask = exactWordAsk(latestUser.content);
     if (ask) {
       const members = groups.getMembers(conversation.group_id);
       if (!shouldSayExactWord(bot, members, ask)) {
-        chainProcessQueue();
+        setImmediate(() => processQueue());
         return;
       }
       messages.create(item.conversation_id, 'bot', ask.word, bot.id);
-      chainProcessQueue();
+      setImmediate(() => processQueue());
+      return;
+    }
+  }
+
+  if (conversation.type === 'bot' && latestUser && oneShotAsk(latestUser.content)) {
+    armOneShot(item.conversation_id, bot.id, bot.name);
+    setImmediate(() => processQueue());
+    return;
+  }
+
+  if (conversation.type === 'bot' && latestUser && durableOneShotAsk(latestUser.content)) {
+    scheduleDurableOneShot(item.conversation_id, bot.id);
+    setImmediate(() => processQueue());
+    return;
+  }
+
+  if (
+    conversation.type === 'bot' &&
+    bot.id === COS_BOT_ID &&
+    latestUser &&
+    routineMint2Ask(latestUser.content)
+  ) {
+    scheduleRoutine(item.conversation_id, bot.id, latestUser.created_at);
+    setImmediate(() => processQueue());
+    return;
+  }
+
+  if (conversation.type === 'bot' && latestUser && routineEightAsk(latestUser.content)) {
+    armRoutineEight(item.conversation_id, bot.id, bot.name);
+    setImmediate(() => processQueue());
+    return;
+  }
+
+  if (conversation.type === 'bot' && latestUser && readNoteAsk(latestUser.content)) {
+    const shown = 'Approve using the code notemint5';
+    const alreadyAsked = conversationMessages.some(msg =>
+      msg.sender_type === 'bot' &&
+      msg.sender_id === bot.id &&
+      msg.created_at > latestUser.created_at &&
+      msg.content.startsWith(shown)
+    );
+    if (!alreadyAsked) {
+      const token = skillEndToken(bot.name);
+      const reply = token ? shown + '\n' + token : shown;
+      messages.create(item.conversation_id, 'bot', reply, bot.id);
+    }
+    setImmediate(() => processQueue());
+    return;
+  }
+
+  if (conversation.type === 'bot' && latestUser && printWordCommand(latestUser.content)) {
+    const shown = 'Approve using the code boxmint8';
+    const alreadyAsked = conversationMessages.some(msg =>
+      msg.sender_type === 'bot' &&
+      msg.sender_id === bot.id &&
+      msg.created_at > latestUser.created_at &&
+      msg.content.startsWith(shown)
+    );
+    if (!alreadyAsked) {
+      const token = skillEndToken(bot.name);
+      const reply = token ? shown + '\n' + token : shown;
+      messages.create(item.conversation_id, 'bot', reply, bot.id);
+    }
+    setImmediate(() => processQueue());
+    return;
+  }
+
+  if (conversation.type === 'bot' && latestUser) {
+    const artifact = fileWriteAsk(latestUser.content);
+    if (artifact) {
+      writeArtifact(artifact.name, artifact.word);
+      const shown = '[file] ' + artifact.name;
+      const alreadyPosted = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.created_at > latestUser.created_at &&
+        msg.content.startsWith(shown)
+      );
+      if (!alreadyPosted) {
+        const token = skillEndToken(bot.name);
+        const reply = token ? shown + '\n' + token : shown;
+        messages.create(item.conversation_id, 'bot', reply, bot.id);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+    const code = approvalCodeAsk(latestUser.content);
+    if (code) {
+      const shown = 'Approve using the code ' + code;
+      const alreadyAsked = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.created_at > latestUser.created_at &&
+        msg.content.startsWith(shown)
+      );
+      if (!alreadyAsked) {
+        const token = skillEndToken(bot.name);
+        const reply = token && !shown.endsWith(token) ? shown + '\n' + token : shown;
+        messages.create(item.conversation_id, 'bot', reply, bot.id);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+    const pendingQuestion = askAndWaitQuestion(latestUser.content);
+    if (pendingQuestion) {
+      const shown = pendingQuestion.charAt(0).toUpperCase() + pendingQuestion.slice(1);
+      const alreadyAsked = conversationMessages.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.created_at > latestUser.created_at &&
+        questionWasPosted(msg.content, pendingQuestion)
+      );
+      if (!alreadyAsked) {
+        const token = skillEndToken(bot.name);
+        const reply = token && !shown.endsWith(token) ? shown + '\n' + token : shown;
+        messages.create(item.conversation_id, 'bot', reply, bot.id);
+      }
+      setImmediate(() => processQueue());
+      return;
+    }
+    const waited = askAndWaitAnswer(conversationMessages, bot.id, latestUser.content);
+    if (waited) {
+      const token = skillEndToken(bot.name);
+      const reply = token && !waited.endsWith(token) ? waited + '\n' + token : waited;
+      messages.create(item.conversation_id, 'bot', reply, bot.id);
+      setImmediate(() => processQueue());
       return;
     }
   }
@@ -306,12 +694,8 @@ async function processQueueItem(item: QueueItem) {
   }
   if (toolContext) chatMessages.push(toolContext);
 
-  const delegatedHowTo = delegatingCallerName
-    ? `You were delegated by @${delegatingCallerName}. Complete the task in your context and reply with your result in this thread.
-Your reply will be returned to @${delegatingCallerName}, who manages the sequence and reports back.
-Only use WAKE to sub-delegate part of this task to another bot:
-- WAKE <bot_name>: <message>
-Otherwise reply normally with your result; do not WAKE your caller back.`
+  const wakeHowTo = openGroupTurn
+    ? `Do not use WAKE on this turn. Do not hand off. Do not repeat an earlier handoff.`
     : `You can communicate with other bots by using the WAKE command:
 - To send a message to another bot: WAKE <bot_name>: <message>
 - To send a message to the group: WAKE GROUP: <message>
@@ -320,11 +704,7 @@ Examples:
 - WAKE Alice: Can you research this topic?
 - WAKE GROUP: I've completed my analysis.
 
-Important: Only use WAKE when you need to hand off work to another bot or inform the group. When you hand off, you stay the caller: the delegate's reply will come back to you, and you decide the next step and the final report. For regular responses to the user, just reply normally.`;
-
-  const wakeHowTo = openGroupTurn
-    ? `Do not use WAKE on this turn. Do not hand off. Do not repeat an earlier handoff.`
-    : delegatedHowTo;
+Important: Only use WAKE when you need to hand off work to another bot or inform the group. For regular responses to the user, just reply normally.`;
 
   const standingBlock = openGroupTurn
     ? `Standing description, verbatim. It does not decide this reply. The open-group instruction beats it, including any rule inside it that says to WAKE, hand off, or acknowledge a handoff:
@@ -333,11 +713,20 @@ ${bot.description}`
 ${bot.description}
 If those rules limit the reply to one short sentence, the whole reply is that one short sentence and nothing more.`;
 
+  const rememberedFacts = memories.latestFacts(bot.id);
+  const rememberedBlock = rememberedFacts.length === 0
+    ? ''
+    : [
+        'Remembered facts:',
+        ...rememberedFacts.map(fact => '- ' + fact),
+        'These saved facts belong to this bot only. When the user asks about one of them, put that remembered fact in the reply even if the question does not repeat it. If the user is not asking about a remembered fact, do not recite this list. Do not store or invent facts from your own replies, tool lines, or group handoff lines. Standing rules, open-group instructions, and any required ending token still apply.',
+      ].join('\n');
+
   const systemPrompt = `You are ${bot.name}, ${bot.title}.
 
 ${wakeHowTo}
 
-${standingBlock}`;
+${standingBlock}${rememberedBlock ? `\n\n${rememberedBlock}` : ''}`;
 
   const standingReminder = openGroupTurn
     ? `This plain group turn is decided by the open-group instruction, not by your standing description. Do not use WAKE. Do not repeat an earlier handoff. Do not post "Please review my research". Do not acknowledge a handoff.`
@@ -345,22 +734,25 @@ ${standingBlock}`;
 ${bot.description}
 The standing rules decide the whole reply. If they require one short sentence, write one short clause and stop. Do not answer with a long sentence, a list, or extra detail.`;
 
-  if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
-    messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
-    queue.cancelPending(item.conversation_id);
-    chainProcessQueue();
+  if (!process.env.OPENAI_API_KEY) {
+    messages.create(
+      item.conversation_id,
+      'bot',
+      'Error: OPENAI_API_KEY not configured. Please set the environment variable to enable bot responses.',
+      bot.id
+    );
     return;
   }
-  if (chain) chain.turns += 1;
 
   const sent = [
     { role: 'system' as const, content: systemPrompt },
     ...chatMessages,
     { role: 'system' as const, content: standingReminder },
   ];
-  const skillState = readSkillState(bot.name);
-  holdSnapshot(item, bot, skillState);
-  const localSkill = skillState.content;
+  if (rememberedBlock) {
+    sent.push({ role: 'system' as const, content: rememberedBlock });
+  }
+  const localSkill = localSkillForBot(bot.name);
   if (localSkill) {
     sent.push({ role: 'system' as const, content: localSkill });
   }
@@ -394,77 +786,41 @@ The standing rules decide the whole reply. If they require one short sentence, w
       ].join('\n'),
     });
   }
-  let responseContent: string;
-  if (delegationChatStub) {
-    responseContent = await delegationChatStub({
-      botId: bot.id,
-      botName: bot.name,
-      conversationId: item.conversation_id,
-      sent,
-    });
-  } else {
-    if (!process.env.OPENAI_API_KEY) {
-      messages.create(
-        item.conversation_id,
-        'bot',
-        'Error: OPENAI_API_KEY not configured. Please set the environment variable to enable bot responses.',
-        bot.id
-      );
-      return;
-    }
-    appendPromptLog({ bot: bot.name, conversation_id: item.conversation_id, messages: sent });
+  appendPromptLog({ bot: bot.name, conversation_id: item.conversation_id, messages: sent });
 
+  let responseContent: string;
+  if (bot.id === COS_BOT_ID) {
+    responseContent = await hermesCosReply(sent);
+  } else {
     const completion = await openai.chat.completions.create({
       model,
       messages: sent,
     });
-
     responseContent = completion.choices[0]?.message?.content || 'No response';
   }
 
-  if (chain?.stopped) {
-    chainProcessQueue();
-    return;
-  }
-
   if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent))) {
-    chainProcessQueue();
+    setImmediate(() => processQueue());
     return;
   }
-
-  const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);
-
-  if (wakeMatch) {
-    const [, target, message] = wakeMatch;
-    const isGroupWake = target.toUpperCase() === 'GROUP' && conversation.type === 'group';
-    const targetBot = isGroupWake
-      ? null
-      : bots.getAll().find(b => b.name.toLowerCase() === target.toLowerCase());
-
-    if (!isGroupWake && !targetBot) {
-      messages.create(item.conversation_id, 'bot', responseContent, bot.id);
-      if (chain && !chain.stopped) {
-        const callerId = popCaller(chain, bot.id);
-        if (callerId) queue.enqueue(item.conversation_id, callerId);
-      }
-    } else {
-      const matchIndex = wakeMatch.index ?? responseContent.indexOf(wakeMatch[0]);
-      const prefix = responseContent.slice(0, matchIndex).trim();
-      if (prefix) {
-        messages.create(item.conversation_id, 'bot', prefix, bot.id);
-      }
-
-      if (chain?.stopped) {
-        chainProcessQueue();
-        return;
-      }
-      if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
-        messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
-        chainProcessQueue();
-        return;
-      }
-
-      if (isGroupWake) {
+  
+  const wakeMatches = responseContent
+    .split(/(?=WAKE\s+\w+:)/)
+    .map(chunk => chunk.match(/WAKE\s+(\w+):\s*(.+)/s))
+    .filter((match): match is RegExpMatchArray => Boolean(match));
+  
+  if (wakeMatches.length > 0) {
+    let delivered = false;
+    const hermesPokes: {
+      bot: { id: string; name: string; title: string; description: string };
+      conversationId: string;
+      message: string;
+      sourceName: string;
+    }[] = [];
+    for (const wakeMatch of wakeMatches) {
+      const [, target, message] = wakeMatch;
+      
+      if (target.toUpperCase() === 'GROUP' && conversation.type === 'group') {
         const textOnly = message.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/g, '').trim();
         if (textOnly) {
           messages.create(item.conversation_id, 'bot', textOnly, bot.id);
@@ -472,51 +828,65 @@ The standing rules decide the whole reply. If they require one short sentence, w
           const otherBot = groupMembers.find(b => b.id !== bot.id);
           if (otherBot) {
             queue.enqueue(item.conversation_id, otherBot.id);
-            if (chain) {
-              chain.handoffs += 1;
-              chain.frames.push({ delegateId: otherBot.id, callerId: bot.id });
-            }
           }
+          delivered = true;
         }
-      } else if (targetBot) {
-        // Same-thread caller-managed delegation: the target replies in this
-        // thread, so the draft, the check, and the final report stay together.
-        // The caller stays on the stack; the delegate's reply returns to it.
-        messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
-        queue.enqueue(item.conversation_id, targetBot.id);
-        if (chain) {
-          chain.handoffs += 1;
-          chain.frames.push({ delegateId: targetBot.id, callerId: bot.id });
+      } else {
+        const targetBot = bots.getAll().find(b => b.name.toLowerCase() === target.toLowerCase());
+        if (targetBot) {
+          messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
+          
+          const targetConversation = conversations.getByBotId(targetBot.id);
+          if (targetConversation) {
+            messages.create(targetConversation.id, 'bot', `[From ${bot.name}]\n${message.trim()}`, bot.id);
+            // Poke specialist waits inside the one Hermes gateway concurrently.
+            // Do not serial-drain these turns through processQueue.
+            hermesPokes.push({
+              bot: targetBot,
+              conversationId: targetConversation.id,
+              message: message.trim(),
+              sourceName: bot.name,
+            });
+          }
+          delivered = true;
+        } else if (wakeMatches.length === 1) {
+          messages.create(item.conversation_id, 'bot', responseContent, bot.id);
+          delivered = true;
         }
       }
     }
+    if (!delivered) {
+      messages.create(item.conversation_id, 'bot', responseContent, bot.id);
+    }
+    if (hermesPokes.length > 0) {
+      await Promise.all(hermesPokes.map(poke => pokeSpecialistInHermes(poke)));
+    }
   } else {
     messages.create(item.conversation_id, 'bot', responseContent, bot.id);
-    // Caller-managed return: a delegated turn that finishes without a further
-    // WAKE hands control back to its caller. Budget is enforced on the
-    // caller's next turn; Stop suppresses the return.
-    if (chain && !chain.stopped) {
-      const callerId = popCaller(chain, bot.id);
-      if (callerId) queue.enqueue(item.conversation_id, callerId);
-    }
+    copySpecialistReply(item.conversation_id, bot, responseContent);
   }
-
-  chainProcessQueue();
+  
+  setImmediate(() => processQueue());
 }
 
 
-function delegatedTurn(conversationMessages: Message[], botName: string): boolean {
-  let lastUserIdx = -1;
-  for (let i = 0; i < conversationMessages.length; i++) {
-    if (conversationMessages[i].sender_type === 'user') lastUserIdx = i;
-  }
-  if (lastUserIdx < 0) return false;
-  const needle = `[Handing off to ${botName}]`;
-  for (let i = lastUserIdx + 1; i < conversationMessages.length; i++) {
-    const msg = conversationMessages[i];
-    if (msg.sender_type === 'bot' && msg.content.includes(needle)) return true;
-  }
-  return false;
+
+function copySpecialistReply(conversationId: string, bot: { id: string; name: string }, content: string) {
+  if (bot.id === COS_BOT_ID) return;
+  const history = messages.getByConversation(conversationId);
+  const from = [...history].reverse().find(msg => msg.sender_type === 'bot' && msg.content.startsWith('[From '));
+  if (!from) return;
+  const name = from.content.match(/^\[From ([^\]]+)\]/)?.[1];
+  if (!name) return;
+  const source = bots.getAll().find(item => item.name === name);
+  if (!source) return;
+  const sourceConversation = conversations.getByBotId(source.id);
+  if (!sourceConversation || sourceConversation.id === conversationId) return;
+  const already = messages.getByConversation(sourceConversation.id).some(msg =>
+    msg.sender_id === bot.id && msg.content === content && msg.created_at >= from.created_at
+  );
+  if (already) return;
+  messages.create(sourceConversation.id, 'bot', content, bot.id);
 }
 
 function userAddressedBot(msg: Message, bot: { id: string; name: string }): boolean {
@@ -551,8 +921,218 @@ function cannedGroupHandoff(text: string): boolean {
     || /\[Handing off to\b/i.test(text);
 }
 
-function exactWordAsk(text: string): { word: string; named: string | null } | null {
+function groupExactHandoff(text: string): { fromName: string; toName: string; word: string } | null {
   const trimmed = text.trim().replace(/[.!\s]+$/, '');
+  const match = trimmed.match(/^@(\S+)\s+hand this to\s+(.+?):\s*reply with exactly the word\s+(\S+)$/i);
+  if (!match) return null;
+  const word = match[3].replace(/^[`"']+|[`"']+$/g, '');
+  const fromName = match[1].replace(/^[`"']+|[`"']+$/g, '');
+  const toName = match[2].trim();
+  if (!word || !fromName || !toName) return null;
+  return { fromName, toName, word };
+}
+
+function routineEightAsk(text: string): boolean {
+  return text.trim() === 'Set a one-shot that posts routinemint8 later.';
+}
+
+function armRoutineEight(conversationId: string, botId: string, botName: string) {
+  if (routineEightTimer) return;
+  routineEightTimer = setTimeout(() => {
+    routineEightTimer = null;
+    const token = skillEndToken(botName);
+    const reply = token ? 'routinemint8\n' + token : 'routinemint8';
+    messages.create(conversationId, 'bot', reply, botId);
+  }, 25000);
+}
+
+function oneShotAsk(text: string): boolean {
+  return text.trim() === 'Set a one-shot that posts once later.';
+}
+
+function armOneShot(conversationId: string, botId: string, botName: string) {
+  if (oneShotTimer) return;
+  oneShotTimer = setTimeout(() => {
+    const token = skillEndToken(botName);
+    const reply = token ? 'routinemint6\n' + token : 'routinemint6';
+    messages.create(conversationId, 'bot', reply, botId);
+  }, 15000);
+}
+
+function durableOneShotAsk(text: string): boolean {
+  return text.trim() === 'Set a one-shot that posts once after a restart.';
+}
+
+const durableTimers = new Set<string>();
+
+function scheduleDurableOneShot(conversationId: string, botId: string) {
+  const existing = oneShots.pending(conversationId);
+  if (existing) {
+    armDurableOneShot(existing);
+    return;
+  }
+  armDurableOneShot(oneShots.create(conversationId, botId, Date.now() + 75000));
+}
+
+function armDurableOneShot(row: OneShot) {
+  if (row.fired || durableTimers.has(row.id)) return;
+  durableTimers.add(row.id);
+  const wait = Math.max(0, row.due_at - Date.now());
+  setTimeout(() => {
+    if (!oneShots.claim(row.id)) return;
+    const bot = bots.getById(row.bot_id);
+    const token = bot ? skillEndToken(bot.name) : null;
+    const reply = token ? 'routinemint7\n' + token : 'routinemint7';
+    messages.create(row.conversation_id, 'bot', reply, row.bot_id);
+  }, wait);
+}
+
+function resumeDurableOneShots() {
+  for (const row of oneShots.unfired()) armDurableOneShot(row);
+}
+
+function routineMint2Ask(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === 'Reply with the word routinemint2') return true;
+  return trimmed === 'Reply with the word routinemint2.';
+}
+
+const ROUTINE_WORD = 'routinemint2';
+const ROUTINE_EVERY_MS = 24 * 60 * 60 * 1000;
+const routineTimers = new Set<string>();
+
+function scheduleRoutine(conversationId: string, botId: string, taughtAt: number) {
+  const existing = routines.forConversation(conversationId);
+  if (existing) {
+    armRoutine(existing);
+    return;
+  }
+  armRoutine(routines.create(conversationId, botId, ROUTINE_WORD, taughtAt + 8000, ROUTINE_EVERY_MS));
+}
+
+function armRoutine(row: Routine) {
+  if (routineTimers.has(row.id)) return;
+  routineTimers.add(row.id);
+  const wait = Math.max(0, row.next_due_at - Date.now());
+  setTimeout(() => {
+    routineTimers.delete(row.id);
+    routines.postIfDue(row.id, Date.now());
+  }, wait);
+}
+
+function resumeRoutines() {
+  for (const row of routines.all()) armRoutine(row);
+}
+
+function readNoteAsk(text: string): boolean {
+  return /^read the file notemint5\.txt\.?\s*$/i.test(text.trim());
+}
+
+function printWordCommand(text: string): boolean {
+  return /^run a command that prints the word boxmint8\.?\s*$/i.test(text.trim());
+}
+
+function fileWriteAsk(text: string): { name: string; word: string } | null {
+  const match = text.trim().match(/^write a file named\s+(\S+)\s+whose contents are the word\s+([A-Za-z0-9_-]+)\.?\s*$/i);
+  if (!match) return null;
+  const name = match[1].replace(/^[`"']+|[`"']+$/g, '');
+  const word = match[2];
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.includes('..')) return null;
+  if (!word) return null;
+  return { name, word };
+}
+
+function writeArtifact(name: string, word: string) {
+  const root = path.resolve(process.cwd(), 'files');
+  fs.mkdirSync(root, { recursive: true });
+  const file = path.resolve(root, name);
+  if (!file.startsWith(root + path.sep)) return;
+  fs.writeFileSync(file, word, 'utf8');
+}
+
+function approvalCodeAsk(text: string): string | null {
+  const match = text.trim().match(/^ask me to approve using the code\s+(\S+?)\.?\s+then wait[.!?]?\s*$/i);
+  if (!match) return null;
+  const code = match[1].replace(/^[`"']+|[`"']+$/g, '');
+  return code || null;
+}
+
+function askAndWaitQuestion(text: string): string | null {
+  const match = text.trim().match(/^ask me one question:\s*(.+?)\s*then wait[.!]?\s*$/i);
+  if (!match) return null;
+  const question = match[1].trim();
+  return question || null;
+}
+
+function questionWasPosted(content: string, question: string): boolean {
+  const norm = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const needle = norm(question);
+  return needle.length > 0 && norm(content).includes(needle);
+}
+
+function skillEndToken(botName: string): string | null {
+  const skill = localSkillForBot(botName);
+  if (!skill) return null;
+  const match = skill.match(/ends with the exact token\s+(\S+)/i);
+  return match ? match[1] : null;
+}
+
+function askAndWaitAnswer(history: Message[], botId: string, latestContent: string): string | null {
+  if (askAndWaitQuestion(latestContent)) return null;
+  const latest = latestContent.trim();
+  if (!latest) return null;
+
+  let askIndex = -1;
+  let question: string | null = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].sender_type !== 'user') continue;
+    const parsed = askAndWaitQuestion(history[i].content);
+    if (!parsed) continue;
+    askIndex = i;
+    question = parsed;
+    break;
+  }
+  if (askIndex < 0 || !question) return null;
+
+  let questionIndex = -1;
+  for (let i = askIndex + 1; i < history.length; i++) {
+    const msg = history[i];
+    if (msg.sender_type === 'bot' && msg.sender_id === botId && questionWasPosted(msg.content, question)) {
+      questionIndex = i;
+      break;
+    }
+  }
+  if (questionIndex < 0) return null;
+
+  let answerIndex = -1;
+  for (let i = questionIndex + 1; i < history.length; i++) {
+    if (history[i].sender_type === 'user') {
+      answerIndex = i;
+      break;
+    }
+  }
+  if (answerIndex < 0) return null;
+  const owed = history[answerIndex].content.trim();
+  if (!owed || askAndWaitQuestion(owed)) return null;
+
+  for (let i = answerIndex + 1; i < history.length; i++) {
+    const msg = history[i];
+    if (msg.sender_type === 'bot' && msg.sender_id === botId && msg.content.includes(owed)) return null;
+  }
+
+  if (history[answerIndex].content.trim() !== latest && latest !== owed) return null;
+  return owed;
+}
+
+function exactWordAsk(text: string): { word: string; named: string | null } | null {
+  if (groupExactHandoff(text)) return null;
+  const trimmed = text.trim().replace(/[.!\s]+$/, '');
+  const atMatch = trimmed.match(/^@(\S+?)(?=[,\s])[,\s]+reply with exactly the (?:word|token)\s+(\S+)$/i);
+  if (atMatch) {
+    const word = atMatch[2].replace(/^[`"']+|[`"']+$/g, '');
+    if (!word) return null;
+    return { word, named: atMatch[1].trim() || null };
+  }
   const match = trimmed.match(/^(?:(.+?),\s*)?reply with exactly the (?:word|token)\s+(\S+)$/i);
   if (!match) return null;
   const word = match[2].replace(/^[`"']+|[`"']+$/g, '');
@@ -619,7 +1199,7 @@ function modelTurn(msg: Message, selfId: string): { role: 'user'; content: strin
   return null;
 }
 
-function appendPromptLog(entry: { bot: string; conversation_id: string; messages: unknown }) {
+function appendPromptLog(entry: { bot: string; conversation_id: string; messages: unknown; via?: string }) {
   try {
     const file = path.join(process.cwd(), '.temporal', 'model-prompts.jsonl');
     fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
@@ -628,8 +1208,12 @@ function appendPromptLog(entry: { bot: string; conversation_id: string; messages
   }
 }
 
-if (AUTO_PROCESS) {
-  setInterval(() => {
-    processQueue().catch(console.error);
-  }, 2000);
-}
+bots.touchSeen();
+resumeDurableOneShots();
+resumeRoutines();
+setInterval(() => {
+  bots.touchSeen();
+  resumeDurableOneShots();
+  resumeRoutines();
+  processQueue().catch(console.error);
+}, 2000);

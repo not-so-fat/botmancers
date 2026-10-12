@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { bots, conversations, queue } from '@/lib/db';
-import { processQueue } from '@/lib/agent';
+import { bots } from '@/lib/db';
 import { IMPORT_SCHEMA_VERSION } from '@/app/api/import-capabilities/route';
 import { createHash } from 'crypto';
 
@@ -83,7 +82,7 @@ function validateImportRequest(body: unknown): { valid: false; errors: string[] 
     errors.push('Field "bot" is required and must be an object');
   } else {
     const bot = req.bot as Record<string, unknown>;
-    
+
     if (!bot.name || typeof bot.name !== 'string' || !bot.name.trim()) {
       errors.push('Field "bot.name" is required and must be a non-empty string');
     }
@@ -108,7 +107,7 @@ function validateImportRequest(body: unknown): { valid: false; errors: string[] 
     }
   }
 
-  const topLevelUnsupportedFields = ['marketplace_data', 'grok_metadata', 'raw_payload'];
+  const topLevelUnsupportedFields = ['marketplace_data', 'grok_metadata', 'raw_payload', 'skills', 'memories', 'routines', 'integrations'];
   for (const field of topLevelUnsupportedFields) {
     if (req[field] !== undefined) {
       errors.push(`Field "${field}" is not supported. Use only Botmancers-compatible import format`);
@@ -125,7 +124,7 @@ function validateImportRequest(body: unknown): { valid: false; errors: string[] 
   };
 }
 
-function verifyImport(request: BotImportRequest, bot: typeof bots extends { getById: (id: string) => infer B } ? B : never): BotImportVerification {
+function verifyImport(request: BotImportRequest, bot: ReturnType<typeof bots.getById>): BotImportVerification {
   if (!bot) {
     return {
       matches: false,
@@ -180,7 +179,7 @@ function verifyImport(request: BotImportRequest, bot: typeof bots extends { getB
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    
+
     const validation = validateImportRequest(body);
     if (!validation.valid) {
       return NextResponse.json(
@@ -212,7 +211,7 @@ export async function POST(request: Request) {
 
       if (existingHash !== requestHash) {
         return NextResponse.json(
-          { 
+          {
             error: 'Conflict: operation_id already used with different content',
             operation_id: importRequest.operation_id,
             existing_bot_id: existingBot.id,
@@ -245,12 +244,8 @@ export async function POST(request: Request) {
       }
     );
 
-    const conversation = conversations.getByBotId(bot.id);
-    if (conversation) {
-      queue.enqueue(conversation.id, bot.id);
-      processQueue().catch(console.error);
-    }
-
+    // No greeting enqueue: verification must not call a model or add a message,
+    // and import-born bots keep an empty conversation. POST /api/bots still greets.
     return NextResponse.json({
       bot,
       created: true,

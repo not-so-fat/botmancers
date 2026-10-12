@@ -18,16 +18,16 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, botIds } = body;
+    const { name, botIds, ownerId } = body;
 
-    if (!name || !botIds || !Array.isArray(botIds) || botIds.length === 0) {
+    if (!name || !botIds || !Array.isArray(botIds) || botIds.length < 2 || botIds.length > 6) {
       return NextResponse.json(
-        { error: 'Name and botIds array are required' },
+        { error: 'A group needs a name and 2 to 6 bots' },
         { status: 400 }
       );
     }
 
-    const group = groups.create(name, botIds);
+    const group = groups.create(String(name), botIds.map(String), ownerId ? String(ownerId) : undefined);
     return NextResponse.json({
       ...group,
       members: groups.getMembers(group.id),
@@ -35,5 +35,25 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error('Error creating group:', error);
     return NextResponse.json({ error: 'Failed to create group' }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const body = await request.json();
+    const id = body.id ? String(body.id) : '';
+    const name = body.name ? String(body.name).trim() : '';
+    if (!id || !name) {
+      return NextResponse.json({ error: 'Group id and name are required' }, { status: 400 });
+    }
+    groups.rename(id, name);
+    const group = groups.getAll().find(item => item.id === id);
+    if (!group) {
+      return NextResponse.json({ error: 'Group not found' }, { status: 404 });
+    }
+    return NextResponse.json({ ...group, members: groups.getMembers(id) });
+  } catch (error) {
+    console.error('Error renaming group:', error);
+    return NextResponse.json({ error: 'Failed to rename group' }, { status: 500 });
   }
 }

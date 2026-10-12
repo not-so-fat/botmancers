@@ -131,18 +131,15 @@ async function runAcceptanceSteps1to7() {
   
   await sleep(5000);
 
-  // NOT-395: delegation is caller-managed in the same thread, so the handoff
-  // notice and the peer reply both land in the group conversation.
-  const wakeThread = await request('GET', `/api/conversations/${groupConv.id}/messages`);
-  const peerWakeMessage = wakeThread.find(
-    m => m.sender_type === 'bot' && m.sender_id === bot1.id &&
-      m.content.includes('[Handing off to ' + bot2.name + ']')
+  const bobMessages = await request('GET', `/api/conversations/${conv2.id}/messages`);
+  const peerWakeMessage = bobMessages.find(
+    m => m.sender_type === 'bot' && m.sender_id === bot1.id
   );
 
   let peerWakeObserved = false;
   if (peerWakeMessage) {
     console.log(`\n✓ PEER WAKE CONFIRMED!`);
-    console.log(`  ${bot1.name} handed off to ${bot2.name} in the group thread:`);
+    console.log(`  ${bot1.name} sent a message to ${bot2.name}'s conversation:`);
     console.log(`  "${peerWakeMessage.content.substring(0, 150)}${peerWakeMessage.content.length > 150 ? '...' : ''}"\n`);
     peerWakeObserved = true;
   } else {

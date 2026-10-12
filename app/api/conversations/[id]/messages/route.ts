@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { messages, conversations, queue, groups, bots } from '@/lib/db';
+import { messages, conversations, queue, groups, bots, memories } from '@/lib/db';
 import { processQueue } from '@/lib/agent';
 
 export async function GET(
@@ -20,6 +20,11 @@ export async function GET(
       }
       return msg;
     });
+
+    const conversation = conversations.getById(id);
+    if (conversation?.type === 'bot' && conversation.bot_id) {
+      bots.markRead(conversation.bot_id);
+    }
     
     return NextResponse.json(enrichedMessages);
   } catch (error) {
@@ -46,9 +51,17 @@ export async function POST(
       return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
     }
 
-    const addressed = addressedBots(String(content), mentionedBotId ? String(mentionedBotId) : undefined);
+    const addressed = addressedBots(
+      String(content),
+      mentionedBotId ? String(mentionedBotId) : undefined,
+      conversation.type === 'group'
+    );
     const handoffIds = addressed.map(bot => bot.id);
     const message = messages.create(id, 'user', content, undefined, handoffIds);
+    const wakeLineCount = String(content).split(/\r?\n/).filter(line => /WAKE\s+\w+\s*:/.test(line)).length;
+    if (conversation.type === 'bot' && conversation.bot_id && handoffIds.length === 0 && wakeLineCount < 2) {
+      memories.rememberStatement(conversation.bot_id, String(content));
+    }
     const queued = new Set<string>();
     const enqueueBot = (conversationId: string, botId: string) => {
       const key = conversationId + ':' + botId;
@@ -108,7 +121,17 @@ function mentionAt(content: string, name: string): boolean {
   return false;
 }
 
-function addressedBots(content: string, explicitId?: string) {
+function escapeName(name: string): string {
+  return name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function nameAsWord(content: string, name: string): boolean {
+  if (!name.trim()) return false;
+  const pattern = new RegExp('(^|[^\\p{L}\\p{N}_])' + escapeName(name) + '(?![\\p{L}\\p{N}_])', 'iu');
+  return pattern.test(content);
+}
+
+function addressedBots(content: string, explicitId?: string, bareNames = true) {
   const all = bots.getAll();
   const found = new Map<string, (typeof all)[number]>();
   if (explicitId) {
@@ -118,6 +141,13 @@ function addressedBots(content: string, explicitId?: string) {
   const sorted = [...all].sort((a, b) => b.name.length - a.name.length);
   for (const bot of sorted) {
     if (mentionAt(content, bot.name)) found.set(bot.id, bot);
+  }
+  const named: (typeof all)[number][] = [];
+  for (const bot of sorted) {
+    if (nameAsWord(content, bot.name)) named.push(bot);
+  }
+  if (bareNames && named.length >= 2) {
+    for (const bot of named) found.set(bot.id, bot);
   }
   return [...found.values()];
 }

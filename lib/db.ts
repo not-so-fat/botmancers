@@ -1,9 +1,7 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 
-// Overridable so the stub-model delegation test uses an isolated file.
-const DB_PATH = process.env.BOTMANCERS_DB_PATH || 'botmancers.db';
-const db = new Database(DB_PATH);
+const db = new Database('botmancers.db');
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -62,24 +60,43 @@ db.exec(`
     FOREIGN KEY (bot_id) REFERENCES bots(id)
   );
 
-  CREATE TABLE IF NOT EXISTS launch_snapshots (
-    id TEXT PRIMARY KEY,
-    bot_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    hash TEXT NOT NULL,
-    snapshot TEXT NOT NULL,
-    FOREIGN KEY (bot_id) REFERENCES bots(id)
-  );
-
   CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_queue_status ON processing_queue(status, created_at);
-  CREATE INDEX IF NOT EXISTS idx_snapshots_bot ON launch_snapshots(bot_id, created_at DESC);
 
   CREATE TABLE IF NOT EXISTS mcp_servers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     command TEXT NOT NULL,
     args TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    fact TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (bot_id) REFERENCES bots(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_memories_bot ON memories(bot_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS one_shots (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    due_at INTEGER NOT NULL,
+    fired INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS routines (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    word TEXT NOT NULL,
+    next_due_at INTEGER NOT NULL,
+    every_ms INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   );
 `);
@@ -94,6 +111,15 @@ if (!botColumns.some(column => column.name === 'color')) {
 }
 if (!botColumns.some(column => column.name === 'pinned')) {
   db.exec('ALTER TABLE bots ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+}
+if (!botColumns.some(column => column.name === 'last_seen')) {
+  db.exec('ALTER TABLE bots ADD COLUMN last_seen INTEGER');
+}
+if (!botColumns.some(column => column.name === 'unread')) {
+  db.exec('ALTER TABLE bots ADD COLUMN unread INTEGER NOT NULL DEFAULT 0');
+}
+if (!botColumns.some(column => column.name === 'hidden')) {
+  db.exec('ALTER TABLE bots ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
 }
 if (!botColumns.some(column => column.name === 'source_provider')) {
   db.exec('ALTER TABLE bots ADD COLUMN source_provider TEXT');
@@ -143,6 +169,9 @@ export interface Bot {
   avatar?: string;
   color: string;
   pinned?: number;
+  hidden?: number;
+  last_seen?: number | null;
+  unread?: number;
   created_at: number;
   source_provider?: string | null;
   template_id?: string | null;
@@ -227,7 +256,7 @@ export const bots = {
   },
 
   createFromImport: (
-    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp'>,
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp'>,
     provenance: ImportProvenance
   ): Bot => {
     const bot: Bot = {
@@ -253,12 +282,12 @@ export const bots = {
       bot.source_provider, bot.template_id, bot.template_url, bot.import_schema_version,
       bot.import_operation_id, bot.import_timestamp
     );
-    
+
     const conversationId = randomUUID();
     db.prepare(
       'INSERT INTO conversations (id, type, bot_id, created_at) VALUES (?, ?, ?, ?)'
     ).run(conversationId, 'bot', bot.id, bot.created_at);
-    
+
     return bot;
   },
 
@@ -286,6 +315,22 @@ export const bots = {
     db.prepare('UPDATE bots SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id);
   },
 
+  setHidden: (id: string, hidden: boolean): void => {
+    db.prepare('UPDATE bots SET hidden = ? WHERE id = ?').run(hidden ? 1 : 0, id);
+  },
+
+  touchSeen: (): void => {
+    db.prepare('UPDATE bots SET last_seen = ?').run(Date.now());
+  },
+
+  markUnread: (id: string): void => {
+    db.prepare('UPDATE bots SET unread = 1 WHERE id = ?').run(id);
+  },
+
+  markRead: (id: string): void => {
+    db.prepare('UPDATE bots SET unread = 0 WHERE id = ?').run(id);
+  },
+
   remove: (id: string): void => {
     const conversations = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').all(id) as { id: string }[];
     db.transaction(() => {
@@ -295,8 +340,8 @@ export const bots = {
         db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
       }
       db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
-      db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
+      db.prepare('DELETE FROM memories WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM bots WHERE id = ?').run(id);
     })();
   },
@@ -387,22 +432,85 @@ export const messages = {
       message.handoff_targets || null,
       message.created_at
     );
+
+    if (senderType === 'bot') {
+      if (senderId) bots.markUnread(senderId);
+      const owner = db.prepare(
+        'SELECT bot_id FROM conversations WHERE id = ? AND type = ?'
+      ).get(conversationId, 'bot') as { bot_id: string | null } | undefined;
+      if (owner?.bot_id && owner.bot_id !== senderId) bots.markUnread(owner.bot_id);
+    }
     
     return message;
-  },
-
-  getById: (id: string): Message | undefined => {
-    return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Message | undefined;
   },
 
   replaceContent: (id: string, content: string): void => {
     db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, id);
   },
   
+  getById: (id: string): Message | undefined => {
+    return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Message | undefined;
+  },
+
   getByConversation: (conversationId: string): Message[] => {
     return db.prepare(
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
     ).all(conversationId) as Message[];
+  },
+
+  repliesBetween: (msg: Message): Message[] => {
+    if (!msg.handoff_targets) return [];
+    let ids: string[] = [];
+    try {
+      const parsed = JSON.parse(msg.handoff_targets);
+      if (!Array.isArray(parsed) || parsed.length < 2) return [];
+      ids = parsed.map(id => String(id));
+    } catch {
+      return [];
+    }
+    const found: Message[] = [];
+    for (const botId of ids) {
+      const conversation = conversations.getByBotId(botId);
+      if (!conversation) continue;
+      const thread = db.prepare(
+        'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
+      ).all(conversation.id) as Message[];
+      const start = thread.find(item =>
+        item.sender_type === 'user' &&
+        item.content === msg.content &&
+        item.handoff_targets === msg.handoff_targets
+      );
+      if (!start) continue;
+      const from = thread.indexOf(start) + 1;
+      for (const item of thread.slice(from)) {
+        if (item.sender_type === 'user') break;
+        if (item.sender_type === 'bot' && item.sender_id === botId) found.push(item);
+      }
+    }
+    found.sort((a, b) => a.created_at - b.created_at);
+    return found;
+  },
+
+  latestFromBot: (botId: string): string => {
+    const own = conversations.getByBotId(botId);
+    const rows = db.prepare(
+      `SELECT content, conversation_id, created_at FROM messages
+       WHERE sender_type = 'bot' AND sender_id = ?
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 20`
+    ).all(botId) as { content: string; conversation_id: string; created_at: number }[];
+    for (const row of rows) {
+      if (own && row.conversation_id !== own.id) continue;
+      const prior = db.prepare(
+        `SELECT content FROM messages
+         WHERE conversation_id = ? AND created_at < ?
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT 1`
+      ).get(row.conversation_id, row.created_at) as { content: string } | undefined;
+      if (prior && prior.content.startsWith('[From ')) continue;
+      return row.content;
+    }
+    return '';
   },
 
   // Prior bot sentence from the source thread of an @-handoff (not the mention text).
@@ -491,44 +599,10 @@ export const queue = {
     ).run(status, Date.now(), id);
   },
 
-  cancelPending: (conversationId: string): number => {
-    const result = db.prepare(
-      "DELETE FROM processing_queue WHERE conversation_id = ? AND status = 'pending'"
-    ).run(conversationId);
-    return Number(result.changes);
-  },
-
-  countPending: (conversationId?: string): number => {
-    const row = conversationId
-      ? (db.prepare(
-          "SELECT COUNT(*) AS n FROM processing_queue WHERE status = 'pending' AND conversation_id = ?"
-        ).get(conversationId) as { n: number })
-      : (db.prepare(
-          "SELECT COUNT(*) AS n FROM processing_queue WHERE status = 'pending'"
-        ).get() as { n: number });
-    return row.n;
-  },
-};
-
-export interface LaunchSnapshot {
-  id: string;
-  bot_id: string;
-  created_at: number;
-  hash: string;
-  snapshot: string;
-}
-
-export const launchSnapshots = {
-  record: (id: string, botId: string, hash: string, snapshot: string): void => {
+  cancelPendingForBot: (botId: string): void => {
     db.prepare(
-      'INSERT OR IGNORE INTO launch_snapshots (id, bot_id, created_at, hash, snapshot) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, botId, Date.now(), hash, snapshot);
-  },
-
-  listByBot: (botId: string): LaunchSnapshot[] => {
-    return db.prepare(
-      'SELECT * FROM launch_snapshots WHERE bot_id = ? ORDER BY created_at DESC, rowid DESC'
-    ).all(botId) as LaunchSnapshot[];
+      `DELETE FROM processing_queue WHERE bot_id = ? AND status = 'pending'`
+    ).run(botId);
   },
 };
 
@@ -557,6 +631,170 @@ export const mcpServers = {
 
   list: (): McpServer[] => {
     return db.prepare('SELECT * FROM mcp_servers ORDER BY created_at ASC').all() as McpServer[];
+  },
+};
+
+export interface Memory {
+  id: string;
+  bot_id: string;
+  fact: string;
+  created_at: number;
+}
+
+const MEMORY_CAP = 20;
+
+function isBareQuestion(text: string): boolean {
+  if (/^(who|what|when|where|why|how|which|whose|whom)\b/i.test(text)) {
+    if (/^(what|how|why|where|when|who)\s+i\b/i.test(text)) return false;
+    return true;
+  }
+  if (/^(do|does|did|can|could|would|will|should|shall|is|are|am|was|were|have|has)\s+(you|i|we|they|he|she|it|there|the|a|an|my|your|our)\b/i.test(text)) {
+    return true;
+  }
+  if (/^(tell me|please tell)\b/i.test(text)) return true;
+  return false;
+}
+
+export function isRememberableStatement(content: string): boolean {
+  const text = content.trim();
+  if (!text) return false;
+  if (/[?？]\s*$/.test(text)) return false;
+  if (/^\[mcp\]/i.test(text)) return false;
+  if (/^\[tool (?:call|result)\]/i.test(text)) return false;
+  if (/^\[Handing off to\b/i.test(text)) return false;
+  if (/^\[From [^\]]+\]/i.test(text)) return false;
+  if (/^Peer handoff:/i.test(text)) return false;
+  if (/reply with exactly\b/i.test(text)) return false;
+  if (isBareQuestion(text)) return false;
+  return true;
+}
+
+export const memories = {
+  rememberStatement: (botId: string, content: string): void => {
+    if (!botId || !isRememberableStatement(content)) return;
+    const fact = content.trim();
+    db.prepare(
+      'INSERT INTO memories (id, bot_id, fact, created_at) VALUES (?, ?, ?, ?)'
+    ).run(randomUUID(), botId, fact, Date.now());
+    db.prepare(`
+      DELETE FROM memories
+      WHERE bot_id = ?
+        AND id NOT IN (
+          SELECT id FROM (
+            SELECT id FROM memories
+            WHERE bot_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+          )
+        )
+    `).run(botId, botId, MEMORY_CAP);
+  },
+
+  latestFacts: (botId: string, limit: number = MEMORY_CAP): string[] => {
+    const cap = limit > 0 ? Math.min(limit, MEMORY_CAP) : MEMORY_CAP;
+    const rows = db.prepare(
+      'SELECT fact FROM memories WHERE bot_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?'
+    ).all(botId, cap) as { fact: string }[];
+    return rows.map(row => row.fact).reverse();
+  },
+};
+
+export interface OneShot {
+  id: string;
+  conversation_id: string;
+  bot_id: string;
+  due_at: number;
+  fired: number;
+  created_at: number;
+}
+
+export const oneShots = {
+  create: (conversationId: string, botId: string, dueAt: number): OneShot => {
+    const row: OneShot = {
+      id: randomUUID(),
+      conversation_id: conversationId,
+      bot_id: botId,
+      due_at: dueAt,
+      fired: 0,
+      created_at: Date.now(),
+    };
+    db.prepare(
+      'INSERT INTO one_shots (id, conversation_id, bot_id, due_at, fired, created_at) VALUES (?, ?, ?, ?, 0, ?)'
+    ).run(row.id, row.conversation_id, row.bot_id, row.due_at, row.created_at);
+    return row;
+  },
+
+  pending: (conversationId: string): OneShot | undefined => {
+    return db.prepare(
+      'SELECT * FROM one_shots WHERE conversation_id = ? AND fired = 0 ORDER BY due_at ASC LIMIT 1'
+    ).get(conversationId) as OneShot | undefined;
+  },
+
+  unfired: (): OneShot[] => {
+    return db.prepare(
+      'SELECT * FROM one_shots WHERE fired = 0 ORDER BY due_at ASC'
+    ).all() as OneShot[];
+  },
+
+  claim: (id: string): boolean => {
+    const result = db.prepare(
+      'UPDATE one_shots SET fired = 1 WHERE id = ? AND fired = 0'
+    ).run(id);
+    return result.changes === 1;
+  },
+};
+
+export interface Routine {
+  id: string;
+  conversation_id: string;
+  bot_id: string;
+  word: string;
+  next_due_at: number;
+  every_ms: number;
+  created_at: number;
+}
+
+export const routines = {
+  create: (conversationId: string, botId: string, word: string, nextDueAt: number, everyMs: number): Routine => {
+    const row: Routine = {
+      id: randomUUID(),
+      conversation_id: conversationId,
+      bot_id: botId,
+      word,
+      next_due_at: nextDueAt,
+      every_ms: everyMs,
+      created_at: Date.now(),
+    };
+    db.prepare(
+      'INSERT INTO routines (id, conversation_id, bot_id, word, next_due_at, every_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(row.id, row.conversation_id, row.bot_id, row.word, row.next_due_at, row.every_ms, row.created_at);
+    return row;
+  },
+
+  forConversation: (conversationId: string): Routine | undefined => {
+    return db.prepare(
+      'SELECT * FROM routines WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 1'
+    ).get(conversationId) as Routine | undefined;
+  },
+
+  all: (): Routine[] => {
+    return db.prepare(
+      'SELECT * FROM routines ORDER BY next_due_at ASC'
+    ).all() as Routine[];
+  },
+
+  postIfDue: (id: string, now: number): boolean => {
+    const run = db.transaction(() => {
+      const row = db.prepare('SELECT * FROM routines WHERE id = ?').get(id) as Routine | undefined;
+      if (!row || row.next_due_at > now) return false;
+      const advanced = db.prepare(
+        'UPDATE routines SET next_due_at = next_due_at + every_ms WHERE id = ? AND next_due_at = ?'
+      ).run(id, row.next_due_at);
+      if (advanced.changes !== 1) return false;
+      messages.create(row.conversation_id, 'bot', '[routine]\n' + row.word, row.bot_id);
+      return true;
+    });
+    return run();
   },
 };
 
