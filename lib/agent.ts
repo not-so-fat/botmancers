@@ -52,6 +52,17 @@ import {
   setApprovalMessage,
   ApprovalActionRefused,
 } from './approvals';
+import {
+  delegateCodingViaDeck,
+  formatDeckHowTo,
+  listAvailableDeckRuntimes,
+  parseDeckDirective,
+  parseDeckRuntime,
+  resolveDeckForCwd,
+  DECK_DIRECTIVE_PATTERN,
+  DECK_REVIEW_FOCUS_DEFAULT,
+} from './agent-deck-run';
+import type { DeckDelegationResult } from './agent-deck-run';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -69,6 +80,28 @@ export const DELEGATION_DEPTH_REASON =
   `[Delegation limit] Depth limit reached (max ${DELEGATION_MAX_DEPTH} handoffs). No further handoff.`;
 export const DELEGATION_BUDGET_REASON =
   `[Delegation limit] Budget limit reached (max ${DELEGATION_MAX_DELEGATED_TURNS} delegated turns per user message). No further delegated turn.`;
+// Capability-probe result advertised to the model in the DECK how-to. Starts
+// unprobed (null) and refreshes in the background, so prompt construction
+// stays synchronous and never blocks a turn on `--version` checks. Until the
+// first probe completes the how-to reports 'none verified yet'; no runtime
+// is named before its launch path is verified. Tests override it directly.
+let cachedDeckRuntimes: string[] | null = null;
+
+export function setCachedDeckRuntimesForTests(runtimes: string[] | null): void {
+  cachedDeckRuntimes = runtimes;
+}
+
+function refreshCachedDeckRuntimes(): void {
+  listAvailableDeckRuntimes().then(
+    runtimes => {
+      cachedDeckRuntimes = runtimes;
+    },
+    () => {
+      // Keep the last advertised set; a failed probe never blanks the prompt.
+    }
+  );
+}
+
 export const DELEGATION_STOPPED_REASON =
   '[Delegation stopped] Delegation stopped. No further handoffs or delegated turns.';
 
@@ -1378,12 +1411,23 @@ async function processQueueItem(item: QueueItem) {
     });
   }
 
+  // Advertise the deck path to the model: without this, only test stubs ever
+  // emit DECK. The probe result is reported as-is: while it is still null
+  // the how-to says 'none verified yet', and the background refresh fills
+  // in the actual probed set for later turns.
+  if (cachedDeckRuntimes === null) {
+    refreshCachedDeckRuntimes();
+  }
+  const deckHowTo = formatDeckHowTo(cachedDeckRuntimes);
+
   const delegatedHowTo = delegatingCallerName
     ? `You were delegated by @${delegatingCallerName}. Complete the task in your context and reply with your result in this thread.
 Your reply will be returned to @${delegatingCallerName}, who manages the sequence and reports back.
 Only use WAKE to sub-delegate part of this task to another bot:
 - WAKE <bot_name>: <message>
-Otherwise reply normally with your result; do not WAKE your caller back.`
+Otherwise reply normally with your result; do not WAKE your caller back.
+
+${deckHowTo}`
     : `You can communicate with other bots by using the WAKE command:
 - To send a message to another bot: WAKE <bot_name>: <message>
 - To send a message to the group: WAKE GROUP: <message>
@@ -1392,7 +1436,9 @@ Examples:
 - WAKE Alice: Can you research this topic?
 - WAKE GROUP: I've completed my analysis.
 
-Important: Only use WAKE when you need to hand off work to another bot or inform the group. When you hand off, you stay the caller: the delegate's reply will come back to you, and you decide the next step and the final report. For regular responses to the user, just reply normally.`;
+Important: Only use WAKE when you need to hand off work to another bot or inform the group. When you hand off, you stay the caller: the delegate's reply will come back to you, and you decide the next step and the final report. For regular responses to the user, just reply normally.
+
+${deckHowTo}`;
 
   const wakeHowTo = openGroupTurn
     ? `Do not use WAKE on this turn. Do not hand off. Do not repeat an earlier handoff.`
@@ -1511,7 +1557,9 @@ The standing rules decide the whole reply. If they require one short sentence, w
     return;
   }
 
-  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent))) {
+  // A DECK directive on an open group turn violates that turn's no-handoff
+  // instruction the same way a canned WAKE does, so it is dropped silently.
+  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent) || parseDeckDirective(responseContent))) {
     chainProcessQueue();
     return;
   }
@@ -1650,6 +1698,104 @@ The standing rules decide the whole reply. If they require one short sentence, w
         return;
       }
     }
+  }
+
+  // Deck coding delegation (NOT-395): a `DECK <runtime>: <task>` directive
+  // in the model reply routes this turn through the agent-deck adapter
+  // (implement, review, resume) instead of another bot. It consumes one
+  // handoff of the existing depth budget on top of this turn's already
+  // counted delegated turn, refuses with the same depth reason when
+  // exhausted, and honours Stop before, during (via the adapter's stopped
+  // callback), and after the sequence. The deck comes from the working
+  // directory's own agent-deck assignment, so no second copy of it lives
+  // on bot records. On success or adapter-reported failure the
+  // caller-managed return below still applies, so a delegate's DECK turn
+  // reports back to its caller like any other delegated turn.
+  const deckDirective = parseDeckDirective(responseContent);
+  if (deckDirective) {
+    // Prefix is text before the anchored directive line; the shared pattern
+    // keeps this consistent with the parser so WAKE text and prose survive.
+    const deckMatch = responseContent.match(DECK_DIRECTIVE_PATTERN);
+    const deckMatchAt = deckMatch?.index ?? -1;
+    const deckPrefix = (deckMatchAt >= 0 ? responseContent.slice(0, deckMatchAt) : '').trim();
+    if (deckPrefix) {
+      recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, deckPrefix), bot.id));
+    }
+    if (chain?.stopped) {
+      chainProcessQueue();
+      return;
+    }
+    let deckClient;
+    try {
+      deckClient = parseDeckRuntime(deckDirective.client);
+    } catch {
+      messages.create(
+        item.conversation_id,
+        'bot',
+        `[Deck failed] runtime=${deckDirective.client} deck=unknown error=Invalid agent-deck runtime.`,
+        bot.id
+      );
+      // Adapter failures still return to the caller: without this the
+      // caller frame stays on the stack and the chain stalls.
+      if (chain && !chain.stopped) {
+        const callerId = popCaller(chain, bot.id);
+        if (callerId) queue.enqueue(item.conversation_id, callerId);
+      }
+      chainProcessQueue();
+      return;
+    }
+    if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
+      messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
+      chainProcessQueue();
+      return;
+    }
+    const deckCwd = process.env.BOTMANCERS_DECK_CWD || process.cwd();
+    let deckId: string;
+    try {
+      deckId = resolveDeckForCwd(deckCwd);
+    } catch (error) {
+      messages.create(
+        item.conversation_id,
+        'bot',
+        `[Deck failed] runtime=${deckClient} deck=unknown error=${String(error).slice(0, 300)}`,
+        bot.id
+      );
+      // Same caller-managed return as above: the failure belongs to the
+      // caller, so the caller is re-enqueued to report it.
+      if (chain && !chain.stopped) {
+        const callerId = popCaller(chain, bot.id);
+        if (callerId) queue.enqueue(item.conversation_id, callerId);
+      }
+      chainProcessQueue();
+      return;
+    }
+    if (chain) chain.handoffs += 1;
+    let deckDelegation: DeckDelegationResult | null = null;
+    let deckFailed = false;
+    try {
+      deckDelegation = await delegateCodingViaDeck({
+        conversationId: item.conversation_id,
+        botId: bot.id,
+        deck: deckId,
+        client: deckClient,
+        cwd: deckCwd,
+        task: deckDirective.task,
+        reviewFocus: DECK_REVIEW_FOCUS_DEFAULT,
+        isStopped: () => chain?.stopped ?? false,
+      });
+    } catch {
+      // [Deck failed] is already in the thread; the caller-managed return
+      // below still runs so the caller can report it.
+      deckFailed = true;
+    }
+    // A Stop-silent null (neither result nor failure) suppresses the
+    // return, like every other stopped path.
+    if ((deckDelegation || deckFailed) && chain && !chain.stopped) {
+      const callerId = popCaller(chain, bot.id);
+      if (callerId) queue.enqueue(item.conversation_id, callerId);
+    }
+    chainProcessQueue();
+    return;
   }
 
   const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);
