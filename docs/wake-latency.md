@@ -29,8 +29,7 @@ tables below; the attached log is the raw record.
   with a timestamp wrapper kept next to it (wrapper adds invoke time and
   per-message arrival times; runner behavior itself unchanged). Same options:
   `settingSources: ['project','user']`, `permissionMode: 'acceptEdits'` with
-  no tools allowed (Bash, Edit, Write disallowed), `cwd` = the botmancers
-  repo.
+  Bash, Edit, Write disallowed, `cwd` = the botmancers repo.
 - Repo: `botmancers`, HEAD `6faaeba`.
 - Path (A): new session via `query()`.
 - Path (B): resume via `query()` with `resume: sessionId`, using small seeded
