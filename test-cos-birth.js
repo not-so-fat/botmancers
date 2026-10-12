@@ -29,7 +29,7 @@ const agent = jiti('./lib/agent.ts');
 const birth = jiti('./lib/birth.ts');
 const skills = jiti('./lib/skills.ts');
 
-const { bots, conversations, messages, queue } = db;
+const { bots, conversations, messages, queue, oneShots, routines } = db;
 
 let failures = 0;
 const skillNames = [];
@@ -115,7 +115,7 @@ async function main() {
   assert(snapshotDup.kind === 'duplicate' && snapshotDup.sourceName === 'Scout', 'snapshot duplicate sentence parses');
   const exitCreate = birth.parseBirthDeterministic('make me a specialist called Scout that tracks competitor pricing');
   assert(exitCreate.kind === 'create' && exitCreate.name === 'Scout', 'exit-predicate wording parses');
-  assert(!/that\s/i.test(exitCreate.job || 'that') || (exitCreate.job || '').length > 0, 'exit job extracted');
+  assert(exitCreate.kind === 'create' && exitCreate.job === 'tracks competitor pricing', 'exit job extracted');
   const neg1 = birth.parseBirthDeterministic('What does a specialist do?');
   const neg2 = birth.parseBirthDeterministic('Duplicate bridge is a fun card game.');
   const neg3 = birth.parseBirthDeterministic('Tell me about Scout.');
@@ -250,6 +250,32 @@ async function main() {
   assert(first.ok && second.ok && first.bot.id === second.bot.id, 'retry returns the same bot id');
   trackSkill('IdemBot');
   log('PASS: import idempotent on retry');
+
+  // Case 9: a due timer tick posts after a birth reply (NOT-411 regression).
+  // The latest user message is an already-answered birth request; the tick
+  // launch must consume the tick instead of being swallowed by the birth
+  // hook's already-replied guard.
+  log('\nCase 9: due tick posts after a birth reply');
+  messages.create(conv.id, 'user', 'make me a specialist called Tickbot that files weekly reports');
+  queue.enqueue(conv.id, cos.id);
+  await drain();
+  const tickbot = bots.getAll().find(b => b.name === 'Tickbot');
+  assert(!!tickbot, 'Tickbot created for the tick regression');
+  const callsBeforeTick = delegationCalls;
+  oneShots.create(conv.id, cos.id, Date.now() - 1000);
+  queue.enqueue(conv.id, cos.id);
+  await drain();
+  const tickPosts = messages.getByConversation(conv.id).filter(m => m.sender_type === 'bot' && m.content === agent.ONE_SHOT_MESSAGE);
+  assert(tickPosts.length === 1, `due one-shot posts after a birth reply (got ${tickPosts.length})`);
+  assert(delegationCalls === callsBeforeTick, 'tick after birth never calls the model');
+  assert(oneShots.pending(conv.id) === undefined, 'one-shot row claimed after firing');
+  routines.create(conv.id, cos.id, 'tickword', Date.now() - 1000, 60000);
+  queue.enqueue(conv.id, cos.id);
+  await drain();
+  const routinePosts = messages.getByConversation(conv.id).filter(m => m.sender_type === 'bot' && m.content === '[routine]\ntickword');
+  assert(routinePosts.length === 1, `due routine posts after a birth reply (got ${routinePosts.length})`);
+  assert(delegationCalls === callsBeforeTick, 'routine tick after birth never calls the model');
+  log('PASS: due tick after birth');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

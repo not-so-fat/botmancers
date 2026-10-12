@@ -587,7 +587,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      `None of the templates fit. Failed to create ${intent.name}.`,
+      `Failed to create ${intent.name}: invalid name.`,
       cosBotId
     );
     return true;
