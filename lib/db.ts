@@ -168,6 +168,9 @@ if (!botColumns.some(column => column.name === 'import_operation_id')) {
 if (!botColumns.some(column => column.name === 'import_timestamp')) {
   db.exec('ALTER TABLE bots ADD COLUMN import_timestamp INTEGER');
 }
+if (!botColumns.some(column => column.name === 'hermes_profile')) {
+  db.exec('ALTER TABLE bots ADD COLUMN hermes_profile TEXT');
+}
 
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_import_operation 
@@ -208,6 +211,7 @@ export interface Bot {
   import_schema_version?: string | null;
   import_operation_id?: string | null;
   import_timestamp?: number | null;
+  hermes_profile?: string | null;
 }
 
 export interface ImportProvenance {
@@ -227,6 +231,14 @@ if (!messageColumns.some(column => column.name === 'handoff_targets')) {
 const groupColumns = db.prepare('PRAGMA table_info(groups)').all() as { name: string }[];
 if (!groupColumns.some(column => column.name === 'owner_bot_id')) {
   db.exec('ALTER TABLE groups ADD COLUMN owner_bot_id TEXT');
+}
+
+// Transport that served a launch ('openai' or 'hermes-gateway'). Outside the
+// hashed snapshot input: it records how the turn ran, not the effective
+// configuration, so backfilled rows read 'openai'.
+const snapshotColumns = db.prepare('PRAGMA table_info(launch_snapshots)').all() as { name: string }[];
+if (!snapshotColumns.some(column => column.name === 'transport')) {
+  db.exec("ALTER TABLE launch_snapshots ADD COLUMN transport TEXT NOT NULL DEFAULT 'openai'");
 }
 
 export interface Group {
@@ -273,8 +285,8 @@ export const bots = {
       created_at: overrides?.created_at ?? Date.now(),
     };
     db.prepare(
-      'INSERT INTO bots (id, name, title, description, avatar, color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color, bot.created_at);
+      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color, bot.hermes_profile || null, bot.created_at);
     
     const conversationId = randomUUID();
     db.prepare(
@@ -285,7 +297,7 @@ export const bots = {
   },
 
   createFromImport: (
-    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp'>,
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile'>,
     provenance: ImportProvenance
   ): Bot => {
     const bot: Bot = {
@@ -346,6 +358,11 @@ export const bots = {
 
   setHidden: (id: string, hidden: boolean): void => {
     db.prepare('UPDATE bots SET hidden = ? WHERE id = ?').run(hidden ? 1 : 0, id);
+  },
+
+  setHermesProfile: (id: string, profile: string | null): void => {
+    const value = profile && profile.trim() ? profile.trim() : null;
+    db.prepare('UPDATE bots SET hermes_profile = ? WHERE id = ?').run(value, id);
   },
 
   touchSeen: (): void => {
@@ -645,6 +662,16 @@ export const approvals = {
 };
 
 export const queue = {
+  getById: (id: string): QueueItem | undefined => {
+    return db.prepare('SELECT * FROM processing_queue WHERE id = ?').get(id) as QueueItem | undefined;
+  },
+
+  listByConversation: (conversationId: string): QueueItem[] => {
+    return db.prepare(
+      'SELECT * FROM processing_queue WHERE conversation_id = ? ORDER BY created_at ASC'
+    ).all(conversationId) as QueueItem[];
+  },
+
   enqueue: (conversationId: string, botId: string): QueueItem => {
     const item: QueueItem = {
       id: randomUUID(),
@@ -704,13 +731,14 @@ export interface LaunchSnapshot {
   created_at: number;
   hash: string;
   snapshot: string;
+  transport: string;
 }
 
 export const launchSnapshots = {
-  record: (id: string, botId: string, hash: string, snapshot: string): void => {
+  record: (id: string, botId: string, hash: string, snapshot: string, transport = 'openai'): void => {
     db.prepare(
-      'INSERT OR IGNORE INTO launch_snapshots (id, bot_id, created_at, hash, snapshot) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, botId, Date.now(), hash, snapshot);
+      'INSERT OR IGNORE INTO launch_snapshots (id, bot_id, created_at, hash, snapshot, transport) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, botId, Date.now(), hash, snapshot, transport);
   },
 
   listByBot: (botId: string): LaunchSnapshot[] => {

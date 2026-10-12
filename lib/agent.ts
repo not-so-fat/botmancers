@@ -6,7 +6,16 @@ import { parseApprovalCode, parseFileNames, isSafeFileName, outboundDraftFromUse
 import { mcpTurn } from './mcp';
 import { readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
-import type { Bot, Message, OneShot, QueueItem, Routine } from './db';
+import {
+  loadHermesConfig,
+  hermesChat,
+  hermesProfilePathForBot,
+  hermesSessionIdForBot,
+  appendHermesWaitLog,
+  HermesError,
+} from './hermes';
+import type { HermesConfig } from './hermes';
+import type { Bot, Conversation, Message, OneShot, QueueItem, Routine } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
 
@@ -43,6 +52,44 @@ interface DelegationChain {
 }
 
 const delegationChains = new Map<string, DelegationChain>();
+
+export const MAIN_TRANSPORT = 'openai';
+export const HERMES_GATEWAY_TRANSPORT = 'hermes-gateway';
+
+// In-flight Hermes gateway pokes per conversation, so Stop aborts them.
+// Entries are removed as each poke settles; an abort rejects its fetch.
+const hermesInFlight = new Map<string, Set<AbortController>>();
+
+function trackHermesPoke(conversationId: string, controller: AbortController): void {
+  let active = hermesInFlight.get(conversationId);
+  if (!active) {
+    active = new Set();
+    hermesInFlight.set(conversationId, active);
+  }
+  active.add(controller);
+}
+
+function untrackHermesPoke(conversationId: string, controller: AbortController): void {
+  const active = hermesInFlight.get(conversationId);
+  if (!active) return;
+  active.delete(controller);
+  if (active.size === 0) hermesInFlight.delete(conversationId);
+}
+
+function abortHermesPokes(conversationId: string): number {
+  const active = hermesInFlight.get(conversationId);
+  if (!active || active.size === 0) return 0;
+  const count = active.size;
+  for (const controller of active) {
+    try {
+      controller.abort();
+    } catch {
+      // Aborting never fails a Stop.
+    }
+  }
+  hermesInFlight.delete(conversationId);
+  return count;
+}
 
 function delegationChainFor(conversationId: string, latestUserId: string | null): DelegationChain | null {
   if (!latestUserId) return null;
@@ -95,8 +142,9 @@ export function stopDelegation(conversationId: string): boolean {
   const alreadyStopped = chain?.stopped ?? false;
   const hadActivity = !!chain && (chain.turns > 0 || chain.handoffs > 0);
   const cancelled = queue.cancelPending(conversationId);
+  const aborted = abortHermesPokes(conversationId);
   if (chain) chain.stopped = true;
-  const stoppedSomething = cancelled > 0 || (hadActivity && !alreadyStopped);
+  const stoppedSomething = cancelled > 0 || aborted > 0 || (hadActivity && !alreadyStopped);
   if (stoppedSomething) {
     messages.create(conversationId, 'bot', DELEGATION_STOPPED_REASON);
   }
@@ -121,6 +169,9 @@ export function setDelegationChatStub(stub: DelegationChatStub | null): void {
 export function resetDelegationForTests(): void {
   delegationChains.clear();
   delegationChatStub = null;
+  for (const conversationId of [...hermesInFlight.keys()]) {
+    abortHermesPokes(conversationId);
+  }
 }
 
 export const ONE_SHOT_MESSAGE = '[one-shot]';
@@ -332,16 +383,19 @@ let isProcessing = false;
 // Snapshot inputs captured at config read time, held for the run, and
 // written when the queue item is marked terminal. Keyed by queue item id.
 // A rules/skill edit during an in-flight run never changes the held values.
-const pendingSnapshots = new Map<string, { json: string; hash: string }>();
+// Transport rides alongside the held input (never inside the hash): main-path
+// turns record MAIN_TRANSPORT, gateway pokes HERMES_GATEWAY_TRANSPORT.
+const pendingSnapshots = new Map<string, { json: string; hash: string; transport: string }>();
 
 function holdSnapshot(
   item: QueueItem,
   bot: Bot,
   skill: { path: string | null; present: boolean | null; content: string | null },
-  facts: string[] | null = null
+  facts: string[] | null = null,
+  transport: string = MAIN_TRANSPORT
 ): void {
   const input = buildSnapshotInput(bot, skill, facts);
-  pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input) });
+  pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input), transport });
 }
 
 function flushSnapshot(item: QueueItem): void {
@@ -349,7 +403,7 @@ function flushSnapshot(item: QueueItem): void {
   pendingSnapshots.delete(item.id);
   if (!held) return;
   try {
-    launchSnapshots.record(item.id, item.bot_id, held.hash, held.json);
+    launchSnapshots.record(item.id, item.bot_id, held.hash, held.json, held.transport);
   } catch (error) {
     console.error('Error recording launch snapshot:', error);
   }
@@ -384,6 +438,340 @@ export async function processQueue() {
   } finally {
     isProcessing = false;
   }
+}
+
+export interface WakeDirective {
+  target: string;
+  message: string;
+}
+
+// All WAKE directives in a model reply. General capability, not prove-shaped:
+// case-insensitive, flexible spacing, bot names with dashes/underscores, any
+// count. Empty tasks are dropped. The caller's user message phrasing never
+// matters here; only the model reply is parsed.
+export function parseWakeDirectives(responseContent: string): WakeDirective[] {
+  return responseContent
+    .split(/(?=WAKE\s+[A-Za-z0-9_-]+\s*:)/gi)
+    .map(chunk => chunk.match(/WAKE\s+([A-Za-z0-9_-]+)\s*:\s*([\s\S]*)/i))
+    .filter((match): match is RegExpMatchArray => Boolean(match))
+    .map(match => ({ target: match[1], message: (match[2] || '').trim() }))
+    .filter(directive => directive.message.length > 0);
+}
+
+type ResolvedWakeTarget =
+  | { directive: WakeDirective; bot: Bot; group: false; unknown: false }
+  | { directive: WakeDirective; bot: null; group: true; unknown: false }
+  | { directive: WakeDirective; bot: null; group: false; unknown: true };
+
+function resolveWakeTargets(
+  directives: WakeDirective[],
+  conversation: Conversation
+): ResolvedWakeTarget[] {
+  const all = bots.getAll();
+  return directives.map(directive => {
+    if (directive.target.toUpperCase() === 'GROUP' && conversation.type === 'group') {
+      return { directive, bot: null, group: true as const, unknown: false as const };
+    }
+    const bot = all.find(candidate => candidate.name.toLowerCase() === directive.target.toLowerCase());
+    if (bot) return { directive, bot, group: false as const, unknown: false as const };
+    return { directive, bot: null, group: false as const, unknown: true as const };
+  });
+}
+
+// One reply-mirroring mechanism for gateway pokes, reconciling same-thread
+// caller-managed delegation with the snapshot's cross-thread copy: the
+// specialist's reply lands once in the caller's thread (so the caller-managed
+// report turn sees it as peer context) and once in the specialist's own
+// thread behind a [From caller] handoff line (so the specialist thread keeps
+// its continuity). Duplicate detection is scoped to the current delegation
+// round: only an identical reply posted after this round's handoff marker
+// suppresses the write, so a later round may legitimately post the same text
+// again while a retried poke never double-posts.
+export function mirrorSpecialistReply(args: {
+  callerConversationId: string;
+  caller: Bot;
+  target: Bot;
+  taskMessage: string;
+  reply: string;
+}): { callerMessageId: string | null; targetMessageId: string | null } {
+  const { callerConversationId, caller, target, taskMessage, reply } = args;
+  let callerMessageId: string | null = null;
+  let targetMessageId: string | null = null;
+
+  // Round boundary: this round's handoff marker in the caller thread. Each
+  // wake turn posts a fresh marker, so the latest match always opens the
+  // current round; a retried poke reuses it instead of opening a new one.
+  const handoffLine = `[Handing off to ${target.name}]\n${taskMessage}`;
+  const callerHistory = messages.getByConversation(callerConversationId);
+  const handoffMsg = [...callerHistory].reverse().find(
+    msg => msg.sender_type === 'bot' && msg.sender_id === caller.id && msg.content === handoffLine
+  );
+  const roundAt = handoffMsg ? handoffMsg.created_at : 0;
+
+  const targetConversation = conversations.getByBotId(target.id);
+  if (targetConversation && targetConversation.id !== callerConversationId) {
+    const fromLine = `[From ${caller.name}]\n${taskMessage}`;
+    let targetHistory = messages.getByConversation(targetConversation.id);
+    let fromMsg = [...targetHistory].reverse().find(
+      msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === caller.id &&
+        msg.content === fromLine &&
+        msg.created_at >= roundAt
+    );
+    if (!fromMsg) {
+      fromMsg = messages.create(targetConversation.id, 'bot', fromLine, caller.id);
+      targetHistory = messages.getByConversation(targetConversation.id);
+    }
+    const hasReply = targetHistory.some(
+      msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === target.id &&
+        msg.content === reply &&
+        msg.created_at >= fromMsg.created_at
+    );
+    if (!hasReply) {
+      targetMessageId = messages.create(targetConversation.id, 'bot', reply, target.id).id;
+    }
+  }
+
+  const hasMirror = callerHistory.some(
+    msg =>
+      msg.sender_type === 'bot' &&
+      msg.sender_id === target.id &&
+      msg.content === reply &&
+      msg.created_at >= roundAt
+  );
+  if (!hasMirror) {
+    callerMessageId = messages.create(callerConversationId, 'bot', reply, target.id).id;
+  }
+  return { callerMessageId, targetMessageId };
+}
+
+function hermesFailureNotice(targetName: string, error: unknown): string {
+  const detail = error instanceof HermesError ? error.message : String(error);
+  const short = detail.length > 160 ? detail.slice(0, 157) + '...' : detail;
+  return `[Specialist ${targetName} failed: ${short}]`;
+}
+
+// One gateway poke: a delegated turn served by the Hermes gateway instead of
+// the serial queue. Owns a processing queue row (so the wait is visible and
+// terminalizes completed/failed), a launch snapshot with the gateway
+// transport, and one wait-log start/finish pair. Aborted by Stop via the
+// conversation's AbortController set.
+async function pokeSpecialistViaGateway(args: {
+  caller: Bot;
+  target: Bot;
+  conversationId: string;
+  taskMessage: string;
+  chain: DelegationChain | null;
+  hermesConfig: HermesConfig;
+}): Promise<void> {
+  const { caller, target, conversationId, taskMessage, chain, hermesConfig } = args;
+  const wait = queue.enqueue(conversationId, target.id);
+  queue.markProcessing(wait.id);
+  const startedAt = Date.now();
+  appendHermesWaitLog({
+    event: 'wait_start',
+    wait_id: wait.id,
+    bot: target.name,
+    bot_id: target.id,
+    conversation_id: conversationId,
+    caller: caller.name,
+    started_at: startedAt,
+  });
+
+  const standingBlock = `Standing rules, verbatim. They are a hard constraint on this reply. They beat the user's request for detail, length, or thoroughness, and they beat every earlier reply:
+${target.description}
+If those rules limit the reply to one short sentence, the whole reply is that one short sentence and nothing more.`;
+
+  const systemPrompt = `You are ${target.name}, ${target.title}.
+
+You were delegated by @${caller.name}. Complete the task in your context and reply with your result in this thread.
+Do not use WAKE on this turn. Do not hand off. Do not call tools. Answer only from the standing rules and the latest handoff message.
+
+${standingBlock}`;
+
+  const standingReminder = `Standing rules for the reply you are about to write, verbatim:
+${target.description}
+The standing rules decide the whole reply. If they require one short sentence, write one short clause and stop. Do not answer with a long sentence, a list, or extra detail.`;
+
+  const rememberedFacts = memories.latestFacts(target.id);
+  const skillState = readSkillState(target.name);
+  holdSnapshot(wait, target, skillState, rememberedFacts, HERMES_GATEWAY_TRANSPORT);
+
+  const sent: { role: string; content: string }[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: `Peer handoff from @${caller.name}:\n${taskMessage}` },
+    { role: 'system', content: standingReminder },
+  ];
+  if (rememberedFacts.length > 0) {
+    sent.push({ role: 'system', content: ['Remembered facts:', ...rememberedFacts.map(fact => '- ' + fact)].join('\n') });
+  }
+  if (skillState.content) {
+    sent.push({ role: 'system', content: skillState.content });
+  }
+
+  const controller = new AbortController();
+  trackHermesPoke(conversationId, controller);
+  try {
+    const reply = await hermesChat({
+      config: hermesConfig,
+      profilePath: hermesProfilePathForBot(target),
+      sessionId: hermesSessionIdForBot(target.id, hermesConfig),
+      messages: sent,
+      signal: controller.signal,
+    });
+    const finishedAt = Date.now();
+    if (chain?.stopped) {
+      queue.markCompleted(wait.id, 'completed');
+      flushSnapshot(wait);
+      appendHermesWaitLog({
+        event: 'wait_finish',
+        wait_id: wait.id,
+        bot: target.name,
+        bot_id: target.id,
+        conversation_id: conversationId,
+        started_at: startedAt,
+        finished_at: finishedAt,
+        delivered: false,
+      });
+      return;
+    }
+    const { callerMessageId } = mirrorSpecialistReply({
+      callerConversationId: conversationId,
+      caller,
+      target,
+      taskMessage,
+      reply,
+    });
+    queue.markCompleted(wait.id, 'completed');
+    flushSnapshot(wait);
+    appendHermesWaitLog({
+      event: 'wait_finish',
+      wait_id: wait.id,
+      bot: target.name,
+      bot_id: target.id,
+      conversation_id: conversationId,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      message_id: callerMessageId,
+      reply,
+    });
+  } catch (error) {
+    const finishedAt = Date.now();
+    queue.markCompleted(wait.id, 'failed');
+    flushSnapshot(wait);
+    appendHermesWaitLog({
+      event: 'wait_failed',
+      wait_id: wait.id,
+      bot: target.name,
+      bot_id: target.id,
+      conversation_id: conversationId,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      code: error instanceof HermesError ? error.code : 'unknown',
+      error: String(error),
+    });
+    // Aborted pokes stay silent: Stop promises no late messages. Genuine
+    // failures leave one notice so the caller's report turn can see them.
+    const aborted = error instanceof HermesError && error.code === 'aborted';
+    if (!aborted && !chain?.stopped) {
+      messages.create(conversationId, 'bot', hermesFailureNotice(target.name, error), caller.id);
+    }
+  } finally {
+    untrackHermesPoke(conversationId, controller);
+  }
+}
+
+// Gateway wake turn: the caller's reply addressed only known specialists, so
+// every poke runs concurrently against the one gateway instead of draining
+// serially through the queue. Each poke consumes one handoff and one turn of
+// the existing limits; refused pokes post the same reasons as the main path.
+// The caller is re-queued once for its report-back turn (caller-managed), and
+// Stop aborts in-flight pokes and suppresses the return.
+async function handleHermesWakeTurn(args: {
+  bot: Bot;
+  conversation: Conversation;
+  chain: DelegationChain | null;
+  responseContent: string;
+  targets: { directive: WakeDirective; bot: Bot }[];
+  hermesConfig: HermesConfig;
+}): Promise<void> {
+  const { bot, conversation, chain, responseContent, targets, hermesConfig } = args;
+  if (chain?.stopped) {
+    chainProcessQueue();
+    return;
+  }
+  if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
+    messages.create(conversation.id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
+    chainProcessQueue();
+    return;
+  }
+
+  const depthRoom = chain ? DELEGATION_MAX_DEPTH - chain.handoffs : targets.length;
+  const budgetRoom = chain ? DELEGATION_MAX_DELEGATED_TURNS - chain.turns : targets.length;
+  const allowedCount = Math.max(0, Math.min(depthRoom, budgetRoom, targets.length));
+  const allowed = targets.slice(0, allowedCount);
+
+  if (allowed.length === 0) {
+    if (depthRoom <= 0 || depthRoom <= budgetRoom) {
+      messages.create(conversation.id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
+    } else {
+      messages.create(conversation.id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+      queue.cancelPending(conversation.id);
+    }
+    chainProcessQueue();
+    return;
+  }
+
+  const firstWakeAt = responseContent.search(/WAKE\s+[A-Za-z0-9_-]+\s*:/i);
+  const prefix = (firstWakeAt >= 0 ? responseContent.slice(0, firstWakeAt) : '').trim();
+  if (prefix) {
+    recordApprovalIfPresent(conversation.id, messages.create(conversation.id, 'bot', prefix, bot.id));
+  }
+  for (const { directive, bot: targetBot } of allowed) {
+    recordApprovalIfPresent(
+      conversation.id,
+      messages.create(conversation.id, 'bot', `[Handing off to ${targetBot.name}]\n${directive.message}`, bot.id)
+    );
+  }
+
+  if (chain) {
+    chain.handoffs += allowed.length;
+    chain.turns += allowed.length;
+  }
+
+  await Promise.allSettled(
+    allowed.map(({ directive, bot: targetBot }) =>
+      pokeSpecialistViaGateway({
+        caller: bot,
+        target: targetBot,
+        conversationId: conversation.id,
+        taskMessage: directive.message,
+        chain,
+        hermesConfig,
+      })
+    )
+  );
+
+  if (allowed.length < targets.length) {
+    if (depthRoom <= budgetRoom) {
+      messages.create(conversation.id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
+    } else {
+      messages.create(conversation.id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+      queue.cancelPending(conversation.id);
+      chainProcessQueue();
+      return;
+    }
+  }
+
+  // Caller-managed return: one re-queue for the report-back turn, suppressed
+  // by Stop. Budget for the report is enforced when that turn processes.
+  if (chain && !chain.stopped) {
+    queue.enqueue(conversation.id, bot.id);
+  }
+  chainProcessQueue();
 }
 
 async function processQueueItem(item: QueueItem) {
@@ -714,6 +1102,33 @@ The standing rules decide the whole reply. If they require one short sentence, w
   }
 
   materializeFileArtifacts(responseContent);
+
+  // Hermes gateway wake (NOT-413): when the gateway is configured and the
+  // reply addresses only known specialists, poke them concurrently through
+  // the one gateway. Anything else (no WAKE, GROUP, unknown target, or no
+  // key) falls through to main's existing single-WAKE path byte-for-byte.
+  const hermesConfig = loadHermesConfig();
+  if (hermesConfig && !openGroupTurn) {
+    const directives = parseWakeDirectives(responseContent);
+    if (directives.length > 0) {
+      const resolved = resolveWakeTargets(directives, conversation);
+      const specialistTargets = resolved.filter(
+        (target): target is { directive: WakeDirective; bot: Bot; group: false; unknown: false } =>
+          !target.group && !target.unknown
+      );
+      if (specialistTargets.length === resolved.length) {
+        await handleHermesWakeTurn({
+          bot,
+          conversation,
+          chain,
+          responseContent,
+          targets: specialistTargets.map(target => ({ directive: target.directive, bot: target.bot })),
+          hermesConfig,
+        });
+        return;
+      }
+    }
+  }
 
   const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);
 
