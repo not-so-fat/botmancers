@@ -733,16 +733,7 @@ export default function Home() {
           </div>
         </div>
         {bots.length === 0 ? (
-          <div className="roster-empty">
-            <Image
-              className="roster-empty-logo"
-              src="/brand/botmancers-logo-outline-256.png"
-              alt="Botmancers logo"
-              width={160}
-              height={160}
-            />
-            <p className="empty-line">Pick someone to talk to.</p>
-          </div>
+          <p className="empty-line">Pick someone to talk to.</p>
         ) : (
           <div className={rowMenu ? 'roster menu-open' : 'roster'}>
             {rosterBots.map(bot => isChiefOfStaff(bot) ? (
@@ -756,13 +747,6 @@ export default function Home() {
                 }}
               >
                 <div className="row-head">
-                  <Image
-                    className="card-logo"
-                    src="/brand/botmancers-logo-filled-64.png"
-                    alt=""
-                    width={24}
-                    height={24}
-                  />
                   <span className="mark" style={{ color: bot.color }}>
                     <span className="mark-tri" />
                     {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}

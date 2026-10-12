@@ -14,8 +14,15 @@ botmancers-logo-outline-64.png 38a4e29e0c512ccdc2ef7626992404b81b95629339f44cccf
 
 curl -I /favicon.ico -> 200 (rewritten to filled-64); <link> tags:
 ```
+<link rel="icon" href="/brand/botmancers-logo-filled-64.png" sizes="64x64" type="image/png"/>
+<link rel="icon" href="/brand/botmancers-logo-filled-256.png" sizes="256x256" type="image/png"/>
+<link rel="apple-touch-icon" href="/brand/botmancers-logo-filled-256.png" sizes="256x256" type="image/png"/>
 ```
 
 lint 0 · build 0 · test:snapshot 0 · test:delegation 0 (next build; note: the first build on a fresh botmancers.db can hit a pre-existing parallel-migration 'duplicate column' race, the same on main; a re-run passes)
 
-Screenshots: before-*/after-* = origin/main vs this branch, same seed (chief-of-staff + researcher). after-home = empty roster (outline-256 at 160px). favicon.png = /favicon.ico.
+Screenshots (recaptured after Atelier review, 2026-10-12 PT): before-* = origin/main, after-* = this branch, each on a fresh DB seeded identically (chief-of-staff then researcher via POST /api/bots).
+- after-cos / before-cos: logo appears once, in the top brand slot only; no logo on the CoS card; full name and triangle; CoS lime #C6F54A, researcher orange #F0A05A on both sides.
+- after-home / before-home: empty roster shows only "Pick someone to talk to." (no large outline logo).
+- favicon.png = /favicon.ico (approved filled-64).
+Hue note: this PR does not touch color assignment (lib/db.ts nextBotColor = BOT_COLORS[count % 5], creation order). The earlier pink/purple capture came from a reused capture DB, not code.
