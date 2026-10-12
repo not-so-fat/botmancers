@@ -19,6 +19,19 @@ import type { Bot, Conversation, Message, OneShot, QueueItem, Routine } from './
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
 import { handleCosBirthRequest } from './birth';
+import {
+  createPendingQuestion,
+  findAnsweredByAnswer,
+  findByTask,
+  listAskedForConversation,
+  parseAskMarker,
+  parseAskRequest,
+  pendingForBot,
+  clearForConversation as clearPendingQuestions,
+  resolveQuestion,
+  resumePrompt,
+  setQuestionMessage,
+} from './ask';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -144,8 +157,14 @@ export function stopDelegation(conversationId: string): boolean {
   const hadActivity = !!chain && (chain.turns > 0 || chain.handoffs > 0);
   const cancelled = queue.cancelPending(conversationId);
   const aborted = abortHermesPokes(conversationId);
+  let clearedAsks = 0;
+  try {
+    clearedAsks = clearPendingQuestions(conversationId);
+  } catch (error) {
+    console.error('Error clearing pending questions:', error);
+  }
   if (chain) chain.stopped = true;
-  const stoppedSomething = cancelled > 0 || aborted > 0 || (hadActivity && !alreadyStopped);
+  const stoppedSomething = cancelled > 0 || aborted > 0 || clearedAsks > 0 || (hadActivity && !alreadyStopped);
   if (stoppedSomething) {
     messages.create(conversationId, 'bot', DELEGATION_STOPPED_REASON);
   }
@@ -800,6 +819,38 @@ async function processQueueItem(item: QueueItem) {
     chainProcessQueue();
     return;
   }
+
+  // Ask-and-wait resume/park (NOT-415): a durable pending row replaces the
+  // snapshot's history scan. When this bot parked a question, the next user
+  // message in the thread is its answer: the first launch to process it wins
+  // the asked->answered swap and resumes with the original task attached,
+  // while a retried launch for the same answer sees the answered row and
+  // stays silent, so the answer is used exactly once. A launch whose latest
+  // user message is still the parked task parks again instead of re-asking.
+  let askResume: { question: string; answer: string; taskContent: string | null } | null = null;
+  if (latestUser) {
+    const askedRow = pendingForBot(item.conversation_id, bot.id);
+    if (askedRow) {
+      if (latestUser.id === askedRow.task_message_id) {
+        chainProcessQueue();
+        return;
+      }
+      const resolved = resolveQuestion(askedRow.id, latestUser.id, latestUser.content);
+      if (!resolved || !resolved.answer) {
+        chainProcessQueue();
+        return;
+      }
+      askResume = {
+        question: resolved.question,
+        answer: resolved.answer,
+        taskContent: resolved.task_content,
+      };
+    } else if (findAnsweredByAnswer(item.conversation_id, bot.id, latestUser.id)) {
+      chainProcessQueue();
+      return;
+    }
+  }
+
   const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
   const delegatingCallerId = callerFor(chain, bot.id);
   const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
@@ -815,6 +866,7 @@ async function processQueueItem(item: QueueItem) {
   // own timer launch. A launch never consumes a tick while its user message
   // still awaits a reply.
   if (
+    !askResume &&
     !isDelegatedTurn &&
     peekDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)
   ) {
@@ -840,7 +892,7 @@ async function processQueueItem(item: QueueItem) {
   // due tick still posts after a birth reply instead of being swallowed by
   // the already-answered birth request. Delegated turns skip it: a WAKE
   // handoff answers the delegation, not the latest user message.
-  if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser && !isDelegatedTurn) {
+  if (!askResume && bot.name.toLowerCase() === 'chief-of-staff' && latestUser && !isDelegatedTurn) {
     const handled = await handleCosBirthRequest(
       item.conversation_id,
       bot.id,
@@ -858,7 +910,7 @@ async function processQueueItem(item: QueueItem) {
   // stopped check above, consumes no delegation budget, and never fires
   // twice for the same user message. Position-based (not timestamp-based)
   // so a same-millisecond draft still counts as a reply.
-  if (conversation.type === 'bot' && latestUser) {
+  if (!askResume && conversation.type === 'bot' && latestUser) {
     const draft = outboundDraftFromUser(latestUser.content);
     if (draft) {
       const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
@@ -878,7 +930,7 @@ async function processQueueItem(item: QueueItem) {
   // phrases. Silent like the reference: the tick itself is the reply.
   // Idempotent: an existing row is just re-armed. Runs behind the tick
   // check above, so a due tick never re-enters here.
-  if (conversation.type === 'bot' && latestUser) {
+  if (!askResume && conversation.type === 'bot' && latestUser) {
     const oneShotDelay = oneShotTeachDelayMs(latestUser.content);
     if (oneShotDelay !== null) {
       scheduleTaughtOneShot(item.conversation_id, bot.id, oneShotDelay);
@@ -893,7 +945,7 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
-  if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
+  if (!askResume && bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
     const fileReadAsk = parseFileReadAsk(latestUser.content);
     if (fileReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
@@ -916,10 +968,42 @@ async function processQueueItem(item: QueueItem) {
       return;
     }
   }
+
+  // Ask-first hook (NOT-415): the user's request says to ask one question
+  // and wait. The question is stored durably and posted as an ordinary bot
+  // card; the bot parks without calling the model. Single asker per task:
+  // the first bot to process the request claims it and the rest park, so a
+  // group ask posts once. A retry for an already-claimed task parks too.
+  if (!askResume && latestUser) {
+    const requested = parseAskRequest(latestUser.content);
+    if (requested) {
+      const claimed =
+        listAskedForConversation(item.conversation_id).some(row => row.task_message_id === latestUser.id) ||
+        findByTask(item.conversation_id, bot.id, latestUser.id);
+      if (claimed) {
+        chainProcessQueue();
+        return;
+      }
+      const row = createPendingQuestion({
+        conversationId: item.conversation_id,
+        botId: bot.id,
+        question: requested,
+        taskMessageId: latestUser.id,
+        taskContent: latestUser.content,
+      });
+      const posted = messages.create(item.conversation_id, 'bot', requested, bot.id);
+      setQuestionMessage(row.id, posted.id);
+      recordApprovalIfPresent(item.conversation_id, posted);
+      chainProcessQueue();
+      return;
+    }
+  }
+
   let openGroupTurn = false;
   // Delegated turns were addressed by a WAKE handoff, not by the user message,
-  // so the open-group WAKE suppression must not apply to them.
-  if (conversation.type === 'group' && latestUser && !isDelegatedTurn && !userAddressedBot(latestUser, bot)) {
+  // so the open-group WAKE suppression must not apply to them. Resume turns
+  // are directed too: the pending row addressed this bot, not the room.
+  if (!askResume && conversation.type === 'group' && latestUser && !isDelegatedTurn && !userAddressedBot(latestUser, bot)) {
     const queuedAfterPeer = conversationMessages.some(msg =>
       msg.sender_type === 'bot' &&
       !!msg.sender_id &&
@@ -930,7 +1014,7 @@ async function processQueueItem(item: QueueItem) {
     openGroupTurn = !queuedAfterPeer;
   }
   let toolContext: { role: 'user'; content: string } | null = null;
-  if (latestUser && latestUser.content.includes('{')) {
+  if (!askResume && latestUser && latestUser.content.includes('{')) {
     for (const server of mcpServers.list()) {
       let args: string[] = [];
       try {
@@ -983,6 +1067,16 @@ async function processQueueItem(item: QueueItem) {
     });
   }
   if (toolContext) chatMessages.push(toolContext);
+  if (askResume) {
+    chatMessages.push({
+      role: 'user',
+      content: resumePrompt({
+        question: askResume.question,
+        answer: askResume.answer,
+        taskContent: askResume.taskContent,
+      }),
+    });
+  }
 
   const delegatedHowTo = delegatingCallerName
     ? `You were delegated by @${delegatingCallerName}. Complete the task in your context and reply with your result in this thread.
@@ -1123,6 +1217,33 @@ The standing rules decide the whole reply. If they require one short sentence, w
   }
 
   materializeFileArtifacts(responseContent);
+
+  // Ask-marker turn (NOT-415): the model needs input, so the question is
+  // stored durably and posted as an ordinary bot card, and the turn parks.
+  // A delegate parks the same way in the shared thread: its caller frame is
+  // left on the stack, so the resumed answer returns to the caller. The raw
+  // marker is never posted. A retry for an already-parked task parks too.
+  const askedMarker = parseAskMarker(responseContent);
+  if (askedMarker) {
+    const taskId = latestUser ? latestUser.id : null;
+    const existing = pendingForBot(item.conversation_id, bot.id);
+    if (existing && taskId && existing.task_message_id === taskId) {
+      chainProcessQueue();
+      return;
+    }
+    const row = createPendingQuestion({
+      conversationId: item.conversation_id,
+      botId: bot.id,
+      question: askedMarker,
+      taskMessageId: taskId,
+      taskContent: latestUser ? latestUser.content : null,
+    });
+    const posted = messages.create(item.conversation_id, 'bot', askedMarker, bot.id);
+    setQuestionMessage(row.id, posted.id);
+    recordApprovalIfPresent(item.conversation_id, posted);
+    chainProcessQueue();
+    return;
+  }
 
   // Hermes gateway wake (NOT-413): when the gateway is configured and the
   // reply addresses only known specialists, poke them concurrently through

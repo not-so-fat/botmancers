@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { messages, conversations, queue, groups, bots, draftActions, approvals, memories } from '@/lib/db';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
+import { resumeBotIdsForConversation } from '@/lib/ask';
 import { processQueue } from '@/lib/agent';
 
 export async function GET(
@@ -72,7 +73,13 @@ export async function POST(
       queue.enqueue(conversationId, botId);
     };
 
-    if (addressed.length > 0) {
+    // Ask-and-wait resume (NOT-415): when the thread holds parked questions,
+    // this user message is their answer, so only the asked bots resume. With
+    // nothing pending this block is skipped and routing is unchanged.
+    const resumeBotIds = resumeBotIdsForConversation(id);
+    if (resumeBotIds && resumeBotIds.length > 0) {
+      for (const botId of resumeBotIds) enqueueBot(id, botId);
+    } else if (addressed.length > 0) {
       if (conversation.type === 'group' && conversation.group_id) {
         const members = groups.getMembers(conversation.group_id);
         for (const bot of addressed) {

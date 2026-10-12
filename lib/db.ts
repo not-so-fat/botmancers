@@ -128,6 +128,26 @@ db.exec(`
     every_ms INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS pending_questions (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    task_message_id TEXT,
+    task_content TEXT,
+    question_message_id TEXT,
+    answer_message_id TEXT,
+    answer TEXT,
+    status TEXT NOT NULL DEFAULT 'asked',
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+    FOREIGN KEY (bot_id) REFERENCES bots(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pending_questions_conversation
+    ON pending_questions(conversation_id, status, created_at);
 `);
 
 const BOT_COLORS = ['#C6F54A', '#F0A05A', '#E85D75', '#C9A0FF', '#F2E36B'];
@@ -383,6 +403,7 @@ export const bots = {
       for (const conversation of conversations) {
         db.prepare('DELETE FROM processing_queue WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversation.id);
+        db.prepare('DELETE FROM pending_questions WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
       }
       db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
@@ -391,6 +412,7 @@ export const bots = {
       db.prepare('DELETE FROM memories WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM one_shots WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM routines WHERE bot_id = ?').run(id);
+      db.prepare('DELETE FROM pending_questions WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM bots WHERE id = ?').run(id);
     })();
   },
