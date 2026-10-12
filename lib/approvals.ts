@@ -19,7 +19,9 @@ import path from 'path';
 import db, { bots, messages } from './db';
 import { isSafeFileName, parseApprovalCode } from './draft';
 import { resolveCommand } from './commands';
-import { localSkillForBot } from './skills';
+import { applySkillEndToken, skillEndToken } from './skills';
+
+export { skillEndToken };
 import { ARTIFACT_MAX_BYTES, filesRoot } from './artifacts';
 
 export type ApprovalActionType = 'read_file' | 'run_command' | 'send_draft' | 'write_file';
@@ -342,18 +344,15 @@ export interface ApprovalOutcome {
   refused?: string;
 }
 
-export function skillEndToken(botName: string | null | undefined): string | null {
-  if (!botName) return null;
-  const skill = localSkillForBot(botName);
-  if (!skill) return null;
-  const match = skill.match(/ends with the exact token\s+(\S+)/i);
-  return match ? match[1] : null;
-}
-
 function endTokenFor(botId: string | null): string | null {
   if (!botId) return null;
   const bot = bots.getById(botId);
   return skillEndToken(bot?.name);
+}
+
+function botNameFor(botId: string | null): string | null {
+  if (!botId) return null;
+  return bots.getById(botId)?.name ?? null;
 }
 
 function postAs(request: ApprovalRequest, content: string): void {
@@ -390,9 +389,7 @@ export function decideApproval(
       const current = getApprovalByCode(conversationId, code);
       return { status: current?.status ?? 'denied', code, ran: false, already: true };
     }
-    postAs(request, `Denied ${code}`);
-    const token = endTokenFor(request.bot_id);
-    if (token) postAs(request, token);
+    postAs(request, applySkillEndToken(botNameFor(request.bot_id), `Denied ${code}`));
     return { status: 'denied', code, ran: false, already: false };
   }
 
@@ -426,8 +423,7 @@ export function decideApproval(
 
   // Plain approval: no action to run, approved is terminal.
   if (request.action_type === null) {
-    const token = endTokenFor(request.bot_id);
-    postAs(request, token ? `${code}\n${token}` : code);
+    postAs(request, applySkillEndToken(botNameFor(request.bot_id), code));
     return { status: 'approved', code, ran: false, already: false };
   }
 
@@ -625,8 +621,7 @@ export function raiseApprovalFromUserInstruction(args: {
     if (error instanceof ApprovalActionRefused) return true;
     throw error;
   }
-  const token = skillEndToken(botName);
-  const card = token ? `${approvalCardText(code)}\n${token}` : approvalCardText(code);
+  const card = applySkillEndToken(botName, approvalCardText(code));
   const posted = messages.create(conversationId, 'bot', card, botId);
   setApprovalMessage(conversationId, code, posted.id);
   return true;

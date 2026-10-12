@@ -13,7 +13,7 @@ import {
   writeArtifactFile,
 } from './artifacts';
 import { mcpTurn } from './mcp';
-import { readSkillState } from './skills';
+import { applySkillEndToken, readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
 import {
   loadHermesConfig,
@@ -50,7 +50,6 @@ import {
   raiseApprovalFromUserInstruction,
   recordModelApproval,
   setApprovalMessage,
-  skillEndToken,
   ApprovalActionRefused,
 } from './approvals';
 
@@ -536,6 +535,9 @@ export function mirrorSpecialistReply(args: {
   reply: string;
 }): { callerMessageId: string | null; targetMessageId: string | null } {
   const { callerConversationId, caller, target, taskMessage, reply } = args;
+  // One post-processed reply for both threads: a specialist whose skill says
+  // replies end with the exact token T posts with T on the gateway path too.
+  const posted = applySkillEndToken(target.name, reply);
   let callerMessageId: string | null = null;
   let targetMessageId: string | null = null;
 
@@ -568,11 +570,11 @@ export function mirrorSpecialistReply(args: {
       msg =>
         msg.sender_type === 'bot' &&
         msg.sender_id === target.id &&
-        msg.content === reply &&
+        msg.content === posted &&
         msg.created_at >= fromMsg.created_at
     );
     if (!hasReply) {
-      targetMessageId = messages.create(targetConversation.id, 'bot', reply, target.id).id;
+      targetMessageId = messages.create(targetConversation.id, 'bot', posted, target.id).id;
     }
   }
 
@@ -580,11 +582,11 @@ export function mirrorSpecialistReply(args: {
     msg =>
       msg.sender_type === 'bot' &&
       msg.sender_id === target.id &&
-      msg.content === reply &&
+      msg.content === posted &&
       msg.created_at >= roundAt
   );
   if (!hasMirror) {
-    callerMessageId = messages.create(callerConversationId, 'bot', reply, target.id).id;
+    callerMessageId = messages.create(callerConversationId, 'bot', posted, target.id).id;
   }
   return { callerMessageId, targetMessageId };
 }
@@ -769,7 +771,7 @@ async function handleHermesWakeTurn(args: {
   const firstWakeAt = responseContent.search(/WAKE\s+[A-Za-z0-9_-]+\s*:/i);
   const prefix = (firstWakeAt >= 0 ? responseContent.slice(0, firstWakeAt) : '').trim();
   if (prefix) {
-    recordApprovalIfPresent(conversation.id, messages.create(conversation.id, 'bot', prefix, bot.id));
+    recordApprovalIfPresent(conversation.id, messages.create(conversation.id, 'bot', applySkillEndToken(bot.name, prefix), bot.id));
   }
   for (const { directive, bot: targetBot } of allowed) {
     recordApprovalIfPresent(
@@ -1000,8 +1002,7 @@ async function processQueueItem(item: QueueItem) {
             }
             throw error;
           }
-          const token = skillEndToken(bot.name);
-          const card = token ? `${approvalCardText(code)}\n${token}` : approvalCardText(code);
+          const card = applySkillEndToken(bot.name, approvalCardText(code));
           const posted = messages.create(item.conversation_id, 'bot', card, bot.id);
           setApprovalMessage(item.conversation_id, code, posted.id);
         }
@@ -1014,7 +1015,7 @@ async function processQueueItem(item: QueueItem) {
         chainProcessQueue();
         return;
       }
-      messages.create(item.conversation_id, 'bot', artifactCardText(valid.name), bot.id);
+      messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, artifactCardText(valid.name)), bot.id);
       chainProcessQueue();
       return;
     }
@@ -1121,7 +1122,7 @@ async function processQueueItem(item: QueueItem) {
         taskMessageId: latestUser.id,
         taskContent: latestUser.content,
       });
-      const posted = messages.create(item.conversation_id, 'bot', requested, bot.id);
+      const posted = messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, requested), bot.id);
       setQuestionMessage(row.id, posted.id);
       recordApprovalIfPresent(item.conversation_id, posted);
       chainProcessQueue();
@@ -1579,8 +1580,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
           }
           throw error;
         }
-        const token = skillEndToken(bot.name);
-        const card = token ? `${approvalCardText(code)}\n${token}` : approvalCardText(code);
+        const card = applySkillEndToken(bot.name, approvalCardText(code));
         const posted = messages.create(item.conversation_id, 'bot', card, bot.id);
         setApprovalMessage(item.conversation_id, code, posted.id);
       }
@@ -1593,7 +1593,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       chainProcessQueue();
       return;
     }
-    messages.create(item.conversation_id, 'bot', artifactCardText(validFile.name), bot.id);
+    messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, artifactCardText(validFile.name)), bot.id);
     chainProcessQueue();
     return;
   }
@@ -1618,7 +1618,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       taskMessageId: taskId,
       taskContent: latestUser ? latestUser.content : null,
     });
-    const posted = messages.create(item.conversation_id, 'bot', askedMarker, bot.id);
+    const posted = messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, askedMarker), bot.id);
     setQuestionMessage(row.id, posted.id);
     recordApprovalIfPresent(item.conversation_id, posted);
     chainProcessQueue();
@@ -1662,7 +1662,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       : bots.getAll().find(b => b.name.toLowerCase() === target.toLowerCase());
 
     if (!isGroupWake && !targetBot) {
-      recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', responseContent, bot.id));
+      recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, responseContent), bot.id));
       if (chain && !chain.stopped) {
         const callerId = popCaller(chain, bot.id);
         if (callerId) queue.enqueue(item.conversation_id, callerId);
@@ -1671,7 +1671,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       const matchIndex = wakeMatch.index ?? responseContent.indexOf(wakeMatch[0]);
       const prefix = responseContent.slice(0, matchIndex).trim();
       if (prefix) {
-        recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', prefix, bot.id));
+        recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, prefix), bot.id));
       }
 
       if (chain?.stopped) {
@@ -1687,7 +1687,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       if (isGroupWake) {
         const textOnly = message.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/g, '').trim();
         if (textOnly) {
-          recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', textOnly, bot.id));
+          recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, textOnly), bot.id));
           const groupMembers = groups.getMembers(conversation.group_id!);
           const otherBot = groupMembers.find(b => b.id !== bot.id);
           if (otherBot) {
@@ -1711,7 +1711,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       }
     }
   } else {
-    recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', responseContent, bot.id));
+    recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, responseContent), bot.id));
     // Caller-managed return: a delegated turn that finishes without a further
     // WAKE hands control back to its caller. Budget is enforced on the
     // caller's next turn; Stop suppresses the return.

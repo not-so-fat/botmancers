@@ -18,7 +18,7 @@ import { randomUUID, createHash } from 'crypto';
 import OpenAI from 'openai';
 import { bots, conversations, messages, queue } from './db';
 import type { Bot, Message } from './db';
-import { localSkillForBot, isSupportedSkillName, writeSkillForBot } from './skills';
+import { applySkillEndToken, localSkillForBot, isSupportedSkillName, writeSkillForBot } from './skills';
 import { IMPORT_SCHEMA_VERSION } from '../app/api/import-capabilities/route';
 
 export const BIRTH_IMPORT_SCHEMA_VERSION = IMPORT_SCHEMA_VERSION;
@@ -494,6 +494,7 @@ export async function handleCosBirthRequest(
   const intent = await extractBirthIntent(latestUser.content);
   if (intent.kind === 'none') return false;
   if (alreadyReplied(conversationMessages, latestUser, cosBotId)) return true;
+  const cosName = bots.getById(cosBotId)?.name ?? null;
 
   if (intent.kind === 'duplicate') {
     const result = await duplicateSpecialist(intent.sourceName, intent.newName);
@@ -501,7 +502,7 @@ export async function handleCosBirthRequest(
       messages.create(
         conversationId,
         'bot',
-        `I could not find ${intent.sourceName} to duplicate. No bot created.`,
+        applySkillEndToken(cosName, `I could not find ${intent.sourceName} to duplicate. No bot created.`),
         cosBotId
       );
       return true;
@@ -510,7 +511,7 @@ export async function handleCosBirthRequest(
       messages.create(
         conversationId,
         'bot',
-        `A bot named ${intent.newName} already exists (case-insensitive match). No bot created.`,
+        applySkillEndToken(cosName, `A bot named ${intent.newName} already exists (case-insensitive match). No bot created.`),
         cosBotId
       );
       return true;
@@ -519,7 +520,7 @@ export async function handleCosBirthRequest(
       messages.create(
         conversationId,
         'bot',
-        `Failed to duplicate ${intent.sourceName} as ${intent.newName}.`,
+        applySkillEndToken(cosName, `Failed to duplicate ${intent.sourceName} as ${intent.newName}.`),
         cosBotId
       );
       return true;
@@ -527,7 +528,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      `Duplicated ${result.source.name} as ${result.bot.name}. Title, description and skill copied; only the name changed. Avatar starts blank. Path: duplicate. New bot id: ${result.bot.id}.`,
+      applySkillEndToken(cosName, `Duplicated ${result.source.name} as ${result.bot.name}. Title, description and skill copied; only the name changed. Avatar starts blank. Path: duplicate. New bot id: ${result.bot.id}.`),
       cosBotId
     );
     return true;
@@ -537,7 +538,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`,
+      applySkillEndToken(cosName, `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`),
       cosBotId
     );
     return true;
@@ -550,7 +551,7 @@ export async function handleCosBirthRequest(
       messages.create(
         conversationId,
         'bot',
-        `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`,
+        applySkillEndToken(cosName, `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`),
         cosBotId
       );
       return true;
@@ -559,7 +560,7 @@ export async function handleCosBirthRequest(
       messages.create(
         conversationId,
         'bot',
-        `Failed to import ${intent.name} from the matching template.`,
+        applySkillEndToken(cosName, `Failed to import ${intent.name} from the matching template.`),
         cosBotId
       );
       return true;
@@ -567,7 +568,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      `Created ${imported.bot.name} from the matching marketplace template (${template.template_id}). Path: template. New bot id: ${imported.bot.id}.`,
+      applySkillEndToken(cosName, `Created ${imported.bot.name} from the matching marketplace template (${template.template_id}). Path: template. New bot id: ${imported.bot.id}.`),
       cosBotId
     );
     return true;
@@ -578,7 +579,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`,
+      applySkillEndToken(cosName, `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`),
       cosBotId
     );
     return true;
@@ -587,7 +588,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      `Failed to create ${intent.name}: invalid name.`,
+      applySkillEndToken(cosName, `Failed to create ${intent.name}: invalid name.`),
       cosBotId
     );
     return true;
@@ -595,7 +596,7 @@ export async function handleCosBirthRequest(
   messages.create(
     conversationId,
     'bot',
-    `None of the templates fit. Created ${created.bot.name} with that job as its description. Path: plain. New bot id: ${created.bot.id}.`,
+    applySkillEndToken(cosName, `None of the templates fit. Created ${created.bot.name} with that job as its description. Path: plain. New bot id: ${created.bot.id}.`),
     cosBotId
   );
   return true;

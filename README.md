@@ -53,6 +53,11 @@ The current application is an early compatibility shell. It can:
 - create bots and groups;
 - chat through an embedded example model loop;
 - route `@bot` and legacy `WAKE` handoffs;
+- show a dark roster-and-thread UI with unread tracking;
+- draft outbound message proposals, gate actions behind Approve/Deny
+  approval requests, and write file artifacts from chat;
+- run taught one-shots and recurring routines, and park a turn on one
+  ask-and-wait question;
 - import bot identity from the Grok marketplace boundary;
 - persist state in SQLite;
 - store the first proposed bot-definition, session, task, and lifecycle-event

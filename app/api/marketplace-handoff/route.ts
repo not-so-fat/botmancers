@@ -1,74 +1,67 @@
 import { NextResponse } from 'next/server';
-import { URL } from 'url';
+import {
+  buildHandoffDestination,
+  cleanReturnUrl,
+  invalidHandoffQuery,
+  isMarketConfigured,
+} from '@/lib/market-handoff';
+
+export const dynamic = 'force-dynamic';
+
+/** Prefer Host / X-Forwarded-* so 127.0.0.1 and localhost are not mixed by the runtime. */
+function requestOrigin(request: Request): string {
+  const url = new URL(request.url);
+  const host = request.headers.get('x-forwarded-host') || request.headers.get('host');
+  if (!host) return url.origin;
+  const protoHeader = request.headers.get('x-forwarded-proto');
+  const proto = (protoHeader || url.protocol.replace(':', '') || 'http').split(',')[0].trim();
+  return `${proto}://${host.split(',')[0].trim()}`;
+}
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  
-  const paramKeys = Array.from(searchParams.keys());
-  if (paramKeys.length !== 1 || !paramKeys.includes('return')) {
+  if (invalidHandoffQuery(request)) {
     return NextResponse.json(
       { error: 'Only return parameter is allowed' },
-      { status: 400 }
+      { status: 400 },
     );
   }
-  
-  const returnPath = searchParams.get('return');
 
-  if (!returnPath) {
+  const returnRaw = new URL(request.url).searchParams.get('return');
+  if (!returnRaw) {
     return NextResponse.json(
       { error: 'Return path is required' },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
-  let cleanedReturnPath: string;
-  try {
-    const returnUrl = new URL(returnPath);
-    const requestUrl = new URL(request.url);
-    
-    if (returnUrl.origin !== requestUrl.origin) {
-      return NextResponse.json(
-        { error: 'Return path must be same-origin' },
-        { status: 400 }
-      );
-    }
-    
-    returnUrl.username = '';
-    returnUrl.password = '';
-    returnUrl.hash = '';
-    cleanedReturnPath = returnUrl.toString();
-  } catch (error) {
+  const cleanedReturn = cleanReturnUrl(returnRaw);
+  if (!cleanedReturn) {
     return NextResponse.json(
       { error: 'Invalid return path' },
-      { status: 400 }
+      { status: 400 },
+    );
+  }
+  if (cleanedReturn.origin !== requestOrigin(request)) {
+    return NextResponse.json(
+      { error: 'Return path must be same-origin' },
+      { status: 400 },
     );
   }
 
-  const cloneMarketUrl = process.env.CLONE_MARKET_URL;
-  
-  if (!cloneMarketUrl) {
+  if (!isMarketConfigured()) {
     return NextResponse.json(
-      { error: 'CLONE_MARKET_URL is not configured' },
-      { status: 404 }
+      { error: 'CLONE_MARKET_URL is not set.' },
+      { status: 404 },
     );
   }
 
-  try {
-    const marketplaceUrl = new URL(cloneMarketUrl);
-    
-    marketplaceUrl.username = '';
-    marketplaceUrl.password = '';
-    marketplaceUrl.hash = '';
-    marketplaceUrl.search = '';
-    
-    marketplaceUrl.searchParams.set('target', 'botmancers');
-    marketplaceUrl.searchParams.set('return', cleanedReturnPath);
-    
-    return NextResponse.redirect(marketplaceUrl.toString());
-  } catch (error) {
+  const destination = buildHandoffDestination(cleanedReturn);
+  if (!destination) {
     return NextResponse.json(
-      { error: 'Invalid CLONE_MARKET_URL configuration' },
-      { status: 500 }
+      { error: 'CLONE_MARKET_URL is not set.' },
+      { status: 404 },
     );
   }
+
+  return NextResponse.redirect(destination, 307);
 }
