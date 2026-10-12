@@ -20,7 +20,12 @@ export async function GET(
       }
       return msg;
     });
-    
+
+    const conversation = conversations.getById(id);
+    if (conversation?.type === 'bot' && conversation.bot_id) {
+      bots.markRead(conversation.bot_id);
+    }
+
     return NextResponse.json(enrichedMessages);
   } catch (error) {
     console.error('Error fetching messages:', error);

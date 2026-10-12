@@ -95,6 +95,15 @@ if (!botColumns.some(column => column.name === 'color')) {
 if (!botColumns.some(column => column.name === 'pinned')) {
   db.exec('ALTER TABLE bots ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
 }
+if (!botColumns.some(column => column.name === 'last_seen')) {
+  db.exec('ALTER TABLE bots ADD COLUMN last_seen INTEGER');
+}
+if (!botColumns.some(column => column.name === 'unread')) {
+  db.exec('ALTER TABLE bots ADD COLUMN unread INTEGER NOT NULL DEFAULT 0');
+}
+if (!botColumns.some(column => column.name === 'hidden')) {
+  db.exec('ALTER TABLE bots ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
+}
 if (!botColumns.some(column => column.name === 'source_provider')) {
   db.exec('ALTER TABLE bots ADD COLUMN source_provider TEXT');
 }
@@ -143,6 +152,9 @@ export interface Bot {
   avatar?: string;
   color: string;
   pinned?: number;
+  hidden?: number;
+  last_seen?: number | null;
+  unread?: number;
   created_at: number;
   source_provider?: string | null;
   template_id?: string | null;
@@ -207,12 +219,12 @@ export interface QueueItem {
 }
 
 export const bots = {
-  create: (data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned'>): Bot => {
+  create: (data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned'>, overrides?: { id?: string; created_at?: number }): Bot => {
     const bot: Bot = {
-      id: randomUUID(),
+      id: overrides?.id || randomUUID(),
       ...data,
       color: nextBotColor(),
-      created_at: Date.now(),
+      created_at: overrides?.created_at ?? Date.now(),
     };
     db.prepare(
       'INSERT INTO bots (id, name, title, description, avatar, color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -227,7 +239,7 @@ export const bots = {
   },
 
   createFromImport: (
-    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp'>,
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp'>,
     provenance: ImportProvenance
   ): Bot => {
     const bot: Bot = {
@@ -286,6 +298,22 @@ export const bots = {
     db.prepare('UPDATE bots SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id);
   },
 
+  setHidden: (id: string, hidden: boolean): void => {
+    db.prepare('UPDATE bots SET hidden = ? WHERE id = ?').run(hidden ? 1 : 0, id);
+  },
+
+  touchSeen: (): void => {
+    db.prepare('UPDATE bots SET last_seen = ?').run(Date.now());
+  },
+
+  markUnread: (id: string): void => {
+    db.prepare('UPDATE bots SET unread = 1 WHERE id = ?').run(id);
+  },
+
+  markRead: (id: string): void => {
+    db.prepare('UPDATE bots SET unread = 0 WHERE id = ?').run(id);
+  },
+
   remove: (id: string): void => {
     const conversations = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').all(id) as { id: string }[];
     db.transaction(() => {
@@ -303,13 +331,13 @@ export const bots = {
 };
 
 export const groups = {
-  create: (name: string, botIds: string[], ownerId?: string): Group => {
+  create: (name: string, botIds: string[], ownerId?: string, overrides?: { created_at?: number }): Group => {
     const owner = ownerId && botIds.includes(ownerId) ? ownerId : botIds[0];
     const group: Group = {
       id: randomUUID(),
       name,
       owner_bot_id: owner,
-      created_at: Date.now(),
+      created_at: overrides?.created_at ?? Date.now(),
     };
     
     const insertGroup = db.prepare(
@@ -387,7 +415,15 @@ export const messages = {
       message.handoff_targets || null,
       message.created_at
     );
-    
+
+    if (senderType === 'bot') {
+      if (senderId) bots.markUnread(senderId);
+      const owner = db.prepare(
+        'SELECT bot_id FROM conversations WHERE id = ? AND type = ?'
+      ).get(conversationId, 'bot') as { bot_id: string | null } | undefined;
+      if (owner?.bot_id && owner.bot_id !== senderId) bots.markUnread(owner.bot_id);
+    }
+
     return message;
   },
 
@@ -403,6 +439,28 @@ export const messages = {
     return db.prepare(
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
     ).all(conversationId) as Message[];
+  },
+
+  latestFromBot: (botId: string): string => {
+    const own = conversations.getByBotId(botId);
+    const rows = db.prepare(
+      `SELECT content, conversation_id, created_at FROM messages
+       WHERE sender_type = 'bot' AND sender_id = ?
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 20`
+    ).all(botId) as { content: string; conversation_id: string; created_at: number }[];
+    for (const row of rows) {
+      if (own && row.conversation_id !== own.id) continue;
+      const prior = db.prepare(
+        `SELECT content FROM messages
+         WHERE conversation_id = ? AND created_at < ?
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT 1`
+      ).get(row.conversation_id, row.created_at) as { content: string } | undefined;
+      if (prior && prior.content.startsWith('[From ')) continue;
+      return row.content;
+    }
+    return '';
   },
 
   // Prior bot sentence from the source thread of an @-handoff (not the mention text).

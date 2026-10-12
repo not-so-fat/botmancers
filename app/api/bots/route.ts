@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { bots, conversations, queue } from '@/lib/db';
+import { bots, conversations, messages, queue } from '@/lib/db';
 import { processQueue } from '@/lib/agent';
 
 export async function GET() {
   try {
-    const allBots = bots.getAll();
+    const allBots = bots.getAll().map(bot => ({ ...bot, unread: bot.unread ? 1 : 0, hidden: bot.hidden ? 1 : 0, latest: messages.latestFromBot(bot.id) }));
     return NextResponse.json(allBots);
   } catch (error) {
     console.error('Error fetching bots:', error);
@@ -66,6 +66,13 @@ export async function PATCH(request: Request) {
     }
     if (body.pinned !== undefined) {
       bots.setPinned(id, Boolean(body.pinned));
+    }
+    if (body.hidden !== undefined) {
+      bots.setHidden(id, Boolean(body.hidden));
+    }
+    if (body.unread !== undefined) {
+      if (body.unread) bots.markUnread(id);
+      else bots.markRead(id);
     }
     if (body.name !== undefined || body.title !== undefined || body.description !== undefined) {
       const name = body.name !== undefined ? String(body.name).trim() : bot.name;
