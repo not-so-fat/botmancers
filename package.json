@@ -21,6 +21,7 @@
     "test:artifacts": "node test-artifacts.js",
     "test:group-semantics": "node test-group-semantics.js",
     "test:command-runs": "node test-command-runs.js",
+    "test:parity-small": "node test-parity-small.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js"
   },
   "dependencies": {

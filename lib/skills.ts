@@ -29,6 +29,30 @@ export function isSupportedSkillName(botName: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(botName);
 }
 
+// A skill rule of the form `ends with the exact token T` (NOT-420 item 3):
+// every bot reply ends with T. The rule is read from the local skill text,
+// never from message keywords. Null when the bot has no skill or no rule.
+export function skillEndToken(botName: string | null | undefined): string | null {
+  if (!botName) return null;
+  const skill = localSkillForBot(botName);
+  if (!skill) return null;
+  const match = skill.match(/ends with the exact token\s+(\S+)/i);
+  return match ? match[1] : null;
+}
+
+// One reply post-processor for the end-token rule: append T once, never
+// double it. Bots without the rule pass through unchanged. Machine and
+// protocol records (tool lines, run cards, draft JSON, ticks, handoff
+// markers, exact-word replies) stay verbatim at their call sites and never
+// reach this function.
+export function applySkillEndToken(botName: string | null | undefined, content: string): string {
+  const token = skillEndToken(botName);
+  if (!token) return content;
+  if (!content) return token;
+  if (content.trimEnd().endsWith(token)) return content;
+  return content + '\n' + token;
+}
+
 // Resolved skill path for the config page and snapshot hash. Null when the
 // bot name cannot map to a skill path.
 export function skillPathForBot(botName: string): string | null {

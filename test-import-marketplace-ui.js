@@ -316,7 +316,7 @@ async function testUnconfiguredHandoff() {
   console.log(`Status: ${response.status}`);
   console.log(`Response: ${JSON.stringify(response.body, null, 2)}\n`);
 
-  if (response.status === 404 && response.body.error?.includes('not configured')) {
+  if (response.status === 404 && response.body.error?.includes('CLONE_MARKET_URL is not set')) {
     console.log('✅ Unconfigured handoff test PASSED\n');
     return true;
   } else if (response.status === 307 || response.status === 302) {
