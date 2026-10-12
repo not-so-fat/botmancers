@@ -230,3 +230,25 @@ loaded" error status (no "Saved" claim).
 - Computer preview overlay, chief-of-staff page read, and coding-limb
   UI: main-only agent-loop features. Reason: built on main after the
   snapshot; styled with the same tokens.
+
+## Operator pass at c91d729 (2026-10-12 08:30–08:40 PT)
+
+Captured with Playwright headless Chromium against `next start -p 43200`
+(production build of c91d729; 43123 is occupied by the owner's own instance),
+seed fixture DB, no mocks except C2 (PATCH held open) and C4 (GET 500).
+All `docs/parity/config-*.png`, `thread-*.png`, `unread-cleared.png` and
+`unread-hover.png` were overwritten from this run.
+
+- C1 `config-loaded.png` / `config-loaded-390.png`: real seed data. Save is muted before any edit (fix c); Back to chat has a gap above the header (fix b).
+- C2 `config-saving.png`, `config-dirty.png` (dirty state, Save active), C3 `config-saved.png`.
+- C4 `config-error.png`: full header with "Bot configuration", "Couldn't load bot details.", hash "—", "○ Not loaded" (fix a).
+- C5 `config-not-found.png`, C6 `config-snapshots-empty.png` (Alice).
+- C7 `config-snapshots-two.png`: first snapshot expanded next to the Template source card (fix d). The labels match the snapshot fields. The remaining visual difference: the card shows "—" in a label/value row, while the snapshot shows "null" stacked under the label. That is for Atelier to judge.
+- Rows 10–12: `thread-draft.png`, `thread-approval.png`, `thread-file.png` (CardMint thread, `--thread-cards` seed).
+- Row 7 `unread-cleared.png`: Cedar thread, no menu (current right).
+- Row 8 `unread-hover.png`: hovering Alice shows the tooltip, but no "Unread" line, even though the seed sets Alice unread=1 (`/api/bots` reports unread 1 before load). This is still DRIFT. It comes from roster code (NOT-409 area), not the config page.
+
+Command results at c91d729 (local, Mac, network on):
+lint 0 · build 0 · tsc --noEmit 0 · test:snapshot 0 · test:delegation 0 · test:thread-actions 0 · test:agent-loop-extras 0 ·
+test:marketplace-import 1 (returnCleanup fails; identical failure on origin/main cce7768, pre-existing) ·
+test:acceptance 1 (step 6 needs OPENAI_API_KEY; same on origin/main).
