@@ -137,6 +137,46 @@ function chainStoppedForLatestUser(conversationId: string): boolean {
   return !!chain && chain.userMessageId === latestUser.id && chain.stopped;
 }
 
+// True when the thread's latest user message belongs to a chain whose
+// delegation budget is spent. Timer arming checks this (like the stopped
+// check above) so an exhausted budget defers ticks instead of enqueueing a
+// budget-refused launch on every heartbeat; the next user message starts a
+// fresh chain and the preserved tick fires then.
+function chainBudgetExhaustedForLatestUser(conversationId: string): boolean {
+  const conversationMessages = messages.getByConversation(conversationId);
+  const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
+  if (!latestUser) return false;
+  const chain = delegationChains.get(conversationId);
+  return !!chain && chain.userMessageId === latestUser.id && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS;
+}
+
+// True while the latest user message has no bot reply after it, so a tick
+// never steals a user's turn.
+function userAwaitingReply(conversationMessages: Message[], latestUser: Message | null): boolean {
+  if (!latestUser) return false;
+  const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
+  return userIdx >= 0 && !conversationMessages.slice(userIdx + 1).some(msg =>
+    msg.sender_type === 'bot'
+  );
+}
+
+// Non-consuming twin of consumeDueTimerTick: true when this launch would
+// consume a due one-shot or routine tick for the owning bot.
+function peekDueTimerTick(
+  conversationId: string,
+  botId: string,
+  conversationMessages: Message[],
+  latestUser: Message | null
+): boolean {
+  if (userAwaitingReply(conversationMessages, latestUser)) return false;
+  const now = Date.now();
+  const pendingOneShot = oneShots.pending(conversationId);
+  if (pendingOneShot && pendingOneShot.bot_id === botId && pendingOneShot.due_at <= now) return true;
+  const routine = routines.forConversation(conversationId);
+  if (routine && routine.bot_id === botId && routine.next_due_at <= now) return true;
+  return false;
+}
+
 // Claims one due one-shot or routine tick for this launch and posts it.
 // Returns true when the launch is fully consumed by the tick. Only the
 // owning bot's launch consumes a row, and only when no user message is
@@ -147,13 +187,7 @@ function consumeDueTimerTick(
   conversationMessages: Message[],
   latestUser: Message | null
 ): boolean {
-  if (latestUser) {
-    const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
-    const awaitingReply = userIdx >= 0 && !conversationMessages.slice(userIdx + 1).some(msg =>
-      msg.sender_type === 'bot'
-    );
-    if (awaitingReply) return false;
-  }
+  if (userAwaitingReply(conversationMessages, latestUser)) return false;
   const now = Date.now();
   const pendingOneShot = oneShots.pending(conversationId);
   if (
@@ -179,6 +213,7 @@ const routineTimers = new Set<string>();
 // the tick, so Stop and the delegation limits apply to it unchanged.
 function fireTimerTick(conversationId: string, botId: string): void {
   if (chainStoppedForLatestUser(conversationId)) return;
+  if (chainBudgetExhaustedForLatestUser(conversationId)) return;
   if (queue.countPending(conversationId) > 0) return;
   queue.enqueue(conversationId, botId);
   chainProcessQueue();
@@ -187,6 +222,7 @@ function fireTimerTick(conversationId: string, botId: string): void {
 function armDurableOneShot(row: OneShot): void {
   if (row.fired || durableOneShotTimers.has(row.id)) return;
   if (chainStoppedForLatestUser(row.conversation_id)) return;
+  if (chainBudgetExhaustedForLatestUser(row.conversation_id)) return;
   if (queue.countPending(row.conversation_id) > 0) return;
   durableOneShotTimers.add(row.id);
   const wait = Math.max(0, row.due_at - Date.now());
@@ -199,6 +235,7 @@ function armDurableOneShot(row: OneShot): void {
 function armRoutine(row: Routine): void {
   if (routineTimers.has(row.id)) return;
   if (chainStoppedForLatestUser(row.conversation_id)) return;
+  if (chainBudgetExhaustedForLatestUser(row.conversation_id)) return;
   if (queue.countPending(row.conversation_id) > 0) return;
   routineTimers.add(row.id);
   const wait = Math.max(0, row.next_due_at - Date.now());
@@ -213,6 +250,48 @@ function armRoutine(row: Routine): void {
 export function resumeLoopTimers(): void {
   for (const row of oneShots.unfired()) armDurableOneShot(row);
   for (const row of routines.all()) armRoutine(row);
+}
+
+const ROUTINE_EVERY_MS = 24 * 60 * 60 * 1000;
+const ROUTINE_FIRST_DUE_MS = 8000;
+const ONE_SHOT_DEFAULT_DELAY_MS = 60_000;
+
+// Taught timers (NOT-411): the reference's fixed teaching phrases,
+// generalised. `Reply with the word <word>` teaches any word (the reference
+// only taught routinemint2 to chief-of-staff); `Set a one-shot[ in N
+// seconds]` teaches a durable one-shot with a chosen delay. Full-string
+// matches so `Reply with exactly the word X` and longer one-shot sentences
+// never collide.
+function routineTeachWord(text: string): string | null {
+  const match = text.trim().match(/^reply with the word (\S+?)\.?$/i);
+  if (!match) return null;
+  const word = match[1].replace(/^[`"'"]+|[`"'"]+$/g, '');
+  return word || null;
+}
+
+function oneShotTeachDelayMs(text: string): number | null {
+  const match = text.trim().match(/^set a one-shot(?: in (\d+) seconds?)?\.?$/i);
+  if (!match) return null;
+  if (match[1]) return Number(match[1]) * 1000;
+  return ONE_SHOT_DEFAULT_DELAY_MS;
+}
+
+function scheduleTaughtRoutine(conversationId: string, botId: string, word: string): void {
+  const existing = routines.forConversation(conversationId);
+  if (existing) {
+    armRoutine(existing);
+    return;
+  }
+  armRoutine(routines.create(conversationId, botId, word, Date.now() + ROUTINE_FIRST_DUE_MS, ROUTINE_EVERY_MS));
+}
+
+function scheduleTaughtOneShot(conversationId: string, botId: string, delayMs: number): void {
+  const existing = oneShots.pending(conversationId);
+  if (existing) {
+    armDurableOneShot(existing);
+    return;
+  }
+  armDurableOneShot(oneShots.create(conversationId, botId, Date.now() + delayMs));
 }
 
 const AUTO_PROCESS = process.env.BOTMANCERS_NO_AUTOPROCESS !== '1';
@@ -309,6 +388,35 @@ async function processQueueItem(item: QueueItem) {
   const delegatingCallerId = callerFor(chain, bot.id);
   const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
 
+  // Timer-tick hook (NOT-411): a due one-shot or routine makes this launch
+  // post its word instead of calling the model. Runs here, right behind the
+  // Stop check and before any content-triggered hook, so a tick never
+  // re-runs the draft, run, or MCP hooks with the stale latest user message.
+  // Consumes one delegation turn like any other launch, and the budget
+  // check inside refuses it once exhausted, so a tick never bypasses the
+  // depth/budget limits or Stop. Delegated turns never consume a tick: a
+  // WAKE handoff's launch answers the delegation, and the tick waits for its
+  // own timer launch. A launch never consumes a tick while its user message
+  // still awaits a reply.
+  if (
+    !isDelegatedTurn &&
+    peekDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)
+  ) {
+    if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
+      messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+      queue.cancelPending(item.conversation_id);
+      chainProcessQueue();
+      return;
+    }
+    if (consumeDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)) {
+      if (chain) chain.turns += 1;
+      chainProcessQueue();
+      return;
+    }
+    chainProcessQueue();
+    return;
+  }
+
   // Outbound-draft hook (NOT-410): a direct-thread ask mentioning email or
   // slack creates a draft card instead of a model reply. Runs behind the
   // stopped check above, consumes no delegation budget, and never fires
@@ -324,6 +432,26 @@ async function processQueueItem(item: QueueItem) {
       if (!alreadyReplied) {
         messages.create(item.conversation_id, 'bot', serializeDraft(draft), bot.id);
       }
+      chainProcessQueue();
+      return;
+    }
+  }
+
+  // Taught-timer hook (NOT-411): a direct thread teaches its own bot a
+  // durable one-shot or a recurring routine via the generalised reference
+  // phrases. Silent like the reference: the tick itself is the reply.
+  // Idempotent: an existing row is just re-armed. Runs behind the tick
+  // check above, so a due tick never re-enters here.
+  if (conversation.type === 'bot' && latestUser) {
+    const oneShotDelay = oneShotTeachDelayMs(latestUser.content);
+    if (oneShotDelay !== null) {
+      scheduleTaughtOneShot(item.conversation_id, bot.id, oneShotDelay);
+      chainProcessQueue();
+      return;
+    }
+    const routineWord = routineTeachWord(latestUser.content);
+    if (routineWord) {
+      scheduleTaughtRoutine(item.conversation_id, bot.id, routineWord);
       chainProcessQueue();
       return;
     }
@@ -475,16 +603,6 @@ The standing rules decide the whole reply. If they require one short sentence, w
     return;
   }
   if (chain) chain.turns += 1;
-
-  // Timer-tick hook (NOT-411): a due one-shot or routine makes this launch
-  // post its word instead of calling the model. Runs behind the stopped
-  // check above and consumes one delegation turn like any other launch, so
-  // a tick never bypasses the depth/budget limits or Stop. A launch never
-  // consumes a tick while its user message still awaits a reply.
-  if (consumeDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)) {
-    chainProcessQueue();
-    return;
-  }
 
   const sent = [
     { role: 'system' as const, content: systemPrompt },
