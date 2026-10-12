@@ -32,7 +32,7 @@ const db = jiti('../lib/db.ts');
 const { serializeRun } = jiti('../lib/run.ts');
 const { serializeDraft } = jiti('../lib/draft.ts');
 
-const { bots, conversations, groups, messages, routines } = db;
+const { bots, conversations, groups, messages, routines, launchSnapshots } = db;
 
 // Same hardcoded IDs as lib/db.ts: only these rows keep the lime (Cedar) and
 // orange (Pine) colors when the module-load recolor runs under `npm run dev`.
@@ -155,6 +155,34 @@ if (THREAD_CARDS) {
   messages.create(convId, 'bot', 'Cards checked.', alice.id);
 }
 
+// NOT-412: two consistent launch snapshots for LaunchMint (manual bot, null
+// provenance) so the config page C1/C7 states capture from real data with
+// no route-interception mock. Newer matches the current config; older has
+// previous rules so it reads "Config changed since".
+const { randomUUID } = require('crypto');
+const { buildSnapshotInput, hashSnapshot } = require('../lib/snapshot');
+{
+  const skillPath = path.join('skills', 'LaunchMint', 'SKILL.md');
+  const skillContent = fs.readFileSync(skillPath, 'utf8');
+  const skillState = { path: skillPath, present: true, content: skillContent };
+  const botRow = bots.getById(launchMint.id);
+  const currentInput = buildSnapshotInput(botRow, skillState, []);
+  const olderInput = buildSnapshotInput(
+    { ...botRow, description: 'Launch helper. (previous rules)' },
+    skillState,
+    []
+  );
+  const olderId = randomUUID();
+  const currentId = randomUUID();
+  launchSnapshots.record(olderId, launchMint.id, hashSnapshot(olderInput), JSON.stringify(olderInput), 'openai');
+  launchSnapshots.record(currentId, launchMint.id, hashSnapshot(currentInput), JSON.stringify(currentInput), 'openai');
+  const DatabaseEarly = require('better-sqlite3');
+  const fixTime = new DatabaseEarly(DB_PATH);
+  fixTime.prepare('UPDATE launch_snapshots SET created_at = ? WHERE id = ?').run(T0 - 86400000, olderId);
+  fixTime.prepare('UPDATE launch_snapshots SET created_at = ? WHERE id = ?').run(T0, currentId);
+  fixTime.close();
+}
+
 // Heartbeat fresh for all but Bob (Bob shows Stopped); only Alice keeps unread.
 bots.touchSeen();
 for (const bot of bots.getAll()) bots.markRead(bot.id);
@@ -194,5 +222,6 @@ if (cardMint) {
   console.log(`  - thread-card demo thread on CardMint (${cardMint.id}): draft, approval cardmint1, file, handoff reveal`);
 }
 console.log('  - routine routinemint2 on chief-of-staff (posts ~8s after dev start, every 60s)');
+console.log(`  - 2 launch snapshots on LaunchMint (${launchMint.id}): newest matches current, older changed`);
 console.log('Working state is client-side: open the chief-of-staff thread and send a message to capture it.');
 console.log(`Run: BOTMANCERS_DB_PATH=${DB_PATH} npm run dev`);

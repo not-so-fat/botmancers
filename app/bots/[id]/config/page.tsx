@@ -264,10 +264,10 @@ export default function BotConfigPage() {
 
   if (notFound) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <div className="cfg-page flex items-center justify-center">
         <div className="text-center">
-          <p className="text-gray-800 mb-4">Bot not found.</p>
-          <Link href="/" className="text-blue-600 hover:underline">
+          <p className="mb-4">Bot not found.</p>
+          <Link href="/" className="cfg-link">
             ← Back to chat
           </Link>
         </div>
@@ -277,18 +277,18 @@ export default function BotConfigPage() {
 
   if (loading && !data) {
     return (
-      <div className="min-h-screen bg-gray-50 p-4 sm:p-6">
+      <div className="cfg-page">
         <div className="max-w-6xl mx-auto space-y-6">
-          <div className="h-6 w-32 bg-gray-200 rounded animate-pulse" />
-          <div className="h-20 bg-gray-200 rounded-lg animate-pulse" />
+          <div className="h-6 w-32 rounded animate-pulse cfg-skel" />
+          <div className="h-20 rounded-lg animate-pulse cfg-skel" />
           <div className="grid gap-6 lg:grid-cols-5">
             <div className="lg:col-span-3 space-y-6">
               {[0, 1, 2].map(n => (
-                <div key={n} className="h-48 bg-gray-200 rounded-lg animate-pulse" />
+                <div key={n} className="h-48 rounded-lg animate-pulse cfg-skel" />
               ))}
             </div>
             <div className="lg:col-span-2">
-              <div className="h-64 bg-gray-200 rounded-lg animate-pulse" />
+              <div className="h-64 rounded-lg animate-pulse cfg-skel" />
             </div>
           </div>
         </div>
@@ -297,23 +297,53 @@ export default function BotConfigPage() {
   }
 
   if (loadFailed && !data) {
+    const errorSections = ['Skills', 'Rules', 'Template source'];
     return (
-      <div className="min-h-screen bg-gray-50 p-4 sm:p-6">
-        <div className="max-w-6xl mx-auto space-y-6">
-          <Link href="/" className="text-blue-600 hover:underline">
+      <div className="cfg-page">
+        <div className="max-w-6xl mx-auto">
+          <Link href="/" className="cfg-link cfg-back text-sm">
             ← Back to chat
           </Link>
-          {['Skills', 'Rules', 'Template source', 'Launch snapshots'].map(section => (
-            <div key={section} className="bg-white border rounded-lg p-6">
-              <h2 className="font-semibold text-gray-800 mb-2">{section}</h2>
-              <p className="text-sm text-gray-600">
-                Couldn&apos;t load this section.{' '}
-                <button onClick={retryLoad} className="text-blue-600 hover:underline">
-                  Retry
-                </button>
+          <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
+            <div className="min-w-0">
+              <h1 className="text-xl font-bold truncate">Bot configuration</h1>
+              <p className="text-sm cfg-faint truncate">Couldn&apos;t load bot details.</p>
+            </div>
+            <div className="ml-auto text-right">
+              <p className="text-sm cfg-muted">
+                Current config hash: <code className="cfg-code">—</code>
+              </p>
+              <p className="text-sm mt-1">
+                <span className="cfg-faint">○ Not loaded</span>
               </p>
             </div>
-          ))}
+          </header>
+          <div className="grid gap-6 lg:grid-cols-5 items-start">
+            <div className="lg:col-span-3 space-y-6">
+              {errorSections.map(section => (
+                <div key={section} className="cfg-card">
+                  <h2 className="cfg-title mb-2">{section}</h2>
+                  <p className="text-sm cfg-muted">
+                    Couldn&apos;t load this section.{' '}
+                    <button onClick={retryLoad} className="cfg-link">
+                      Retry
+                    </button>
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div className="lg:col-span-2">
+              <div className="cfg-card">
+                <h2 className="cfg-title mb-2">Launch snapshots</h2>
+                <p className="text-sm cfg-muted">
+                  Couldn&apos;t load this section.{' '}
+                  <button onClick={retryLoad} className="cfg-link">
+                    Retry
+                  </button>
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -323,74 +353,74 @@ export default function BotConfigPage() {
 
   const { bot, skill, currentHash, snapshots } = data;
   const hasTemplateSource = Boolean(
-    bot.source_provider ?? bot.template_id ?? bot.template_url ?? bot.import_schema_version ?? bot.import_operation_id
+    bot.source_provider || bot.template_id || bot.template_url || bot.import_schema_version || bot.import_operation_id
   );
 
   const rulesStateLine =
     rulesPhase === 'saving' ? (
-      <span className="text-sm text-gray-500">Saving…</span>
+      <span className="text-sm cfg-faint">Saving…</span>
     ) : rulesDirty || rulesPhase === 'error' ? (
-      <span className="text-sm text-amber-600">
-        <span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1" />
+      <span className="text-sm cfg-dirty">
+        <span className="inline-block w-2 h-2 rounded-full cfg-dot-amber mr-1" />
         Unsaved changes
       </span>
     ) : rulesPhase === 'confirmed' ? (
-      <span className="text-sm text-gray-500">Saved {formatClock(rulesConfirmedAt)}</span>
+      <span className="text-sm cfg-faint">Saved {formatClock(rulesConfirmedAt)}</span>
     ) : (
-      <span className="text-sm text-gray-500">Saved</span>
+      <span className="text-sm cfg-faint">Saved</span>
     );
 
   const skillStateLine =
     skillPhase === 'saving' ? (
-      <span className="text-sm text-gray-500">Saving…</span>
+      <span className="text-sm cfg-faint">Saving…</span>
     ) : skillDirty || skillPhase === 'error' ? (
-      <span className="text-sm text-amber-600">
-        <span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1" />
+      <span className="text-sm cfg-dirty">
+        <span className="inline-block w-2 h-2 rounded-full cfg-dot-amber mr-1" />
         Unsaved changes
       </span>
     ) : skillPhase === 'confirmed' ? (
-      <span className="text-sm text-gray-500">Saved {formatClock(skillConfirmedAt)}</span>
+      <span className="text-sm cfg-faint">Saved {formatClock(skillConfirmedAt)}</span>
     ) : (
-      <span className="text-sm text-gray-500">Saved</span>
+      <span className="text-sm cfg-faint">Saved</span>
     );
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 sm:p-6">
+    <div className="cfg-page">
       <div className="max-w-6xl mx-auto">
-        <Link href="/" onClick={confirmLeave} className="text-blue-600 hover:underline text-sm">
+        <Link href="/" onClick={confirmLeave} className="cfg-link cfg-back text-sm">
           ← Back to chat
         </Link>
 
         <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
           {bot.avatar ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={bot.avatar} alt="" className="w-12 h-12 rounded-full object-cover" />
+            <img src={bot.avatar} alt="" className="w-12 h-12 cfg-avatar" />
           ) : null}
           <div className="min-w-0">
-            <h1 className="text-xl font-bold text-gray-900 truncate">{bot.name}</h1>
-            <p className="text-sm text-gray-500 truncate">{bot.title || ' '}</p>
+            <h1 className="text-xl font-bold truncate">{bot.name}</h1>
+            <p className="text-sm cfg-faint truncate">{bot.title || ' '}</p>
           </div>
           <div className="ml-auto text-right">
-            <p className="text-sm text-gray-600">
+            <p className="text-sm cfg-muted">
               Current config hash:{' '}
-              <code className="font-mono" title={currentHash}>
+              <code className="cfg-code" title={currentHash}>
                 {currentHash.slice(0, 8)}
               </code>{' '}
               <button
                 onClick={() => flashCopied('header', currentHash)}
-                className="text-blue-600 hover:underline text-sm"
+                className="cfg-link text-sm"
               >
                 {copiedKey === 'header' ? 'Copied' : 'Copy'}
               </button>
             </p>
             <p className="text-sm mt-1">
               {anyDirty ? (
-                <span className="text-amber-600">
-                  <span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1" />
+                <span className="cfg-dirty">
+                  <span className="inline-block w-2 h-2 rounded-full cfg-dot-amber mr-1" />
                   Unsaved changes
                 </span>
               ) : (
-                <span className="text-gray-500">● Saved</span>
+                <span className="cfg-faint">● Saved</span>
               )}
             </p>
           </div>
@@ -398,44 +428,44 @@ export default function BotConfigPage() {
 
         <div className="grid gap-6 lg:grid-cols-5 items-start">
           <div className="lg:col-span-3 space-y-6">
-            <section className="bg-white border rounded-lg p-6">
+            <section className="cfg-card">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold text-gray-800">Skills</h2>
+                <h2 className="cfg-title">Skills</h2>
                 {skillStateLine}
               </div>
               {skill.status === 'unsupported' ? (
                 <>
-                  <p className="text-sm text-gray-600 mb-3">Unsupported name</p>
-                  <p className="text-sm text-gray-600">
+                  <p className="text-sm cfg-muted mb-3">Unsupported name</p>
+                  <p className="text-sm cfg-muted">
                     Skill files need a bot name matching /^[A-Za-z0-9_-]+$/ — this name cannot map to a skill path.
                   </p>
                 </>
               ) : (
                 <>
-                  <p className="text-sm text-gray-600 mb-3">
+                  <p className="text-sm cfg-muted mb-3">
                     {skill.path} · {skill.status === 'present' ? 'Present' : 'Not present'}
                   </p>
                   {!skillEditing ? (
                     skill.status === 'present' ? (
                       <>
-                        <pre className="text-sm bg-gray-50 border rounded p-3 whitespace-pre-wrap max-h-64 overflow-y-auto">
+                        <pre className="text-sm cfg-pre max-h-64 overflow-y-auto">
                           {skill.content}
                         </pre>
                         <button
                           onClick={startSkillEdit}
-                          className="mt-3 px-4 py-2 border rounded-lg text-sm hover:bg-gray-50 w-full sm:w-auto"
+                          className="mt-3 cfg-btn-ghost text-sm w-full sm:w-auto"
                         >
                           Edit
                         </button>
                       </>
                     ) : (
                       <>
-                        <p className="text-sm text-gray-600">
+                        <p className="text-sm cfg-muted">
                           No skill file yet. Create SKILL.md to give this bot standing instructions.
                         </p>
                         <button
                           onClick={startSkillEdit}
-                          className="mt-3 px-4 py-2 border rounded-lg text-sm hover:bg-gray-50 w-full sm:w-auto"
+                          className="mt-3 cfg-btn-ghost text-sm w-full sm:w-auto"
                         >
                           Create
                         </button>
@@ -447,10 +477,10 @@ export default function BotConfigPage() {
                         value={skillText}
                         onChange={e => setSkillText(e.target.value)}
                         rows={8}
-                        className="w-full px-3 py-2 border rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        className="cfg-input text-sm"
                       />
                       {skillPhase === 'error' && (
-                        <p className="mt-2 text-sm text-red-700">
+                        <p className="mt-2 text-sm cfg-error">
                           Couldn&apos;t save: {skillError}.{' '}
                           <button onClick={saveSkill} className="underline hover:no-underline">
                             Retry
@@ -461,42 +491,42 @@ export default function BotConfigPage() {
                         <button
                           onClick={saveSkill}
                           disabled={!skillDirty || skillPhase === 'saving'}
-                          className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+                          className="flex-1 sm:flex-none cfg-btn-primary text-sm"
                         >
                           {skillPhase === 'saving' ? 'Saving…' : 'Save'}
                         </button>
                         <button
                           onClick={discardSkill}
-                          disabled={skillPhase === 'saving'}
-                          className="flex-1 sm:flex-none px-4 py-2 border rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50"
+                          disabled={!skillDirty || skillPhase === 'saving'}
+                          className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
                         >
                           Discard
                         </button>
                       </div>
                     </>
                   )}
-                  <p className="mt-3 text-xs text-gray-500">Appended verbatim as a system message at launch.</p>
+                  <p className="mt-3 text-xs cfg-faint">Appended verbatim as a system message at launch.</p>
                 </>
               )}
             </section>
 
-            <section className="bg-white border rounded-lg p-6">
+            <section className="cfg-card">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold text-gray-800">Rules</h2>
+                <h2 className="cfg-title">Rules</h2>
                 {rulesStateLine}
               </div>
               <textarea
                 value={rulesText ?? ''}
                 onChange={e => setRulesText(e.target.value)}
                 rows={8}
-                className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="cfg-input cfg-input-sans text-sm"
               />
-              <p className="mt-2 text-xs text-gray-500">
+              <p className="mt-2 text-xs cfg-faint">
                 Sent verbatim as the standing-rules system message on every turn. This beats the user&apos;s request
                 for detail or length.
               </p>
               {rulesPhase === 'error' && (
-                <p className="mt-2 text-sm text-red-700">
+                <p className="mt-2 text-sm cfg-error">
                   Couldn&apos;t save: {rulesError}.{' '}
                   <button onClick={saveRules} className="underline hover:no-underline">
                     Retry
@@ -507,40 +537,40 @@ export default function BotConfigPage() {
                 <button
                   onClick={saveRules}
                   disabled={!rulesDirty || rulesPhase === 'saving'}
-                  className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+                  className="flex-1 sm:flex-none cfg-btn-primary text-sm"
                 >
                   {rulesPhase === 'saving' ? 'Saving…' : 'Save'}
                 </button>
                 <button
                   onClick={discardRules}
                   disabled={!rulesDirty || rulesPhase === 'saving'}
-                  className="flex-1 sm:flex-none px-4 py-2 border rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50"
+                  className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
                 >
                   Discard
                 </button>
               </div>
             </section>
 
-            <section className="bg-white border rounded-lg p-6">
-              <h2 className="font-semibold text-gray-800 mb-3">Template source</h2>
+            <section className="cfg-card">
+              <h2 className="cfg-title mb-3">Template source</h2>
               {!hasTemplateSource && (
-                <p className="text-sm text-gray-600 mb-3">Created manually in Botmancers — no template source.</p>
+                <p className="text-sm cfg-muted mb-3">Created manually in Botmancers — no template source.</p>
               )}
               <dl className="text-sm">
-                <div className="flex justify-between gap-4 py-1 border-t">
-                  <dt className="text-gray-500">Source provider</dt>
-                  <dd className="text-gray-800 text-right">{bot.source_provider ?? '—'}</dd>
+                <div className="flex justify-between gap-4 py-1 border-t cfg-line">
+                  <dt className="cfg-faint">Source provider</dt>
+                  <dd className="text-right">{bot.source_provider ?? '—'}</dd>
                 </div>
-                <div className="flex justify-between gap-4 py-1 border-t">
-                  <dt className="text-gray-500">Template ID</dt>
-                  <dd className="text-gray-800 text-right">{bot.template_id ?? '—'}</dd>
+                <div className="flex justify-between gap-4 py-1 border-t cfg-line">
+                  <dt className="cfg-faint">Template ID</dt>
+                  <dd className="text-right">{bot.template_id ?? '—'}</dd>
                 </div>
-                <div className="flex justify-between gap-4 py-1 border-t">
-                  <dt className="text-gray-500">Template URL</dt>
-                  <dd className="text-gray-800 text-right break-all">
+                <div className="flex justify-between gap-4 py-1 border-t cfg-line">
+                  <dt className="cfg-faint">Template URL</dt>
+                  <dd className="text-right break-all">
                     {bot.template_url ? (
                       looksLikeUrl(bot.template_url) ? (
-                        <a href={bot.template_url} className="text-blue-600 hover:underline">
+                        <a href={bot.template_url} className="cfg-link">
                           {bot.template_url}
                         </a>
                       ) : (
@@ -551,17 +581,17 @@ export default function BotConfigPage() {
                     )}
                   </dd>
                 </div>
-                <div className="flex justify-between gap-4 py-1 border-t">
-                  <dt className="text-gray-500">Schema version</dt>
-                  <dd className="text-gray-800 text-right">{bot.import_schema_version ?? '—'}</dd>
+                <div className="flex justify-between gap-4 py-1 border-t cfg-line">
+                  <dt className="cfg-faint">Import schema version</dt>
+                  <dd className="text-right">{bot.import_schema_version ?? '—'}</dd>
                 </div>
-                <div className="flex justify-between gap-4 py-1 border-t">
-                  <dt className="text-gray-500">Operation ID</dt>
-                  <dd className="text-gray-800 text-right break-all">{bot.import_operation_id ?? '—'}</dd>
+                <div className="flex justify-between gap-4 py-1 border-t cfg-line">
+                  <dt className="cfg-faint">Import operation ID</dt>
+                  <dd className="text-right break-all">{bot.import_operation_id ?? '—'}</dd>
                 </div>
-                <div className="flex justify-between gap-4 py-1 border-y">
-                  <dt className="text-gray-500">Imported at</dt>
-                  <dd className="text-gray-800 text-right">
+                <div className="flex justify-between gap-4 py-1 border-y cfg-line">
+                  <dt className="cfg-faint">Imported at</dt>
+                  <dd className="text-right">
                     {bot.import_timestamp ? formatDateTime(bot.import_timestamp) : '—'}
                   </dd>
                 </div>
@@ -570,67 +600,67 @@ export default function BotConfigPage() {
           </div>
 
           <div className="lg:col-span-2">
-            <section className="bg-white border rounded-lg p-6">
-              <h2 className="font-semibold text-gray-800 mb-3">Launch snapshots</h2>
+            <section className="cfg-card">
+              <h2 className="cfg-title mb-3">Launch snapshots</h2>
               {snapshots.length === 0 ? (
-                <p className="text-sm text-gray-600">No launches recorded yet.</p>
+                <p className="text-sm cfg-muted">No launches recorded yet.</p>
               ) : (
                 <ul className="space-y-3">
                   {snapshots.map(row => {
                     const matches = row.hash === currentHash;
                     const open = Boolean(expanded[row.id]);
                     return (
-                      <li key={row.id} className="border rounded-lg p-3">
+                      <li key={row.id} className="cfg-row">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm text-gray-800">
+                          <p className="text-sm">
                             {formatDateTime(row.created_at)} · {row.id.slice(0, 4)}
                             {row.transport ? ` · ${row.transport}` : null}
                           </p>
                           <button
                             onClick={() => setExpanded(prev => ({ ...prev, [row.id]: !prev[row.id] }))}
                             aria-label={open ? 'Collapse snapshot detail' : 'Expand snapshot detail'}
-                            className="text-gray-500 hover:text-gray-800 px-1"
+                            className="cfg-chevron px-1"
                           >
                             {open ? '▾' : '▸'}
                           </button>
                         </div>
                         <p className="mt-1 text-sm">
-                          <code className="font-mono text-gray-800">{row.hash.slice(0, 12)}</code>{' '}
+                          <code className="cfg-code">{row.hash.slice(0, 12)}</code>{' '}
                           <button
                             onClick={() => flashCopied(row.id, row.hash)}
-                            className="text-blue-600 hover:underline text-sm"
+                            className="cfg-link text-sm"
                           >
                             {copiedKey === row.id ? 'Copied' : 'Copy'}
                           </button>
                         </p>
                         <p className="mt-1 text-sm">
                           {matches ? (
-                            <span className="text-green-700">● Matches current config</span>
+                            <span className="cfg-ok">● Matches current config</span>
                           ) : (
-                            <span className="text-gray-500">○ Config changed since</span>
+                            <span className="cfg-faint">○ Config changed since</span>
                           )}
                         </p>
                         {open && (
-                          <div className="mt-3 pt-3 border-t text-sm">
-                            <p className="text-gray-600 break-all">
-                              <span className="font-medium text-gray-700">Launch ID:</span> {row.id}
+                          <div className="mt-3 pt-3 border-t cfg-line text-sm">
+                            <p className="cfg-muted break-all">
+                              <span className="font-medium">Launch ID:</span> {row.id}
                             </p>
-                            <p className="mt-1 text-gray-600 break-all">
-                              <span className="font-medium text-gray-700">Hash:</span>{' '}
-                              <code className="font-mono">{row.hash}</code>
+                            <p className="mt-1 cfg-muted break-all">
+                              <span className="font-medium">Hash:</span>{' '}
+                              <code className="cfg-code">{row.hash}</code>
                             </p>
                             <dl className="mt-2">
                               {SNAPSHOT_FIELDS.map(field => {
                                 const value = row.snapshot[field.key];
                                 return (
-                                  <div key={field.key} className="py-1 border-t">
-                                    <dt className="text-gray-500">{field.label}</dt>
-                                    <dd className="text-gray-800 whitespace-pre-wrap break-words">
+                                  <div key={field.key} className="py-1 border-t cfg-line">
+                                    <dt className="cfg-faint">{field.label}</dt>
+                                    <dd className="whitespace-pre-wrap break-words">
                                       {value === null || value === undefined ? (
-                                        <span className="text-gray-400">null</span>
+                                        <span className="cfg-faint">null</span>
                                       ) : Array.isArray(value) ? (
                                         value.length === 0 ? (
-                                          <span className="text-gray-400">(none)</span>
+                                          <span className="cfg-faint">(none)</span>
                                         ) : (
                                           <span className="block max-h-32 overflow-y-auto">
                                             {value.map(fact => `- ${fact}`).join('\n')}
@@ -639,7 +669,7 @@ export default function BotConfigPage() {
                                       ) : typeof value === 'boolean' ? (
                                         String(value)
                                       ) : value === '' ? (
-                                        <span className="text-gray-400">(empty)</span>
+                                        <span className="cfg-faint">(empty)</span>
                                       ) : (
                                         <span className="block max-h-32 overflow-y-auto">{value}</span>
                                       )}
