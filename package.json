@@ -12,6 +12,7 @@
     "test:snapshot": "node test-snapshot.js",
     "test:delegation": "node test-delegation.js",
     "test:unread": "node test-unread.js",
+    "test:thread-actions": "node test-thread-actions.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js"
   },
   "dependencies": {
