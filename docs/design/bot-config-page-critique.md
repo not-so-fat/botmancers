@@ -33,9 +33,11 @@ values (`grok-marketplace`, `template-abc`, `import-op-12345`).
   exclusion and the hash's configuration-only scope are stated, not
   silent. Pass.
 
-Severity labels below are `must-fix` (blocks build) or `optional`
-(builder may resolve without a spec revision). No finding below blocks
-the build.
+Severity labels below are `must-fix` (blocks build until resolved
+by a spec revision) or `optional` (builder may resolve without a spec
+revision). Finding 11 was `must-fix` and is now closed by the Atelier
+spec revision recorded under Re-review; no `must-fix` finding remains
+open.
 
 ## Findings
 
@@ -49,8 +51,15 @@ what the page shows, but not where snapshots persist (new table vs
 derived storage) or which endpoint serves the list and expanded detail.
 Suggested fix: one line stating persistence and API are defined in the
 build ticket, or a minimal contract (table, write point on the
-terminal-marking path, read endpoint). Optional because the page
-rendering contract does not depend on the storage choice.
+terminal-marking path, read endpoint). The write point matters for
+correctness, not just rendering: values read at terminal-marking time
+record config the run never used when rules/skills changed mid-flight
+(see finding 11), so snapshot values must be captured at config read
+time and only written when the item is marked terminal. This finding
+stays optional because, once finding 11's capture-timing rule is in
+the spec, the remaining storage/API choice does not affect the page
+rendering contract and the builder can resolve it without a further
+spec revision.
 
 ### Finding 2 [optional] — Expanded snapshot detail field list is vague
 
@@ -147,13 +156,56 @@ are unstated. Suggested fix: pin the formats (the mocks already imply
 `YYYY-MM-DD HH:MM` for rows). Optional because the mocks illustrate the
 intent and any locale-consistent rendering is acceptable.
 
+### Finding 11 [must-fix] — Snapshot capture timing records config the run never used
+
+Spec section: `Launch snapshots and snapshot hash`.
+
+The spec (pre-revision lines 187-189) says the snapshot "captures the
+effective configuration that run used, recorded when the item is marked
+terminal". But in `lib/agent.ts` the bot row is read at :45 and the
+skill at :195 before the async model call, while `markCompleted` runs
+at :33/:36 afterwards. A rules/skill edit during an in-flight run
+makes a terminal-time read record config the run never used, so the
+audit hash is false — direct drift from the transparency purpose and
+the "snapshot with hash per launch" criterion. Early-return runs (bot
+not found, chief-of-staff file/page/coding runs at `agent.ts:46-81`,
+plus conversation-not-found and other pre-model returns) are also
+marked completed without consuming the full skills/rules config, and
+the pre-revision spec does not say what they snapshot. Required fix: capture the
+hash-input values at config read time (bot-row fields at the bot-row
+read, skill fields at the skill-file read before the model call),
+hold them for the run, and write them when the item is marked
+terminal; define what early-return rows record, including that a
+bot-not-found run records no row. Status: closed by the Atelier spec
+revision verified in Re-review below; no longer open.
+
 ## Decision
 
 All five judging criteria are covered, the checked code claims are
-accurate, the state coverage (present/absent/unsupported, dirty/saving/
-save-error/load-error/not-found, empty snapshots) is thorough, and the
-ten findings above are clarifications the builder can resolve without a
-spec revision. There are no open must-fix findings, so the build can
-start. The owner confirms by commenting on NOT-393.
+accurate, and the state coverage (present/absent/unsupported,
+dirty/saving/save-error/load-error/not-found, empty snapshots) is
+thorough. Findings 1-10 are clarifications the builder can resolve
+without a spec revision, but finding 11 is must-fix: the terminal-time
+snapshot read falsifies the audit hash and leaves early-return rows
+undefined, so the spec must require capture at config read time before
+the build starts.
+
+Verdict: revise
+
+## Re-review after Atelier spec revision
+
+Atelier revised `Launch snapshots and snapshot hash` in
+`docs/design/bot-config-page.md` to require capturing hash-input
+values at config read time (bot-row fields at the bot-row read, skill
+fields at the skill-file read before the model call), holding them for
+the run, and writing them when the item is marked terminal, with a
+rules/skill edit mid-flight never changing the recorded snapshot; and
+to define early-return rows (fields actually read, null for fields
+never read; bot-not-found records no row). Re-checked against
+`lib/agent.ts` (:45 read, :195 skill read, :33/:36 terminal marking,
+:46-81 early returns): the capture point now precedes the async model
+call and the early-return rows are defined, so finding 11 is closed.
+No must-fix finding remains open, so the build can start. The owner
+confirms by commenting on NOT-393.
 
 Verdict: approve
