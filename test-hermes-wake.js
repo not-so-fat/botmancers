@@ -563,6 +563,45 @@ async function main() {
     'persistent-session reuse assertion: second gateway reply posted in the solo thread'
   );
 
+  // Scenario 9b (NOT-434 repair): Stop during an ordinary Hermes turn
+  // aborts the gateway request and posts no late failure notice. No stub
+  // is set, so this exercises the real dispatch path (unlike scenario 3,
+  // which stubs the caller turn).
+  log('\nScenario 9b: Stop during an ordinary Hermes turn stays silent');
+  agent.setDelegationChatStub(null);
+  process.env.HERMES_API_SERVER_KEY = 'test-key';
+  process.env.HERMES_BASE_URL = gateway.baseUrl;
+  gateway.state.delayMs = 1500;
+  gateway.state.requests.length = 0;
+  const userStop = messages.create(soloConv.id, 'user', 'Solo, take your time on this one.');
+  queue.enqueue(soloConv.id, solo.id);
+  const ordinaryInFlight = agent.processNextQueueItem();
+  let waitedStop = 0;
+  while (gateway.state.requests.length === 0 && waitedStop < 2000) {
+    await sleep(50);
+    waitedStop += 50;
+  }
+  assert(gateway.state.requests.length === 1, 'ordinary Hermes turn in flight before Stop');
+  const stoppedOrdinary = agent.stopDelegation(soloConv.id);
+  assert(stoppedOrdinary === true, 'stopDelegation reports the ordinary turn stopped');
+  await ordinaryInFlight;
+  gateway.state.delayMs = 120;
+  const threadStop = chainAfter(soloConv.id, userStop.id);
+  assert(
+    !threadStop.some(m => m.sender_type === 'bot' && m.sender_id === solo.id && m.content.includes('Hermes turn failed')),
+    'no late Hermes failure notice after Stop aborts the ordinary turn'
+  );
+  assert(
+    threadStop.some(m => m.sender_type === 'bot' && m.content.includes('Delegation stopped')),
+    'Stop notice still posted once for the aborted ordinary turn'
+  );
+  const countAfterOrdinaryStop = messages.getByConversation(soloConv.id).length;
+  await drain();
+  assert(
+    messages.getByConversation(soloConv.id).length === countAfterOrdinaryStop,
+    'zero new messages after the aborted ordinary turn settles'
+  );
+
   // Scenario 10 (NOT-434): a delegated coding run stays a separate Agent
   // Deck session from the persistent Hermes session. The Hermes turn
   // (stubbed gateway reply carrying a DECK directive) dispatches the

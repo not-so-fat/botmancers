@@ -1641,7 +1641,12 @@ The standing rules decide the whole reply. If they require one short sentence, w
           signal: controller.signal,
         });
       } catch (error) {
-        messages.create(item.conversation_id, 'bot', hermesTurnFailureMessage(bot.name, error), bot.id);
+        // Aborted ordinary turns stay silent: Stop promises no late
+        // messages (same guard as the specialist poke path).
+        const aborted = error instanceof HermesError && error.code === 'aborted';
+        if (!aborted && !chain?.stopped) {
+          messages.create(item.conversation_id, 'bot', hermesTurnFailureMessage(bot.name, error), bot.id);
+        }
         chainProcessQueue();
         return;
       } finally {
