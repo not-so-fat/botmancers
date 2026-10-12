@@ -1,6 +1,4 @@
 import fs from 'fs';
-import path from 'path';
-import OpenAI from 'openai';
 import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines } from './db';
 import { parseApprovalCode, parseDraft, parseFileNames, serializeDraft } from './draft';
 import { createDraft, parseDraftRequest } from './draft-producer';
@@ -68,13 +66,6 @@ import {
   PERSISTENT_RUNTIME_HERMES,
 } from './bot-definition';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || 'dummy',
-  baseURL: process.env.OPENAI_BASE_URL || 'https://openrouter.ai/api/v1',
-});
-
-const model = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
-
 // Conversational delegation limits (NOT-395). Placeholder values until the
 // owner confirms them; change one line here. Tests assert these constants.
 export const DELEGATION_MAX_DEPTH = 3;
@@ -124,7 +115,9 @@ interface DelegationChain {
 
 const delegationChains = new Map<string, DelegationChain>();
 
-export const MAIN_TRANSPORT = 'openai';
+// NOT-435: the embedded example model loop is removed. Ordinary turns
+// run on the persistent Hermes gateway and record HERMES_GATEWAY_TRANSPORT;
+// coding work runs through Agent Deck (see the DECK directive path below).
 export const HERMES_GATEWAY_TRANSPORT = 'hermes-gateway';
 
 // NOT-434: Hermes is the default persistent runtime for ordinary
@@ -156,18 +149,6 @@ export function hermesTurnFailureMessage(botName: string, error: unknown): strin
   const detail = error instanceof HermesError ? error.message : String(error);
   const short = detail.length > 200 ? detail.slice(0, 197) + '...' : detail;
   return `[Hermes turn failed for ${botName}: ${short}]`;
-}
-
-// Counts OpenAI-compatible loop attempts for the Hermes-failure tests:
-// Hermes turns never take the embedded loop, so this stays 0 for them.
-let openaiFallbackAttempts = 0;
-
-export function getOpenAIFallbackAttemptsForTests(): number {
-  return openaiFallbackAttempts;
-}
-
-export function resetOpenAIFallbackAttemptsForTests(): void {
-  openaiFallbackAttempts = 0;
 }
 
 // In-flight Hermes gateway pokes per conversation, so Stop aborts them.
@@ -291,7 +272,6 @@ export function setDelegationChatStub(stub: DelegationChatStub | null): void {
 export function resetDelegationForTests(): void {
   delegationChains.clear();
   delegationChatStub = null;
-  openaiFallbackAttempts = 0;
   for (const conversationId of [...hermesInFlight.keys()]) {
     abortHermesPokes(conversationId);
   }
@@ -506,8 +486,8 @@ let isProcessing = false;
 // Snapshot inputs captured at config read time, held for the run, and
 // written when the queue item is marked terminal. Keyed by queue item id.
 // A rules/skill edit during an in-flight run never changes the held values.
-// Transport rides alongside the held input (never inside the hash): main-path
-// turns record MAIN_TRANSPORT, gateway pokes HERMES_GATEWAY_TRANSPORT.
+// Transport rides alongside the held input (never inside the hash): ordinary
+// turns and gateway pokes record HERMES_GATEWAY_TRANSPORT.
 const pendingSnapshots = new Map<string, { json: string; hash: string; transport: string }>();
 
 function holdSnapshot(
@@ -515,7 +495,7 @@ function holdSnapshot(
   bot: Bot,
   skill: { path: string | null; present: boolean | null; content: string | null },
   facts: string[] | null = null,
-  transport: string = MAIN_TRANSPORT
+  transport: string = HERMES_GATEWAY_TRANSPORT
 ): void {
   const input = buildSnapshotInput(bot, skill, facts);
   pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input), transport });
@@ -1557,19 +1537,14 @@ The standing rules decide the whole reply. If they require one short sentence, w
   }
   const skillState = readSkillState(bot.name);
   // NOT-434: ordinary turns run on the bot definition's persistent
-  // runtime. Hermes is the default (see persistentRuntimeForBot); its
-  // turns record the Hermes gateway transport in the launch snapshot.
-  // Coding work stays separate: only a DECK directive below enters the
-  // Agent Deck adapter, never an ordinary turn.
+  // runtime. Hermes is the only supported persistent runtime (see
+  // persistentRuntimeForBot); its turns record the Hermes gateway
+  // transport in the launch snapshot. Coding work stays separate: only
+  // a DECK directive below enters the Agent Deck adapter, never an
+  // ordinary turn. NOT-435 removed the embedded example model loop,
+  // so no fallback transport exists after a Hermes failure.
   const persistentRuntime = persistentRuntimeForBot(bot);
-  const hermesTurn = persistentRuntime === PERSISTENT_RUNTIME_HERMES;
-  holdSnapshot(
-    item,
-    bot,
-    skillState,
-    rememberedFacts,
-    hermesTurn ? HERMES_GATEWAY_TRANSPORT : MAIN_TRANSPORT
-  );
+  holdSnapshot(item, bot, skillState, rememberedFacts, HERMES_GATEWAY_TRANSPORT);
   const localSkill = skillState.content;
   if (localSkill) {
     sent.push({ role: 'system' as const, content: localSkill });
@@ -1610,9 +1585,18 @@ The standing rules decide the whole reply. If they require one short sentence, w
   // when set (existing loop tests), so those tests keep running without a
   // gateway; without a stub the turn requires Hermes configuration and
   // calls the gateway. Missing or unreachable Hermes configuration posts
-  // a visible Hermes error and never falls back to the embedded
-  // OpenAI-compatible loop.
-  if (hermesTurn) {
+  // a visible Hermes error and never falls back to another transport.
+  if (persistentRuntime !== PERSISTENT_RUNTIME_HERMES) {
+    messages.create(
+      item.conversation_id,
+      'bot',
+      `[Unsupported persistent runtime for ${bot.name}: ${persistentRuntime}. Hermes is the only supported persistent runtime.]`,
+      bot.id
+    );
+    chainProcessQueue();
+    return;
+  }
+  {
     const hermesConfig = loadHermesConfig();
     const hermesSessionId = hermesConfig ? hermesSessionIdForBot(bot.id, hermesConfig) : null;
     if (delegationChatStub) {
@@ -1653,35 +1637,6 @@ The standing rules decide the whole reply. If they require one short sentence, w
         untrackHermesPoke(item.conversation_id, controller);
       }
     }
-  } else if (delegationChatStub) {
-    openaiFallbackAttempts += 1;
-    responseContent = await delegationChatStub({
-      botId: bot.id,
-      botName: bot.name,
-      conversationId: item.conversation_id,
-      sent,
-    });
-  } else {
-    // (unconfirmed) non-Hermes persistent runtime path: preserves main's
-    // existing OpenAI-compatible loop for a future supported runtime.
-    openaiFallbackAttempts += 1;
-    if (!process.env.OPENAI_API_KEY) {
-      messages.create(
-        item.conversation_id,
-        'bot',
-        'Error: OPENAI_API_KEY not configured. Please set the environment variable to enable bot responses.',
-        bot.id
-      );
-      return;
-    }
-    appendPromptLog({ bot: bot.name, conversation_id: item.conversation_id, messages: sent });
-
-    const completion = await openai.chat.completions.create({
-      model,
-      messages: sent,
-    });
-
-    responseContent = completion.choices[0]?.message?.content || 'No response';
   }
 
   if (chain?.stopped) {
@@ -2208,15 +2163,6 @@ function modelTurn(msg: Message, selfId: string): { role: 'user'; content: strin
     return { role: 'user', content: `Peer handoff from @${getBotName(msg.sender_id)}:\n${msg.content}` };
   }
   return null;
-}
-
-function appendPromptLog(entry: { bot: string; conversation_id: string; messages: unknown }) {
-  try {
-    const file = path.join(process.cwd(), '.temporal', 'model-prompts.jsonl');
-    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
-  } catch (error) {
-    console.error('prompt log failed', error);
-  }
 }
 
 if (AUTO_PROCESS) {

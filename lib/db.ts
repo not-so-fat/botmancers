@@ -294,12 +294,13 @@ if (!groupColumns.some(column => column.name === 'owner_bot_id')) {
   db.exec('ALTER TABLE groups ADD COLUMN owner_bot_id TEXT');
 }
 
-// Transport that served a launch ('openai' or 'hermes-gateway'). Outside the
-// hashed snapshot input: it records how the turn ran, not the effective
-// configuration, so backfilled rows read 'openai'.
+// Transport that served a launch ('hermes-gateway'). Outside the hashed
+// snapshot input: it records how the turn ran, not the effective
+// configuration, so backfilled rows read 'hermes-gateway'. NOT-435 removed
+// the embedded example model loop and its former transport value.
 const snapshotColumns = db.prepare('PRAGMA table_info(launch_snapshots)').all() as { name: string }[];
 if (!snapshotColumns.some(column => column.name === 'transport')) {
-  db.exec("ALTER TABLE launch_snapshots ADD COLUMN transport TEXT NOT NULL DEFAULT 'openai'");
+  db.exec("ALTER TABLE launch_snapshots ADD COLUMN transport TEXT NOT NULL DEFAULT 'hermes-gateway'");
 }
 
 export interface Group {
@@ -846,7 +847,7 @@ export interface LaunchSnapshot {
 }
 
 export const launchSnapshots = {
-  record: (id: string, botId: string, hash: string, snapshot: string, transport = 'openai'): void => {
+  record: (id: string, botId: string, hash: string, snapshot: string, transport = 'hermes-gateway'): void => {
     db.prepare(
       'INSERT OR IGNORE INTO launch_snapshots (id, bot_id, created_at, hash, snapshot, transport) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, botId, Date.now(), hash, snapshot, transport);

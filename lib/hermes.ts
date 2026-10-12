@@ -3,8 +3,9 @@
 // One gateway wakes specialists: each specialist waits inside the single
 // gateway process, and a chat turn pokes it over HTTP with a per-specialist
 // session id. The gateway is an external process; this module only speaks to
-// it. With no HERMES_API_SERVER_KEY configured, the agent loop stays on
-// main's existing path and never calls here.
+// it. With no HERMES_API_SERVER_KEY configured, ordinary turns post a
+// visible Hermes error and never call here; NOT-435 removed the embedded
+// example model loop, so there is no fallback transport.
 //
 // Configuration (all optional except the key):
 // - HERMES_API_SERVER_KEY: Bearer key. Unset means "gateway off".

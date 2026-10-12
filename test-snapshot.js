@@ -160,7 +160,6 @@ async function main() {
   }
   process.env.BOTMANCERS_DB_PATH = DB_PATH;
   process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-  delete process.env.OPENAI_API_KEY;
 
   const { createJiti } = require('jiti');
   const jiti = createJiti(__filename);

@@ -19,9 +19,8 @@ coding runtime plus deck. Only runtimes with a real, available launch path are
 offered. The thread shows the handoff, launched run/session, review, resume,
 final result, and failure as conversational events.
 
-The embedded OpenAI-compatible example loop is legacy and is being removed. It
-is not part of the Botmancers execution architecture and has no replacement
-generic-model role.
+The embedded example model loop has been removed. It is not part of the
+Botmancers execution architecture and has no replacement generic-model role.
 
 This remains a product hypothesis grounded in the owner's repeated manual
 workflow. The first proof is repeat use of the complete
@@ -36,7 +35,7 @@ behavioral contract.
 The current application is an early compatibility shell. It can:
 
 - create bots and groups;
-- chat through an embedded example model loop;
+- converse through the persistent Hermes runtime;
 - route `@bot` and legacy `WAKE` handoffs;
 - show a dark roster-and-thread UI with unread tracking;
 - draft outbound message proposals, gate actions behind Approve/Deny
@@ -54,7 +53,7 @@ return transport. Wider cloud/local runners, provider adapters, and optional
 Huddo-style transport come only after that slice tests the stable boundaries.
 The UI must not present an adapter as available until its launch path is real.
 
-## Run the embedded compatibility prototype
+## Run the app
 
 1. Install dependencies:
 
@@ -62,17 +61,16 @@ The UI must not present an adapter as available until its launch path is real.
 npm install
 ```
 
-2. Optionally set an OpenAI-compatible API key for model responses:
+2. Point the app at a running Hermes gateway for conversational turns:
 
 ```bash
-export OPENAI_API_KEY=your-key-here
+export HERMES_API_SERVER_KEY=your-key-here
 ```
 
 Optional configuration:
 
 ```bash
-export OPENAI_BASE_URL=https://openrouter.ai/api/v1  # optional
-export OPENAI_MODEL=gpt-3.5-turbo                    # optional
+export HERMES_BASE_URL=http://127.0.0.1:8642  # default gateway origin
 ```
 
 3. Start the development server:
@@ -83,6 +81,7 @@ npm run dev
 
 4. Open http://localhost:43123
 
-The app will work without an API key, but the embedded example loop will return
-an explicit error instead of a model response. This loop is a compatibility
-prototype and is not the required Botmancers execution architecture.
+Conversational turns require Hermes configuration: without
+`HERMES_API_SERVER_KEY`, a turn posts an explicit Hermes error instead of a
+reply, and no fallback transport is attempted. Coding work is delegated to
+local coding agents through `agent-deck run`.

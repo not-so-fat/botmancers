@@ -50,7 +50,7 @@ async function waitForMessages(conversationId, minCount, maxAttempts = 30) {
 }
 
 
-// Deterministic peer-wake proof used when OPENAI_API_KEY is not set.
+// Deterministic peer-wake proof used when HERMES_API_SERVER_KEY is not set.
 async function stubPeerWake() {
   const os = require('os');
   const path = require('path');
@@ -59,7 +59,7 @@ async function stubPeerWake() {
   const script = `
     process.env.BOTMANCERS_DB_PATH = ${JSON.stringify(dbPath)};
     process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.HERMES_API_SERVER_KEY;
     const jiti = require('jiti').createJiti(${JSON.stringify(__filename)});
     const db = jiti('./lib/db.ts'); const agent = jiti('./lib/agent.ts');
     (async () => {
@@ -83,7 +83,7 @@ async function stubPeerWake() {
   try {
     const out = JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: __dirname, encoding: 'utf8' }).trim().split('\n').pop());
     if (out.handoff && out.reply) {
-      console.log('\n✓ PEER WAKE CONFIRMED (deterministic stub model, no OPENAI_API_KEY)');
+      console.log('\n✓ PEER WAKE CONFIRMED (deterministic stub, no Hermes key)');
       console.log(`  Alice: "${out.handoff.substring(0, 150)}"`);
       console.log(`  Bob:   "${out.reply.substring(0, 150)}"\n`);
       return true;
@@ -178,10 +178,10 @@ async function runAcceptanceSteps1to7() {
   console.log('⏳ Waiting for peer wake to occur...');
   
   let peerWakeObserved = false;
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.HERMES_API_SERVER_KEY) {
     // No key: prove the same peer-wake path in-process with a deterministic
-    // stub at the model-call boundary (isolated DB; same shape as
-    // test-delegation.js). The real-key path below is unchanged.
+    // stub at the runtime seam (isolated DB; same shape as
+    // test-delegation.js). The Hermes-gateway path below is unchanged.
     peerWakeObserved = await stubPeerWake();
   } else {
   await sleep(5000);
@@ -224,24 +224,24 @@ async function runAcceptanceSteps1to7() {
     console.log('Steps 1-7: FAIL ❌');
     console.log('═══════════════════════════════════════════════════════════════\n');
     console.log('Reason: Step 6 (peer wake) was not observed.');
-    console.log('Steps 2-5 work. Step 6 requires OPENAI_API_KEY to generate WAKE.\n');
+    console.log('Steps 2-5 work. Step 6 requires Hermes configuration to generate WAKE.\n');
   }
 
   console.log('───────────────────────────────────────────────────────────────');
-  console.log('PROCESSOR PROOF (requires OPENAI_API_KEY)');
+  console.log('PROCESSOR PROOF (requires Hermes configuration)');
   console.log('───────────────────────────────────────────────────────────────\n');
 
-  if (!process.env.OPENAI_API_KEY) {
-    console.log('❌ Cannot demonstrate processor without API key.\n');
+  if (!process.env.HERMES_API_SERVER_KEY) {
+    console.log('❌ Cannot demonstrate processor without Hermes configuration.\n');
     console.log('Why: The WAKE detector parses bot responses from the chat API.');
-    console.log('     Without OPENAI_API_KEY, bots return errors and never generate WAKE.\n');
+    console.log('     Without HERMES_API_SERVER_KEY, bots return Hermes errors and never generate WAKE.\n');
     console.log('How to verify:');
-    console.log('  1. Set OPENAI_API_KEY');
+    console.log('  1. Set HERMES_API_SERVER_KEY');
     console.log('  2. Run this test again');
     console.log('  3. Step 6 will show peer wake if bot generates WAKE command');
     console.log('  4. Check lib/agent.ts processQueueItem() for WAKE detection logic\n');
   } else {
-    console.log('✓ API key present - peer wake was tested in Step 6 above\n');
+    console.log('✓ Hermes key present - peer wake was tested in Step 6 above\n');
   }
 
   console.log('═══════════════════════════════════════════════════════════════\n');
@@ -264,9 +264,9 @@ async function runAcceptanceSteps1to7() {
   console.log('');
   console.log('═══════════════════════════════════════════════════════════════\n');
 
-  if (!process.env.OPENAI_API_KEY) {
-    console.log('⚠️  OPENAI_API_KEY not set — bots will show error messages');
-    console.log('   Set OPENAI_API_KEY to see full bot interactions\n');
+  if (!process.env.HERMES_API_SERVER_KEY) {
+    console.log('⚠️  HERMES_API_SERVER_KEY not set — bots will show Hermes errors');
+    console.log('   Set HERMES_API_SERVER_KEY to see full bot interactions\n');
   }
 
   console.log('Database state:');
@@ -284,7 +284,7 @@ async function main() {
       console.log('══════════════════════════════════════════════════════════════');
       console.log('TEST RESULT: FAIL');
       console.log('══════════════════════════════════════════════════════════════');
-      console.log('Steps 2-5 work. Step 6 requires OPENAI_API_KEY for live model wake.\n');
+      console.log('Steps 2-5 work. Step 6 requires Hermes configuration for live gateway wake.\n');
       process.exit(1);
     }
     console.log('══════════════════════════════════════════════════════════════');
