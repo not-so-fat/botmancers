@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { messages, conversations, queue, groups, bots, draftActions, approvals, memories } from '@/lib/db';
+import { getApprovalByCode } from '@/lib/approvals';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { resumeBotIdsForConversation } from '@/lib/ask';
 import { processQueue } from '@/lib/agent';
@@ -16,10 +17,14 @@ export async function GET(
       const draft = parseDraft(msg.content);
       const draftRow = draft ? draftActions.get(msg.id) : undefined;
       const code = parseApprovalCode(msg.content);
-      const approvalRow = code ? approvals.get(id, code) : undefined;
+      const requestRow = code ? getApprovalByCode(id, code) : undefined;
+      const legacyRow = !requestRow && code ? approvals.get(id, code) : undefined;
+      const approvalStatus = requestRow
+        ? (requestRow.status === 'executed' ? 'approved' : requestRow.status)
+        : (legacyRow?.status ?? (code ? 'pending' : null));
       const cardStatus = {
         draftStatus: draft ? (draft.state !== 'open' ? draft.state : (draftRow?.status ?? 'open')) : null,
-        approvalStatus: code ? (approvalRow?.status ?? 'pending') : null,
+        approvalStatus,
       };
       if (msg.sender_type === 'bot' && msg.sender_id) {
         const bot = bots.getById(msg.sender_id);
