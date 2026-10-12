@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { parseRun, runLine } from '@/lib/run';
 import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 
@@ -711,11 +712,12 @@ export default function Home() {
       <aside className="rail">
         <div className="brand">
           <div className={logoDrop ? 'logo-shape is-settling' : 'logo-shape'}>
-            <svg viewBox="0 0 36 28" width="28" height="22" aria-hidden="true">
-              <path fill="#D5D0C3" d="M18 2c6.4.8 13.2 5.2 14 11 .8 6.2-4.2 12.2-11.2 12.6-6.6.4-13.6-3.6-15.4-9.4C3.4 10.2 9.2 1.2 18 2z" />
-              <circle cx="13.2" cy="13" r="2.05" fill="#0E120C" />
-              <circle cx="22.2" cy="12.2" r="2.05" fill="#0E120C" />
-            </svg>
+            <Image
+              src="/brand/botmancers-logo-filled-64.png"
+              alt=""
+              width={28}
+              height={28}
+            />
           </div>
           <div className="logo-word">botmancers</div>
         </div>
@@ -731,7 +733,16 @@ export default function Home() {
           </div>
         </div>
         {bots.length === 0 ? (
-          <p className="empty-line">Pick someone to talk to.</p>
+          <div className="roster-empty">
+            <Image
+              className="roster-empty-logo"
+              src="/brand/botmancers-logo-outline-256.png"
+              alt="Botmancers logo"
+              width={160}
+              height={160}
+            />
+            <p className="empty-line">Pick someone to talk to.</p>
+          </div>
         ) : (
           <div className={rowMenu ? 'roster menu-open' : 'roster'}>
             {rosterBots.map(bot => isChiefOfStaff(bot) ? (
@@ -745,6 +756,13 @@ export default function Home() {
                 }}
               >
                 <div className="row-head">
+                  <Image
+                    className="card-logo"
+                    src="/brand/botmancers-logo-filled-64.png"
+                    alt=""
+                    width={24}
+                    height={24}
+                  />
                   <span className="mark" style={{ color: bot.color }}>
                     <span className="mark-tri" />
                     {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
