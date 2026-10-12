@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { bots, launchSnapshots, memories } from '@/lib/db';
 import { readSkillState } from '@/lib/skills';
 import { buildSnapshotInput, hashSnapshot } from '@/lib/snapshot';
+import { serializeBot } from '@/lib/bot-definition';
 
 export async function GET(
   _request: Request,
@@ -23,7 +24,7 @@ export async function GET(
       transport: row.transport,
       snapshot: JSON.parse(row.snapshot),
     }));
-    return NextResponse.json({ bot, skill, currentHash, snapshots });
+    return NextResponse.json({ bot: serializeBot(bot), skill, currentHash, snapshots });
   } catch (error) {
     console.error('Error fetching bot config:', error);
     return NextResponse.json({ error: 'Failed to fetch bot config' }, { status: 500 });
