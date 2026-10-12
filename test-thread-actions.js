@@ -25,6 +25,7 @@ const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
 const draftLib = jiti('./lib/draft.ts');
+const approvalsEngine = jiti('./lib/approvals.ts');
 
 const draftRoute = jiti('./app/api/conversations/[id]/draft/route.ts');
 const approveRoute = jiti('./app/api/conversations/[id]/approve/route.ts');
@@ -34,7 +35,7 @@ const betweenRoute = jiti('./app/api/messages/[id]/between/route.ts');
 const groupsRoute = jiti('./app/api/groups/route.ts');
 const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
 
-const { bots, conversations, groups, messages, draftActions, approvals } = db;
+const { bots, conversations, groups, messages, draftActions } = db;
 
 let failures = 0;
 const tempFiles = [];
@@ -159,11 +160,17 @@ async function main() {
   assert(approveRes.status === 200, `approve returns 200 (got ${approveRes.status})`);
   assert((await bodyJson(approveRes)).status === 'approved', 'approve returns status approved');
   assert(
-    messages.getByConversation(conv.id).filter(m => m.content === '[Approved gate42]').length === 1,
+    messages.getByConversation(conv.id).filter(m => m.content === 'gate42').length === 1,
     'approval recorded in the thread'
   );
-  assert((await post(approveRoute, { id: conv.id }, { code: 'gate42' })).status === 409, 'second approve -> 409');
-  assert((await post(denyRoute, { id: conv.id }, { code: 'gate42' })).status === 409, 'deny after approve -> 409');
+  const threadBeforeRepeat = messages.getByConversation(conv.id).length;
+  const approveRepeat = await post(approveRoute, { id: conv.id }, { code: 'gate42' });
+  assert(approveRepeat.status === 200, `second approve no-ops with 200 (got ${approveRepeat.status})`);
+  assert((await bodyJson(approveRepeat)).status === 'approved', 'second approve reports stored status');
+  assert(messages.getByConversation(conv.id).length === threadBeforeRepeat, 'second approve posts nothing');
+  const denyAfterApprove = await post(denyRoute, { id: conv.id }, { code: 'gate42' });
+  assert(denyAfterApprove.status === 200, `deny after approve no-ops with 200 (got ${denyAfterApprove.status})`);
+  assert(messages.getByConversation(conv.id).length === threadBeforeRepeat, 'deny after approve posts nothing');
   const enriched2 = await (await get(messagesRoute, { id: conv.id })).json();
   assert(enriched2.find(m => m.id === approvalMsg.id).approvalStatus === 'approved', 'messages GET reports approval approved');
 
@@ -174,12 +181,17 @@ async function main() {
   assert(denyRes.status === 200, `deny by messageId returns 200 (got ${denyRes.status})`);
   assert((await bodyJson(denyRes)).status === 'denied', 'deny returns status denied');
   assert(
-    messages.getByConversation(conv.id).filter(m => m.content === '[Denied gate43]').length === 1,
+    messages.getByConversation(conv.id).filter(m => m.content.startsWith('Denied') && m.content.includes('gate43')).length === 1,
     'denial recorded in the thread'
   );
-  assert((await post(approveRoute, { id: conv.id }, { code: 'gate43' })).status === 409, 'approve after deny -> 409');
+  const threadBeforeAfterDeny = messages.getByConversation(conv.id).length;
+  const approveAfterDeny = await post(approveRoute, { id: conv.id }, { code: 'gate43' });
+  assert(approveAfterDeny.status === 200, `approve after deny no-ops with 200 (got ${approveAfterDeny.status})`);
+  assert((await bodyJson(approveAfterDeny)).status === 'denied', 'approve after deny reports denied');
+  assert(messages.getByConversation(conv.id).length === threadBeforeAfterDeny, 'approve after deny posts nothing');
   assert((await post(approveRoute, { id: conv.id }, { code: 'missing99' })).status === 404, 'unknown code -> 404');
   assert((await post(approveRoute, { id: conv.id }, {})).status === 400, 'missing code -> 400');
+  assert((await post(approveRoute, { id: conv.id }, { messageId: 'nope' })).status === 400, 'unknown message -> 400');
   assert((await post(denyRoute, { id: 'nope' }, { code: 'gate42' })).status === 404, 'unknown conversation -> 404');
 
   // Case 5: file artifacts.
@@ -258,7 +270,7 @@ async function main() {
   const hookThread = messages.getByConversation(conv.id);
   const hookMsg = hookThread.find(m => m.sender_type === 'bot' && m.content.includes('[file]'));
   assert(!!hookMsg, 'bot reply with markers stored in thread');
-  assert(approvals.get(conv.id, 'hook99')?.status === 'pending', 'agent run records pending approval');
+  assert(approvalsEngine.getApprovalByCode(conv.id, 'hook99')?.status === 'pending', 'agent run records pending approval');
   const hookPath = path.join(process.cwd(), 'files', hookFile);
   assert(fs.existsSync(hookPath) && fs.readFileSync(hookPath, 'utf8') === 'artifact-bytes\n', 'agent run materializes the [file] payload');
   const hookApprove = await post(approveRoute, { id: conv.id }, { code: 'hook99' });

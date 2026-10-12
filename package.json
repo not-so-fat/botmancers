@@ -17,6 +17,7 @@
     "test:thread-actions": "node test-thread-actions.js",
     "test:cos-birth": "node test-cos-birth.js",
     "test:ask-and-wait": "node test-ask-and-wait.js",
+    "test:approvals": "node test-approvals.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js"
   },
   "dependencies": {

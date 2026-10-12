@@ -1428,10 +1428,10 @@ function ApprovalCard({ message, conversationId, status, onDone }: {
       >
         Approve
       </button>
-      {' '}
       <button
         type="button"
-        className="attach-word"
+        className="approve-control"
+        style={{ marginLeft: 8 }}
         disabled={busy}
         onClick={() => { void act('deny'); }}
       >

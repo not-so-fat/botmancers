@@ -148,6 +148,27 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_pending_questions_conversation
     ON pending_questions(conversation_id, status, created_at);
+
+  CREATE TABLE IF NOT EXISTS approval_requests (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    bot_id TEXT,
+    code TEXT NOT NULL,
+    action_type TEXT,
+    action_args TEXT,
+    message_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result TEXT,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+    FOREIGN KEY (bot_id) REFERENCES bots(id)
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_requests_conversation_code
+    ON approval_requests(conversation_id, code);
+  CREATE INDEX IF NOT EXISTS idx_approval_requests_conversation
+    ON approval_requests(conversation_id, status, created_at);
 `);
 
 const BOT_COLORS = ['#C6F54A', '#F0A05A', '#E85D75', '#C9A0FF', '#F2E36B'];
@@ -404,6 +425,7 @@ export const bots = {
         db.prepare('DELETE FROM processing_queue WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM pending_questions WHERE conversation_id = ?').run(conversation.id);
+        db.prepare('DELETE FROM approval_requests WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
       }
       db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);

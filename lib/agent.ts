@@ -1,8 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
-import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, approvals, memories, oneShots, routines } from './db';
-import { parseApprovalCode, parseFileNames, isSafeFileName, outboundDraftFromUser, serializeDraft } from './draft';
+import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines } from './db';
+import { parseFileNames, isSafeFileName, outboundDraftFromUser, serializeDraft } from './draft';
 import { mcpTurn } from './mcp';
 import { readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
@@ -32,6 +32,10 @@ import {
   resumePrompt,
   setQuestionMessage,
 } from './ask';
+import {
+  raiseApprovalFromUserInstruction,
+  recordModelApproval,
+} from './approvals';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -969,6 +973,29 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
+  // Approval hook (NOT-416): a direct-thread instruction asking for approval
+  // (a gated file read, a gated command, or a plain approve-by-code ask)
+  // raises a pending request and posts its card instead of calling the model.
+  // Runs ahead of the ask-first hook below (snapshot order): an approval ask
+  // also names asking and waiting, so it must be claimed here first. The
+  // pending action never runs here; only the approve route executes it,
+  // exactly once. Refused asks (path traversal, invalid shapes) raise
+  // nothing and run nothing. A retry for an already-raised task posts no
+  // second card.
+  if (!askResume && conversation.type === 'bot' && latestUser) {
+    const raised = raiseApprovalFromUserInstruction({
+      conversationId: item.conversation_id,
+      botId: bot.id,
+      botName: bot.name,
+      userMessage: latestUser,
+      thread: conversationMessages,
+    });
+    if (raised) {
+      chainProcessQueue();
+      return;
+    }
+  }
+
   // Ask-first hook (NOT-415): the user's request says to ask one question
   // and wait. The question is stored durably and posted as an ordinary bot
   // card; the bot parks without calling the model. Single asker per task:
@@ -1345,14 +1372,12 @@ The standing rules decide the whole reply. If they require one short sentence, w
 }
 
 
-// Approval-code hook (NOT-410): a bot reply containing
-// `approve using the code <code>` opens a pending approval the thread UI
-// renders as an Approve/Deny card. Replies without a code are untouched.
+// Approval-code hook (NOT-416): a bot reply containing
+// `approve using the code <code>` opens a pending approval request the thread
+// UI renders as an Approve/Deny card. Replies without a code are untouched.
 function recordApprovalIfPresent(conversationId: string, message: Message): void {
   try {
-    const code = parseApprovalCode(message.content);
-    if (!code) return;
-    approvals.recordPending(conversationId, code, message.id);
+    recordModelApproval(conversationId, message);
   } catch (error) {
     console.error('Error recording approval:', error);
   }
