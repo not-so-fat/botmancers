@@ -19,13 +19,15 @@ import path from 'path';
 import db, { bots, messages } from './db';
 import { isSafeFileName, parseApprovalCode } from './draft';
 import { localSkillForBot } from './skills';
+import { ARTIFACT_MAX_BYTES, filesRoot } from './artifacts';
 
-export type ApprovalActionType = 'read_file' | 'run_command' | 'send_draft';
+export type ApprovalActionType = 'read_file' | 'run_command' | 'send_draft' | 'write_file';
 
 export const APPROVAL_ACTION_TYPES: readonly ApprovalActionType[] = [
   'read_file',
   'run_command',
   'send_draft',
+  'write_file',
 ];
 
 export function isApprovalActionType(value: unknown): value is ApprovalActionType {
@@ -105,7 +107,7 @@ function readFileArgs(args: Record<string, unknown> | null): string {
   const name = args?.name;
   if (typeof name !== 'string' || !name) refused('read_file needs a file name');
   if (!isSafeFileName(name)) refused(`refused: unsafe file name ${JSON.stringify(name)}`);
-  const root = path.resolve(process.cwd(), 'files');
+  const root = filesRoot();
   const resolved = path.resolve(root, name);
   if (!resolved.startsWith(root + path.sep)) {
     refused(`refused: path traversal in ${JSON.stringify(name)}`);
@@ -147,6 +149,23 @@ function sendDraftArgs(args: Record<string, unknown> | null): {
   return { recipient: recipient.trim(), body: body.trim() };
 }
 
+function writeFileArgs(args: Record<string, unknown> | null): { name: string; content: string } {
+  const name = args?.name;
+  if (typeof name !== 'string' || !name) refused('write_file needs a file name');
+  if (!isSafeFileName(name)) refused(`refused: unsafe file name ${JSON.stringify(name)}`);
+  const root = filesRoot();
+  const resolved = path.resolve(root, name);
+  if (!resolved.startsWith(root + path.sep)) {
+    refused(`refused: path traversal in ${JSON.stringify(name)}`);
+  }
+  const content = (args as Record<string, unknown>)?.content;
+  if (typeof content !== 'string' || !content) refused('write_file needs content');
+  if (Buffer.byteLength(content, 'utf8') > ARTIFACT_MAX_BYTES) {
+    refused(`refused: file content exceeds ${ARTIFACT_MAX_BYTES} bytes`);
+  }
+  return { name, content };
+}
+
 export interface ApprovalActionHandler {
   validate: (args: Record<string, unknown> | null) => void;
   run: (args: Record<string, unknown> | null, ctx: ApprovalActionContext) => ApprovalActionResult;
@@ -159,7 +178,7 @@ export const APPROVAL_ACTIONS: Record<ApprovalActionType, ApprovalActionHandler>
     },
     run: (args) => {
       const name = readFileArgs(args);
-      const filePath = path.join(path.resolve(process.cwd(), 'files'), name);
+      const filePath = path.join(filesRoot(), name);
       const contents = fs.readFileSync(filePath, 'utf8');
       return {
         ok: true,
@@ -198,6 +217,24 @@ export const APPROVAL_ACTIONS: Record<ApprovalActionType, ApprovalActionHandler>
       const { recipient, body } = sendDraftArgs(args);
       const line = `[Sent to ${recipient}] ${body}`;
       return { ok: true, lines: [line], result: line };
+    },
+  },
+  write_file: {
+    validate: args => {
+      writeFileArgs(args);
+    },
+    run: (args) => {
+      // Approved overwrite: the pending write runs exactly once and posts
+      // the download link. Content is data, never executed.
+      const { name, content } = writeFileArgs(args);
+      const root = filesRoot();
+      fs.mkdirSync(root, { recursive: true });
+      const filePath = path.resolve(root, name);
+      if (!filePath.startsWith(root + path.sep)) {
+        throw new ApprovalActionRefused(`refused: path traversal in ${JSON.stringify(name)}`);
+      }
+      fs.writeFileSync(filePath, content, 'utf8');
+      return { ok: true, lines: [`[file] ${name}`], result: name };
     },
   },
 };

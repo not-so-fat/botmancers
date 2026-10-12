@@ -2,7 +2,16 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines } from './db';
-import { parseFileNames, isSafeFileName, outboundDraftFromUser, serializeDraft } from './draft';
+import { parseApprovalCode, parseDraft, parseFileNames, serializeDraft } from './draft';
+import { createDraft, parseDraftRequest } from './draft-producer';
+import {
+  artifactCardText,
+  parseFileWriteRequest,
+  parseTypedResult,
+  resolveArtifactPath,
+  validateArtifact,
+  writeArtifactFile,
+} from './artifacts';
 import { mcpTurn } from './mcp';
 import { readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
@@ -33,8 +42,15 @@ import {
   setQuestionMessage,
 } from './ask';
 import {
+  approvalCardText,
+  createApprovalRequest,
+  getApprovalByCode,
+  mintApprovalCode,
   raiseApprovalFromUserInstruction,
   recordModelApproval,
+  setApprovalMessage,
+  skillEndToken,
+  ApprovalActionRefused,
 } from './approvals';
 
 const openai = new OpenAI({
@@ -909,21 +925,95 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
-  // Outbound-draft hook (NOT-410): a direct-thread ask mentioning email or
-  // slack creates a draft card instead of a model reply. Runs behind the
-  // stopped check above, consumes no delegation budget, and never fires
-  // twice for the same user message. Position-based (not timestamp-based)
-  // so a same-millisecond draft still counts as a reply.
+  // Typed-draft hook (NOT-417): a direct-thread draft request (creation
+  // verb + email/slack + body after that says/saying/note:) creates one
+  // open draft card instead of a model reply. Plain mentions ("we should
+  // email less") yield nothing and fall through. Runs behind the stopped
+  // check, consumes no delegation budget, and never fires twice for the
+  // same user message. Position-based (not timestamp-based) so a
+  // same-millisecond draft still counts as a reply.
   if (!askResume && conversation.type === 'bot' && latestUser) {
-    const draft = outboundDraftFromUser(latestUser.content);
-    if (draft) {
+    const request = parseDraftRequest(latestUser.content);
+    if (request) {
       const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
       const alreadyReplied = userIdx >= 0 && conversationMessages.slice(userIdx + 1).some(msg =>
         msg.sender_type === 'bot'
       );
       if (!alreadyReplied) {
-        messages.create(item.conversation_id, 'bot', serializeDraft(draft), bot.id);
+        messages.create(item.conversation_id, 'bot', serializeDraft(createDraft(request)), bot.id);
       }
+      chainProcessQueue();
+      return;
+    }
+  }
+
+  // Typed-file hook (NOT-417): a direct-thread file-write request writes one
+  // artifact and posts one `[file]` link instead of a model reply.
+  // Traversal, bad names and oversize content are refused (consumed,
+  // nothing written, nothing posted). Overwriting an existing file raises a
+  // `write_file` approval request instead of writing; approving runs the
+  // write once. Repeat turns post nothing and rewrite nothing.
+  if (!askResume && conversation.type === 'bot' && latestUser) {
+    const fileRequest = parseFileWriteRequest(latestUser.content);
+    if (fileRequest) {
+      let valid: { name: string; content: string };
+      try {
+        valid = validateArtifact(fileRequest);
+      } catch {
+        chainProcessQueue();
+        return;
+      }
+      const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
+      const afterUser = userIdx >= 0 ? conversationMessages.slice(userIdx + 1) : [];
+      const alreadyPosted = afterUser.some(msg =>
+        msg.sender_type === 'bot' &&
+        msg.sender_id === bot.id &&
+        msg.content.startsWith(artifactCardText(valid.name))
+      );
+      if (alreadyPosted) {
+        chainProcessQueue();
+        return;
+      }
+      let exists = false;
+      try {
+        exists = fs.existsSync(resolveArtifactPath(valid.name));
+      } catch {
+        chainProcessQueue();
+        return;
+      }
+      if (exists) {
+        if (!alreadyApprovalRaised(item.conversation_id, afterUser, bot.id)) {
+          const code = freshWriteCode(item.conversation_id, valid.name);
+          try {
+            createApprovalRequest({
+              conversationId: item.conversation_id,
+              botId: bot.id,
+              code,
+              actionType: 'write_file',
+              actionArgs: { name: valid.name, content: valid.content },
+            });
+          } catch (error) {
+            if (error instanceof ApprovalActionRefused) {
+              chainProcessQueue();
+              return;
+            }
+            throw error;
+          }
+          const token = skillEndToken(bot.name);
+          const card = token ? `${approvalCardText(code)}\n${token}` : approvalCardText(code);
+          const posted = messages.create(item.conversation_id, 'bot', card, bot.id);
+          setApprovalMessage(item.conversation_id, code, posted.id);
+        }
+        chainProcessQueue();
+        return;
+      }
+      try {
+        writeArtifactFile(valid.name, valid.content, { allowOverwrite: false });
+      } catch {
+        chainProcessQueue();
+        return;
+      }
+      messages.create(item.conversation_id, 'bot', artifactCardText(valid.name), bot.id);
       chainProcessQueue();
       return;
     }
@@ -1245,6 +1335,87 @@ The standing rules decide the whole reply. If they require one short sentence, w
 
   materializeFileArtifacts(responseContent);
 
+  // Typed-producer turn (NOT-417): the model returned a `[produce]`
+  // draft/file result. A valid result becomes one `[draft]`/`[file]` card
+  // (file writes use the same validator; overwrites gate through approval
+  // instead); invalid markers fall through to the normal reply. The raw
+  // marker is never posted. Once per turn: a retry for an already-posted
+  // card posts nothing and rewrites nothing.
+  const typed = parseTypedResult(responseContent);
+  if (typed) {
+    const userIdx = latestUser
+      ? conversationMessages.findIndex(msg => msg.id === latestUser.id)
+      : -1;
+    const afterUser = userIdx >= 0 ? conversationMessages.slice(userIdx + 1) : [];
+    if (typed.kind === 'draft') {
+      const alreadyDrafted = afterUser.some(msg =>
+        msg.sender_type === 'bot' && msg.sender_id === bot.id && parseDraft(msg.content)
+      );
+      if (!alreadyDrafted) {
+        messages.create(
+          item.conversation_id,
+          'bot',
+          serializeDraft(createDraft(typed.draft)),
+          bot.id
+        );
+      }
+      chainProcessQueue();
+      return;
+    }
+    const validFile = typed.file;
+    const alreadyPosted = afterUser.some(msg =>
+      msg.sender_type === 'bot' &&
+      msg.sender_id === bot.id &&
+      msg.content.startsWith(artifactCardText(validFile.name))
+    );
+    if (alreadyPosted) {
+      chainProcessQueue();
+      return;
+    }
+    let exists = false;
+    try {
+      exists = fs.existsSync(resolveArtifactPath(validFile.name));
+    } catch {
+      chainProcessQueue();
+      return;
+    }
+    if (exists) {
+      if (!alreadyApprovalRaised(item.conversation_id, afterUser, bot.id)) {
+        const code = freshWriteCode(item.conversation_id, validFile.name);
+        try {
+          createApprovalRequest({
+            conversationId: item.conversation_id,
+            botId: bot.id,
+            code,
+            actionType: 'write_file',
+            actionArgs: { name: validFile.name, content: validFile.content },
+          });
+        } catch (error) {
+          if (error instanceof ApprovalActionRefused) {
+            chainProcessQueue();
+            return;
+          }
+          throw error;
+        }
+        const token = skillEndToken(bot.name);
+        const card = token ? `${approvalCardText(code)}\n${token}` : approvalCardText(code);
+        const posted = messages.create(item.conversation_id, 'bot', card, bot.id);
+        setApprovalMessage(item.conversation_id, code, posted.id);
+      }
+      chainProcessQueue();
+      return;
+    }
+    try {
+      writeArtifactFile(validFile.name, validFile.content, { allowOverwrite: false });
+    } catch {
+      chainProcessQueue();
+      return;
+    }
+    messages.create(item.conversation_id, 'bot', artifactCardText(validFile.name), bot.id);
+    chainProcessQueue();
+    return;
+  }
+
   // Ask-marker turn (NOT-415): the model needs input, so the question is
   // stored durably and posted as an ordinary bot card, and the turn parks.
   // A delegate parks the same way in the shared thread: its caller frame is
@@ -1383,23 +1554,46 @@ function recordApprovalIfPresent(conversationId: string, message: Message): void
   }
 }
 
-// File-artifact hook (NOT-410): a `[file] <name>` marker followed by a fenced
-// block materializes that block into files/<name> so the thread's download
-// link serves it. Markers without a payload stay display-only; unsafe names
-// are never written.
+// Gated file-write helpers (NOT-417): an overwrite raises a `write_file`
+// approval instead of writing. The already-raised check keeps retries from
+// posting a second card for the same user message.
+function alreadyApprovalRaised(
+  conversationId: string,
+  afterUser: Message[],
+  botId: string
+): boolean {
+  return afterUser.some(msg => {
+    if (msg.sender_type !== 'bot' || msg.sender_id !== botId) return false;
+    const code = parseApprovalCode(msg.content);
+    return !!code && !!getApprovalByCode(conversationId, code);
+  });
+}
+
+function freshWriteCode(conversationId: string, name: string): string {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const code = mintApprovalCode(`write-${name}`);
+    if (!getApprovalByCode(conversationId, code)) return code;
+  }
+  return mintApprovalCode(`write-${name}-${Date.now().toString(36)}`);
+}
+
+// File-artifact hook (NOT-410, validated by NOT-417): a `[file] <name>`
+// marker followed by a fenced block materializes that block into the files
+// root so the thread's download link serves it. Markers without a payload
+// stay display-only; unsafe names, oversize payloads and existing files are
+// never written.
 function materializeFileArtifacts(responseContent: string): void {
   try {
     const names = parseFileNames(responseContent);
     if (names.length === 0) return;
-    const dir = path.join(process.cwd(), 'files');
-    fs.mkdirSync(dir, { recursive: true });
     for (const name of names) {
-      if (!isSafeFileName(name)) continue;
       const payload = filePayloadAfter(responseContent, name);
       if (payload === null) continue;
-      const filePath = path.join(dir, name);
-      if (!filePath.startsWith(dir + path.sep)) continue;
-      fs.writeFileSync(filePath, payload);
+      try {
+        writeArtifactFile(name, payload, { allowOverwrite: false });
+      } catch {
+        continue;
+      }
     }
   } catch (error) {
     console.error('Error materializing file artifact:', error);
