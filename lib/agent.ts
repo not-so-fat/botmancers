@@ -629,7 +629,9 @@ function appendPromptLog(entry: { bot: string; conversation_id: string; messages
 }
 
 if (AUTO_PROCESS) {
+  bots.touchSeen();
   setInterval(() => {
+    bots.touchSeen();
     processQueue().catch(console.error);
   }, 2000);
 }
