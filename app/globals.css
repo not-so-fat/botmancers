@@ -1167,6 +1167,11 @@ button.cfg-link:hover {
 
 .cfg-input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.cfg-input-sans {
+  font-family: var(--chrome);
 }
 
 .cfg-btn-primary {
@@ -1177,6 +1182,10 @@ button.cfg-link:hover {
   border-radius: 8px;
   padding: 8px 16px;
   cursor: pointer;
+}
+
+.cfg-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
 }
 
 .cfg-btn-primary:disabled {
@@ -1193,6 +1202,10 @@ button.cfg-link:hover {
   padding: 8px 16px;
   cursor: pointer;
   text-decoration: none;
+}
+
+.cfg-btn-ghost:hover:not(:disabled) {
+  background: var(--composer);
 }
 
 .cfg-btn-ghost:disabled {

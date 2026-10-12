@@ -64,12 +64,16 @@ restored home page and the screenshots above. Repro: seed fixture,
 Code check (verified in this PR, no browser needed): the restyled page
 contains no light-only surfaces —
 `grep -nE 'bg-gray|text-gray|bg-white' 'app/bots/[id]/config/page.tsx'`
-prints nothing — and the diff touches only `className` strings, so every
-behavior in `docs/design/bot-config-page.md` is preserved. Styling uses
-the shared tokens (`--field`, `--card`, `--hairline`, `--ink`,
-`--accent`, `--composer`, `--chrome`, `--mono`) and home-page component
-patterns (card, hairline-bordered inputs, accent primary button,
-accent text actions); see the `.cfg-*` block in `app/globals.css`.
+prints nothing — and the diff touches only `className` strings plus
+the `.cfg-*` block in `app/globals.css`, so every behavior in
+`docs/design/bot-config-page.md` is preserved. Styling uses the shared
+tokens (`--field`, `--card`, `--hairline`, `--ink`, `--accent`,
+`--composer`, `--chrome`, `--mono`) and home-page component patterns
+(card, hairline-bordered inputs, accent primary button, accent text
+actions). Pre-restyle details preserved: the skill editor stays mono
+while Rules stays sans (`.cfg-input-sans`), textareas keep a 2px accent
+focus ring, and primary/ghost buttons keep hover feedback
+(`brightness(1.1)` / `var(--composer)`).
 
 ## Intentionally different
 

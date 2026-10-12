@@ -489,7 +489,7 @@ export default function BotConfigPage() {
                 value={rulesText ?? ''}
                 onChange={e => setRulesText(e.target.value)}
                 rows={8}
-                className="cfg-input text-sm"
+                className="cfg-input cfg-input-sans text-sm"
               />
               <p className="mt-2 text-xs cfg-faint">
                 Sent verbatim as the standing-rules system message on every turn. This beats the user&apos;s request
