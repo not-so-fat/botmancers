@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test:acceptance": "node test-acceptance-steps-1-7.js",
     "test:marketplace-import": "node test-import-marketplace-ui.js",
+    "test:snapshot": "node test-snapshot.js",
     "test:delegation": "node test-delegation.js"
   },
   "dependencies": {

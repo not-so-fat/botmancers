@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
-import { bots, conversations, messages, queue, groups, mcpServers } from './db';
+import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots } from './db';
 import { mcpTurn } from './mcp';
-import { localSkillForBot } from './skills';
-import type { Message, QueueItem } from './db';
+import { readSkillState } from './skills';
+import { buildSnapshotInput, hashSnapshot } from './snapshot';
+import type { Bot, Message, QueueItem } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
 
@@ -129,6 +130,31 @@ function chainProcessQueue(): void {
 
 let isProcessing = false;
 
+// Snapshot inputs captured at config read time, held for the run, and
+// written when the queue item is marked terminal. Keyed by queue item id.
+// A rules/skill edit during an in-flight run never changes the held values.
+const pendingSnapshots = new Map<string, { json: string; hash: string }>();
+
+function holdSnapshot(
+  item: QueueItem,
+  bot: Bot,
+  skill: { path: string | null; present: boolean | null; content: string | null }
+): void {
+  const input = buildSnapshotInput(bot, skill);
+  pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input) });
+}
+
+function flushSnapshot(item: QueueItem): void {
+  const held = pendingSnapshots.get(item.id);
+  pendingSnapshots.delete(item.id);
+  if (!held) return;
+  try {
+    launchSnapshots.record(item.id, item.bot_id, held.hash, held.json);
+  } catch (error) {
+    console.error('Error recording launch snapshot:', error);
+  }
+}
+
 export async function processNextQueueItem(): Promise<boolean> {
   const item = queue.getNext();
   if (!item) return false;
@@ -138,9 +164,11 @@ export async function processNextQueueItem(): Promise<boolean> {
   try {
     await processQueueItem(item);
     queue.markCompleted(item.id, 'completed');
+    flushSnapshot(item);
   } catch (error) {
     console.error('Error processing queue item:', error);
     queue.markCompleted(item.id, 'failed');
+    flushSnapshot(item);
   }
   return true;
 }
@@ -164,6 +192,10 @@ async function processQueueItem(item: QueueItem) {
     console.error('Bot not found:', item.bot_id);
     return;
   }
+  // Capture bot-row fields at the bot-row read. Skill fields stay null until
+  // the skill-file read below, so early-return runs record the fields they
+  // actually read and null for fields never read.
+  holdSnapshot(item, bot, { path: null, present: null, content: null });
 
   const conversation = conversations.getById(item.conversation_id);
   if (!conversation) {
@@ -326,7 +358,9 @@ The standing rules decide the whole reply. If they require one short sentence, w
     ...chatMessages,
     { role: 'system' as const, content: standingReminder },
   ];
-  const localSkill = localSkillForBot(bot.name);
+  const skillState = readSkillState(bot.name);
+  holdSnapshot(item, bot, skillState);
+  const localSkill = skillState.content;
   if (localSkill) {
     sent.push({ role: 'system' as const, content: localSkill });
   }
