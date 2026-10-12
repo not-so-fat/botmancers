@@ -1138,6 +1138,11 @@ button.cfg-link:hover {
   text-decoration: underline;
 }
 
+.cfg-back {
+  display: inline-block;
+  margin-bottom: 4px;
+}
+
 .cfg-code {
   font-family: var(--mono);
   color: var(--ink);
@@ -1189,8 +1194,11 @@ button.cfg-link:hover {
 }
 
 .cfg-btn-primary:disabled {
-  opacity: 0.5;
+  background: var(--composer);
+  color: var(--ink);
+  opacity: 0.55;
   cursor: default;
+  filter: none;
 }
 
 .cfg-btn-ghost {

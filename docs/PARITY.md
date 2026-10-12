@@ -46,32 +46,48 @@ and the C7 mixed mock in code plus the seed, and marks rows 1, 2, 3,
 `unread-cleared.png`, `unread-hover.png`, and `config-*.png` images
 predate those captures.
 
-Repair round 3 (this HEAD) changes only the C4 error header text to a
+Repair round 3 (9b18335) changes only the C4 error header text to a
 neutral label ("Bot configuration" + "Couldn't load bot details.",
 hash "—") instead of the raw route id as the title plus an empty
 subtitle; header structure and the loaded-page Back-link gap are
-unchanged. C4 needs a fresh capture at this HEAD. All other operator
-items are unchanged: rows 7–8 recaptures, rows 10–12, fresh C1–C7,
-full CI logs at the head, and the Atelier `approve` comment on
-NOT-412. Roster-style drift on rows 1, 2, 3, 8, 9 (flat rows per the
-NOT-409 Atelier spec vs reference card rows; home page out of scope
-here) is accepted per the owner decision 2026-10-12 and documented
-under Intentionally different; the owner confirmation comment
-(operator criterion) is still pending.
+unchanged.
+
+Repair round 4 (this HEAD) makes all 4 of Atelier's required fixes in
+the app diff: (a) the C4 load-error header keeps the full page header
+with the neutral "Bot configuration" title and a neutral "○ Not
+loaded" status line (no misleading "Saved"); (b) the loaded and
+error-state "Back to chat" links carry an explicit `.cfg-back` gap
+(`inline-block` + 4px bottom margin, on top of the header `mt-3`) so
+a visible gap sits below the link before the header; (c) a disabled
+Save now renders muted (`var(--composer)` background, no accent) so
+it looks inactive before any edit and the accent active style appears
+only when dirty (disabled logic unchanged); (d) the Template source
+card uses the full spec labels "Import schema version" and "Import
+operation ID", matching the snapshot detail labels and the spec
+order. C1–C7 need fresh captures at this HEAD. All other operator
+items are unchanged: rows 7–8 recaptures, rows 10–12, full CI logs
+at the head, and the Atelier `approve` comment on NOT-412.
+Roster-style drift on rows 1, 2, 3, 8, 9 (flat rows per the NOT-409
+Atelier spec vs reference card rows; home page out of scope here) is
+ACCEPTED DRIFT per the owner decision 2026-10-12, and per the repair
+round 3 human decision that ACCEPTED DRIFT counts as a matching
+verdict for the exit predicate; documented under Intentionally
+different. The owner confirmation comment (operator criterion) is
+still pending.
 
 ## Reference screens
 
 | # | Screen | Reference file | Current-side repro | Side-by-side | Verdict |
 |---|--------|----------------|--------------------|--------------|---------|
-| 1 | Grouped roster, botmancer idle, card rows | `botmancer-idle.png` | seed fixture, `/` at 1440x900 | [`docs/parity/botmancer-idle.png`](parity/botmancer-idle.png) | ACCEPTED DRIFT (roster style, owner decision) — palette, tokens, thread cards and composer match; roster is flat rows with sans names (Atelier 2026-10-03 spec) vs reference card rows, the only style difference. The computer-preview overlay is main-only (see Intentionally different) |
-| 2 | Same, scrolled to top | `botmancer-idle-top.png` | seed fixture, `/` scrolled top | [`docs/parity/botmancer-idle-top.png`](parity/botmancer-idle-top.png) | ACCEPTED DRIFT (roster style, owner decision) — thread view (mono message cards, You labels, header) matches; roster is flat rows vs reference card rows, the only difference |
-| 3 | Botmancer working (heartbeat "Working") | `botmancer-working.png` | seed fixture, trigger a run, capture mid-run | [`docs/parity/botmancer-working.png`](parity/botmancer-working.png) | ACCEPTED DRIFT (roster style, owner decision) — header shows "Working" as in the reference; roster is flat rows vs reference card rows, the only style difference. The lead-card error line is a fixture limit (no OPENAI_API_KEY) and the computer-preview overlay is main-only |
+| 1 | Grouped roster, botmancer idle, card rows | `botmancer-idle.png` | seed fixture, `/` at 1440x900 | [`docs/parity/botmancer-idle.png`](parity/botmancer-idle.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — palette, tokens, thread cards and composer match; roster is flat rows with sans names (Atelier 2026-10-03 spec) vs reference card rows, the only style difference. The computer-preview overlay is main-only (see Intentionally different) |
+| 2 | Same, scrolled to top | `botmancer-idle-top.png` | seed fixture, `/` scrolled top | [`docs/parity/botmancer-idle-top.png`](parity/botmancer-idle-top.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — thread view (mono message cards, You labels, header) matches; roster is flat rows vs reference card rows, the only difference |
+| 3 | Botmancer working (heartbeat "Working") | `botmancer-working.png` | seed fixture, trigger a run, capture mid-run | [`docs/parity/botmancer-working.png`](parity/botmancer-working.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — header shows "Working" as in the reference; roster is flat rows vs reference card rows, the only style difference. The lead-card error line is a fixture limit (no OPENAI_API_KEY) and the computer-preview overlay is main-only |
 | 4 | Flat rows, group section | `flat-rows-group.png` | seed fixture, `/` scrolled to groups | [`docs/parity/flat-rows-group.png`](parity/flat-rows-group.png) | MATCH — flat rows, group pills (ClickproofGrove @Pine, Research Team), thread cards match; only the listed main-only additions (logo, Import button, Config/Stop) differ |
 | 5 | Flat rows, top | `flat-rows-top.png` | seed fixture, `/` scrolled top | [`docs/parity/flat-rows-top.png`](parity/flat-rows-top.png) | MATCH — same as flat-rows-group at the top of the roster |
 | 6 | Roster without groups | `roster-nogroups.png` | `--no-groups` fixture, `/` | [`docs/parity/roster-nogroups.png`](parity/roster-nogroups.png) | MATCH — flat roster without groups, highlighted active row, thread cards match; only the main-only additions differ |
 | 7 | Unread badge cleared | `unread-cleared.png` | seed fixture, open the Cedar thread, no menu | [`docs/parity/unread-cleared.png`](parity/unread-cleared.png) | DRIFT (repro, operator recapture below) — attached capture shows the LaunchMint thread with the row menu open; the reference shows the Cedar thread with no menu, so this pair is not like-for-like |
-| 8 | Unread row hover (tooltip) | `unread-hover.png` | seed fixture, hover unread row (Alice unread) | [`docs/parity/unread-hover.png`](parity/unread-hover.png) | DRIFT (repro) + ACCEPTED DRIFT (roster style, owner decision) — row menu style matches; the attached capture has no "Unread" line because no bot was unread at capture time (operator recapture below restores it). Roster is flat rows vs reference card rows: accepted, the only style difference once unread is seeded |
-| 9 | Unread thread with tooltip menu | `unread-thread.png` | seed fixture, hover row in thread view | [`docs/parity/unread-thread.png`](parity/unread-thread.png) | ACCEPTED DRIFT (roster style, owner decision) — thread and row-menu styling match; roster is flat rows vs reference card rows, the only style difference. The menu reads Unpin because LaunchMint is pinned in the fixture (fixture state, not a style drift) |
+| 8 | Unread row hover (tooltip) | `unread-hover.png` | seed fixture, hover unread row (Alice unread) | [`docs/parity/unread-hover.png`](parity/unread-hover.png) | DRIFT (repro) + ACCEPTED DRIFT = MATCH on roster style per owner/human decision 2026-10-12 — row menu style matches; the attached capture has no "Unread" line because no bot was unread at capture time (operator recapture below restores it). Roster is flat rows vs reference card rows: accepted, the only style difference once unread is seeded |
+| 9 | Unread thread with tooltip menu | `unread-thread.png` | seed fixture, hover row in thread view | [`docs/parity/unread-thread.png`](parity/unread-thread.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — thread and row-menu styling match; roster is flat rows vs reference card rows, the only style difference. The menu reads Unpin because LaunchMint is pinned in the fixture (fixture state, not a style drift) |
 | 10 | Draft proposal card | (behavioral, NOT-410) | `--thread-cards` fixture, draft thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
 | 11 | Approval request (Approve/Deny) | (behavioral, NOT-410/411) | `--thread-cards` fixture, approval thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
 | 12 | File artifact card | (behavioral, NOT-410) | `--thread-cards` fixture, file thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
@@ -163,7 +179,7 @@ restored home page and the screenshots above. Repro: seed fixture,
 | C1 | Loaded (skills present, rules, template source, snapshots) | LaunchMint `/bots/<id>/config` (seed has skill + 2 snapshots, no mock) | [`docs/parity/config-loaded.png`](parity/config-loaded.png) | STALE capture (3cdf9a6, snapshot row + template fields mocked) — consistent with home tokens (card, hairline inputs, accent primary, mono skill / sans rules). 390x800: [`config-loaded-390.png`](parity/config-loaded-390.png), stacks cleanly. Fresh capture at this HEAD uses real seed data; pending Atelier verdict |
 | C2 | Saving (Rules card `Saving…`, buttons disabled) | edit rules, hold PATCH open, capture mid-save | [`docs/parity/config-saving.png`](parity/config-saving.png) | STALE capture — header reads "Unsaved changes" (amber any-dirty summary, unchanged from pre-restyle), Rules card reads "Saving…" with Save showing "Saving…" disabled; PATCH held open by route interception. Fresh capture at this HEAD; pending Atelier verdict |
 | C3 | Saved (`Saved HH:MM:SS`) | capture within 5s of a save | [`docs/parity/config-saved.png`](parity/config-saved.png) | STALE capture — "Saved 07:17:01" status, hash updated. Fresh capture at this HEAD; pending Atelier verdict |
-| C4 | Load error with retry | 500 from `GET /api/bots/[id]/config`, load page | [`docs/parity/config-error.png`](parity/config-error.png) | FIXED in code, capture STALE — error state now keeps the page header (neutral "Bot configuration" title + "Couldn't load bot details." subtitle, hash "—") with the loaded-page Back-link gap (`mt-3`/`mb-6`) and errors only inside cards in the loaded grid. The attached capture (3cdf9a6) predates the fix and shows the flush Back link. Fresh capture at this HEAD; pending Atelier verdict |
+| C4 | Load error with retry | 500 from `GET /api/bots/[id]/config`, load page | [`docs/parity/config-error.png`](parity/config-error.png) | FIXED in code, capture STALE — error state keeps the full page header (neutral "Bot configuration" title + "Couldn't load bot details." subtitle, hash "—", neutral "○ Not loaded" status with no "Saved" claim) with the loaded-page Back-link gap (`.cfg-back` + `mt-3`/`mb-6`) and errors only inside cards in the loaded grid. The attached captures predate the fix. Fresh capture at this HEAD; pending Atelier verdict |
 | C5 | Not found | `/bots/does-not-exist/config` | [`docs/parity/config-not-found.png`](parity/config-not-found.png) | Consistent — centered "Bot not found." + Back to chat. Fresh capture at this HEAD; pending Atelier verdict |
 | C6 | Empty snapshot list | Alice `/bots/<id>/config` (no launches) | [`docs/parity/config-snapshots-empty.png`](parity/config-snapshots-empty.png) | Consistent — "No launches recorded yet.". Fresh capture at this HEAD; pending Atelier verdict |
 | C7 | Snapshot list with two hashes | LaunchMint `/bots/<id>/config`, first row expanded (seed snapshots, no mock) | [`docs/parity/config-snapshots-two.png`](parity/config-snapshots-two.png) | MIXED-MOCK capture, FIXED by seed — attached capture mixes a manual Template source ("Created manually") with marketplace launch rows (`grok-marketplace` / `tpl-launchmint`) from route interception. The seed now records two consistent manual snapshots (newest matches current, older "Config changed since"); fresh capture uses real data with no mock. Pending Atelier verdict |
@@ -178,12 +194,19 @@ accent primary button, accent text actions). Pre-restyle details
 preserved: the skill editor stays mono while Rules stays sans
 (`.cfg-input-sans`), textareas keep a 2px accent focus ring, and
 primary/ghost buttons keep hover feedback (`brightness(1.1)` /
-`var(--composer)`). Repair-round-2 behavior fixes (same spec, Atelier
-required): the load-error state keeps the page header with the
-loaded-page gap and errors only inside cards; skill Discard is disabled
-until an edit (matching Rules); `hasTemplateSource` uses `||` so any
-set provenance field counts; the seed records two consistent LaunchMint
-snapshots so C1/C7 capture from real data.
+`var(--composer)`); a disabled primary Save renders muted
+(`var(--composer)` background, no accent) so it reads inactive until
+dirty. The loaded and error Back links carry `.cfg-back`
+(`inline-block` + 4px bottom margin over the header `mt-3`). The
+Template source card uses the full spec labels ("Import schema
+version", "Import operation ID"), matching the snapshot detail rows.
+Repair-round-2 behavior fixes (same spec, Atelier required): the
+load-error state keeps the page header with the loaded-page gap and
+errors only inside cards; skill Discard is disabled until an edit
+(matching Rules); `hasTemplateSource` uses `||` so any set provenance
+field counts; the seed records two consistent LaunchMint snapshots so
+C1/C7 capture from real data. Repair round 4 adds the neutral "○ Not
+loaded" error status (no "Saved" claim).
 
 ## Intentionally different
 

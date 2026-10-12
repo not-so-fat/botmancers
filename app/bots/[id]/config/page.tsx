@@ -301,7 +301,7 @@ export default function BotConfigPage() {
     return (
       <div className="cfg-page">
         <div className="max-w-6xl mx-auto">
-          <Link href="/" className="cfg-link text-sm">
+          <Link href="/" className="cfg-link cfg-back text-sm">
             ← Back to chat
           </Link>
           <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
@@ -314,7 +314,7 @@ export default function BotConfigPage() {
                 Current config hash: <code className="cfg-code">—</code>
               </p>
               <p className="text-sm mt-1">
-                <span className="cfg-faint">● Saved</span>
+                <span className="cfg-faint">○ Not loaded</span>
               </p>
             </div>
           </header>
@@ -387,7 +387,7 @@ export default function BotConfigPage() {
   return (
     <div className="cfg-page">
       <div className="max-w-6xl mx-auto">
-        <Link href="/" onClick={confirmLeave} className="cfg-link text-sm">
+        <Link href="/" onClick={confirmLeave} className="cfg-link cfg-back text-sm">
           ← Back to chat
         </Link>
 
@@ -582,11 +582,11 @@ export default function BotConfigPage() {
                   </dd>
                 </div>
                 <div className="flex justify-between gap-4 py-1 border-t cfg-line">
-                  <dt className="cfg-faint">Schema version</dt>
+                  <dt className="cfg-faint">Import schema version</dt>
                   <dd className="text-right">{bot.import_schema_version ?? '—'}</dd>
                 </div>
                 <div className="flex justify-between gap-4 py-1 border-t cfg-line">
-                  <dt className="cfg-faint">Operation ID</dt>
+                  <dt className="cfg-faint">Import operation ID</dt>
                   <dd className="text-right break-all">{bot.import_operation_id ?? '—'}</dd>
                 </div>
                 <div className="flex justify-between gap-4 py-1 border-y cfg-line">
