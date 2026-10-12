@@ -3,6 +3,7 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import Link from 'next/link';
 import { parseRun, runLine } from '@/lib/run';
+import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 
 interface Bot {
   id: string;
@@ -25,6 +26,8 @@ interface Message {
   sender_name?: string;
   content: string;
   handoff_targets?: string | null;
+  draftStatus?: 'open' | 'sent' | 'discarded' | null;
+  approvalStatus?: 'pending' | 'approved' | 'denied' | null;
   created_at: number;
 }
 
@@ -152,6 +155,10 @@ export default function Home() {
   const [avatarStep, setAvatarStep] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [rowName, setRowName] = useState('');
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [groupName, setGroupName] = useState('');
+  const [revealed, setRevealed] = useState<Record<string, Message[]>>({});
+  const revealing = useRef<Record<string, boolean>>({});
   const [deleteAsk, setDeleteAsk] = useState<Bot | null>(null);
   const [rowMenu, setRowMenu] = useState<{ bot: Bot; x: number; y: number } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
@@ -339,6 +346,54 @@ export default function Home() {
       method: 'POST',
     });
     await loadMessages();
+  };
+
+  const toggleReveal = async (msg: Message, target: string) => {
+    if (revealed[msg.id]) {
+      setRevealed(current => {
+        const next = { ...current };
+        delete next[msg.id];
+        return next;
+      });
+      return;
+    }
+    if (revealing.current[msg.id]) return;
+    const index = messages.findIndex(item => item.id === msg.id);
+    const bot = bots.find(item => item.name === target);
+    const reply = messages.slice(index + 1).find(item =>
+      item.sender_type === 'bot' && (bot ? item.sender_id === bot.id : item.sender_name === target)
+    );
+    if (!reply) return;
+    revealing.current[msg.id] = true;
+    try {
+      const res = await fetch(`/api/messages/${msg.id}/between?other=${encodeURIComponent(reply.id)}`);
+      const data = await res.json().catch(() => null);
+      if (res.ok && Array.isArray(data) && data.length > 0) {
+        setRevealed(current => ({ ...current, [msg.id]: data }));
+      }
+    } finally {
+      delete revealing.current[msg.id];
+    }
+  };
+
+  const renameGroup = async (group: GroupRow) => {
+    const name = groupName.trim();
+    setEditingGroupId(null);
+    if (!name || name === group.name) return;
+    const res = await fetch('/api/groups', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: group.id, name }),
+    });
+    if (!res.ok) return;
+    const saved = await res.json();
+    setGroups(current => current.map(item => item.id === saved.id ? { ...item, name: saved.name } : item));
+    if (activeConversation?.type === 'group' && activeConversation.details.id === saved.id) {
+      setActiveConversation({
+        ...activeConversation,
+        details: { ...activeConversation.details, name: saved.name },
+      });
+    }
   };
 
   async function openBot(id: string) {
@@ -824,8 +879,34 @@ export default function Home() {
                 key={group.id}
                 className="card"
                 onClick={() => openGroup(group.id)}
+                onDoubleClick={e => {
+                  e.stopPropagation();
+                  setEditingGroupId(group.id);
+                  setGroupName(group.name);
+                }}
               >
-                <div className="card-name">{groupLabel(group)}</div>
+                {editingGroupId === group.id ? (
+                  <input
+                    className="card-name"
+                    value={groupName}
+                    autoFocus
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => setGroupName(e.target.value)}
+                    onBlur={() => renameGroup(group)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        (e.target as HTMLInputElement).blur();
+                      }
+                      if (e.key === 'Escape') {
+                        setEditingGroupId(null);
+                      }
+                    }}
+                    style={{ background: 'transparent', border: 0, outline: 'none', padding: 0 }}
+                  />
+                ) : (
+                  <div className="card-name">{groupLabel(group)}</div>
+                )}
               </div>
             ))}
           </div>
@@ -942,6 +1023,12 @@ export default function Home() {
                 if (!mine && activeConversation.type === 'group') {
                   const sender = bots.find(bot => bot.id === msg.sender_id);
                   const senderName = sender?.name || msg.sender_name || '';
+                  const groupDraft = parseDraft(stripStoredPrefix(msg.content));
+                  const groupCode = parseApprovalCode(msg.content);
+                  const groupFiles = parseFileNames(msg.content);
+                  const groupHandoff = parseHandoff(shown.text);
+                  const groupDraftStatus = msg.draftStatus ?? (groupDraft ? 'open' : null);
+                  const groupApprovalStatus = msg.approvalStatus ?? (groupCode ? 'pending' : null);
                   return (
                     <div key={msg.id} className="agent-turn">
                       <div className="agent-from">
@@ -949,10 +1036,44 @@ export default function Home() {
                         {sender ? mark(sender) : <span className="agent-mark" />}
                         <span>{senderName}</span>
                       </div>
-                      <div className="agent-bar">
-                        {shown.text}
-                        {picture}
-                      </div>
+                      {groupDraft && groupDraftStatus ? (
+                        <div className="agent-bar">
+                          <DraftCard
+                            key={msg.id + groupDraftStatus}
+                            message={msg}
+                            conversationId={activeConversation.id}
+                            status={groupDraftStatus}
+                            onDone={() => { void loadMessages(); }}
+                          />
+                        </div>
+                      ) : (
+                        <div
+                          className="agent-bar"
+                          onClick={groupHandoff ? () => { void toggleReveal(msg, groupHandoff); } : undefined}
+                          title={groupHandoff ? 'Show the replies between this handoff and the reply' : undefined}
+                          style={groupHandoff ? { cursor: 'pointer' } : undefined}
+                        >
+                          {shown.text}
+                          {picture}
+                          {groupCode && groupApprovalStatus ? (
+                            <ApprovalCard
+                              key={msg.id + groupApprovalStatus}
+                              message={msg}
+                              conversationId={activeConversation.id}
+                              status={groupApprovalStatus}
+                              onDone={() => { void loadMessages(); }}
+                            />
+                          ) : null}
+                          <FileLinks names={groupFiles} />
+                        </div>
+                      )}
+                      {revealed[msg.id] ? (
+                        <div className="agent-bar">
+                          {revealed[msg.id].map(item => (
+                            <div key={item.id}>{(item.sender_name || 'Bot') + ': ' + displayBody(item.content)}</div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 }
@@ -962,6 +1083,12 @@ export default function Home() {
                     ? (activeConversation.details as Bot).color
                     : bots.find(b => b.id === msg.sender_id)?.color);
                 const run = mine ? null : parseRun(msg.content);
+                const draft = !mine && !run ? parseDraft(stripStoredPrefix(msg.content)) : null;
+                const approvalCode = !mine && !run ? parseApprovalCode(msg.content) : null;
+                const fileNames = !mine && !run ? parseFileNames(msg.content) : [];
+                const handoff = !mine && !run ? parseHandoff(shown.text) : null;
+                const draftStatus = msg.draftStatus ?? (draft ? 'open' : null);
+                const approvalStatus = msg.approvalStatus ?? (approvalCode ? 'pending' : null);
                 return (
                   <div key={msg.id} className={mine ? 'msg-you' : 'msg-bot'} ref={run && run.state === 'running' ? runningLineRef : undefined}>
                     <div
@@ -991,12 +1118,44 @@ export default function Home() {
                           </>
                         ) : null}
                       </div>
-                    ) : (
+                    ) : draft && draftStatus ? (
                       <div className="msg-body">
+                        <DraftCard
+                          key={msg.id + draftStatus}
+                          message={msg}
+                          conversationId={activeConversation.id}
+                          status={draftStatus}
+                          onDone={() => { void loadMessages(); }}
+                        />
+                      </div>
+                    ) : (
+                      <div
+                        className="msg-body"
+                        onClick={handoff ? () => { void toggleReveal(msg, handoff); } : undefined}
+                        title={handoff ? 'Show the replies between this handoff and the reply' : undefined}
+                        style={handoff ? { cursor: 'pointer' } : undefined}
+                      >
                         {shown.text}
                         {picture}
+                        {approvalCode && approvalStatus ? (
+                          <ApprovalCard
+                            key={msg.id + approvalStatus}
+                            message={msg}
+                            conversationId={activeConversation.id}
+                            status={approvalStatus}
+                            onDone={() => { void loadMessages(); }}
+                          />
+                        ) : null}
+                        <FileLinks names={fileNames} />
                       </div>
                     )}
+                    {revealed[msg.id] ? (
+                      <div className="msg-body">
+                        {revealed[msg.id].map(item => (
+                          <div key={item.id}>{(item.sender_name || 'Bot') + ': ' + displayBody(item.content)}</div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -1139,6 +1298,153 @@ export default function Home() {
         />
       )}
     </div>
+  );
+}
+
+function DraftCard({ message, conversationId, status, onDone }: {
+  message: Message;
+  conversationId: string;
+  status: 'open' | 'sent' | 'discarded';
+  onDone: () => void;
+}) {
+  const parsed = parseDraft(stripStoredPrefix(message.content));
+  const [recipient, setRecipient] = useState(parsed?.recipient ?? '');
+  const [body, setBody] = useState(parsed?.body ?? '');
+  const [busy, setBusy] = useState(false);
+  const closed = useRef(status !== 'open');
+  if (!parsed) return null;
+  const readOnly = status !== 'open';
+  const act = async (action: 'send' | 'discard') => {
+    if (closed.current || busy) return;
+    closed.current = true;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/draft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId: message.id, action, recipient, body }),
+      });
+      if (!res.ok) closed.current = false;
+    } finally {
+      setBusy(false);
+      onDone();
+    }
+  };
+  return (
+    <div className="draft-card">
+      <p className="draft-title">{draftTitle(parsed.recipient)}</p>
+      {readOnly ? (
+        <div className="msg-body">
+          <div>To: {parsed.recipient}</div>
+          <div>{parsed.body}</div>
+          <span className="draft-mark">{status === 'sent' ? 'Sent' : 'Discarded'}</span>
+        </div>
+      ) : (
+        <>
+          <input
+            aria-label="Recipient"
+            value={recipient}
+            onChange={e => setRecipient(e.target.value)}
+            disabled={busy}
+          />
+          <textarea
+            aria-label="Draft body"
+            rows={3}
+            value={body}
+            onChange={e => setBody(e.target.value)}
+            disabled={busy}
+          />
+          <span className="draft-mark">
+            <button
+              type="button"
+              className="approve-control"
+              disabled={busy}
+              onClick={() => { void act('send'); }}
+            >
+              Send
+            </button>
+            {' '}
+            <button
+              type="button"
+              className="attach-word"
+              disabled={busy}
+              onClick={() => { void act('discard'); }}
+            >
+              Discard
+            </button>
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ApprovalCard({ message, conversationId, status, onDone }: {
+  message: Message;
+  conversationId: string;
+  status: 'pending' | 'approved' | 'denied';
+  onDone: () => void;
+}) {
+  const code = parseApprovalCode(message.content);
+  const [busy, setBusy] = useState(false);
+  const closed = useRef(status !== 'pending');
+  if (!code) return null;
+  const readOnly = status !== 'pending';
+  const act = async (decision: 'approve' | 'deny') => {
+    if (closed.current || busy) return;
+    closed.current = true;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/${decision}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, messageId: message.id }),
+      });
+      if (!res.ok) closed.current = false;
+    } finally {
+      setBusy(false);
+      onDone();
+    }
+  };
+  if (readOnly) {
+    return <span className="draft-mark">{status === 'approved' ? 'Approved' : 'Denied'}</span>;
+  }
+  return (
+    <span className="draft-mark">
+      <button
+        type="button"
+        className="approve-control"
+        disabled={busy}
+        onClick={() => { void act('approve'); }}
+      >
+        Approve
+      </button>
+      {' '}
+      <button
+        type="button"
+        className="attach-word"
+        disabled={busy}
+        onClick={() => { void act('deny'); }}
+      >
+        Deny
+      </button>
+    </span>
+  );
+}
+
+function FileLinks({ names }: { names: string[] }) {
+  if (names.length === 0) return null;
+  return (
+    <>
+      {names.map(name => (
+        <span key={name}>
+          <br />
+          <a className="file-control" href={`/api/files/${encodeURIComponent(name)}`} download={name}>
+            Download {name}
+          </a>
+        </span>
+      ))}
+    </>
   );
 }
 
