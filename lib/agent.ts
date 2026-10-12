@@ -15,26 +15,118 @@ const openai = new OpenAI({
 
 const model = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
 
+// Conversational delegation limits (NOT-395). Placeholder values until the
+// owner confirms them; change one line here. Tests assert these constants.
+export const DELEGATION_MAX_DEPTH = 3;
+export const DELEGATION_MAX_DELEGATED_TURNS = 8;
+
+export const DELEGATION_DEPTH_REASON =
+  `[Delegation limit] Depth limit reached (max ${DELEGATION_MAX_DEPTH} handoffs). No further handoff.`;
+export const DELEGATION_BUDGET_REASON =
+  `[Delegation limit] Budget limit reached (max ${DELEGATION_MAX_DELEGATED_TURNS} delegated turns per user message). No further delegated turn.`;
+export const DELEGATION_STOPPED_REASON =
+  '[Delegation stopped] Delegation stopped. No further handoffs or delegated turns.';
+
+interface DelegationChain {
+  userMessageId: string;
+  handoffs: number;
+  turns: number;
+  stopped: boolean;
+}
+
+const delegationChains = new Map<string, DelegationChain>();
+
+function delegationChainFor(conversationId: string, latestUserId: string | null): DelegationChain | null {
+  if (!latestUserId) return null;
+  const existing = delegationChains.get(conversationId);
+  if (existing && existing.userMessageId === latestUserId) return existing;
+  const fresh: DelegationChain = { userMessageId: latestUserId, handoffs: 0, turns: 0, stopped: false };
+  delegationChains.set(conversationId, fresh);
+  return fresh;
+}
+
+export function getDelegationState(conversationId: string): DelegationChain | null {
+  return delegationChains.get(conversationId) ?? null;
+}
+
+// Stop cancels queued delegated turns for this thread and prevents further
+// handoffs in the current chain. A later user message starts a fresh chain.
+// Returns true when something was actually stopped.
+export function stopDelegation(conversationId: string): boolean {
+  const conversationMessages = messages.getByConversation(conversationId);
+  const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
+  let chain: DelegationChain | null = null;
+  if (latestUser) {
+    const existing = delegationChains.get(conversationId);
+    if (existing && existing.userMessageId === latestUser.id) {
+      chain = existing;
+    } else {
+      chain = { userMessageId: latestUser.id, handoffs: 0, turns: 0, stopped: false };
+      delegationChains.set(conversationId, chain);
+    }
+  }
+  const alreadyStopped = chain?.stopped ?? false;
+  const hadActivity = !!chain && (chain.turns > 0 || chain.handoffs > 0);
+  const cancelled = queue.cancelPending(conversationId);
+  if (chain) chain.stopped = true;
+  const stoppedSomething = cancelled > 0 || (hadActivity && !alreadyStopped);
+  if (stoppedSomething) {
+    messages.create(conversationId, 'bot', DELEGATION_STOPPED_REASON);
+  }
+  return stoppedSomething;
+}
+
+export interface DelegationStubContext {
+  botId: string;
+  botName: string;
+  conversationId: string;
+  sent: Array<{ role: string; content: string }>;
+}
+
+export type DelegationChatStub = (ctx: DelegationStubContext) => string | Promise<string>;
+
+let delegationChatStub: DelegationChatStub | null = null;
+
+export function setDelegationChatStub(stub: DelegationChatStub | null): void {
+  delegationChatStub = stub;
+}
+
+export function resetDelegationForTests(): void {
+  delegationChains.clear();
+  delegationChatStub = null;
+}
+
+const AUTO_PROCESS = process.env.BOTMANCERS_NO_AUTOPROCESS !== '1';
+
+function chainProcessQueue(): void {
+  if (AUTO_PROCESS) setImmediate(() => processQueue());
+}
+
 let isProcessing = false;
+
+export async function processNextQueueItem(): Promise<boolean> {
+  const item = queue.getNext();
+  if (!item) return false;
+
+  queue.markProcessing(item.id);
+
+  try {
+    await processQueueItem(item);
+    queue.markCompleted(item.id, 'completed');
+  } catch (error) {
+    console.error('Error processing queue item:', error);
+    queue.markCompleted(item.id, 'failed');
+  }
+  return true;
+}
 
 export async function processQueue() {
   if (isProcessing) return;
   isProcessing = true;
 
   try {
-    while (true) {
-      const item = queue.getNext();
-      if (!item) break;
-
-      queue.markProcessing(item.id);
-
-      try {
-        await processQueueItem(item);
-        queue.markCompleted(item.id, 'completed');
-      } catch (error) {
-        console.error('Error processing queue item:', error);
-        queue.markCompleted(item.id, 'failed');
-      }
+    while (await processNextQueueItem()) {
+      // Drains until empty; WAKE enqueues are picked up on the next iteration.
     }
   } finally {
     isProcessing = false;
@@ -57,31 +149,40 @@ async function processQueueItem(item: QueueItem) {
   const conversationMessages = messages.getByConversation(item.conversation_id);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
 
+  const chain = delegationChainFor(item.conversation_id, latestUser ? latestUser.id : null);
+  if (chain?.stopped) {
+    chainProcessQueue();
+    return;
+  }
+  const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
+
   if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
     const fileReadAsk = parseFileReadAsk(latestUser.content);
     if (fileReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginFileReadRun(runMessage.id, fileReadAsk.seconds);
-      setImmediate(() => processQueue());
+      chainProcessQueue();
       return;
     }
     const publicPageReadAsk = parsePublicPageReadAsk(latestUser.content);
     if (publicPageReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginPublicPageReadRun(runMessage.id, publicPageReadAsk.seconds, publicPageReadAsk.url);
-      setImmediate(() => processQueue());
+      chainProcessQueue();
       return;
     }
     const codingLimbAsk = parseCodingLimbAsk(latestUser.content);
     if (codingLimbAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginCodingLimbRun(runMessage.id, codingLimbAsk.seconds);
-      setImmediate(() => processQueue());
+      chainProcessQueue();
       return;
     }
   }
   let openGroupTurn = false;
-  if (conversation.type === 'group' && latestUser && !userAddressedBot(latestUser, bot)) {
+  // Delegated turns were addressed by a WAKE handoff, not by the user message,
+  // so the open-group WAKE suppression must not apply to them.
+  if (conversation.type === 'group' && latestUser && !isDelegatedTurn && !userAddressedBot(latestUser, bot)) {
     const queuedAfterPeer = conversationMessages.some(msg =>
       msg.sender_type === 'bot' &&
       !!msg.sender_id &&
@@ -124,11 +225,11 @@ async function processQueueItem(item: QueueItem) {
     if (ask) {
       const members = groups.getMembers(conversation.group_id);
       if (!shouldSayExactWord(bot, members, ask)) {
-        setImmediate(() => processQueue());
+        chainProcessQueue();
         return;
       }
       messages.create(item.conversation_id, 'bot', ask.word, bot.id);
-      setImmediate(() => processQueue());
+      chainProcessQueue();
       return;
     }
   }
@@ -177,15 +278,13 @@ ${standingBlock}`;
 ${bot.description}
 The standing rules decide the whole reply. If they require one short sentence, write one short clause and stop. Do not answer with a long sentence, a list, or extra detail.`;
 
-  if (!process.env.OPENAI_API_KEY) {
-    messages.create(
-      item.conversation_id,
-      'bot',
-      'Error: OPENAI_API_KEY not configured. Please set the environment variable to enable bot responses.',
-      bot.id
-    );
+  if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
+    messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+    queue.cancelPending(item.conversation_id);
+    chainProcessQueue();
     return;
   }
+  if (chain) chain.turns += 1;
 
   const sent = [
     { role: 'system' as const, content: systemPrompt },
@@ -226,56 +325,112 @@ The standing rules decide the whole reply. If they require one short sentence, w
       ].join('\n'),
     });
   }
-  appendPromptLog({ bot: bot.name, conversation_id: item.conversation_id, messages: sent });
+  let responseContent: string;
+  if (delegationChatStub) {
+    responseContent = await delegationChatStub({
+      botId: bot.id,
+      botName: bot.name,
+      conversationId: item.conversation_id,
+      sent,
+    });
+  } else {
+    if (!process.env.OPENAI_API_KEY) {
+      messages.create(
+        item.conversation_id,
+        'bot',
+        'Error: OPENAI_API_KEY not configured. Please set the environment variable to enable bot responses.',
+        bot.id
+      );
+      return;
+    }
+    appendPromptLog({ bot: bot.name, conversation_id: item.conversation_id, messages: sent });
 
-  const completion = await openai.chat.completions.create({
-    model,
-    messages: sent,
-  });
+    const completion = await openai.chat.completions.create({
+      model,
+      messages: sent,
+    });
 
-  const responseContent = completion.choices[0]?.message?.content || 'No response';
+    responseContent = completion.choices[0]?.message?.content || 'No response';
+  }
 
-  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent))) {
-    setImmediate(() => processQueue());
+  if (chain?.stopped) {
+    chainProcessQueue();
     return;
   }
-  
+
+  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent))) {
+    chainProcessQueue();
+    return;
+  }
+
   const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);
-  
+
   if (wakeMatch) {
     const [, target, message] = wakeMatch;
-    
-    if (target.toUpperCase() === 'GROUP' && conversation.type === 'group') {
-      const textOnly = message.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/g, '').trim();
-      if (textOnly) {
-        messages.create(item.conversation_id, 'bot', textOnly, bot.id);
-        const groupMembers = groups.getMembers(conversation.group_id!);
-        const otherBot = groupMembers.find(b => b.id !== bot.id);
-        if (otherBot) {
-          queue.enqueue(item.conversation_id, otherBot.id);
-        }
-      }
+    const isGroupWake = target.toUpperCase() === 'GROUP' && conversation.type === 'group';
+    const targetBot = isGroupWake
+      ? null
+      : bots.getAll().find(b => b.name.toLowerCase() === target.toLowerCase());
+
+    if (!isGroupWake && !targetBot) {
+      messages.create(item.conversation_id, 'bot', responseContent, bot.id);
     } else {
-      const targetBot = bots.getAll().find(b => b.name.toLowerCase() === target.toLowerCase());
-      if (targetBot) {
-        messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
-        
-        const targetConversation = conversations.getByBotId(targetBot.id);
-        if (targetConversation) {
-          messages.create(targetConversation.id, 'bot', `[From ${bot.name}]\n${message.trim()}`, bot.id);
-          queue.enqueue(targetConversation.id, targetBot.id);
+      const matchIndex = wakeMatch.index ?? responseContent.indexOf(wakeMatch[0]);
+      const prefix = responseContent.slice(0, matchIndex).trim();
+      if (prefix) {
+        messages.create(item.conversation_id, 'bot', prefix, bot.id);
+      }
+
+      if (chain?.stopped) {
+        chainProcessQueue();
+        return;
+      }
+      if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
+        messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
+        chainProcessQueue();
+        return;
+      }
+
+      if (isGroupWake) {
+        const textOnly = message.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/g, '').trim();
+        if (textOnly) {
+          messages.create(item.conversation_id, 'bot', textOnly, bot.id);
+          const groupMembers = groups.getMembers(conversation.group_id!);
+          const otherBot = groupMembers.find(b => b.id !== bot.id);
+          if (otherBot) {
+            queue.enqueue(item.conversation_id, otherBot.id);
+            if (chain) chain.handoffs += 1;
+          }
         }
-      } else {
-        messages.create(item.conversation_id, 'bot', responseContent, bot.id);
+      } else if (targetBot) {
+        // Same-thread caller-managed delegation: the target replies in this
+        // thread, so the draft, the check, and the final report stay together.
+        messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
+        queue.enqueue(item.conversation_id, targetBot.id);
+        if (chain) chain.handoffs += 1;
       }
     }
   } else {
     messages.create(item.conversation_id, 'bot', responseContent, bot.id);
   }
-  
-  setImmediate(() => processQueue());
+
+  chainProcessQueue();
 }
 
+
+function delegatedTurn(conversationMessages: Message[], botName: string): boolean {
+  let lastUserIdx = -1;
+  for (let i = 0; i < conversationMessages.length; i++) {
+    if (conversationMessages[i].sender_type === 'user') lastUserIdx = i;
+  }
+  if (lastUserIdx < 0) return false;
+  const needle = `[Handing off to ${botName}]`;
+  for (let i = lastUserIdx + 1; i < conversationMessages.length; i++) {
+    const msg = conversationMessages[i];
+    if (msg.sender_type === 'bot' && msg.content.includes(needle)) return true;
+  }
+  return false;
+}
 
 function userAddressedBot(msg: Message, bot: { id: string; name: string }): boolean {
   if (msg.handoff_targets) {
@@ -386,6 +541,8 @@ function appendPromptLog(entry: { bot: string; conversation_id: string; messages
   }
 }
 
-setInterval(() => {
-  processQueue().catch(console.error);
-}, 2000);
+if (AUTO_PROCESS) {
+  setInterval(() => {
+    processQueue().catch(console.error);
+  }, 2000);
+}
