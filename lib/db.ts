@@ -713,6 +713,12 @@ export const queue = {
     return Number(result.changes);
   },
 
+  cancelPendingForBot: (botId: string): void => {
+    db.prepare(
+      "DELETE FROM processing_queue WHERE bot_id = ? AND status = 'pending'"
+    ).run(botId);
+  },
+
   countPending: (conversationId?: string): number => {
     const row = conversationId
       ? (db.prepare(

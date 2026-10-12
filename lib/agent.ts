@@ -18,6 +18,7 @@ import type { HermesConfig } from './hermes';
 import type { Bot, Conversation, Message, OneShot, QueueItem, Routine } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
+import { handleCosBirthRequest } from './birth';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -806,10 +807,10 @@ async function processQueueItem(item: QueueItem) {
   // Timer-tick hook (NOT-411): a due one-shot or routine makes this launch
   // post its word instead of calling the model. Runs here, right behind the
   // Stop check and before any content-triggered hook, so a tick never
-  // re-runs the draft, run, or MCP hooks with the stale latest user message.
-  // Consumes one delegation turn like any other launch, and the budget
-  // check inside refuses it once exhausted, so a tick never bypasses the
-  // depth/budget limits or Stop. Delegated turns never consume a tick: a
+  // re-runs the birth, draft, run, or MCP hooks with the stale latest user
+  // message. Consumes one delegation turn like any other launch, and the
+  // budget check inside refuses it once exhausted, so a tick never bypasses
+  // the depth/budget limits or Stop. Delegated turns never consume a tick: a
   // WAKE handoff's launch answers the delegation, and the tick waits for its
   // own timer launch. A launch never consumes a tick while its user message
   // still awaits a reply.
@@ -830,6 +831,26 @@ async function processQueueItem(item: QueueItem) {
     }
     chainProcessQueue();
     return;
+  }
+
+  // Birth hook (NOT-414): the chief-of-staff (by name, never UUID) creates a
+  // specialist or duplicates a bot from a chat message. Runs behind the Stop
+  // check and the timer-tick hook and before every other content hook, so a
+  // birth request never becomes a draft, a timer teach, or a run, while a
+  // due tick still posts after a birth reply instead of being swallowed by
+  // the already-answered birth request. Delegated turns skip it: a WAKE
+  // handoff answers the delegation, not the latest user message.
+  if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser && !isDelegatedTurn) {
+    const handled = await handleCosBirthRequest(
+      item.conversation_id,
+      bot.id,
+      latestUser,
+      conversationMessages
+    );
+    if (handled) {
+      chainProcessQueue();
+      return;
+    }
   }
 
   // Outbound-draft hook (NOT-410): a direct-thread ask mentioning email or
