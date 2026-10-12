@@ -60,8 +60,18 @@ db.exec(`
     FOREIGN KEY (bot_id) REFERENCES bots(id)
   );
 
+  CREATE TABLE IF NOT EXISTS launch_snapshots (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    FOREIGN KEY (bot_id) REFERENCES bots(id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_queue_status ON processing_queue(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_snapshots_bot ON launch_snapshots(bot_id, created_at DESC);
 
   CREATE TABLE IF NOT EXISTS mcp_servers (
     id TEXT PRIMARY KEY,
@@ -283,6 +293,7 @@ export const bots = {
         db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
       }
       db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
+      db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM bots WHERE id = ?').run(id);
     })();
@@ -476,6 +487,28 @@ export const queue = {
     db.prepare(
       'UPDATE processing_queue SET status = ?, completed_at = ? WHERE id = ?'
     ).run(status, Date.now(), id);
+  },
+};
+
+export interface LaunchSnapshot {
+  id: string;
+  bot_id: string;
+  created_at: number;
+  hash: string;
+  snapshot: string;
+}
+
+export const launchSnapshots = {
+  record: (id: string, botId: string, hash: string, snapshot: string): void => {
+    db.prepare(
+      'INSERT OR IGNORE INTO launch_snapshots (id, bot_id, created_at, hash, snapshot) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, botId, Date.now(), hash, snapshot);
+  },
+
+  listByBot: (botId: string): LaunchSnapshot[] => {
+    return db.prepare(
+      'SELECT * FROM launch_snapshots WHERE bot_id = ? ORDER BY created_at DESC, rowid DESC'
+    ).all(botId) as LaunchSnapshot[];
   },
 };
 
