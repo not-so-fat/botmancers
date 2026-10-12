@@ -22,7 +22,7 @@ export const metadata: Metadata = {
       { url: "/brand/botmancers-logo-filled-256.png", sizes: "256x256", type: "image/png" },
     ],
     apple: [
-      { url: "/brand/botmancers-logo-filled-256.png", sizes: "180x180", type: "image/png" },
+      { url: "/brand/botmancers-logo-filled-256.png", sizes: "256x256", type: "image/png" },
     ],
   },
 };
