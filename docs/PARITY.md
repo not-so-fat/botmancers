@@ -56,6 +56,41 @@ launches); C2 holds the PATCH open; C4 returns 500.
 | 11 | Approval request (Approve/Deny) | (behavioral, NOT-410/411) | `--thread-cards` fixture, approval thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
 | 12 | File artifact card | (behavioral, NOT-410) | `--thread-cards` fixture, file thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
 
+### Remaining captures (operator, repair round 2)
+
+Rows 10–12 need a browser-capable pass at this HEAD; the dev sandbox
+has no browser and no loopback, so this is not a code change. All
+three cards live in the one CardMint thread seeded by the
+`--thread-cards` fixture (`scripts/seed-design-fixture.js`):
+
+```sh
+node scripts/seed-design-fixture.js --thread-cards
+BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm run dev
+# open http://localhost:43123, select the CardMint thread at 1440x900
+```
+
+Capture each card scrolled into view and save as
+`docs/parity/thread-draft.png` (row 10, email draft to Alice),
+`docs/parity/thread-approval.png` (row 11, `cardmint1` approval),
+`docs/parity/thread-file.png` (row 12, `filemint6.txt`), then flip
+the three rows above from NOT CAPTURED to linked verdicts. There is
+no reference counterpart for these rows; judge them against the
+restored home-page tokens like the config states.
+
+### Approvals pending (operator / Atelier, repair round 2)
+
+- Atelier verdict `approve` (or a mismatch list) on config states
+  C1–C7, recorded as a Linear comment on NOT-412. The C4 capture
+  notes one minor drift (Back link flush on the first card).
+- CI run on the PR head: `test:snapshot`, `test:delegation`,
+  `test:marketplace-import`, `test:acceptance`, `test:thread-actions`,
+  `test:agent-loop-extras`, `lint`, `build`, each exit 0. Local
+  evidence at this HEAD: `lint` exit 0 (0 errors, 9 warnings);
+  `test:snapshot`, `test:delegation`, `test:thread-actions`,
+  `test:agent-loop-extras` PASS; `test:marketplace-import` and
+  `test:acceptance` need a loopback dev server and `build` needs
+  Google Fonts network access, so they are routed to CI.
+
 ## Config page states (no reference counterpart)
 
 The reference has no config page; these states are judged against the
