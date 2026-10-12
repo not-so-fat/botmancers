@@ -15,7 +15,6 @@
 // Provenance and hermes profile are never copied to a duplicate.
 
 import { randomUUID, createHash } from 'crypto';
-import OpenAI from 'openai';
 import { bots, conversations, messages, queue } from './db';
 import type { Bot, Message } from './db';
 import { applySkillEndToken, localSkillForBot, isSupportedSkillName, writeSkillForBot } from './skills';
@@ -167,47 +166,10 @@ export function setBirthModelStub(stub: BirthModelFn | null): void {
   birthModelStub = stub;
 }
 
-const BIRTH_MODEL_SYSTEM = [
-  'Extract a bot birth request from the user message. Reply with JSON only, no other text.',
-  'Schema: {"intent":"create","name":"<bot name>","job":"<job description>"}',
-  'or {"intent":"duplicate","source":"<existing bot>","newName":"<new bot name>"}',
-  'or {"intent":"none"}.',
-  'Use create only when the user asks to create, make or build a new specialist or bot with a name and a job.',
-  'Use duplicate only when the user asks to duplicate, copy or clone one named bot as another name.',
-  'Otherwise use none. Past tense and questions about bots are none.',
-].join(' ');
-
-async function extractWithModel(text: string): Promise<BirthIntent> {
-  if (birthModelStub) {
-    return coerceModelResult(await birthModelStub(text));
-  }
-  if (!process.env.OPENAI_API_KEY) {
-    return parseBirthDeterministic(text);
-  }
-  try {
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      baseURL: process.env.OPENAI_BASE_URL || 'https://openrouter.ai/api/v1',
-    });
-    const completion = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: BIRTH_MODEL_SYSTEM },
-        { role: 'user', content: text },
-      ],
-    });
-    const content = completion.choices[0]?.message?.content || '';
-    return coerceModelResult(content);
-  } catch {
-    return parseBirthDeterministic(text);
-  }
-}
-
-// Model-assisted extraction with a plain deterministic fallback. The model
-// runs first when a stub or API key is available; errors and invalid shapes
-// fall back to the deterministic parser. A confident model none is kept.
+// Deterministic extraction with an injectable stub seam. The stub stands in
+// for a model reply in tests; errors and invalid shapes fall back to the
+// deterministic parser. A confident stub none is kept. NOT-435 removed the
+// embedded example model loop, so there is no live model call here.
 export async function extractBirthIntent(text: string): Promise<BirthIntent> {
   if (birthModelStub) {
     try {
@@ -216,10 +178,7 @@ export async function extractBirthIntent(text: string): Promise<BirthIntent> {
       return parseBirthDeterministic(text);
     }
   }
-  if (!process.env.OPENAI_API_KEY) {
-    return parseBirthDeterministic(text);
-  }
-  return extractWithModel(text);
+  return parseBirthDeterministic(text);
 }
 
 export interface MarketTemplate {
