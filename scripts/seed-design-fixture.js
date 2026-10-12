@@ -6,6 +6,7 @@
 // (.temporal/design-fixture-nogroups.db with --no-groups).
 // Usage: BOTMANCERS_DB_PATH=.temporal/design-fixture.db node scripts/seed-design-fixture.js
 //        node scripts/seed-design-fixture.js --no-groups   (roster-nogroups screen)
+//        node scripts/seed-design-fixture.js --thread-cards (NOT-410 card demo thread)
 //        BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm run dev
 'use strict';
 
@@ -29,6 +30,7 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
 const db = jiti('../lib/db.ts');
 const { serializeRun } = jiti('../lib/run.ts');
+const { serializeDraft } = jiti('../lib/draft.ts');
 
 const { bots, conversations, groups, messages } = db;
 
@@ -128,6 +130,25 @@ if (!NO_GROUPS) {
   messages.create(researchConv.id, 'bot', 'Researching.', bob.id);
 }
 
+// NOT-410: opt-in thread-card demo (draft, approval, file, handoff reveal).
+// Off by default so the six NOT-409 screens seed byte-identically; the extra
+// bot takes the latest created_at slot so existing colors and roster order
+// are unchanged when the flag is on.
+const THREAD_CARDS = process.argv.includes('--thread-cards') || process.env.SEED_THREAD_CARDS === '1';
+let cardMint = null;
+if (THREAD_CARDS) {
+  cardMint = makeBot('CardMint', '', 'Thread-card demo.', 7);
+  const convId = threadOf(cardMint);
+  messages.create(convId, 'user', 'Show me the thread cards.');
+  messages.create(convId, 'bot', serializeDraft({ channel: 'email', recipient: 'Alice', body: 'Hello Alice, this draft is ready to send.', state: 'open' }), cardMint.id);
+  messages.create(convId, 'bot', 'Please approve using the code cardmint1 to continue.', cardMint.id);
+  messages.create(convId, 'bot', '[file] filemint6.txt\nThe launch code is filemint6.', cardMint.id);
+  messages.create(convId, 'user', 'Ask Alice to check this.');
+  messages.create(convId, 'bot', '[Handing off to Alice]\nplease check the cards', cardMint.id);
+  messages.create(convId, 'bot', 'A reply between the handoff and the answer.', cardMint.id);
+  messages.create(convId, 'bot', 'Cards checked.', alice.id);
+}
+
 // Heartbeat fresh for all but Bob (Bob shows Stopped); only Alice keeps unread.
 bots.touchSeen();
 for (const bot of bots.getAll()) bots.markRead(bot.id);
@@ -162,6 +183,9 @@ for (const bot of rows) {
 if (grove) {
   console.log(`  - group ClickproofGrove @Pine (${grove.id})`);
   console.log(`  - group Research Team (${research.id})`);
+}
+if (cardMint) {
+  console.log(`  - thread-card demo thread on CardMint (${cardMint.id}): draft, approval cardmint1, file, handoff reveal`);
 }
 console.log('Working state is client-side: open the chief-of-staff thread and send a message to capture it.');
 console.log(`Run: BOTMANCERS_DB_PATH=${DB_PATH} npm run dev`);

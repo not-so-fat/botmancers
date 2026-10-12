@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
-import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots } from './db';
+import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, approvals } from './db';
+import { parseApprovalCode, parseFileNames, isSafeFileName, outboundDraftFromUser, serializeDraft } from './draft';
 import { mcpTurn } from './mcp';
 import { readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
@@ -214,6 +215,26 @@ async function processQueueItem(item: QueueItem) {
   const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
   const delegatingCallerId = callerFor(chain, bot.id);
   const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
+
+  // Outbound-draft hook (NOT-410): a direct-thread ask mentioning email or
+  // slack creates a draft card instead of a model reply. Runs behind the
+  // stopped check above, consumes no delegation budget, and never fires
+  // twice for the same user message. Position-based (not timestamp-based)
+  // so a same-millisecond draft still counts as a reply.
+  if (conversation.type === 'bot' && latestUser) {
+    const draft = outboundDraftFromUser(latestUser.content);
+    if (draft) {
+      const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
+      const alreadyReplied = userIdx >= 0 && conversationMessages.slice(userIdx + 1).some(msg =>
+        msg.sender_type === 'bot'
+      );
+      if (!alreadyReplied) {
+        messages.create(item.conversation_id, 'bot', serializeDraft(draft), bot.id);
+      }
+      chainProcessQueue();
+      return;
+    }
+  }
 
   if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
     const fileReadAsk = parseFileReadAsk(latestUser.content);
@@ -432,6 +453,8 @@ The standing rules decide the whole reply. If they require one short sentence, w
     return;
   }
 
+  materializeFileArtifacts(responseContent);
+
   const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);
 
   if (wakeMatch) {
@@ -442,7 +465,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       : bots.getAll().find(b => b.name.toLowerCase() === target.toLowerCase());
 
     if (!isGroupWake && !targetBot) {
-      messages.create(item.conversation_id, 'bot', responseContent, bot.id);
+      recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', responseContent, bot.id));
       if (chain && !chain.stopped) {
         const callerId = popCaller(chain, bot.id);
         if (callerId) queue.enqueue(item.conversation_id, callerId);
@@ -451,7 +474,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       const matchIndex = wakeMatch.index ?? responseContent.indexOf(wakeMatch[0]);
       const prefix = responseContent.slice(0, matchIndex).trim();
       if (prefix) {
-        messages.create(item.conversation_id, 'bot', prefix, bot.id);
+        recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', prefix, bot.id));
       }
 
       if (chain?.stopped) {
@@ -467,7 +490,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       if (isGroupWake) {
         const textOnly = message.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/g, '').trim();
         if (textOnly) {
-          messages.create(item.conversation_id, 'bot', textOnly, bot.id);
+          recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', textOnly, bot.id));
           const groupMembers = groups.getMembers(conversation.group_id!);
           const otherBot = groupMembers.find(b => b.id !== bot.id);
           if (otherBot) {
@@ -482,7 +505,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
         // Same-thread caller-managed delegation: the target replies in this
         // thread, so the draft, the check, and the final report stay together.
         // The caller stays on the stack; the delegate's reply returns to it.
-        messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
+        recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id));
         queue.enqueue(item.conversation_id, targetBot.id);
         if (chain) {
           chain.handoffs += 1;
@@ -491,7 +514,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       }
     }
   } else {
-    messages.create(item.conversation_id, 'bot', responseContent, bot.id);
+    recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', responseContent, bot.id));
     // Caller-managed return: a delegated turn that finishes without a further
     // WAKE hands control back to its caller. Budget is enforced on the
     // caller's next turn; Stop suppresses the return.
@@ -504,6 +527,52 @@ The standing rules decide the whole reply. If they require one short sentence, w
   chainProcessQueue();
 }
 
+
+// Approval-code hook (NOT-410): a bot reply containing
+// `approve using the code <code>` opens a pending approval the thread UI
+// renders as an Approve/Deny card. Replies without a code are untouched.
+function recordApprovalIfPresent(conversationId: string, message: Message): void {
+  try {
+    const code = parseApprovalCode(message.content);
+    if (!code) return;
+    approvals.recordPending(conversationId, code, message.id);
+  } catch (error) {
+    console.error('Error recording approval:', error);
+  }
+}
+
+// File-artifact hook (NOT-410): a `[file] <name>` marker followed by a fenced
+// block materializes that block into files/<name> so the thread's download
+// link serves it. Markers without a payload stay display-only; unsafe names
+// are never written.
+function materializeFileArtifacts(responseContent: string): void {
+  try {
+    const names = parseFileNames(responseContent);
+    if (names.length === 0) return;
+    const dir = path.join(process.cwd(), 'files');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of names) {
+      if (!isSafeFileName(name)) continue;
+      const payload = filePayloadAfter(responseContent, name);
+      if (payload === null) continue;
+      const filePath = path.join(dir, name);
+      if (!filePath.startsWith(dir + path.sep)) continue;
+      fs.writeFileSync(filePath, payload);
+    }
+  } catch (error) {
+    console.error('Error materializing file artifact:', error);
+  }
+}
+
+function filePayloadAfter(responseContent: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lines = responseContent.split('\n');
+  const index = lines.findIndex(line => new RegExp(`^\\s*\\[file\\]\\s*${escaped}\\s*$`, 'i').test(line));
+  if (index < 0) return null;
+  const fence = lines.slice(index + 1).join('\n').match(/```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)```/);
+  if (!fence) return null;
+  return fence[1].replace(/\r\n/g, '\n');
+}
 
 function delegatedTurn(conversationMessages: Message[], botName: string): boolean {
   let lastUserIdx = -1;

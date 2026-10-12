@@ -82,6 +82,23 @@ db.exec(`
     args TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS draft_actions (
+    message_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    recipient TEXT,
+    acted_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS approvals (
+    conversation_id TEXT NOT NULL,
+    code TEXT NOT NULL,
+    message_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    PRIMARY KEY (conversation_id, code)
+  );
 `);
 
 const BOT_COLORS = ['#C6F54A', '#F0A05A', '#E85D75', '#C9A0FF', '#F2E36B'];
@@ -364,7 +381,11 @@ export const groups = {
   getAll: (): Group[] => {
     return db.prepare('SELECT * FROM groups ORDER BY created_at DESC').all() as Group[];
   },
-  
+
+  getById: (id: string): Group | undefined => {
+    return db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+  },
+
   rename: (id: string, name: string): void => {
     db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id);
   },
@@ -441,6 +462,24 @@ export const messages = {
     ).all(conversationId) as Message[];
   },
 
+  // Messages strictly between two anchors in the same thread, in thread
+  // order. Either anchor may come first. Null when an anchor is unknown or
+  // the anchors sit in different conversations.
+  getBetween: (idA: string, idB: string): Message[] | null => {
+    const a = messages.getById(idA);
+    const b = messages.getById(idB);
+    if (!a || !b) return null;
+    if (a.conversation_id !== b.conversation_id) return null;
+    const all = db.prepare(
+      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC'
+    ).all(a.conversation_id) as Message[];
+    const indexA = all.findIndex(message => message.id === idA);
+    const indexB = all.findIndex(message => message.id === idB);
+    if (indexA < 0 || indexB < 0) return null;
+    const [low, high] = indexA < indexB ? [indexA, indexB] : [indexB, indexA];
+    return all.slice(low + 1, high);
+  },
+
   latestFromBot: (botId: string): string => {
     const own = conversations.getByBotId(botId);
     const rows = db.prepare(
@@ -511,6 +550,65 @@ export const messages = {
       return text;
     }
     return null;
+  },
+};
+
+export type DraftActionStatus = 'sent' | 'discarded';
+
+export interface DraftAction {
+  message_id: string;
+  status: DraftActionStatus;
+  recipient?: string | null;
+  acted_at: number;
+}
+
+// One-shot draft state. A draft message is open while it has no row here;
+// Send or Discard inserts exactly one row, so a card can never fire twice.
+export const draftActions = {
+  get: (messageId: string): DraftAction | undefined => {
+    return db.prepare('SELECT * FROM draft_actions WHERE message_id = ?').get(messageId) as DraftAction | undefined;
+  },
+
+  // Returns false when the draft was already acted on.
+  record: (messageId: string, status: DraftActionStatus, recipient?: string): boolean => {
+    const result = db.prepare(
+      'INSERT OR IGNORE INTO draft_actions (message_id, status, recipient, acted_at) VALUES (?, ?, ?, ?)'
+    ).run(messageId, status, recipient || null, Date.now());
+    return Number(result.changes) > 0;
+  },
+};
+
+export type ApprovalStatus = 'pending' | 'approved' | 'denied';
+
+export interface Approval {
+  conversation_id: string;
+  code: string;
+  message_id?: string | null;
+  status: ApprovalStatus;
+  created_at: number;
+  resolved_at?: number | null;
+}
+
+export const approvals = {
+  get: (conversationId: string, code: string): Approval | undefined => {
+    return db.prepare(
+      'SELECT * FROM approvals WHERE conversation_id = ? AND code = ?'
+    ).get(conversationId, code) as Approval | undefined;
+  },
+
+  recordPending: (conversationId: string, code: string, messageId?: string): Approval => {
+    db.prepare(
+      'INSERT OR IGNORE INTO approvals (conversation_id, code, message_id, status, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(conversationId, code, messageId || null, 'pending', Date.now());
+    return approvals.get(conversationId, code) as Approval;
+  },
+
+  // Returns false when the code was already resolved.
+  resolve: (conversationId: string, code: string, status: 'approved' | 'denied'): boolean => {
+    const result = db.prepare(
+      "UPDATE approvals SET status = ?, resolved_at = ? WHERE conversation_id = ? AND code = ? AND status = 'pending'"
+    ).run(status, Date.now(), conversationId, code);
+    return Number(result.changes) > 0;
   },
 };
 
