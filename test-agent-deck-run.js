@@ -229,6 +229,29 @@ async function main() {
   const claudeArgv = deck.buildDeckRunStartCommand({ deck: 'planner', client: 'claude', cwd: '/repo/checkout', prompt: 'x' });
   assert(hasFlag(claudeArgv, '--client', 'claude'), 'unverified client still builds a valid adapter command');
 
+  // Directive anchoring regressions: only a line-start uppercase DECK with a
+  // known runtime routes through the adapter; prose and WAKE text fall
+  // through to the normal reply path.
+  log('\nDirective anchoring');
+  const directive = deck.parseDeckDirective('DECK codex: Implement the widget.');
+  assert(!!directive && directive.client === 'codex' && directive.task === 'Implement the widget.', 'line-start DECK codex parses with its task');
+  const multiline = deck.parseDeckDirective('One line of context.\nDECK muse: Do the thing.');
+  assert(!!multiline && multiline.client === 'muse' && multiline.task === 'Do the thing.', 'directive on a later line still parses');
+  assert(deck.parseDeckDirective('WAKE A: update the deck notes: finish it.') === null, 'WAKE text mentioning deck notes is not a directive');
+  assert(deck.parseDeckDirective('use the deck below: do the thing.') === null, 'deck-mentioning prose is not a directive');
+  assert(deck.parseDeckDirective('DECK gpt: do the thing.') === null, 'unknown runtime is not a directive');
+  assert(deck.parseDeckDirective('please deck codex: do the thing.') === null, 'lowercase deck is not a directive');
+  assert(deck.parseDeckDirective('DECK codex:') === null, 'empty task is not a directive');
+
+  // How-to text advertised to the model in the conversation loop.
+  log('\nDeck how-to');
+  const howToFallback = deck.formatDeckHowTo(null);
+  assert(howToFallback.includes('DECK <runtime>') && howToFallback.includes('codex'), 'how-to names the directive and the first verified path before any probe');
+  const howToVerified = deck.formatDeckHowTo(['codex']);
+  assert(howToVerified.includes('Verified launch paths right now: codex'), 'how-to advertises the probed launch path');
+  const howToUnknown = deck.formatDeckHowTo(['gpt']);
+  assert(howToUnknown.includes('Verified launch paths right now: codex'), 'how-to ignores unprobed runtime names');
+
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }

@@ -118,6 +118,8 @@ async function main() {
   assert(calls1.Origin === 3 && calls1.A === 1 && calls1.B === 1, `caller-managed sequence Origin->A, back, Origin->B, back, report (Origin=${calls1.Origin || 0}, A=${calls1.A || 0}, B=${calls1.B || 0})`);
   assert((seenBy.A || '').includes('delegated by @Origin'), 'A was told Origin delegated it');
   assert((seenBy.B || '').includes('delegated by @Origin'), 'B was told Origin delegated it');
+  assert((seenBy.A || '').includes('DECK <runtime>'), 'delegate prompt presents the DECK directive to the model');
+  assert((seenBy.A || '').includes('codex'), 'delegate prompt names the verified launch path');
   assert(queue.countPending(conv.id) === 0, 'queue drained after report');
 
   // Scenario 2: handoff beyond the depth constant is refused with a reason.
@@ -520,6 +522,63 @@ async function main() {
   );
   assert(!thread8.some(m => m.content.startsWith('[Deck resume]')), 'no resume observation after a fork');
   assert(!thread8.some(m => m.content.startsWith('[Deck result]')), 'no final result after a fork');
+
+  // Scenario 9: a deck failure before any run still returns to the caller.
+  // The folder names no deck, so resolveDeckForCwd throws; the [Deck
+  // failed] notice must land and the caller must still be re-enqueued to
+  // report, instead of stalling with its frame on the stack.
+  log('\nScenario 9: deck failure returns to the caller');
+  const emptyCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-deck-empty-'));
+  process.env.BOTMANCERS_DECK_CWD = emptyCwd;
+  const calls9 = {};
+  agent.setDelegationChatStub(ctx => {
+    calls9[ctx.botName] = (calls9[ctx.botName] || 0) + 1;
+    if (ctx.botName === 'Origin' && calls9.Origin === 1) return 'WAKE A: Please build the widget.';
+    if (ctx.botName === 'A') return 'DECK codex: Implement the widget.';
+    if (ctx.botName === 'Origin') return 'REPORT: deck unavailable, proceeding manually.';
+    return 'No response';
+  });
+  const user9 = messages.create(conv.id, 'user', 'Build the widget through the coding agent.');
+  queue.enqueue(conv.id, origin.id);
+  await drain();
+  delete process.env.BOTMANCERS_DECK_CWD;
+  try { fs.rmSync(emptyCwd, { recursive: true, force: true }); } catch { /* best effort */ }
+  const thread9 = chainAfter(conv.id, user9.id);
+  assert(thread9.some(m => m.content.startsWith('[Deck failed]')), 'missing deck posts [Deck failed]');
+  assert(
+    thread9.some(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('REPORT: deck unavailable')),
+    'caller still reports after the deck failure (caller-managed return)'
+  );
+  assert(queue.countPending(conv.id) === 0, 'queue drained after the failed deck delegation');
+
+  // Scenario 10: a WAKE handoff carrying deck-mentioning text is not
+  // hijacked. 'WAKE B: update the deck notes: ...' contains 'deck
+  // <word>:' but must route as a WAKE handoff, not a deck directive.
+  log('\nScenario 10: WAKE handoff mentioning the deck is not a directive');
+  const calls10 = {};
+  agent.setDelegationChatStub(ctx => {
+    calls10[ctx.botName] = (calls10[ctx.botName] || 0) + 1;
+    if (ctx.botName === 'Origin' && calls10.Origin === 1) return 'WAKE A: Please write the release note.';
+    if (ctx.botName === 'A' && calls10.A === 1) return 'WAKE B: update the deck notes: venue added.';
+    if (ctx.botName === 'B') return 'NOTED: deck notes updated.';
+    if (ctx.botName === 'A') return 'Done, notes updated.';
+    if (ctx.botName === 'Origin') return 'REPORT: note done.';
+    return 'No response';
+  });
+  const user10 = messages.create(conv.id, 'user', 'Write the release note.');
+  queue.enqueue(conv.id, origin.id);
+  await drain();
+  const thread10 = chainAfter(conv.id, user10.id);
+  assert(!thread10.some(m => m.content.startsWith('[Deck')), 'no deck observations for the deck-mentioning handoff');
+  assert(
+    thread10.some(m => m.sender_type === 'bot' && m.sender_id === botB.id && m.content.includes('NOTED: deck notes updated.')),
+    'WAKE handoff mentioning the deck still reaches its delegate'
+  );
+  assert(
+    thread10.some(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('REPORT: note done.')),
+    'caller still reports after the deck-mentioning handoff'
+  );
+  assert(queue.countPending(conv.id) === 0, 'queue drained after the deck-mentioning handoff');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

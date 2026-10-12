@@ -339,6 +339,25 @@ export async function listAvailableDeckRuntimes(): Promise<DeckRuntime[]> {
   return available;
 }
 
+// The DECK how-to presented to the model in the conversation loop, so a
+// real model-driven turn can emit the directive instead of only test stubs.
+// The verified list comes from the capability probe; before the first probe
+// completes the caller passes null and the text names codex, the first
+// verified launch path. Unverified runtimes stay valid targets but are
+// flagged as fail-closed when their launch path is missing.
+export function formatDeckHowTo(available: readonly string[] | null | undefined): string {
+  const verified = (available ?? []).filter((runtime): runtime is DeckRuntime =>
+    (DECK_RUNTIMES as readonly string[]).includes(runtime)
+  );
+  const verifiedText = verified.length > 0 ? verified.join(', ') : 'codex';
+  return [
+    'You can also hand implementation work to a local coding agent through agent-deck: put a DECK directive on its own line.',
+    '- DECK <runtime>: <task>  (runtimes: codex, claude, cursor, muse)',
+    `Verified launch paths right now: ${verifiedText}. An unverified runtime is still accepted but fails closed when its launch path is missing.`,
+    'The implementation run, a reviewer run, and a resume of the original coding session all post into this same thread; like any delegated reply, the result comes back to you and you report it.',
+  ].join('\n');
+}
+
 export interface DeckDelegationRequest {
   conversationId: string;
   botId: string;
@@ -497,13 +516,18 @@ export interface DeckDirective {
 }
 
 // A model-reply directive paralleling WAKE: `DECK <runtime>: <task>` routes
-// the turn through the deck adapter instead of another bot. The runtime
-// token is validated later by parseDeckRuntime (fail closed); this parser
-// only decides whether the reply carries a directive at all, so prose that
-// merely mentions a deck falls through to the normal reply path. Requires a
-// non-empty task: `run` needs exactly one of --prompt/--prompt-file.
+// the turn through the deck adapter instead of another bot. Anchored to a
+// line start, uppercase DECK only, and known runtime tokens only, so prose
+// that merely mentions a deck ('update the deck notes: ...', 'the deck
+// below: ...') and WAKE handoffs fall through to the normal reply path.
+// An unknown runtime is not a directive either: it stays a normal reply
+// (with the usual caller-managed return) instead of hijacking the turn.
+// Requires a non-empty task: `run` needs exactly one of
+// --prompt/--prompt-file.
+export const DECK_DIRECTIVE_PATTERN = /^DECK[ \t]+(codex|claude|cursor|muse)[ \t]*:[ \t]*(\S[\s\S]*)/m;
+
 export function parseDeckDirective(responseContent: string): DeckDirective | null {
-  const match = responseContent.match(/DECK\s+(\S+)\s*:\s*(\S[\s\S]*)/i);
+  const match = responseContent.match(DECK_DIRECTIVE_PATTERN);
   if (!match) return null;
   return { client: match[1], task: match[2].trim() };
 }
