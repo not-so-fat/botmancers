@@ -341,15 +341,17 @@ export async function listAvailableDeckRuntimes(): Promise<DeckRuntime[]> {
 
 // The DECK how-to presented to the model in the conversation loop, so a
 // real model-driven turn can emit the directive instead of only test stubs.
-// The verified list comes from the capability probe; before the first probe
-// completes the caller passes null and the text names codex, the first
-// verified launch path. Unverified runtimes stay valid targets but are
-// flagged as fail-closed when their launch path is missing.
+// The verified list comes from the capability probe and is reported as-is:
+// before the first probe completes the caller passes null, and an empty or
+// unknown-only probe result both render as 'none verified yet' — no runtime
+// is named until its launch path is actually verified. Unverified runtimes
+// stay valid targets but are flagged as fail-closed when their launch path
+// is missing.
 export function formatDeckHowTo(available: readonly string[] | null | undefined): string {
   const verified = (available ?? []).filter((runtime): runtime is DeckRuntime =>
     (DECK_RUNTIMES as readonly string[]).includes(runtime)
   );
-  const verifiedText = verified.length > 0 ? verified.join(', ') : 'codex';
+  const verifiedText = verified.length > 0 ? verified.join(', ') : 'none verified yet';
   return [
     'You can also hand implementation work to a local coding agent through agent-deck: put a DECK directive on its own line.',
     '- DECK <runtime>: <task>  (runtimes: codex, claude, cursor, muse)',

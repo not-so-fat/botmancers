@@ -80,10 +80,11 @@ export const DELEGATION_DEPTH_REASON =
   `[Delegation limit] Depth limit reached (max ${DELEGATION_MAX_DEPTH} handoffs). No further handoff.`;
 export const DELEGATION_BUDGET_REASON =
   `[Delegation limit] Budget limit reached (max ${DELEGATION_MAX_DELEGATED_TURNS} delegated turns per user message). No further delegated turn.`;
-// Capability-probe result advertised to the model in the DECK how-to. Seeded
-// with the first verified launch path and refreshed in the background once
-// the probe completes, so prompt construction stays synchronous and never
-// blocks a turn on `--version` checks. Tests override it directly.
+// Capability-probe result advertised to the model in the DECK how-to. Starts
+// unprobed (null) and refreshes in the background, so prompt construction
+// stays synchronous and never blocks a turn on `--version` checks. Until the
+// first probe completes the how-to reports 'none verified yet'; no runtime
+// is named before its launch path is verified. Tests override it directly.
 let cachedDeckRuntimes: string[] | null = null;
 
 export function setCachedDeckRuntimesForTests(runtimes: string[] | null): void {
@@ -1411,10 +1412,10 @@ async function processQueueItem(item: QueueItem) {
   }
 
   // Advertise the deck path to the model: without this, only test stubs ever
-  // emit DECK. Seeded with the first verified launch path; the background
-  // refresh replaces it with the actual probe result for later turns.
+  // emit DECK. The probe result is reported as-is: while it is still null
+  // the how-to says 'none verified yet', and the background refresh fills
+  // in the actual probed set for later turns.
   if (cachedDeckRuntimes === null) {
-    cachedDeckRuntimes = ['codex'];
     refreshCachedDeckRuntimes();
   }
   const deckHowTo = formatDeckHowTo(cachedDeckRuntimes);

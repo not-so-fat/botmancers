@@ -246,11 +246,13 @@ async function main() {
   // How-to text advertised to the model in the conversation loop.
   log('\nDeck how-to');
   const howToFallback = deck.formatDeckHowTo(null);
-  assert(howToFallback.includes('DECK <runtime>') && howToFallback.includes('codex'), 'how-to names the directive and the first verified path before any probe');
+  assert(howToFallback.includes('DECK <runtime>') && howToFallback.includes('none verified yet'), 'how-to names the directive and reports none verified before any probe');
+  const howToEmpty = deck.formatDeckHowTo([]);
+  assert(howToEmpty.includes('none verified yet'), 'how-to reports none verified on an empty probe');
   const howToVerified = deck.formatDeckHowTo(['codex']);
   assert(howToVerified.includes('Verified launch paths right now: codex'), 'how-to advertises the probed launch path');
   const howToUnknown = deck.formatDeckHowTo(['gpt']);
-  assert(howToUnknown.includes('Verified launch paths right now: codex'), 'how-to ignores unprobed runtime names');
+  assert(howToUnknown.includes('none verified yet'), 'how-to ignores unprobed runtime names and reports none verified');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
