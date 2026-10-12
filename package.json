@@ -19,6 +19,7 @@
     "test:ask-and-wait": "node test-ask-and-wait.js",
     "test:approvals": "node test-approvals.js",
     "test:artifacts": "node test-artifacts.js",
+    "test:group-semantics": "node test-group-semantics.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js"
   },
   "dependencies": {

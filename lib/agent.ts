@@ -1158,6 +1158,175 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
+  // In-group handoff (NOT-418): generalises the snapshot's single
+  // `@A hand this to B: reply with exactly the word W` template to any task:
+  // `@Source hand this to Target: <task>`. The source posts one
+  // `[Handing off to Target]` marker and enqueues the target through the
+  // same depth/budget accounting as WAKE; Stop stops it. Exactly-once:
+  // the source never re-posts/re-enqueues after its marker, and the target
+  // never replies twice for the same user message. Non-participants stay
+  // silent. Exact-word tasks (`reply with exactly the word W`) are answered
+  // deterministically like the snapshot; general tasks fall through to the
+  // model as a delegated turn.
+  if (!askResume && conversation.type === 'group' && latestUser && conversation.group_id) {
+    const handoff = parseGroupHandoff(latestUser.content);
+    if (handoff) {
+      const members = groups.getMembers(conversation.group_id);
+      const target = members.find(member => memberNamed(member, handoff.toName));
+      const isSource = userAddressedBot(latestUser, bot) && memberNamed(bot, handoff.fromName);
+      if (isSource) {
+        if (chain?.stopped) {
+          chainProcessQueue();
+          return;
+        }
+        if (!target || target.id === bot.id) {
+          chainProcessQueue();
+          return;
+        }
+        if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
+          const alreadyRefused = conversationMessages.some(msg =>
+            msg.sender_type === 'bot' &&
+            msg.sender_id === bot.id &&
+            msg.created_at > latestUser.created_at &&
+            msg.content === DELEGATION_DEPTH_REASON
+          );
+          if (!alreadyRefused) {
+            messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
+          }
+          chainProcessQueue();
+          return;
+        }
+        if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
+          const alreadyRefused = conversationMessages.some(msg =>
+            msg.sender_type === 'bot' &&
+            msg.sender_id === bot.id &&
+            msg.created_at > latestUser.created_at &&
+            msg.content === DELEGATION_BUDGET_REASON
+          );
+          if (!alreadyRefused) {
+            messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+          }
+          queue.cancelPending(item.conversation_id);
+          chainProcessQueue();
+          return;
+        }
+        const alreadyPassed = conversationMessages.some(msg =>
+          msg.sender_type === 'bot' &&
+          msg.sender_id === bot.id &&
+          msg.created_at > latestUser.created_at &&
+          msg.content.startsWith(`[Handing off to ${target.name}]`)
+        );
+        if (!alreadyPassed) {
+          messages.create(
+            item.conversation_id,
+            'bot',
+            `[Handing off to ${target.name}]\n${handoff.task}`,
+            bot.id
+          );
+          queue.enqueue(item.conversation_id, target.id);
+          if (chain) chain.handoffs += 1;
+          chainProcessQueue();
+          return;
+        }
+        // Already passed: a later WAKE to the source is answered once via the
+        // model (so a handoff loop still runs under the depth limit); a plain
+        // rerun without a WAKE stays silent.
+        if (delegatedTurn(conversationMessages, bot.name)) {
+          const wakeAt = Math.max(
+            0,
+            ...conversationMessages
+              .filter(msg =>
+                msg.sender_type === 'bot' &&
+                msg.created_at > latestUser.created_at &&
+                msg.content.includes(`[Handing off to ${bot.name}]`)
+              )
+              .map(msg => msg.created_at)
+          );
+          const alreadyAnsweredWake = conversationMessages.some(msg =>
+            msg.sender_type === 'bot' &&
+            msg.sender_id === bot.id &&
+            msg.created_at > wakeAt
+          );
+          if (alreadyAnsweredWake) {
+            chainProcessQueue();
+            return;
+          }
+          // Else fall through to the model (do not return, do not consume).
+        } else {
+          chainProcessQueue();
+          return;
+        }
+      } else if (target && bot.id === target.id) {
+        if (chain?.stopped) {
+          chainProcessQueue();
+          return;
+        }
+        const markerExists = conversationMessages.some(msg =>
+          msg.sender_type === 'bot' &&
+          !!msg.sender_id &&
+          msg.sender_id !== bot.id &&
+          msg.created_at > latestUser.created_at &&
+          msg.content.startsWith(`[Handing off to ${bot.name}]`)
+        );
+        if (!markerExists) {
+          chainProcessQueue();
+          return;
+        }
+        const exactTask = exactWordAsk(handoff.task);
+        if (exactTask && (!exactTask.named || memberNamed(bot, exactTask.named))) {
+          const alreadyReplied = conversationMessages.some(msg =>
+            msg.sender_type === 'bot' &&
+            msg.sender_id === bot.id &&
+            msg.created_at > latestUser.created_at &&
+            msg.content.trim() === exactTask.word
+          );
+          if (alreadyReplied) {
+            chainProcessQueue();
+            return;
+          }
+          if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
+            messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+            queue.cancelPending(item.conversation_id);
+            chainProcessQueue();
+            return;
+          }
+          messages.create(item.conversation_id, 'bot', exactTask.word, bot.id);
+          if (chain) chain.turns += 1;
+          chainProcessQueue();
+          return;
+        }
+        // General task: fall through to the model as a delegated turn, once
+        // per handoff marker. A plain rerun without a new WAKE stays silent,
+        // while a later WAKE to the target is answered (so a handoff loop
+        // still runs under the depth limit).
+        const wakeAt = Math.max(
+          0,
+          ...conversationMessages
+            .filter(msg =>
+              msg.sender_type === 'bot' &&
+              msg.created_at > latestUser.created_at &&
+              msg.content.includes(`[Handing off to ${bot.name}]`)
+            )
+            .map(msg => msg.created_at)
+        );
+        const alreadyRepliedToWake = conversationMessages.some(msg =>
+          msg.sender_type === 'bot' &&
+          msg.sender_id === bot.id &&
+          msg.created_at > wakeAt
+        );
+        if (alreadyRepliedToWake) {
+          chainProcessQueue();
+          return;
+        }
+        // Fall through (do not return): delegatedTurn is true via the marker,
+        // so the open-group suppression does not apply.
+      } else {
+        chainProcessQueue();
+        return;
+      }
+    }
+  }
+
   if (openGroupTurn && latestUser && conversation.group_id) {
     const ask = exactWordAsk(latestUser.content);
     if (ask) {
@@ -1657,6 +1826,7 @@ function cannedGroupHandoff(text: string): boolean {
 }
 
 function exactWordAsk(text: string): { word: string; named: string | null } | null {
+  if (parseGroupHandoff(text)) return null;
   const trimmed = text.trim().replace(/[.!\s]+$/, '');
   const match = trimmed.match(/^(?:(.+?),\s*)?reply with exactly the (?:word|token)\s+(\S+)$/i);
   if (!match) return null;
@@ -1664,6 +1834,20 @@ function exactWordAsk(text: string): { word: string; named: string | null } | nu
   if (!word) return null;
   const named = match[1] ? match[1].trim() : null;
   return { word, named: named || null };
+}
+
+// General in-group handoff (NOT-418): `@Source hand this to Target: <task>`
+// with `hand off to` / `pass this to` variants. The snapshot's
+// `@A hand this to B: reply with exactly the word W` is one task shape.
+export function parseGroupHandoff(text: string): { fromName: string; toName: string; task: string } | null {
+  const trimmed = text.trim().replace(/[.!\s]+$/, '');
+  const match = trimmed.match(/^@(\S+)\s+(?:hand this to|hand off to|pass this to)\s+(.+?):\s*(.+)$/i);
+  if (!match) return null;
+  const fromName = match[1].replace(/^[`"'"]+|[`"'"]+$/g, '').trim();
+  const toName = match[2].trim().replace(/^[`"'"]+|[`"'"]+$/g, '').trim();
+  const task = match[3].trim();
+  if (!fromName || !toName || !task) return null;
+  return { fromName, toName, task };
 }
 
 function memberNamed(bot: { name: string; title: string }, named: string): boolean {
