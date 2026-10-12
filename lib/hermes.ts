@@ -11,8 +11,9 @@
 // - HERMES_BASE_URL: gateway origin. Defaults to the documented constant.
 // - HERMES_TIMEOUT_MS: per-request timeout. Defaults to 240000.
 // - HERMES_SESSION_PREFIX: session-id prefix. Defaults to the constant.
-// - HERMES_PROFILE_PATH: single profile path for every bot. Unset means the
-//   path is derived per bot from its role (title slug).
+// Per-bot profile: the bots.hermes_profile setting. A bot without an explicit
+// profile uses the root chat path; a bot with one uses /p/<profile>/.... The
+// profile is never derived from name, title or role.
 // - HERMES_MODEL: model name sent in the chat body. Defaults to 'hermes'.
 // - HERMES_WAIT_LOG_PATH: wait-log file. Defaults to the .temporal JSONL log.
 
@@ -100,16 +101,17 @@ function slugify(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-// Per-bot profile path, derived from the bot's role (title slug) or name.
-// Never a UUID: slugs come from human-readable settings only. A global
-// HERMES_PROFILE_PATH override wins when set.
-export function hermesProfilePathForBot(
-  bot: { name: string; title: string },
-  env: NodeJS.ProcessEnv = process.env
-): string {
-  const override = (env.HERMES_PROFILE_PATH || '').trim();
-  if (override) return override.startsWith('/') ? override : `/${override}`;
-  const slug = slugify(bot.title || '') || slugify(bot.name || '');
+// Chat path for one bot. Root by default; /p/<profile>/... only when the bot
+// explicitly declares a hermes_profile. Never derived from name or title,
+// never a UUID.
+export function hermesProfilePathForBot(bot: {
+  name: string;
+  title: string;
+  hermes_profile?: string | null;
+}): string {
+  const declared = (bot.hermes_profile || '').trim();
+  if (!declared) return HERMES_DEFAULT_CHAT_PATH;
+  const slug = slugify(declared);
   if (!slug) return HERMES_DEFAULT_CHAT_PATH;
   return `/p/${slug}${HERMES_DEFAULT_CHAT_PATH}`;
 }
@@ -180,21 +182,30 @@ export async function hermesChat(args: {
       throw new HermesError('network', `Hermes request failed: ${String(error)}`);
     }
 
-    let payload: {
-      choices?: { message?: { content?: string } }[];
-      error?: { message?: string };
-    };
+    // Read the body as text first so a non-JSON error page (404/502 HTML
+    // from a misrouted profile path) still reports its HTTP status.
+    let raw = '';
     try {
-      payload = (await response.json()) as typeof payload;
+      raw = await response.text();
     } catch {
-      throw new HermesError('protocol', 'Hermes reply was not JSON');
+      raw = '';
     }
     if (!response.ok) {
-      throw new HermesError(
-        'http',
-        payload.error?.message || `Hermes turn failed with status ${response.status}`,
-        response.status
-      );
+      let detail = `Hermes turn failed with status ${response.status}`;
+      try {
+        const payload = JSON.parse(raw) as { error?: { message?: string } };
+        if (payload?.error?.message) detail = payload.error.message;
+      } catch {
+        const snippet = raw.trim().slice(0, 120);
+        if (snippet) detail = `${detail}: ${snippet}`;
+      }
+      throw new HermesError('http', detail, response.status);
+    }
+    let payload: { choices?: { message?: { content?: string } }[] };
+    try {
+      payload = JSON.parse(raw) as typeof payload;
+    } catch {
+      throw new HermesError('protocol', 'Hermes reply was not JSON', response.status);
     }
     const reply = payload.choices?.[0]?.message?.content?.trim();
     return reply || 'No response';

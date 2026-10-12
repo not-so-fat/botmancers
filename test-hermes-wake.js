@@ -8,7 +8,9 @@
 // Covers: session header sent, two pokes overlap in time, failed poke marks
 // the queue row failed and logs wait_failed, Stop aborts, no key falls back
 // to main's path, reply appears once per thread, a paraphrased wake message
-// also works.
+// also works, and an explicit per-bot profile routes to /p/<profile>/....
+// Bots without an explicit profile use the root chat path; profiles are never
+// derived from name, title or role.
 'use strict';
 
 const fs = require('fs');
@@ -28,7 +30,6 @@ const WAIT_LOG = path.join(os.tmpdir(), `botmancers-hermes-waits-${process.pid}.
 try { fs.rmSync(WAIT_LOG, { force: true }); } catch { /* fresh start */ }
 process.env.HERMES_WAIT_LOG_PATH = WAIT_LOG;
 process.env.HERMES_API_SERVER_KEY = 'test-key';
-delete process.env.HERMES_PROFILE_PATH;
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
@@ -161,12 +162,13 @@ async function main() {
   const origin = bots.create({ name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
   const botA = bots.create({ name: 'A', title: 'Drafter', description: 'Drafts.' });
   const botB = bots.create({ name: 'B', title: 'Checker', description: 'Checks drafts.' });
+  const chief = bots.create({ name: 'Chief', title: 'Chief of staff', description: 'Coordinates.', hermes_profile: 'cos' });
   const conv = conversations.getByBotId(origin.id);
   const convA = conversations.getByBotId(botA.id);
   const convB = conversations.getByBotId(botB.id);
   assert(!!conv && !!convA && !!convB, 'origin and specialist threads exist');
 
-  const gateway = await startStubGateway({ [botA.id]: 'A', [botB.id]: 'B' });
+  const gateway = await startStubGateway({ [botA.id]: 'A', [botB.id]: 'B', [chief.id]: 'Chief' });
   process.env.HERMES_BASE_URL = gateway.baseUrl;
   log(`Stub gateway: ${gateway.baseUrl}`);
 
@@ -180,9 +182,18 @@ async function main() {
   );
   const sessionA = hermes.hermesSessionIdForBot(botA.id, hermes.loadHermesConfig());
   assert(sessionA.endsWith(botA.id) && sessionA.length > botA.id.length, 'session id carries the bot id with a prefix');
+  const rootPath = hermes.HERMES_DEFAULT_CHAT_PATH;
   const profileA = hermes.hermesProfilePathForBot(botA);
-  assert(!profileA.includes(botA.id), `profile path derived from role, never a UUID (${profileA})`);
-  assert(profileA.includes('drafter'), `profile path reflects the role (${profileA})`);
+  assert(profileA === rootPath, `no explicit profile means the root path (${profileA})`);
+  const profileB = hermes.hermesProfilePathForBot(botB);
+  assert(profileB === rootPath, `role titles never become profiles (${profileB})`);
+  const profileChief = hermes.hermesProfilePathForBot(chief);
+  assert(profileChief === `/p/cos${rootPath}`, `explicit profile routes to /p/<profile>/... (${profileChief})`);
+  assert(!profileChief.includes(chief.id), 'profile path never carries a UUID');
+  bots.setHermesProfile(chief.id, null);
+  const cleared = hermes.hermesProfilePathForBot(bots.getById(chief.id));
+  assert(cleared === rootPath, 'clearing the profile restores the root path');
+  bots.setHermesProfile(chief.id, 'cos');
 
   // Scenario 1: one message WAKEs two specialists concurrently.
   log('\nScenario 1: two concurrent pokes, distinct sessions, once per thread');
@@ -211,6 +222,7 @@ async function main() {
   );
   assert(new Set(sessions).size === 2, 'session ids are distinct per specialist');
   assert(seen.every(r => r.auth === 'Bearer test-key'), 'Bearer key sent on both pokes');
+  assert(seen.every(r => r.path === rootPath), `specialist pokes use the root path (got ${seen.map(r => r.path).join(', ')})`);
   assert(seen.every(r => !String(r.path).includes(botA.id) && !String(r.path).includes(botB.id)), 'profile paths carry no UUID');
   assert(gateway.maxInFlight() >= 2, `two pokes overlap in time (max in-flight ${gateway.maxInFlight()})`);
 
@@ -396,6 +408,41 @@ async function main() {
     reply: replyMsg6 ? replyMsg6.content : '',
   });
   assert(retry.callerMessageId === null && retry.targetMessageId === null, 'retried mirror of the same round posts nothing');
+
+  // Scenario 7: a bot with an explicit profile is poked on its profile path,
+  // while specialists without one stay on the root path.
+  log('\nScenario 7: explicit profile pokes /p/<profile>/...');
+  gateway.state.requests.length = 0;
+  let originCalls7 = 0;
+  agent.setDelegationChatStub(ctx => {
+    if (ctx.botName === 'Origin') {
+      originCalls7++;
+      if (originCalls7 === 1) return 'WAKE Chief: Please coordinate the launch.';
+      return 'REPORT: Chief coordinated.';
+    }
+    return 'unused';
+  });
+  const user7 = messages.create(conv.id, 'user', 'Ask the chief to coordinate the launch.');
+  queue.enqueue(conv.id, origin.id);
+  await drain();
+
+  const seen7 = gateway.state.requests;
+  assert(seen7.length === 1, `one gateway request for the profiled bot (got ${seen7.length})`);
+  assert(
+    seen7.length === 1 && seen7[0].path === `/p/cos${rootPath}`,
+    `explicit profile pokes /p/cos/... (got ${seen7[0] && seen7[0].path})`
+  );
+  assert(
+    seen7.length === 1 && String(seen7[0].sessionId).endsWith(chief.id),
+    'profiled poke carries its specialist session id'
+  );
+  const thread7 = chainAfter(conv.id, user7.id);
+  assert(countIn(thread7, chief.id, 'GATEWAY-REPLY from Chief') === 1, "chief's reply appears once in the caller thread");
+  assert(countIn(thread7, origin.id, 'REPORT:') === 1, 'profiled wake: report posted');
+  assert(
+    launchSnapshots.listByBot(chief.id).some(s => s.transport === 'hermes-gateway'),
+    "chief's launch snapshot records hermes-gateway"
+  );
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
