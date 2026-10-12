@@ -101,9 +101,11 @@ export async function POST(
       for (const member of members) enqueueBot(id, member.id);
     }
 
-    // Per-bot memory (NOT-411): a direct thread teaches its own bot.
-    // Learning never breaks sending.
-    if (conversation.type === 'bot' && conversation.bot_id) {
+    // Per-bot memory (NOT-411): a direct thread teaches its own bot, unless
+    // the message addresses another bot or carries a WAKE handoff (reference
+    // guard). Learning never breaks sending.
+    const wakeLineCount = String(content).split(/\r?\n/).filter(line => /WAKE\s+\w+\s*:/.test(line)).length;
+    if (conversation.type === 'bot' && conversation.bot_id && handoffIds.length === 0 && wakeLineCount < 2) {
       try {
         memories.rememberStatement(conversation.bot_id, String(content));
       } catch (error) {
