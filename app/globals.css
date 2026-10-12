@@ -1084,3 +1084,166 @@ button.thread-name {
 .computer-dock img:nth-child(3) {
   height: 32px;
 }
+
+/* Per-bot config page (NOT-412): same dark tokens as the home page. */
+.cfg-page {
+  min-height: 100vh;
+  background: var(--field);
+  color: var(--ink);
+  font-family: var(--chrome);
+  padding: 16px;
+}
+
+@media (min-width: 640px) {
+  .cfg-page {
+    padding: 24px;
+  }
+}
+
+.cfg-card {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.cfg-title {
+  font-family: var(--chrome);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.cfg-muted {
+  color: var(--ink);
+  opacity: 0.7;
+}
+
+.cfg-faint {
+  color: var(--ink);
+  opacity: 0.5;
+}
+
+.cfg-link {
+  font-family: var(--chrome);
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+a.cfg-link:hover,
+button.cfg-link:hover {
+  text-decoration: underline;
+}
+
+.cfg-code {
+  font-family: var(--mono);
+  color: var(--ink);
+}
+
+.cfg-pre {
+  background: var(--composer);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 12px;
+  font-family: var(--mono);
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.cfg-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--composer);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  color: var(--ink);
+  outline: none;
+}
+
+.cfg-input:focus {
+  border-color: var(--accent);
+}
+
+.cfg-btn-primary {
+  font-family: var(--chrome);
+  background: var(--accent);
+  color: var(--ink-on-accent);
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.cfg-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cfg-btn-ghost {
+  font-family: var(--chrome);
+  background: var(--field);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.cfg-btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cfg-row {
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.cfg-line {
+  border-color: var(--hairline);
+}
+
+.cfg-dirty {
+  color: #e0a83e;
+}
+
+.cfg-dot-amber {
+  background: #f59e0b;
+}
+
+.cfg-error {
+  color: #f08080;
+}
+
+.cfg-ok {
+  color: #2ebd4e;
+}
+
+.cfg-skel {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+}
+
+.cfg-avatar {
+  border-radius: 9999px;
+  object-fit: cover;
+}
+
+.cfg-chevron {
+  color: var(--ink);
+  opacity: 0.5;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.cfg-chevron:hover {
+  opacity: 1;
+}
