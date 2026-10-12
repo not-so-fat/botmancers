@@ -7,3 +7,5 @@ botmancers.db-wal
 .env
 *.log
 .temporal
+tsconfig.tsbuildinfo
+*.tsbuildinfo
