@@ -124,12 +124,15 @@ string verbatim in the same inline slot.
   unavailable state — no fake option is rendered:
   `No coding runtimes verified on this machine yet. The bot will still
   chat via Hermes; add a coding path later from Config once a runtime is
-  installed.` Create stays enabled and submits without a coding path
-  and with `launchable` omitted (an unconfigured bot; see legacy state
-  below).
+  installed.` Create stays enabled and submits without a coding path:
+  the request carries no `coding_runtime`, `deck_name`, or
+  `working_directory` keys and `launchable` is omitted, so nothing
+  partial is stored — the bot is created fully unconfigured (all three
+  null; see legacy state below), even if deck/directory text was typed
+  before the probe resolved.
 - **Load error**: `Couldn't check coding runtimes. Retry.` with a Retry
-  button that re-fetches. Create stays enabled and submits without a
-  coding path and with `launchable` omitted.
+  button that re-fetches. Create stays enabled and submits the same
+  fully-unconfigured body (all three coding keys omitted).
 
 ### Annotated New Bot reference (desktop modal, 1440x900)
 
@@ -156,10 +159,11 @@ Ready state (one or more runtimes verified):
 Loading state: the coding-runtime slot reads `Checking available
 runtimes…` (disabled), and Create is disabled. Empty state: the picker
 slot reads the `No coding runtimes verified…` note above, deck and
-directory inputs stay editable, and Create submits an unconfigured bot.
-Load-error state: the picker slot reads `Couldn't check coding
-runtimes.` with a `Retry` button; Create stays enabled (unconfigured
-submit). Validation errors render inline above Create with typed values
+directory inputs stay editable, but Create omits all three coding keys
+(fully unconfigured submit — typed deck/directory text is discarded, not
+stored). Load-error state: the picker slot reads `Couldn't check coding
+runtimes.` with a `Retry` button; Create stays enabled (same
+omit-all-three submit). Validation errors render inline above Create with typed values
 preserved.
 
 ### Annotated New Bot reference (narrow, 390x800)
@@ -208,12 +212,16 @@ same 12px de-emphasised style as `.bot-preview`:
   coding-runtime enum directly, and an unverified runtime never appears
   as a fresh selectable option anywhere.
 
-The "Config" affordance in the unconfigured and unverified lines is the
-row's own click (which already opens `/bots/[id]/config`): it is not a
-nested link. No inner `<a>` or `<button>` is rendered inside the
-clickable row, so no `stopPropagation` or extra tab stop is needed —
-the whole row is one tab stop with the existing row key handler, and
-focus order is unchanged.
+The "Config" wording in the unconfigured and unverified lines is
+non-interactive text, not a control: the roster row's own click already
+opens the conversation (`openBot(bot.id)` in `app/page.tsx:811`), and
+rows are non-focusable `div`s with no `tabIndex` or key handler, so this
+spec adds no row click target, no tab stop, and no key handling.
+Config is reached through the existing thread-bar Config link
+(`app/page.tsx:966`, `Link` to `/bots/[id]/config`), which is visible
+once the bot's conversation is open. No inner `<a>` or `<button>` is
+rendered inside the row, so no `stopPropagation` is needed and focus
+order is unchanged.
 
 ### Annotated roster reference (desktop rail, 1440x900)
 
@@ -227,14 +235,15 @@ focus order is unchanged.
 │ welcome aboard           │
 │ Chat: Hermes             │
 │ Code: not set —          │  ← honest unconfigured state;
-│   add it in Config.      │     whole row opens /bots/[id]/config
-│                          │
+│   add it in Config.      │     plain text; row click still
+│                          │     opens the conversation
 │ Stale Bot                │  ← stored-but-unverified row
 │ old thread preview       │
 │ Chat: Hermes             │
 │ Code: codex · planner    │  ← stored path still shown…
-│   (not verified —        │  ← …with the unverified marker;
-│   see Config).           │     whole row opens /bots/[id]/config
+│   (not verified —        │  ← …with the unverified marker
+│   see Config).           │     (plain text); row click still
+│                          │     opens the conversation
 ```
 
 ### Annotated roster reference (narrow, 390x800)
@@ -491,8 +500,11 @@ provenance (`GET /api/import-capabilities`), group threads, avatar editing.
 2. `app/page.tsx` — roster rows: add the two-line `Chat:`/`Code:` sub-line
    (configured, unconfigured, stored-but-unverified, and truncation rules
    above). The roster reads the availability payload only for the
-   verified/unverified marker. The Config affordance is the row's own
-   click — no nested link, no `stopPropagation`, no extra tab stop.
+   verified/unverified marker. The "Config" wording in those lines is
+   non-interactive text — do not touch row navigation (`openBot`,
+   `app/page.tsx:811`), add no nested link, no `stopPropagation`, no
+   `tabIndex`, and no key handler. Config stays reachable through the
+   existing thread-bar Config link (`app/page.tsx:966`).
 3. `app/page.tsx` — thread (if needed): monospace styling hook for lines
    starting with `[Deck `; no new controls. Thread events render the
    effective launch values verbatim (directive runtime, cwd-resolved
