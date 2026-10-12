@@ -1,16 +1,21 @@
 #!/usr/bin/env node
-// NOT-413: Hermes gateway wake path (one gateway, specialists wait inside it).
+// NOT-413 Hermes gateway wake path plus NOT-434 Hermes default persistent
+// runtime (one gateway, specialists wait inside it; ordinary turns run on
+// the bot's Hermes session by default).
 //
 // Self-contained: isolated SQLite file, stub gateway HTTP server on an
 // ephemeral port, deterministic caller stub at the model-call boundary.
 // No dev server, no API key, no network beyond loopback.
 //
 // Covers: session header sent, two pokes overlap in time, failed poke marks
-// the queue row failed and logs wait_failed, Stop aborts, no key falls back
-// to main's path, reply appears once per thread, a paraphrased wake message
-// also works, and an explicit per-bot profile routes to /p/<profile>/....
-// Bots without an explicit profile use the root chat path; profiles are never
-// derived from name, title or role.
+// the queue row failed and logs wait_failed, Stop aborts, missing or
+// unreachable Hermes configuration posts a visible Hermes error with no
+// OpenAI-compatible fallback, a newly created bot defaults to Hermes for
+// its ordinary turn with a stable per-bot session id, a delegated coding
+// run stays a separate Agent Deck session, reply appears once per thread,
+// a paraphrased wake message also works, and an explicit per-bot profile
+// routes to /p/<profile>/.... Bots without an explicit profile use the
+// root chat path; profiles are never derived from name, title or role.
 'use strict';
 
 const fs = require('fs');
@@ -38,6 +43,7 @@ const agent = jiti('./lib/agent.ts');
 const hermes = jiti('./lib/hermes.ts');
 
 const { bots, conversations, messages, queue, launchSnapshots } = db;
+const deckRun = jiti('./lib/agent-deck-run.ts');
 
 let failures = 0;
 
@@ -85,72 +91,96 @@ function countIn(thread, senderId, snippet) {
 
 // Stub gateway: records every request, overlaps in time under concurrency,
 // fails tasks containing FAIL, and answers per specialist by session id.
+//
+// Implemented as a global fetch interceptor (no loopback listener: listen()
+// is unavailable in this sandbox). hermesChat calls global fetch by default,
+// so every gateway poke and ordinary Hermes turn lands here. A base URL
+// outside the stub host simulates an unreachable gateway by throwing, so
+// the unreachable fixture needs no network either.
 function startStubGateway(botNameById) {
   const requests = [];
   let inFlight = 0;
   let maxInFlight = 0;
   const state = { delayMs: 120, requests };
+  const baseUrl = 'http://stub-hermes.test';
+  const originalFetch = globalThis.fetch;
 
-  const server = http.createServer((req, res) => {
-    if (req.method !== 'POST') {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'not found' } }));
-      return;
+  async function stubFetch(url, init = {}) {
+    const parsed = new URL(String(url));
+    if (parsed.origin !== baseUrl) {
+      throw new Error(`fetch failed: ${parsed.host} unreachable (stub)`);
     }
-    let raw = '';
-    req.on('data', chunk => { raw += chunk; });
-    req.on('end', () => {
-      const startedAt = Date.now();
-      inFlight++;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      let body = null;
-      try { body = JSON.parse(raw); } catch { body = null; }
-      const record = {
-        path: req.url,
-        sessionId: req.headers['x-hermes-session-id'] || null,
-        auth: req.headers.authorization || null,
-        body,
-        startedAt,
-        finishedAt: null,
-      };
-      requests.push(record);
-      const task = (body && body.messages || []).map(m => m.content).join('\n');
-      const fail = task.includes('FAIL');
-      setTimeout(() => {
-        inFlight--;
-        record.finishedAt = Date.now();
-        try {
-          if (fail) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: 'stub failure' } }));
-            return;
-          }
-          const sessionId = String(record.sessionId || '');
-          const botId = Object.keys(botNameById).find(id => sessionId.endsWith(id));
-          const name = (botId && botNameById[botId]) || 'specialist';
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            choices: [{ message: { content: `GATEWAY-REPLY from ${name}: done.` } }],
-          }));
-        } catch {
-          // Client aborted (Stop test); nothing to send back to.
+    const startedAt = Date.now();
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    const headers = init.headers || {};
+    let body = null;
+    try { body = JSON.parse(init.body); } catch { body = null; }
+    const record = {
+      path: parsed.pathname,
+      sessionId: headers['X-Hermes-Session-Id'] || headers['x-hermes-session-id'] || null,
+      auth: headers.Authorization || headers.authorization || null,
+      body,
+      startedAt,
+      finishedAt: null,
+    };
+    requests.push(record);
+    const task = (body && body.messages || []).map(m => m.content).join('\n');
+    const fail = task.includes('FAIL');
+    const signal = init.signal;
+    try {
+      await new Promise((resolve, reject) => {
+        if (signal && signal.aborted) {
+          const early = new Error('This operation was aborted');
+          early.name = 'AbortError';
+          reject(early);
+          return;
         }
-      }, state.delayMs);
-    });
-  });
-
-  return new Promise((resolve, reject) => {
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      resolve({
-        server, state,
-        baseUrl: `http://127.0.0.1:${port}`,
-        maxInFlight: () => maxInFlight,
-        resetOverlap: () => { maxInFlight = inFlight; },
+        const timer = setTimeout(resolve, state.delayMs);
+        const onAbort = () => {
+          clearTimeout(timer);
+          const aborted = new Error('This operation was aborted');
+          aborted.name = 'AbortError';
+          reject(aborted);
+        };
+        if (signal) {
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
       });
-    });
-  });
+    } catch (error) {
+      inFlight--;
+      record.finishedAt = Date.now();
+      throw error;
+    }
+    inFlight--;
+    record.finishedAt = Date.now();
+    if (fail) {
+      return {
+        ok: false,
+        status: 500,
+        text: async () => JSON.stringify({ error: { message: 'stub failure' } }),
+      };
+    }
+    const sessionId = String(record.sessionId || '');
+    const botId = Object.keys(botNameById).find(id => sessionId.endsWith(id));
+    const name = (botId && botNameById[botId]) || 'specialist';
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: `GATEWAY-REPLY from ${name}: done.` } }],
+      }),
+    };
+  }
+
+  globalThis.fetch = stubFetch;
+  return {
+    server: null, state,
+    baseUrl,
+    maxInFlight: () => maxInFlight,
+    resetOverlap: () => { maxInFlight = inFlight; },
+    restore: () => { globalThis.fetch = originalFetch; },
+  };
 }
 
 async function main() {
@@ -250,8 +280,8 @@ async function main() {
   assert(snapA.some(s => s.transport === 'hermes-gateway'), "A's launch snapshot records hermes-gateway");
   assert(snapB.some(s => s.transport === 'hermes-gateway'), "B's launch snapshot records hermes-gateway");
   assert(
-    launchSnapshots.listByBot(origin.id).some(s => s.transport === 'openai'),
-    "caller's own turn still records the main transport"
+    launchSnapshots.listByBot(origin.id).some(s => s.transport === 'hermes-gateway'),
+    "caller's own turn records hermes-gateway as the persistent transport (NOT-434)"
   );
   const delegation = agent.getDelegationState(conv.id);
   assert(!!delegation && delegation.handoffs === 2, `each poke counts a handoff (got ${delegation && delegation.handoffs})`);
@@ -324,30 +354,57 @@ async function main() {
   assert(countIn(thread3, botB.id, 'GATEWAY-REPLY') === 0, 'no late B reply after Stop');
   assert(queue.countPending(conv.id) === 0, 'caller return suppressed after Stop');
 
-  // Scenario 4: no key falls back to main's existing path.
-  log('\nScenario 4: no key falls back');
-  delete process.env.HERMES_API_SERVER_KEY;
-  gateway.state.requests.length = 0;
-  const stubTurns = {};
-  agent.setDelegationChatStub(ctx => {
-    stubTurns[ctx.botName] = (stubTurns[ctx.botName] || 0) + 1;
-    if (ctx.botName === 'Origin' && stubTurns.Origin === 1) return 'WAKE A: Please draft the launch note.';
-    if (ctx.botName === 'Origin' && stubTurns.Origin === 2) return 'WAKE B: Please check this draft: Launch Friday at 9am.';
-    if (ctx.botName === 'Origin') return 'REPORT: A draft: Launch Friday at 9am. B check: add the venue. Done.';
-    if (ctx.botName === 'A') return 'DRAFT from A: Launch Friday at 9am.';
-    if (ctx.botName === 'B') return 'CHECK from B: Looks good; add the venue.';
-    return 'No response';
-  });
-  const user4 = messages.create(conv.id, 'user', 'Get A to draft the launch note and B to check it.');
-  queue.enqueue(conv.id, origin.id);
-  await drain();
+  // Scenario 4 (NOT-434): missing or unreachable Hermes configuration posts
+  // a visible Hermes error and never falls back to the embedded
+  // OpenAI-compatible loop. No stub is set here, so any fallback would
+  // have to go through the real OpenAI path; the fallback-attempt counter
+  // proves it never does.
+  log('\nScenario 4: Hermes failure fixtures (absent and unreachable), no fallback');
+  agent.setDelegationChatStub(null);
+  agent.resetOpenAIFallbackAttemptsForTests();
+  const failBot = bots.create({ name: 'FailBot', title: 'Failure probe', description: 'Probes Hermes failure behavior.' });
+  const failConv = conversations.getByBotId(failBot.id);
+  assert(!!failConv, 'failure-probe thread exists');
 
-  assert(gateway.state.requests.length === 0, 'no gateway request without a key');
-  assert(stubTurns.A === 1 && stubTurns.B === 1, `specialists served by main's path (A=${stubTurns.A || 0}, B=${stubTurns.B || 0})`);
-  const thread4 = chainAfter(conv.id, user4.id);
-  assert(countIn(thread4, botA.id, 'DRAFT from A') === 1, 'fallback draft posted once');
-  assert(countIn(thread4, botB.id, 'CHECK from B') === 1, 'fallback check posted once');
-  assert(countIn(thread4, origin.id, 'REPORT:') === 1, 'fallback report posted once');
+  // Fixture 1 (absent): no key at all, with an OpenAI key present so a
+  // fallback would have credentials to call.
+  delete process.env.HERMES_API_SERVER_KEY;
+  process.env.OPENAI_API_KEY = 'test-key-present';
+  agent.resetOpenAIFallbackAttemptsForTests();
+  gateway.state.requests.length = 0;
+  const user4a = messages.create(failConv.id, 'user', 'Hello with no Hermes key configured.');
+  queue.enqueue(failConv.id, failBot.id);
+  await drain();
+  const thread4a = chainAfter(failConv.id, user4a.id);
+  assert(
+    thread4a.some(m => m.sender_type === 'bot' && m.sender_id === failBot.id && m.content.includes('Hermes configuration missing')),
+    'failure fixture absent-key posts the visible Hermes configuration message'
+  );
+  assert(gateway.state.requests.length === 0, 'failure fixture absent-key sends no gateway request');
+  assert(agent.getOpenAIFallbackAttemptsForTests() === 0, 'failure fixture absent-key attempts no OpenAI-compatible call');
+
+  // Fixture 2 (unreachable): a key plus a base URL outside the stub host,
+  // which the fetch stub rejects like a refused connection (no network).
+  process.env.HERMES_API_SERVER_KEY = 'test-key';
+  process.env.HERMES_BASE_URL = 'http://unreachable.invalid';
+  agent.resetOpenAIFallbackAttemptsForTests();
+  gateway.state.requests.length = 0;
+  const user4b = messages.create(failConv.id, 'user', 'Hello with an unreachable Hermes gateway.');
+  queue.enqueue(failConv.id, failBot.id);
+  await drain();
+  const thread4b = chainAfter(failConv.id, user4b.id);
+  assert(
+    thread4b.some(m => m.sender_type === 'bot' && m.sender_id === failBot.id && m.content.includes('Hermes turn failed')),
+    'failure fixture unreachable-gateway posts the visible Hermes failure message'
+  );
+  assert(agent.getOpenAIFallbackAttemptsForTests() === 0, 'failure fixture unreachable-gateway attempts no OpenAI-compatible call');
+  assert(
+    thread4a.some(m => m.content.includes('Hermes configuration missing')) &&
+    thread4b.some(m => m.content.includes('Hermes turn failed')),
+    'no-fallback assertion: both failure fixtures fail visibly with zero OpenAI-compatible calls'
+  );
+  delete process.env.OPENAI_API_KEY;
+  process.env.HERMES_BASE_URL = gateway.baseUrl;
 
   // Scenario 5: a paraphrased wake message also works. The wake path is
   // driven by delegation directives, never by exact user wording.
@@ -443,6 +500,182 @@ async function main() {
     launchSnapshots.listByBot(chief.id).some(s => s.transport === 'hermes-gateway'),
     "chief's launch snapshot records hermes-gateway"
   );
+
+  // Scenario 8 (NOT-434): a newly created bot with no opt-in runtime
+  // switch converses through its Hermes session by default. No stub is
+  // set: the ordinary turn must dispatch through the Hermes gateway.
+  log('\nScenario 8: newly created bot defaults to Hermes for its ordinary turn');
+  agent.setDelegationChatStub(null);
+  process.env.HERMES_API_SERVER_KEY = 'test-key';
+  process.env.HERMES_BASE_URL = gateway.baseUrl;
+  const solo = bots.create({ name: 'Solo', title: 'Soloist', description: 'Answers directly.' });
+  const soloReadBack = bots.getById(solo.id);
+  assert(
+    soloReadBack.persistent_runtime === 'hermes' && agent.persistentRuntimeForBot(soloReadBack) === 'hermes',
+    'default-runtime assertion: newly created bot without an opt-in switch reads back as hermes'
+  );
+  const soloConv = conversations.getByBotId(solo.id);
+  assert(!!soloConv, 'solo thread exists');
+  gateway.state.requests.length = 0;
+  agent.resetOpenAIFallbackAttemptsForTests();
+  const user8 = messages.create(soloConv.id, 'user', 'Hello Solo, are you there?');
+  queue.enqueue(soloConv.id, solo.id);
+  await drain();
+  const soloConfig = hermes.loadHermesConfig();
+  const soloSession = hermes.hermesSessionIdForBot(solo.id, soloConfig);
+  const seen8 = gateway.state.requests;
+  assert(seen8.length === 1, `Hermes-dispatch assertion: ordinary turn sends one gateway request (got ${seen8.length})`);
+  assert(
+    seen8.length === 1 && seen8[0].sessionId === soloSession,
+    `Hermes-dispatch assertion: ordinary turn carries its stable Hermes session id (${soloSession})`
+  );
+  assert(
+    seen8.length === 1 && seen8[0].path === rootPath,
+    `Hermes-dispatch assertion: unprofiled ordinary turn uses the root path (${rootPath})`
+  );
+  const thread8 = chainAfter(soloConv.id, user8.id);
+  assert(
+    thread8.some(m => m.sender_type === 'bot' && m.sender_id === solo.id && m.content.includes('GATEWAY-REPLY')),
+    'Hermes-dispatch assertion: gateway reply posted once in the solo thread'
+  );
+  assert(agent.getOpenAIFallbackAttemptsForTests() === 0, 'Hermes-dispatch assertion: ordinary Hermes turn attempts no OpenAI-compatible call');
+  assert(
+    launchSnapshots.listByBot(solo.id).some(s => s.transport === 'hermes-gateway'),
+    'snapshot transport assertion: solo ordinary turn records hermes-gateway'
+  );
+
+  // Scenario 9 (NOT-434): repeated ordinary turns reuse the stable per-bot
+  // Hermes session identifier.
+  log('\nScenario 9: repeated turns reuse the stable Hermes session');
+  gateway.state.requests.length = 0;
+  const user9 = messages.create(soloConv.id, 'user', 'Solo, one more turn please.');
+  queue.enqueue(soloConv.id, solo.id);
+  await drain();
+  const seen9 = gateway.state.requests;
+  assert(seen9.length === 1, `second ordinary turn sends one gateway request (got ${seen9.length})`);
+  assert(
+    seen9.length === 1 && seen9[0].sessionId === soloSession,
+    'persistent-session reuse assertion: second turn reuses the same stable Hermes session id'
+  );
+  const thread9 = chainAfter(soloConv.id, user9.id);
+  assert(
+    thread9.some(m => m.sender_type === 'bot' && m.sender_id === solo.id && m.content.includes('GATEWAY-REPLY')),
+    'persistent-session reuse assertion: second gateway reply posted in the solo thread'
+  );
+
+  // Scenario 9b (NOT-434 repair): Stop during an ordinary Hermes turn
+  // aborts the gateway request and posts no late failure notice. No stub
+  // is set, so this exercises the real dispatch path (unlike scenario 3,
+  // which stubs the caller turn).
+  log('\nScenario 9b: Stop during an ordinary Hermes turn stays silent');
+  agent.setDelegationChatStub(null);
+  process.env.HERMES_API_SERVER_KEY = 'test-key';
+  process.env.HERMES_BASE_URL = gateway.baseUrl;
+  gateway.state.delayMs = 1500;
+  gateway.state.requests.length = 0;
+  const userStop = messages.create(soloConv.id, 'user', 'Solo, take your time on this one.');
+  queue.enqueue(soloConv.id, solo.id);
+  const ordinaryInFlight = agent.processNextQueueItem();
+  let waitedStop = 0;
+  while (gateway.state.requests.length === 0 && waitedStop < 2000) {
+    await sleep(50);
+    waitedStop += 50;
+  }
+  assert(gateway.state.requests.length === 1, 'ordinary Hermes turn in flight before Stop');
+  const stoppedOrdinary = agent.stopDelegation(soloConv.id);
+  assert(stoppedOrdinary === true, 'stopDelegation reports the ordinary turn stopped');
+  await ordinaryInFlight;
+  gateway.state.delayMs = 120;
+  const threadStop = chainAfter(soloConv.id, userStop.id);
+  assert(
+    !threadStop.some(m => m.sender_type === 'bot' && m.sender_id === solo.id && m.content.includes('Hermes turn failed')),
+    'no late Hermes failure notice after Stop aborts the ordinary turn'
+  );
+  assert(
+    threadStop.some(m => m.sender_type === 'bot' && m.content.includes('Delegation stopped')),
+    'Stop notice still posted once for the aborted ordinary turn'
+  );
+  const countAfterOrdinaryStop = messages.getByConversation(soloConv.id).length;
+  await drain();
+  assert(
+    messages.getByConversation(soloConv.id).length === countAfterOrdinaryStop,
+    'zero new messages after the aborted ordinary turn settles'
+  );
+
+  // Scenario 10 (NOT-434): a delegated coding run stays a separate Agent
+  // Deck session from the persistent Hermes session. The Hermes turn
+  // (stubbed gateway reply carrying a DECK directive) dispatches the
+  // coding work through the configured Agent Deck path; the deck run
+  // reports its own opaque session id, distinct from the Hermes one.
+  log('\nScenario 10: delegated coding run is a separate Agent Deck session');
+  const coder = bots.create({
+    name: 'Coder', title: 'Coder', description: 'Delegates implementation work.',
+    persistent_runtime: 'hermes', coding_runtime: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/relay-work',
+  });
+  const coderConv = conversations.getByBotId(coder.id);
+  assert(!!coderConv, 'coder thread exists');
+  const coderHermesSession = hermes.hermesSessionIdForBot(coder.id, hermes.loadHermesConfig());
+  const deckCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-hermes-deck-cwd-'));
+  fs.mkdirSync(path.join(deckCwd, '.agent-deck'), { recursive: true });
+  fs.writeFileSync(
+    path.join(deckCwd, '.agent-deck', 'use.json'),
+    JSON.stringify({ version: 3, deckId: 'actual-deck-id', deckName: 'actual-deck' })
+  );
+  process.env.BOTMANCERS_DECK_CWD = deckCwd;
+  let deckRuns = 0;
+  deckRun.setDeckRunProcess(async argv => {
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+      const runId = argv[3];
+      // The resume run reports the impl session (no fork); the review run
+      // reports its own. Mirrors the test-snapshot deck mock.
+      const sessionId = String(runId).endsWith('-2') ? `ses-for-${runId}` : 'ses-deck-impl';
+      return {
+        stdout: JSON.stringify({
+          runId, deck: 'actual-deck-id', client: 'codex', state: 'ended', sessionId,
+          startedAt: '2026-10-12T00:00:00.000Z', lastLogTs: '2026-10-12T00:01:00.000Z',
+          logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
+        }),
+        stderr: '', exitCode: 0,
+      };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+      const runId = argv[3];
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, subtype: 'success', result: `output of ${runId}` }),
+        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+      deckRuns += 1;
+      const runId = `run-hermes-${deckRuns}`;
+      return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
+  });
+  agent.setDelegationChatStub(() => 'DECK codex: Implement the widget.');
+  const user10 = messages.create(coderConv.id, 'user', 'Build the widget through the coding agent.');
+  queue.enqueue(coderConv.id, coder.id);
+  await drain();
+  delete process.env.BOTMANCERS_DECK_CWD;
+  deckRun.setDeckRunProcess(null);
+  agent.setDelegationChatStub(null);
+  const thread10 = messages.getByConversation(coderConv.id);
+  const deckRunLine = thread10.find(m => m.sender_type === 'bot' && m.content.startsWith('[Deck run]'));
+  const deckSessionMatch = deckRunLine ? deckRunLine.content.match(/sessionId=(\S+)/) : null;
+  const deckSession = deckSessionMatch ? deckSessionMatch[1] : null;
+  assert(!!deckSession, `coding delegation reports its own Agent Deck session id (got ${deckSession || 'none'})`);
+  assert(
+    !!deckSession && deckSession !== coderHermesSession,
+    `session-separation assertion: Agent Deck session (${deckSession || 'none'}) differs from the persistent Hermes session (${coderHermesSession})`
+  );
+  assert(
+    thread10.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck handoff]')),
+    'session-separation assertion: ordinary Hermes turn delegates coding through the Agent Deck path, not the gateway'
+  );
+  try { fs.rmSync(deckCwd, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { gateway.restore(); } catch { /* best effort */ }
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

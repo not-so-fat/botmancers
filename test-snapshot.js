@@ -238,6 +238,12 @@ async function main() {
 
   const rows = db.launchSnapshots.listByBot(botRow.id);
   assert.ok(rows.length >= 1, 'a launch snapshot was flushed for the deck turn');
+  // NOT-434: the persistent transport rides alongside the held input (never
+  // inside the hash). A Hermes persistent turn records hermes-gateway even
+  // when the turn delegates coding work through the Agent Deck path.
+  assert.strictEqual(rows[rows.length - 1].transport, 'hermes-gateway', 'flushed snapshot must record hermes as the persistent transport');
+  console.log('PASS: snapshot transport assertion: flushed snapshot records hermes-gateway as the persistent transport');
+  passed += 1;
   const flushed = JSON.parse(rows[rows.length - 1].snapshot);
   console.log(`flushed snapshot coding path: persistent_runtime=${flushed.persistent_runtime} coding_runtime=${flushed.coding_runtime} deck_name=${flushed.deck_name} working_directory=${flushed.working_directory}`);
   assert.strictEqual(flushed.persistent_runtime, 'hermes', 'flushed snapshot must carry the effective persistent runtime');
@@ -254,7 +260,7 @@ async function main() {
   for (const suffix of ['', '-shm', '-wal']) {
     try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* cleanup */ }
   }
-  console.log(`\ntest:snapshot: ${passed}/12 assertions passing`);
+  console.log(`\ntest:snapshot: ${passed}/13 assertions passing`);
 }
 
 main().catch(error => {

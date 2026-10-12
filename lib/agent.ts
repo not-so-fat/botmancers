@@ -63,6 +63,10 @@ import {
   DECK_REVIEW_FOCUS_DEFAULT,
 } from './agent-deck-run';
 import type { DeckDelegationResult } from './agent-deck-run';
+import {
+  normalizePersistentRuntime,
+  PERSISTENT_RUNTIME_HERMES,
+} from './bot-definition';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -122,6 +126,49 @@ const delegationChains = new Map<string, DelegationChain>();
 
 export const MAIN_TRANSPORT = 'openai';
 export const HERMES_GATEWAY_TRANSPORT = 'hermes-gateway';
+
+// NOT-434: Hermes is the default persistent runtime for ordinary
+// conversational turns. The bot definition carries the explicit value;
+// rows that predate the runtime path (null/blank) read back as Hermes,
+// the documented default, without acquiring a coding path (coding
+// fields stay null until the owner supplies them; see
+// ./bot-definition.ts resolveCodingPath). Only 'hermes' is a supported
+// persistent runtime today; any other stored value is (unconfirmed)
+// future work and falls back to the Hermes default here.
+export function persistentRuntimeForBot(bot: Pick<Bot, 'persistent_runtime'>): string {
+  try {
+    return normalizePersistentRuntime(bot.persistent_runtime);
+  } catch {
+    return PERSISTENT_RUNTIME_HERMES;
+  }
+}
+
+// Visible thread error when the persistent Hermes gateway is not
+// configured. Posted as the bot's reply so the failure is visible in
+// the thread; no fallback transport is attempted after this.
+export const HERMES_MISSING_CONFIG_MESSAGE =
+  '[Hermes configuration missing: HERMES_API_SERVER_KEY is not set. Set it to enable persistent Hermes turns. No fallback transport attempted.]';
+
+// Visible thread error when the persistent Hermes gateway is configured
+// but unreachable or rejects the turn. No fallback transport is
+// attempted after this.
+export function hermesTurnFailureMessage(botName: string, error: unknown): string {
+  const detail = error instanceof HermesError ? error.message : String(error);
+  const short = detail.length > 200 ? detail.slice(0, 197) + '...' : detail;
+  return `[Hermes turn failed for ${botName}: ${short}]`;
+}
+
+// Counts OpenAI-compatible loop attempts for the Hermes-failure tests:
+// Hermes turns never take the embedded loop, so this stays 0 for them.
+let openaiFallbackAttempts = 0;
+
+export function getOpenAIFallbackAttemptsForTests(): number {
+  return openaiFallbackAttempts;
+}
+
+export function resetOpenAIFallbackAttemptsForTests(): void {
+  openaiFallbackAttempts = 0;
+}
 
 // In-flight Hermes gateway pokes per conversation, so Stop aborts them.
 // Entries are removed as each poke settles; an abort rejects its fetch.
@@ -229,6 +276,8 @@ export interface DelegationStubContext {
   botName: string;
   conversationId: string;
   sent: Array<{ role: string; content: string }>;
+  hermesSessionId?: string | null;
+  transport?: string;
 }
 
 export type DelegationChatStub = (ctx: DelegationStubContext) => string | Promise<string>;
@@ -242,6 +291,7 @@ export function setDelegationChatStub(stub: DelegationChatStub | null): void {
 export function resetDelegationForTests(): void {
   delegationChains.clear();
   delegationChatStub = null;
+  openaiFallbackAttempts = 0;
   for (const conversationId of [...hermesInFlight.keys()]) {
     abortHermesPokes(conversationId);
   }
@@ -1506,7 +1556,20 @@ The standing rules decide the whole reply. If they require one short sentence, w
     sent.push({ role: 'system' as const, content: rememberedBlock });
   }
   const skillState = readSkillState(bot.name);
-  holdSnapshot(item, bot, skillState, rememberedFacts);
+  // NOT-434: ordinary turns run on the bot definition's persistent
+  // runtime. Hermes is the default (see persistentRuntimeForBot); its
+  // turns record the Hermes gateway transport in the launch snapshot.
+  // Coding work stays separate: only a DECK directive below enters the
+  // Agent Deck adapter, never an ordinary turn.
+  const persistentRuntime = persistentRuntimeForBot(bot);
+  const hermesTurn = persistentRuntime === PERSISTENT_RUNTIME_HERMES;
+  holdSnapshot(
+    item,
+    bot,
+    skillState,
+    rememberedFacts,
+    hermesTurn ? HERMES_GATEWAY_TRANSPORT : MAIN_TRANSPORT
+  );
   const localSkill = skillState.content;
   if (localSkill) {
     sent.push({ role: 'system' as const, content: localSkill });
@@ -1542,7 +1605,56 @@ The standing rules decide the whole reply. If they require one short sentence, w
     });
   }
   let responseContent: string;
-  if (delegationChatStub) {
+  // NOT-434: a Hermes persistent turn goes through the bot's Hermes
+  // session. The deterministic test stub stands in for the gateway reply
+  // when set (existing loop tests), so those tests keep running without a
+  // gateway; without a stub the turn requires Hermes configuration and
+  // calls the gateway. Missing or unreachable Hermes configuration posts
+  // a visible Hermes error and never falls back to the embedded
+  // OpenAI-compatible loop.
+  if (hermesTurn) {
+    const hermesConfig = loadHermesConfig();
+    const hermesSessionId = hermesConfig ? hermesSessionIdForBot(bot.id, hermesConfig) : null;
+    if (delegationChatStub) {
+      responseContent = await delegationChatStub({
+        botId: bot.id,
+        botName: bot.name,
+        conversationId: item.conversation_id,
+        sent,
+        hermesSessionId,
+        transport: HERMES_GATEWAY_TRANSPORT,
+      });
+    } else {
+      if (!hermesConfig) {
+        messages.create(item.conversation_id, 'bot', HERMES_MISSING_CONFIG_MESSAGE, bot.id);
+        chainProcessQueue();
+        return;
+      }
+      const controller = new AbortController();
+      trackHermesPoke(item.conversation_id, controller);
+      try {
+        responseContent = await hermesChat({
+          config: hermesConfig,
+          profilePath: hermesProfilePathForBot(bot),
+          sessionId: hermesSessionId as string,
+          messages: sent.map(entry => ({ role: entry.role, content: entry.content })),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        // Aborted ordinary turns stay silent: Stop promises no late
+        // messages (same guard as the specialist poke path).
+        const aborted = error instanceof HermesError && error.code === 'aborted';
+        if (!aborted && !chain?.stopped) {
+          messages.create(item.conversation_id, 'bot', hermesTurnFailureMessage(bot.name, error), bot.id);
+        }
+        chainProcessQueue();
+        return;
+      } finally {
+        untrackHermesPoke(item.conversation_id, controller);
+      }
+    }
+  } else if (delegationChatStub) {
+    openaiFallbackAttempts += 1;
     responseContent = await delegationChatStub({
       botId: bot.id,
       botName: bot.name,
@@ -1550,6 +1662,9 @@ The standing rules decide the whole reply. If they require one short sentence, w
       sent,
     });
   } else {
+    // (unconfirmed) non-Hermes persistent runtime path: preserves main's
+    // existing OpenAI-compatible loop for a future supported runtime.
+    openaiFallbackAttempts += 1;
     if (!process.env.OPENAI_API_KEY) {
       messages.create(
         item.conversation_id,
