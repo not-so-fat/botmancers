@@ -24,7 +24,8 @@
     "test:group-semantics": "node test-group-semantics.js",
     "test:command-runs": "node test-command-runs.js",
     "test:parity-small": "node test-parity-small.js",
-    "seed:design-fixture": "node scripts/seed-design-fixture.js"
+    "seed:design-fixture": "node scripts/seed-design-fixture.js",
+    "test:bot-runtime-ui": "node test-bot-runtime-ui.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
