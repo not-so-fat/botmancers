@@ -22,6 +22,7 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
 const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
+const deckRun = jiti('./lib/agent-deck-run.ts');
 
 const { bots, conversations, messages, queue } = db;
 
@@ -201,6 +202,95 @@ async function main() {
   assert(!thread4.some(m => m.content.includes('REPORT: should never run')), 'no report produced after Stop');
   assert(agent.stopDelegation(conv.id) === false, 'second Stop is a no-op without duplicate notice');
   assert(messages.getByConversation(conv.id).length === countAfterStop, 'no duplicate stopped notice');
+
+  // Scenario 5: agent-deck coding delegation (NOT-395 adapter). From the same
+  // conversation the caller drives an implementation run, a reviewer run,
+  // and a resume of the original session through the injected agent-deck
+  // process boundary. No manual prompt or session-ID copying: the resume
+  // receives the original session ID straight from the bound run's status.
+  log('\nScenario 5: agent-deck implement/review/resume in the originating thread');
+  const deckRecorded = [];
+  let deckRuns = 0;
+  deckRun.setDeckRunProcess(async argv => {
+    deckRecorded.push(argv);
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+      const runId = argv[3];
+      // The implementation run owns the stable fixture session ID, and the
+      // resumed run reports that ORIGINAL session ID back: resume never
+      // forks the session.
+      const sessionId = runId === 'run-deck-2' ? `ses-for-${runId}` : 'ses-deck-impl';
+      return {
+        stdout: JSON.stringify({
+          runId,
+          deck: 'deck-id-9',
+          client: 'codex',
+          state: 'ended',
+          sessionId,
+          startedAt: '2026-10-12T00:00:00.000Z',
+          lastLogTs: '2026-10-12T00:01:00.000Z',
+          logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
+        }),
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+      const runId = argv[3];
+      const body = runId === 'run-deck-2' ? 'review says: add the venue' : `output of ${runId}`;
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, subtype: 'success', result: body }),
+        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+      deckRuns++;
+      const runId = `run-deck-${deckRuns}`;
+      return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
+  });
+  const user5 = messages.create(conv.id, 'user', 'Build the widget via the coding agent.');
+  const delegation = await deckRun.delegateCodingViaDeck({
+    conversationId: conv.id,
+    botId: origin.id,
+    deck: 'planner',
+    client: 'codex',
+    cwd: '/repo/checkout',
+    task: 'Implement the widget.',
+    reviewFocus: 'Check the edge cases.',
+  });
+  deckRun.setDeckRunProcess(null);
+
+  const thread5 = chainAfter(conv.id, user5.id);
+  const observedTypes = thread5
+    .filter(m => m.sender_type === 'bot' && m.sender_id === origin.id)
+    .map(m => (m.content.match(/^\[(Deck [a-z]+)\]/) || [])[1])
+    .filter(Boolean);
+  log(`  observation types: ${observedTypes.join(' -> ')}`);
+  assert(
+    JSON.stringify(observedTypes) === JSON.stringify(['Deck handoff', 'Deck run', 'Deck review', 'Deck resume', 'Deck result']),
+    'ordered observations: handoff, session-bound run, review, resume, final result'
+  );
+  assert(
+    thread5.every(m => m.conversation_id === conv.id),
+    'all deck observations live in the originating thread'
+  );
+  const resumeStart = deckRecorded.find(a => a[1] === 'run' && a.includes('--resume'));
+  assert(
+    !!resumeStart && resumeStart.includes('ses-deck-impl'),
+    'resume receives the original session ID (session-reuse)'
+  );
+  assert(
+    delegation.implSessionId === 'ses-deck-impl' && delegation.resumedSessionId === 'ses-deck-impl',
+    'resumed session ID is unchanged from the implementation session ID'
+  );
+  assert(
+    !!thread5.find(m => m.content.startsWith('[Deck run]') && m.content.includes('run-deck-1') && m.content.includes('ses-deck-impl')),
+    'bound run/session observation correlates run ID and session ID'
+  );
+  assert(queue.countPending(conv.id) === 0, 'no queue residue from the deck delegation');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
