@@ -17,7 +17,6 @@ for (const suffix of ['', '-shm', '-wal']) {
 }
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-delete process.env.OPENAI_API_KEY;
 
 const ROOT = __dirname;
 const { createJiti } = require('jiti');
@@ -99,7 +98,7 @@ function handoffIdsOf(msg) {
 async function main() {
   log('NOT-418 group-semantics test (stub model, isolated DB)');
   log(`DB: ${DB_PATH}`);
-  log(`OPENAI_API_KEY set: ${Boolean(process.env.OPENAI_API_KEY)} (stub must work without it)`);
+  log('Deterministic stub serves all turns (no external model key required)');
   agent.resetDelegationForTests();
 
   // Case 1: snapshot handoff sentence posts once; rerun posts nothing more.

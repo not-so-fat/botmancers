@@ -16,7 +16,6 @@ for (const suffix of ['', '-shm', '-wal']) {
 }
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-delete process.env.OPENAI_API_KEY;
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
@@ -61,7 +60,7 @@ function chainAfter(convId, userMessageId) {
 async function main() {
   log('NOT-395 delegation test (stub model, isolated DB)');
   log(`DB: ${DB_PATH}`);
-  log(`OPENAI_API_KEY set: ${Boolean(process.env.OPENAI_API_KEY)} (stub must work without it)`);
+  log('Deterministic stub serves all turns (no external model key required)');
 
   const MAX_DEPTH = agent.DELEGATION_MAX_DEPTH;
   const MAX_TURNS = agent.DELEGATION_MAX_DELEGATED_TURNS;

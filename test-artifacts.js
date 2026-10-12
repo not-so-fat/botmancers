@@ -20,7 +20,6 @@ fs.mkdirSync(FILES_ROOT, { recursive: true });
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_FILES_ROOT = FILES_ROOT;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-delete process.env.OPENAI_API_KEY;
 
 const ROOT = __dirname;
 const { createJiti } = require('jiti');

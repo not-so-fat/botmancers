@@ -10,7 +10,7 @@
 // Covers: session header sent, two pokes overlap in time, failed poke marks
 // the queue row failed and logs wait_failed, Stop aborts, missing or
 // unreachable Hermes configuration posts a visible Hermes error with no
-// OpenAI-compatible fallback, a newly created bot defaults to Hermes for
+// hidden fallback turn, a newly created bot defaults to Hermes for
 // its ordinary turn with a stable per-bot session id, a delegated coding
 // run stays a separate Agent Deck session, reply appears once per thread,
 // a paraphrased wake message also works, and an explicit per-bot profile
@@ -29,7 +29,6 @@ for (const suffix of ['', '-shm', '-wal']) {
 }
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-delete process.env.OPENAI_API_KEY;
 
 const WAIT_LOG = path.join(os.tmpdir(), `botmancers-hermes-waits-${process.pid}.jsonl`);
 try { fs.rmSync(WAIT_LOG, { force: true }); } catch { /* fresh start */ }
@@ -355,22 +354,18 @@ async function main() {
   assert(queue.countPending(conv.id) === 0, 'caller return suppressed after Stop');
 
   // Scenario 4 (NOT-434): missing or unreachable Hermes configuration posts
-  // a visible Hermes error and never falls back to the embedded
-  // OpenAI-compatible loop. No stub is set here, so any fallback would
-  // have to go through the real OpenAI path; the fallback-attempt counter
-  // proves it never does.
+  // a visible Hermes error and never activates a hidden fallback. No stub
+  // is set here, so any hidden fallback would have to answer the turn
+  // itself; instead each fixture's only bot reply must be the Hermes
+  // error, with zero gateway requests.
   log('\nScenario 4: Hermes failure fixtures (absent and unreachable), no fallback');
   agent.setDelegationChatStub(null);
-  agent.resetOpenAIFallbackAttemptsForTests();
   const failBot = bots.create({ name: 'FailBot', title: 'Failure probe', description: 'Probes Hermes failure behavior.' });
   const failConv = conversations.getByBotId(failBot.id);
   assert(!!failConv, 'failure-probe thread exists');
 
-  // Fixture 1 (absent): no key at all, with an OpenAI key present so a
-  // fallback would have credentials to call.
+  // Fixture 1 (absent): no key at all.
   delete process.env.HERMES_API_SERVER_KEY;
-  process.env.OPENAI_API_KEY = 'test-key-present';
-  agent.resetOpenAIFallbackAttemptsForTests();
   gateway.state.requests.length = 0;
   const user4a = messages.create(failConv.id, 'user', 'Hello with no Hermes key configured.');
   queue.enqueue(failConv.id, failBot.id);
@@ -381,13 +376,15 @@ async function main() {
     'failure fixture absent-key posts the visible Hermes configuration message'
   );
   assert(gateway.state.requests.length === 0, 'failure fixture absent-key sends no gateway request');
-  assert(agent.getOpenAIFallbackAttemptsForTests() === 0, 'failure fixture absent-key attempts no OpenAI-compatible call');
+  assert(
+    thread4a.filter(m => m.sender_type === 'bot').every(m => m.sender_id === failBot.id && m.content.includes('Hermes configuration missing')),
+    'failure fixture absent-key posts no hidden fallback reply'
+  );
 
   // Fixture 2 (unreachable): a key plus a base URL outside the stub host,
   // which the fetch stub rejects like a refused connection (no network).
   process.env.HERMES_API_SERVER_KEY = 'test-key';
   process.env.HERMES_BASE_URL = 'http://unreachable.invalid';
-  agent.resetOpenAIFallbackAttemptsForTests();
   gateway.state.requests.length = 0;
   const user4b = messages.create(failConv.id, 'user', 'Hello with an unreachable Hermes gateway.');
   queue.enqueue(failConv.id, failBot.id);
@@ -397,13 +394,15 @@ async function main() {
     thread4b.some(m => m.sender_type === 'bot' && m.sender_id === failBot.id && m.content.includes('Hermes turn failed')),
     'failure fixture unreachable-gateway posts the visible Hermes failure message'
   );
-  assert(agent.getOpenAIFallbackAttemptsForTests() === 0, 'failure fixture unreachable-gateway attempts no OpenAI-compatible call');
+  assert(
+    thread4b.filter(m => m.sender_type === 'bot').every(m => m.sender_id === failBot.id && m.content.includes('Hermes turn failed')),
+    'failure fixture unreachable-gateway posts no hidden fallback reply'
+  );
   assert(
     thread4a.some(m => m.content.includes('Hermes configuration missing')) &&
     thread4b.some(m => m.content.includes('Hermes turn failed')),
-    'no-fallback assertion: both failure fixtures fail visibly with zero OpenAI-compatible calls'
+    'no-fallback assertion: both failure fixtures fail visibly with no hidden fallback turn'
   );
-  delete process.env.OPENAI_API_KEY;
   process.env.HERMES_BASE_URL = gateway.baseUrl;
 
   // Scenario 5: a paraphrased wake message also works. The wake path is
@@ -517,7 +516,6 @@ async function main() {
   const soloConv = conversations.getByBotId(solo.id);
   assert(!!soloConv, 'solo thread exists');
   gateway.state.requests.length = 0;
-  agent.resetOpenAIFallbackAttemptsForTests();
   const user8 = messages.create(soloConv.id, 'user', 'Hello Solo, are you there?');
   queue.enqueue(soloConv.id, solo.id);
   await drain();
@@ -538,7 +536,6 @@ async function main() {
     thread8.some(m => m.sender_type === 'bot' && m.sender_id === solo.id && m.content.includes('GATEWAY-REPLY')),
     'Hermes-dispatch assertion: gateway reply posted once in the solo thread'
   );
-  assert(agent.getOpenAIFallbackAttemptsForTests() === 0, 'Hermes-dispatch assertion: ordinary Hermes turn attempts no OpenAI-compatible call');
   assert(
     launchSnapshots.listByBot(solo.id).some(s => s.transport === 'hermes-gateway'),
     'snapshot transport assertion: solo ordinary turn records hermes-gateway'

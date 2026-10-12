@@ -16,7 +16,6 @@ for (const suffix of ['', '-shm', '-wal']) {
 }
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-delete process.env.OPENAI_API_KEY;
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
@@ -77,7 +76,7 @@ function askThenResumeStub(resultWord) {
 async function main() {
   log('NOT-415 ask-and-wait test (stub model, isolated DB)');
   log(`DB: ${DB_PATH}`);
-  log(`OPENAI_API_KEY set: ${Boolean(process.env.OPENAI_API_KEY)} (stub must work without it)`);
+  log('Deterministic stub serves all turns (no external model key required)');
 
   // Case 1: ask then answer resumes once (model-marker path, direct thread).
   log('\nCase 1: ask then answer resumes once');
