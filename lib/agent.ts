@@ -18,6 +18,7 @@ import type { HermesConfig } from './hermes';
 import type { Bot, Conversation, Message, OneShot, QueueItem, Routine } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
+import { handleCosBirthRequest } from './birth';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy',
@@ -802,6 +803,24 @@ async function processQueueItem(item: QueueItem) {
   const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
   const delegatingCallerId = callerFor(chain, bot.id);
   const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
+
+  // Birth hook (NOT-414): the chief-of-staff (by name, never UUID) creates a
+  // specialist or duplicates a bot from a chat message. Runs behind the Stop
+  // check and before every content hook, so a birth request never becomes a
+  // draft, a timer teach, or a run. Delegated turns skip it: a WAKE handoff
+  // answers the delegation, not the latest user message.
+  if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser && !isDelegatedTurn) {
+    const handled = await handleCosBirthRequest(
+      item.conversation_id,
+      bot.id,
+      latestUser,
+      conversationMessages
+    );
+    if (handled) {
+      chainProcessQueue();
+      return;
+    }
+  }
 
   // Timer-tick hook (NOT-411): a due one-shot or routine makes this launch
   // post its word instead of calling the model. Runs here, right behind the
