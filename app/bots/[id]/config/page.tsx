@@ -30,7 +30,7 @@ interface SnapshotRow {
   bot_id: string;
   created_at: number;
   hash: string;
-  snapshot: Record<string, string | boolean | null>;
+  snapshot: Record<string, string | string[] | boolean | null>;
 }
 
 interface ConfigData {
@@ -46,6 +46,7 @@ const SNAPSHOT_FIELDS: Array<{ key: string; label: string }> = [
   { key: 'description', label: 'Description (rules)' },
   { key: 'import_operation_id', label: 'Import operation ID' },
   { key: 'import_schema_version', label: 'Import schema version' },
+  { key: 'memories', label: 'Remembered facts' },
   { key: 'name', label: 'Name' },
   { key: 'skill_content', label: 'Skill content' },
   { key: 'skill_path', label: 'Skill path' },
@@ -625,6 +626,14 @@ export default function BotConfigPage() {
                                     <dd className="text-gray-800 whitespace-pre-wrap break-words">
                                       {value === null || value === undefined ? (
                                         <span className="text-gray-400">null</span>
+                                      ) : Array.isArray(value) ? (
+                                        value.length === 0 ? (
+                                          <span className="text-gray-400">(none)</span>
+                                        ) : (
+                                          <span className="block max-h-32 overflow-y-auto">
+                                            {value.map(fact => `- ${fact}`).join('\n')}
+                                          </span>
+                                        )
                                       ) : typeof value === 'boolean' ? (
                                         String(value)
                                       ) : value === '' ? (

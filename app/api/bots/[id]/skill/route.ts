@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { bots } from '@/lib/db';
+import { bots, memories } from '@/lib/db';
 import { readSkillState, writeSkillForBot } from '@/lib/skills';
 import { buildSnapshotInput, hashSnapshot } from '@/lib/snapshot';
 
@@ -7,7 +7,7 @@ function currentHashFor(botId: string) {
   const bot = bots.getById(botId);
   if (!bot) return null;
   const skill = readSkillState(bot.name);
-  return { bot, skill, currentHash: hashSnapshot(buildSnapshotInput(bot, skill)) };
+  return { bot, skill, currentHash: hashSnapshot(buildSnapshotInput(bot, skill, memories.latestFacts(bot.id))) };
 }
 
 export async function PUT(

@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
-import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, approvals } from './db';
+import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, approvals, memories, oneShots, routines } from './db';
 import { parseApprovalCode, parseFileNames, isSafeFileName, outboundDraftFromUser, serializeDraft } from './draft';
 import { mcpTurn } from './mcp';
 import { readSkillState } from './skills';
 import { buildSnapshotInput, hashSnapshot } from './snapshot';
-import type { Bot, Message, QueueItem } from './db';
+import type { Bot, Message, OneShot, QueueItem, Routine } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun } from './run-child';
 
@@ -123,6 +123,98 @@ export function resetDelegationForTests(): void {
   delegationChatStub = null;
 }
 
+export const ONE_SHOT_MESSAGE = '[one-shot]';
+
+// True when the thread's latest user message belongs to a stopped chain.
+// Timer arming checks this so a stopped routine does not enqueue a
+// suppressed launch on every poll; a later user message starts a fresh
+// chain and the timers resume.
+function chainStoppedForLatestUser(conversationId: string): boolean {
+  const conversationMessages = messages.getByConversation(conversationId);
+  const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
+  if (!latestUser) return false;
+  const chain = delegationChains.get(conversationId);
+  return !!chain && chain.userMessageId === latestUser.id && chain.stopped;
+}
+
+// Claims one due one-shot or routine tick for this launch and posts it.
+// Returns true when the launch is fully consumed by the tick. Only the
+// owning bot's launch consumes a row, and only when no user message is
+// still awaiting a reply, so a tick never steals a user's turn.
+function consumeDueTimerTick(
+  conversationId: string,
+  botId: string,
+  conversationMessages: Message[],
+  latestUser: Message | null
+): boolean {
+  if (latestUser) {
+    const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
+    const awaitingReply = userIdx >= 0 && !conversationMessages.slice(userIdx + 1).some(msg =>
+      msg.sender_type === 'bot'
+    );
+    if (awaitingReply) return false;
+  }
+  const now = Date.now();
+  const pendingOneShot = oneShots.pending(conversationId);
+  if (
+    pendingOneShot &&
+    pendingOneShot.bot_id === botId &&
+    pendingOneShot.due_at <= now &&
+    oneShots.claim(pendingOneShot.id)
+  ) {
+    messages.create(conversationId, 'bot', ONE_SHOT_MESSAGE, botId);
+    return true;
+  }
+  const routine = routines.forConversation(conversationId);
+  if (routine && routine.bot_id === botId && routine.next_due_at <= now) {
+    return routines.postIfDue(routine.id, now);
+  }
+  return false;
+}
+
+const durableOneShotTimers = new Set<string>();
+const routineTimers = new Set<string>();
+
+// A timer tick only enqueues a launch; the launch itself claims and posts
+// the tick, so Stop and the delegation limits apply to it unchanged.
+function fireTimerTick(conversationId: string, botId: string): void {
+  if (chainStoppedForLatestUser(conversationId)) return;
+  if (queue.countPending(conversationId) > 0) return;
+  queue.enqueue(conversationId, botId);
+  chainProcessQueue();
+}
+
+function armDurableOneShot(row: OneShot): void {
+  if (row.fired || durableOneShotTimers.has(row.id)) return;
+  if (chainStoppedForLatestUser(row.conversation_id)) return;
+  if (queue.countPending(row.conversation_id) > 0) return;
+  durableOneShotTimers.add(row.id);
+  const wait = Math.max(0, row.due_at - Date.now());
+  setTimeout(() => {
+    durableOneShotTimers.delete(row.id);
+    fireTimerTick(row.conversation_id, row.bot_id);
+  }, wait);
+}
+
+function armRoutine(row: Routine): void {
+  if (routineTimers.has(row.id)) return;
+  if (chainStoppedForLatestUser(row.conversation_id)) return;
+  if (queue.countPending(row.conversation_id) > 0) return;
+  routineTimers.add(row.id);
+  const wait = Math.max(0, row.next_due_at - Date.now());
+  setTimeout(() => {
+    routineTimers.delete(row.id);
+    fireTimerTick(row.conversation_id, row.bot_id);
+  }, wait);
+}
+
+// Re-arm timers for all stored one-shots and routines. Called on process
+// start and on the heartbeat interval; the extras test calls it directly.
+export function resumeLoopTimers(): void {
+  for (const row of oneShots.unfired()) armDurableOneShot(row);
+  for (const row of routines.all()) armRoutine(row);
+}
+
 const AUTO_PROCESS = process.env.BOTMANCERS_NO_AUTOPROCESS !== '1';
 
 function chainProcessQueue(): void {
@@ -139,9 +231,10 @@ const pendingSnapshots = new Map<string, { json: string; hash: string }>();
 function holdSnapshot(
   item: QueueItem,
   bot: Bot,
-  skill: { path: string | null; present: boolean | null; content: string | null }
+  skill: { path: string | null; present: boolean | null; content: string | null },
+  facts: string[] | null = null
 ): void {
-  const input = buildSnapshotInput(bot, skill);
+  const input = buildSnapshotInput(bot, skill, facts);
   pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input) });
 }
 
@@ -354,11 +447,20 @@ ${bot.description}`
 ${bot.description}
 If those rules limit the reply to one short sentence, the whole reply is that one short sentence and nothing more.`;
 
+  const rememberedFacts = memories.latestFacts(bot.id);
+  const rememberedBlock = rememberedFacts.length === 0
+    ? ''
+    : [
+        'Remembered facts:',
+        ...rememberedFacts.map(fact => '- ' + fact),
+        'These saved facts belong to this bot only. When the user asks about one of them, put that remembered fact in the reply even if the question does not repeat it. If the user is not asking about a remembered fact, do not recite this list. Do not store or invent facts from your own replies, tool lines, or group handoff lines. Standing rules and open-group instructions still apply.',
+      ].join('\n');
+
   const systemPrompt = `You are ${bot.name}, ${bot.title}.
 
 ${wakeHowTo}
 
-${standingBlock}`;
+${standingBlock}${rememberedBlock ? `\n\n${rememberedBlock}` : ''}`;
 
   const standingReminder = openGroupTurn
     ? `This plain group turn is decided by the open-group instruction, not by your standing description. Do not use WAKE. Do not repeat an earlier handoff. Do not post "Please review my research". Do not acknowledge a handoff.`
@@ -374,13 +476,26 @@ The standing rules decide the whole reply. If they require one short sentence, w
   }
   if (chain) chain.turns += 1;
 
+  // Timer-tick hook (NOT-411): a due one-shot or routine makes this launch
+  // post its word instead of calling the model. Runs behind the stopped
+  // check above and consumes one delegation turn like any other launch, so
+  // a tick never bypasses the depth/budget limits or Stop. A launch never
+  // consumes a tick while its user message still awaits a reply.
+  if (consumeDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)) {
+    chainProcessQueue();
+    return;
+  }
+
   const sent = [
     { role: 'system' as const, content: systemPrompt },
     ...chatMessages,
     { role: 'system' as const, content: standingReminder },
   ];
+  if (rememberedBlock) {
+    sent.push({ role: 'system' as const, content: rememberedBlock });
+  }
   const skillState = readSkillState(bot.name);
-  holdSnapshot(item, bot, skillState);
+  holdSnapshot(item, bot, skillState, rememberedFacts);
   const localSkill = skillState.content;
   if (localSkill) {
     sent.push({ role: 'system' as const, content: localSkill });
@@ -699,8 +814,10 @@ function appendPromptLog(entry: { bot: string; conversation_id: string; messages
 
 if (AUTO_PROCESS) {
   bots.touchSeen();
+  resumeLoopTimers();
   setInterval(() => {
     bots.touchSeen();
+    resumeLoopTimers();
     processQueue().catch(console.error);
   }, 2000);
 }
