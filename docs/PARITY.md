@@ -39,12 +39,25 @@ hidden with injected CSS. Config snapshot rows and template fields
 were mocked with Playwright route interception (the fixture has no
 launches); C2 holds the PATCH open; C4 returns 500.
 
-Repair round 2 (this HEAD) fixes the C4 error layout, skill Discard,
+Repair round 2 (0e14d87) fixes the C4 error layout, skill Discard,
 and the C7 mixed mock in code plus the seed, and marks rows 1, 2, 3,
 8, 9 as accepted roster-style drift per the owner decision. Rows 7–8,
 10–12, and fresh C1–C7 captures are operator work below; the attached
 `unread-cleared.png`, `unread-hover.png`, and `config-*.png` images
 predate those captures.
+
+Repair round 3 (this HEAD) changes only the C4 error header text to a
+neutral label ("Bot configuration" + "Couldn't load bot details.",
+hash "—") instead of the raw route id as the title plus an empty
+subtitle; header structure and the loaded-page Back-link gap are
+unchanged. C4 needs a fresh capture at this HEAD. All other operator
+items are unchanged: rows 7–8 recaptures, rows 10–12, fresh C1–C7,
+full CI logs at the head, and the Atelier `approve` comment on
+NOT-412. Roster-style drift on rows 1, 2, 3, 8, 9 (flat rows per the
+NOT-409 Atelier spec vs reference card rows; home page out of scope
+here) is accepted per the owner decision 2026-10-12 and documented
+under Intentionally different; the owner confirmation comment
+(operator criterion) is still pending.
 
 ## Reference screens
 
@@ -103,8 +116,9 @@ the three rows above from NOT CAPTURED to linked verdicts. There is
 no reference counterpart for these rows; judge them against the
 restored home-page tokens like the config states.
 
-Fresh config states C1–C7 (this HEAD fixes C4 layout, skill Discard,
-and the C7 mixed mock; the attached config images predate the fixes):
+Fresh config states C1–C7 (rounds 2–3 fix C4 layout plus the neutral
+header text, skill Discard, and the C7 mixed mock; the attached config
+images predate the fixes):
 
 ```sh
 node scripts/seed-design-fixture.js
@@ -120,7 +134,8 @@ BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm run dev
 - C2: edit Rules, hold the PATCH open, capture mid-save (header reads
   "Unsaved changes", Rules card reads "Saving…").
 - C4: return 500 from `GET /api/bots/[id]/config`, capture the error
-  state (header kept, Back-link gap matches loaded).
+  state (header kept with neutral "Bot configuration" title and
+  "Couldn't load bot details." subtitle, Back-link gap matches loaded).
 - C3/C5/C6 as before. Overwrite `docs/parity/config-*.png` and flip
   C1–C7 from stale to fresh verdicts.
 
@@ -148,7 +163,7 @@ restored home page and the screenshots above. Repro: seed fixture,
 | C1 | Loaded (skills present, rules, template source, snapshots) | LaunchMint `/bots/<id>/config` (seed has skill + 2 snapshots, no mock) | [`docs/parity/config-loaded.png`](parity/config-loaded.png) | STALE capture (3cdf9a6, snapshot row + template fields mocked) — consistent with home tokens (card, hairline inputs, accent primary, mono skill / sans rules). 390x800: [`config-loaded-390.png`](parity/config-loaded-390.png), stacks cleanly. Fresh capture at this HEAD uses real seed data; pending Atelier verdict |
 | C2 | Saving (Rules card `Saving…`, buttons disabled) | edit rules, hold PATCH open, capture mid-save | [`docs/parity/config-saving.png`](parity/config-saving.png) | STALE capture — header reads "Unsaved changes" (amber any-dirty summary, unchanged from pre-restyle), Rules card reads "Saving…" with Save showing "Saving…" disabled; PATCH held open by route interception. Fresh capture at this HEAD; pending Atelier verdict |
 | C3 | Saved (`Saved HH:MM:SS`) | capture within 5s of a save | [`docs/parity/config-saved.png`](parity/config-saved.png) | STALE capture — "Saved 07:17:01" status, hash updated. Fresh capture at this HEAD; pending Atelier verdict |
-| C4 | Load error with retry | 500 from `GET /api/bots/[id]/config`, load page | [`docs/parity/config-error.png`](parity/config-error.png) | FIXED in code, capture STALE — error state now keeps the page header (bot id + hash "—") with the loaded-page Back-link gap (`mt-3`/`mb-6`) and errors only inside cards in the loaded grid. The attached capture (3cdf9a6) predates the fix and shows the flush Back link. Fresh capture at this HEAD; pending Atelier verdict |
+| C4 | Load error with retry | 500 from `GET /api/bots/[id]/config`, load page | [`docs/parity/config-error.png`](parity/config-error.png) | FIXED in code, capture STALE — error state now keeps the page header (neutral "Bot configuration" title + "Couldn't load bot details." subtitle, hash "—") with the loaded-page Back-link gap (`mt-3`/`mb-6`) and errors only inside cards in the loaded grid. The attached capture (3cdf9a6) predates the fix and shows the flush Back link. Fresh capture at this HEAD; pending Atelier verdict |
 | C5 | Not found | `/bots/does-not-exist/config` | [`docs/parity/config-not-found.png`](parity/config-not-found.png) | Consistent — centered "Bot not found." + Back to chat. Fresh capture at this HEAD; pending Atelier verdict |
 | C6 | Empty snapshot list | Alice `/bots/<id>/config` (no launches) | [`docs/parity/config-snapshots-empty.png`](parity/config-snapshots-empty.png) | Consistent — "No launches recorded yet.". Fresh capture at this HEAD; pending Atelier verdict |
 | C7 | Snapshot list with two hashes | LaunchMint `/bots/<id>/config`, first row expanded (seed snapshots, no mock) | [`docs/parity/config-snapshots-two.png`](parity/config-snapshots-two.png) | MIXED-MOCK capture, FIXED by seed — attached capture mixes a manual Template source ("Created manually") with marketplace launch rows (`grok-marketplace` / `tpl-launchmint`) from route interception. The seed now records two consistent manual snapshots (newest matches current, older "Config changed since"); fresh capture uses real data with no mock. Pending Atelier verdict |

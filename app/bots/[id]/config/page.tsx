@@ -306,8 +306,8 @@ export default function BotConfigPage() {
           </Link>
           <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
             <div className="min-w-0">
-              <h1 className="text-xl font-bold truncate">{id}</h1>
-              <p className="text-sm cfg-faint truncate"> </p>
+              <h1 className="text-xl font-bold truncate">Bot configuration</h1>
+              <p className="text-sm cfg-faint truncate">Couldn&apos;t load bot details.</p>
             </div>
             <div className="ml-auto text-right">
               <p className="text-sm cfg-muted">
