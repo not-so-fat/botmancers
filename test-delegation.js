@@ -80,10 +80,13 @@ async function main() {
   agent.setDelegationChatStub(ctx => {
     calls1[ctx.botName] = (calls1[ctx.botName] || 0) + 1;
     seenBy[ctx.botName] = ctx.sent.map(part => part.content).join('\n---\n');
+    // Caller-managed: only Origin issues WAKE. A and B reply with results
+    // (no WAKE); the runtime returns control to Origin after each delegate.
     if (ctx.botName === 'Origin' && calls1.Origin === 1) return 'WAKE A: Please draft the launch note.';
-    if (ctx.botName === 'A') return 'DRAFT from A: Launch Friday at 9am.\nWAKE B: Please check this draft: Launch Friday at 9am.';
-    if (ctx.botName === 'B') return 'CHECK from B: Looks good; add the venue.\nWAKE Origin: Checked. Draft: Launch Friday at 9am. Finding: add the venue. Please report back.';
+    if (ctx.botName === 'Origin' && calls1.Origin === 2) return 'WAKE B: Please check this draft: Launch Friday at 9am.';
     if (ctx.botName === 'Origin') return 'REPORT: A draft: Launch Friday at 9am. B check: add the venue. Done.';
+    if (ctx.botName === 'A') return 'DRAFT from A: Launch Friday at 9am.';
+    if (ctx.botName === 'B') return 'CHECK from B: Looks good; add the venue.';
     return 'No response';
   });
   const user1 = messages.create(conv.id, 'user', 'Get A to draft the launch note and B to check it.');
@@ -111,6 +114,9 @@ async function main() {
   );
   assert((seenBy.B || '').includes('Launch Friday at 9am'), "B received A's draft in its context");
   assert((seenBy.Origin || '').includes('add the venue'), "Origin's report turn saw B's check");
+  assert(calls1.Origin === 3 && calls1.A === 1 && calls1.B === 1, `caller-managed sequence Origin->A, back, Origin->B, back, report (Origin=${calls1.Origin || 0}, A=${calls1.A || 0}, B=${calls1.B || 0})`);
+  assert((seenBy.A || '').includes('delegated by @Origin'), 'A was told Origin delegated it');
+  assert((seenBy.B || '').includes('delegated by @Origin'), 'B was told Origin delegated it');
   assert(queue.countPending(conv.id) === 0, 'queue drained after report');
 
   // Scenario 2: handoff beyond the depth constant is refused with a reason.
@@ -156,23 +162,27 @@ async function main() {
   const calls4 = {};
   agent.setDelegationChatStub(ctx => {
     calls4[ctx.botName] = (calls4[ctx.botName] || 0) + 1;
+    // Caller-managed: only Origin issues WAKE.
     if (ctx.botName === 'Origin' && calls4.Origin === 1) return 'WAKE A: Please draft the launch note.';
-    if (ctx.botName === 'A') return 'DRAFT from A: Launch Friday at 9am.\nWAKE B: Please check this draft: Launch Friday at 9am.';
-    if (ctx.botName === 'B') return 'CHECK from B: should never run.\nWAKE Origin: should never run.';
+    if (ctx.botName === 'Origin' && calls4.Origin === 2) return 'WAKE B: should never run.';
     if (ctx.botName === 'Origin') return 'REPORT: should never run.';
+    if (ctx.botName === 'A') return 'DRAFT from A: Launch Friday at 9am.';
+    if (ctx.botName === 'B') return 'CHECK from B: should never run.';
     return 'No response';
   });
   const user4 = messages.create(conv.id, 'user', 'Get A to draft and B to check, then stop.');
   queue.enqueue(conv.id, origin.id);
   await agent.processNextQueueItem(); // Origin -> handoff to A
   await sleep(3);
-  await agent.processNextQueueItem(); // A -> draft + handoff to B
+  await agent.processNextQueueItem(); // A -> draft, runtime returns to Origin
   await sleep(3);
 
   const midChain = chainAfter(conv.id, user4.id);
   assert(midChain.some(m => m.content.includes('DRAFT from A')), 'draft posted before Stop');
   assert(!midChain.some(m => m.content.includes('CHECK from B')), 'check not yet posted before Stop');
-  assert(queue.countPending(conv.id) === 1, 'one delegated turn queued before Stop');
+  assert(queue.countPending(conv.id) === 1, 'one caller return queued before Stop');
+  const pendingBeforeStop = queue.getNext();
+  assert(!!pendingBeforeStop && pendingBeforeStop.bot_id === origin.id, 'queued return is the caller (Origin)');
 
   const stopped = agent.stopDelegation(conv.id);
   assert(stopped === true, 'stopDelegation reports something stopped');

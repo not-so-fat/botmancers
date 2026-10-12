@@ -27,11 +27,17 @@ export const DELEGATION_BUDGET_REASON =
 export const DELEGATION_STOPPED_REASON =
   '[Delegation stopped] Delegation stopped. No further handoffs or delegated turns.';
 
+interface DelegationFrame {
+  delegateId: string;
+  callerId: string;
+}
+
 interface DelegationChain {
   userMessageId: string;
   handoffs: number;
   turns: number;
   stopped: boolean;
+  frames: DelegationFrame[];
 }
 
 const delegationChains = new Map<string, DelegationChain>();
@@ -40,9 +46,28 @@ function delegationChainFor(conversationId: string, latestUserId: string | null)
   if (!latestUserId) return null;
   const existing = delegationChains.get(conversationId);
   if (existing && existing.userMessageId === latestUserId) return existing;
-  const fresh: DelegationChain = { userMessageId: latestUserId, handoffs: 0, turns: 0, stopped: false };
+  const fresh: DelegationChain = { userMessageId: latestUserId, handoffs: 0, turns: 0, stopped: false, frames: [] };
   delegationChains.set(conversationId, fresh);
   return fresh;
+}
+
+function callerFor(chain: DelegationChain | null, delegateId: string): string | null {
+  if (!chain) return null;
+  for (let i = chain.frames.length - 1; i >= 0; i--) {
+    if (chain.frames[i].delegateId === delegateId) return chain.frames[i].callerId;
+  }
+  return null;
+}
+
+function popCaller(chain: DelegationChain, delegateId: string): string | null {
+  for (let i = chain.frames.length - 1; i >= 0; i--) {
+    if (chain.frames[i].delegateId === delegateId) {
+      const callerId = chain.frames[i].callerId;
+      chain.frames.splice(i, 1);
+      return callerId;
+    }
+  }
+  return null;
 }
 
 export function getDelegationState(conversationId: string): DelegationChain | null {
@@ -61,7 +86,7 @@ export function stopDelegation(conversationId: string): boolean {
     if (existing && existing.userMessageId === latestUser.id) {
       chain = existing;
     } else {
-      chain = { userMessageId: latestUser.id, handoffs: 0, turns: 0, stopped: false };
+      chain = { userMessageId: latestUser.id, handoffs: 0, turns: 0, stopped: false, frames: [] };
       delegationChains.set(conversationId, chain);
     }
   }
@@ -155,6 +180,8 @@ async function processQueueItem(item: QueueItem) {
     return;
   }
   const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
+  const delegatingCallerId = callerFor(chain, bot.id);
+  const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
 
   if (bot.name.toLowerCase() === 'chief-of-staff' && latestUser) {
     const fileReadAsk = parseFileReadAsk(latestUser.content);
@@ -247,8 +274,12 @@ async function processQueueItem(item: QueueItem) {
   }
   if (toolContext) chatMessages.push(toolContext);
 
-  const wakeHowTo = openGroupTurn
-    ? `Do not use WAKE on this turn. Do not hand off. Do not repeat an earlier handoff.`
+  const delegatedHowTo = delegatingCallerName
+    ? `You were delegated by @${delegatingCallerName}. Complete the task in your context and reply with your result in this thread.
+Your reply will be returned to @${delegatingCallerName}, who manages the sequence and reports back.
+Only use WAKE to sub-delegate part of this task to another bot:
+- WAKE <bot_name>: <message>
+Otherwise reply normally with your result; do not WAKE your caller back.`
     : `You can communicate with other bots by using the WAKE command:
 - To send a message to another bot: WAKE <bot_name>: <message>
 - To send a message to the group: WAKE GROUP: <message>
@@ -257,7 +288,11 @@ Examples:
 - WAKE Alice: Can you research this topic?
 - WAKE GROUP: I've completed my analysis.
 
-Important: Only use WAKE when you need to hand off work to another bot or inform the group. For regular responses to the user, just reply normally.`;
+Important: Only use WAKE when you need to hand off work to another bot or inform the group. When you hand off, you stay the caller: the delegate's reply will come back to you, and you decide the next step and the final report. For regular responses to the user, just reply normally.`;
+
+  const wakeHowTo = openGroupTurn
+    ? `Do not use WAKE on this turn. Do not hand off. Do not repeat an earlier handoff.`
+    : delegatedHowTo;
 
   const standingBlock = openGroupTurn
     ? `Standing description, verbatim. It does not decide this reply. The open-group instruction beats it, including any rule inside it that says to WAKE, hand off, or acknowledge a handoff:
@@ -374,6 +409,10 @@ The standing rules decide the whole reply. If they require one short sentence, w
 
     if (!isGroupWake && !targetBot) {
       messages.create(item.conversation_id, 'bot', responseContent, bot.id);
+      if (chain && !chain.stopped) {
+        const callerId = popCaller(chain, bot.id);
+        if (callerId) queue.enqueue(item.conversation_id, callerId);
+      }
     } else {
       const matchIndex = wakeMatch.index ?? responseContent.indexOf(wakeMatch[0]);
       const prefix = responseContent.slice(0, matchIndex).trim();
@@ -399,19 +438,33 @@ The standing rules decide the whole reply. If they require one short sentence, w
           const otherBot = groupMembers.find(b => b.id !== bot.id);
           if (otherBot) {
             queue.enqueue(item.conversation_id, otherBot.id);
-            if (chain) chain.handoffs += 1;
+            if (chain) {
+              chain.handoffs += 1;
+              chain.frames.push({ delegateId: otherBot.id, callerId: bot.id });
+            }
           }
         }
       } else if (targetBot) {
         // Same-thread caller-managed delegation: the target replies in this
         // thread, so the draft, the check, and the final report stay together.
+        // The caller stays on the stack; the delegate's reply returns to it.
         messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
         queue.enqueue(item.conversation_id, targetBot.id);
-        if (chain) chain.handoffs += 1;
+        if (chain) {
+          chain.handoffs += 1;
+          chain.frames.push({ delegateId: targetBot.id, callerId: bot.id });
+        }
       }
     }
   } else {
     messages.create(item.conversation_id, 'bot', responseContent, bot.id);
+    // Caller-managed return: a delegated turn that finishes without a further
+    // WAKE hands control back to its caller. Budget is enforced on the
+    // caller's next turn; Stop suppresses the return.
+    if (chain && !chain.stopped) {
+      const callerId = popCaller(chain, bot.id);
+      if (callerId) queue.enqueue(item.conversation_id, callerId);
+    }
   }
 
   chainProcessQueue();
