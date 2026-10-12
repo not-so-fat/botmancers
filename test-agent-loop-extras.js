@@ -204,13 +204,19 @@ async function main() {
   assert(lateRoutine().length === 1, `deferred tick fires on the fresh chain (got ${lateRoutine().length})`);
 
   // Scenario 5: the generalised teaching phrases arm timers through the
-  // real launch path, without calling the model.
+  // real launch path, without calling the model — and the taught timers
+  // post exactly once past due. Regression cover for the silent-teaching
+  // deadlock: teaching posted no reply, so the tick launch saw the user
+  // turn as awaiting reply, fell through to the teaching hook, and
+  // re-armed the already-due row with wait 0 in a tight loop (no post,
+  // queue and launch_snapshots growing every few ms).
   log('\nScenario 5: teaching phrases arm timers');
   let teachCalls = 0;
   agent.setDelegationChatStub(() => {
     teachCalls++;
     return 'should never send';
   });
+  process.env.BOTMANCERS_ROUTINE_FIRST_DUE_MS = '80';
   const teachBot = bots.create({ name: 'TeachBot', title: 'Student', description: 'Learns timers.' });
   const teachConv = conversations.getByBotId(teachBot.id);
   messages.create(teachConv.id, 'user', 'Reply with the word teacup.');
@@ -220,6 +226,21 @@ async function main() {
   assert(!!taught && taught.word === 'teacup', 'routine phrase teaches the word');
   assert(!!taught && taught.every_ms === 24 * 60 * 60 * 1000, 'taught routine repeats daily like the reference');
   assert(teachCalls === 0, 'routine teaching never calls the model');
+  await sleep(300);
+  await drain();
+  const taughtRoutinePosts = () =>
+    botMessages(teachConv.id).filter(m => m.content === '[routine]\nteacup');
+  assert(taughtRoutinePosts().length === 1, `taught routine posts exactly once past due (got ${taughtRoutinePosts().length})`);
+  assert(queue.countPending(teachConv.id) === 0, 'no queued rows after the taught routine fires');
+  assert(teachCalls === 0, 'taught routine tick never calls the model');
+  const teachSnapshots = launchSnapshots.listByBot(teachBot.id).length;
+  await sleep(200);
+  await drain();
+  assert(taughtRoutinePosts().length === 1, 'taught routine still exactly once after settling');
+  assert(
+    launchSnapshots.listByBot(teachBot.id).length === teachSnapshots,
+    'no re-arm loop: snapshot count stable after the taught routine fires'
+  );
   messages.create(teachConv.id, 'user', 'Reply with the word teacup.');
   queue.enqueue(teachConv.id, teachBot.id);
   await drain();
@@ -227,19 +248,35 @@ async function main() {
     routines.all().filter(row => row.conversation_id === teachConv.id).length === 1,
     'reteaching re-arms instead of duplicating the row'
   );
+  delete process.env.BOTMANCERS_ROUTINE_FIRST_DUE_MS;
   const shotBot = bots.create({ name: 'ShotBot', title: 'Student', description: 'Learns one-shots.' });
   const shotConv = conversations.getByBotId(shotBot.id);
   const teachAt = Date.now();
-  messages.create(shotConv.id, 'user', 'Set a one-shot in 30 seconds.');
+  messages.create(shotConv.id, 'user', 'Set a one-shot in 1 second.');
   queue.enqueue(shotConv.id, shotBot.id);
   await drain();
   const taughtShot = oneShots.pending(shotConv.id);
   assert(!!taughtShot, 'one-shot phrase teaches a durable one-shot');
   assert(
-    !!taughtShot && Math.abs(taughtShot.due_at - (teachAt + 30000)) < 5000,
+    !!taughtShot && Math.abs(taughtShot.due_at - (teachAt + 1000)) < 2000,
     'one-shot delay honors the taught seconds'
   );
   assert(teachCalls === 0, 'one-shot teaching never calls the model');
+  await sleep(1500);
+  await drain();
+  const taughtShotPosts = () =>
+    botMessages(shotConv.id).filter(m => m.content === agent.ONE_SHOT_MESSAGE);
+  assert(taughtShotPosts().length === 1, `taught one-shot posts exactly once past due (got ${taughtShotPosts().length})`);
+  assert(queue.countPending(shotConv.id) === 0, 'no queued rows after the taught one-shot fires');
+  assert(teachCalls === 0, 'taught one-shot tick never calls the model');
+  const shotSnapshots = launchSnapshots.listByBot(shotBot.id).length;
+  await sleep(200);
+  await drain();
+  assert(taughtShotPosts().length === 1, 'taught one-shot still exactly once after settling');
+  assert(
+    launchSnapshots.listByBot(shotBot.id).length === shotSnapshots,
+    'no re-arm loop: snapshot count stable after the taught one-shot fires'
+  );
 
   // Scenario 6: the tick check runs before the content hooks, so a due
   // routine posts even when the latest user message is a draft ask

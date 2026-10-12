@@ -160,6 +160,25 @@ function userAwaitingReply(conversationMessages: Message[], latestUser: Message 
   );
 }
 
+// Tick launches use this instead of userAwaitingReply directly. A
+// taught-timer phrase is answered by the arming itself: teaching is silent
+// by design (the tick is the reply), so in a direct bot thread it must not
+// block ticks. Without this bypass a taught routine/one-shot never posts:
+// the tick launch sees the unanswered teaching message, falls through to
+// the teaching hook, and re-arms the already-due row with wait 0 in a
+// tight loop. Scoped to bot threads, the only place the teaching hook runs.
+function tickBlockedByUserTurn(
+  conversationId: string,
+  conversationMessages: Message[],
+  latestUser: Message | null
+): boolean {
+  if (!latestUser) return false;
+  if (!userAwaitingReply(conversationMessages, latestUser)) return false;
+  const conversation = conversations.getById(conversationId);
+  if (conversation?.type !== 'bot') return true;
+  return routineTeachWord(latestUser.content) === null && oneShotTeachDelayMs(latestUser.content) === null;
+}
+
 // Non-consuming twin of consumeDueTimerTick: true when this launch would
 // consume a due one-shot or routine tick for the owning bot.
 function peekDueTimerTick(
@@ -168,7 +187,7 @@ function peekDueTimerTick(
   conversationMessages: Message[],
   latestUser: Message | null
 ): boolean {
-  if (userAwaitingReply(conversationMessages, latestUser)) return false;
+  if (tickBlockedByUserTurn(conversationId, conversationMessages, latestUser)) return false;
   const now = Date.now();
   const pendingOneShot = oneShots.pending(conversationId);
   if (pendingOneShot && pendingOneShot.bot_id === botId && pendingOneShot.due_at <= now) return true;
@@ -187,7 +206,7 @@ function consumeDueTimerTick(
   conversationMessages: Message[],
   latestUser: Message | null
 ): boolean {
-  if (userAwaitingReply(conversationMessages, latestUser)) return false;
+  if (tickBlockedByUserTurn(conversationId, conversationMessages, latestUser)) return false;
   const now = Date.now();
   const pendingOneShot = oneShots.pending(conversationId);
   if (
@@ -256,6 +275,14 @@ const ROUTINE_EVERY_MS = 24 * 60 * 60 * 1000;
 const ROUTINE_FIRST_DUE_MS = 8000;
 const ONE_SHOT_DEFAULT_DELAY_MS = 60_000;
 
+// Test hook: the extras test shortens the taught-routine first due so
+// Scenario 5 can wait past it without an 8s sleep. Default unchanged.
+function taughtRoutineFirstDueMs(): number {
+  const override = Number(process.env.BOTMANCERS_ROUTINE_FIRST_DUE_MS);
+  if (Number.isFinite(override) && override >= 0) return override;
+  return ROUTINE_FIRST_DUE_MS;
+}
+
 // Taught timers (NOT-411): the reference's fixed teaching phrases,
 // generalised. `Reply with the word <word>` teaches any word (the reference
 // only taught routinemint2 to chief-of-staff); `Set a one-shot[ in N
@@ -282,7 +309,7 @@ function scheduleTaughtRoutine(conversationId: string, botId: string, word: stri
     armRoutine(existing);
     return;
   }
-  armRoutine(routines.create(conversationId, botId, word, Date.now() + ROUTINE_FIRST_DUE_MS, ROUTINE_EVERY_MS));
+  armRoutine(routines.create(conversationId, botId, word, Date.now() + taughtRoutineFirstDueMs(), ROUTINE_EVERY_MS));
 }
 
 function scheduleTaughtOneShot(conversationId: string, botId: string, delayMs: number): void {
