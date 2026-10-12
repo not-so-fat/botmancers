@@ -1112,3 +1112,11 @@ button.thread-name {
 .computer-dock img:nth-child(3) {
   height: 32px;
 }
+
+/* NOT-430: keep the CoS name on one line now that the card also shows the logo */
+.card .row-head .bot-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
