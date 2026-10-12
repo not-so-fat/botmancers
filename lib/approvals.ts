@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import db, { bots, messages } from './db';
 import { isSafeFileName, parseApprovalCode } from './draft';
+import { resolveCommand } from './commands';
 import { localSkillForBot } from './skills';
 import { ARTIFACT_MAX_BYTES, filesRoot } from './artifacts';
 
@@ -115,22 +116,20 @@ function readFileArgs(args: Record<string, unknown> | null): string {
   return name;
 }
 
-const PRINT_WORD_PATTERN = /^[A-Za-z0-9_-]+$/;
-
 function runCommandArgs(args: Record<string, unknown> | null): string {
-  // Stub allowlist until the command-runs ticket wires the full registry:
-  // exactly `printf %s <word>`, no shell, one safe word.
-  if (args?.command !== undefined && args.command !== 'printf') {
-    refused('refused: command not allowlisted');
+  // Single source of truth: the command-runs allowlist (lib/commands.ts).
+  // Exactly `printf %s <word>`, no shell, one safe word; anything else throws
+  // CommandRefused, surfaced here as ApprovalActionRefused.
+  try {
+    const resolved = resolveCommand({
+      command: args?.command ?? 'printf',
+      format: args?.format,
+      word: args?.word,
+    });
+    return resolved.argv[1];
+  } catch (error) {
+    refused(error instanceof Error ? error.message : 'refused: command not allowlisted');
   }
-  if (args?.format !== undefined && args.format !== '%s') {
-    refused('refused: command not allowlisted');
-  }
-  const word = args?.word;
-  if (typeof word !== 'string' || !PRINT_WORD_PATTERN.test(word) || word.length > 64) {
-    refused('refused: command not allowlisted');
-  }
-  return word;
 }
 
 function sendDraftArgs(args: Record<string, unknown> | null): {

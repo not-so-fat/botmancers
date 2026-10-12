@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { stopFileReadRun, stopPublicPageReadRun, stopCodingLimbRun } from '@/lib/run-child';
+import { stopFileReadRun, stopPublicPageReadRun, stopCodingLimbRun, stopCommandRun } from '@/lib/run-child';
 
 export async function POST(
   request: Request,
@@ -7,11 +7,12 @@ export async function POST(
 ) {
   try {
     const { messageId } = await params;
-    
+
     stopFileReadRun(messageId);
     stopPublicPageReadRun(messageId);
     stopCodingLimbRun(messageId);
-    
+    stopCommandRun(messageId);
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error stopping run:', error);
