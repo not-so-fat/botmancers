@@ -28,22 +28,33 @@ Status `PENDING` below means the current-side capture still needs a
 browser session; the dev sandbox for this change has no browser and no
 loopback, so captures are routed to the operator.
 
+## Operator capture notes (2026-10-12)
+
+Captured at HEAD 3cdf9a6 with Playwright headless Chromium against
+`next dev -p 43200` (43123 was occupied by another local instance),
+seed fixture DB. Reference rows use the reference viewport 1024x570
+(composites: reference left, current right). Config states are
+1440x900 full-page, plus one 390x800. The Next.js dev indicator was
+hidden with injected CSS. Config snapshot rows and template fields
+were mocked with Playwright route interception (the fixture has no
+launches); C2 holds the PATCH open; C4 returns 500.
+
 ## Reference screens
 
 | # | Screen | Reference file | Current-side repro | Side-by-side | Verdict |
 |---|--------|----------------|--------------------|--------------|---------|
-| 1 | Grouped roster, botmancer idle, card rows | `botmancer-idle.png` | seed fixture, `/` at 1440x900 | `docs/parity/botmancer-idle.png` — PENDING | pending visual check |
-| 2 | Same, scrolled to top | `botmancer-idle-top.png` | seed fixture, `/` scrolled top | `docs/parity/botmancer-idle-top.png` — PENDING | pending visual check |
-| 3 | Botmancer working (heartbeat "Working") | `botmancer-working.png` | seed fixture, trigger a run, capture mid-run | `docs/parity/botmancer-working.png` — PENDING | pending visual check |
-| 4 | Flat rows, group section | `flat-rows-group.png` | seed fixture, `/` scrolled to groups | `docs/parity/flat-rows-group.png` — PENDING | pending visual check |
-| 5 | Flat rows, top | `flat-rows-top.png` | seed fixture, `/` scrolled top | `docs/parity/flat-rows-top.png` — PENDING | pending visual check |
-| 6 | Roster without groups | `roster-nogroups.png` | `--no-groups` fixture, `/` | `docs/parity/roster-nogroups.png` — PENDING | pending visual check |
-| 7 | Unread badge cleared | `unread-cleared.png` | seed fixture, open the unread thread | `docs/parity/unread-cleared.png` — PENDING | pending visual check |
-| 8 | Unread row hover (tooltip) | `unread-hover.png` | seed fixture, hover unread row | `docs/parity/unread-hover.png` — PENDING | pending visual check |
-| 9 | Unread thread with tooltip menu | `unread-thread.png` | seed fixture, hover row in thread view | `docs/parity/unread-thread.png` — PENDING | pending visual check |
-| 10 | Draft proposal card | (behavioral, NOT-410) | `--thread-cards` fixture, draft thread | `docs/parity/draft-card.png` — PENDING | pending visual check |
-| 11 | Approval request (Approve/Deny) | (behavioral, NOT-410/411) | `--thread-cards` fixture, approval thread | `docs/parity/approval-card.png` — PENDING | pending visual check |
-| 12 | File artifact card | (behavioral, NOT-410) | `--thread-cards` fixture, file thread | `docs/parity/file-card.png` — PENDING | pending visual check |
+| 1 | Grouped roster, botmancer idle, card rows | `botmancer-idle.png` | seed fixture, `/` at 1440x900 | [`docs/parity/botmancer-idle.png`](parity/botmancer-idle.png) | DRIFT — palette, tokens, thread cards and composer match; roster uses flat rows instead of the reference card rows, names render sans not mono, and the main-only computer-preview overlay covers the thread |
+| 2 | Same, scrolled to top | `botmancer-idle-top.png` | seed fixture, `/` scrolled top | [`docs/parity/botmancer-idle-top.png`](parity/botmancer-idle-top.png) | DRIFT — thread view (mono message cards, You labels, header) matches; roster is flat rows vs reference card rows |
+| 3 | Botmancer working (heartbeat "Working") | `botmancer-working.png` | seed fixture, trigger a run, capture mid-run | [`docs/parity/botmancer-working.png`](parity/botmancer-working.png) | DRIFT — header shows "Working" as in the reference; the fixture has no OPENAI_API_KEY, so the lead card preview shows an error line, and the computer-preview overlay covers the thread |
+| 4 | Flat rows, group section | `flat-rows-group.png` | seed fixture, `/` scrolled to groups | [`docs/parity/flat-rows-group.png`](parity/flat-rows-group.png) | MATCH — flat rows, group pills (ClickproofGrove @Pine, Research Team), thread cards match; only the listed main-only additions (logo, Import button, Config/Stop) differ |
+| 5 | Flat rows, top | `flat-rows-top.png` | seed fixture, `/` scrolled top | [`docs/parity/flat-rows-top.png`](parity/flat-rows-top.png) | MATCH — same as flat-rows-group at the top of the roster |
+| 6 | Roster without groups | `roster-nogroups.png` | `--no-groups` fixture, `/` | [`docs/parity/roster-nogroups.png`](parity/roster-nogroups.png) | MATCH — flat roster without groups, highlighted active row, thread cards match; only the main-only additions differ |
+| 7 | Unread badge cleared | `unread-cleared.png` | seed fixture, open the unread thread | [`docs/parity/unread-cleared.png`](parity/unread-cleared.png) | DRIFT (repro) — capture shows the LaunchMint thread with the row menu open; the reference shows the Cedar thread with no menu, so this pair is not a like-for-like repro |
+| 8 | Unread row hover (tooltip) | `unread-hover.png` | seed fixture, hover unread row | [`docs/parity/unread-hover.png`](parity/unread-hover.png) | DRIFT — row menu style (Heartbeat/Pin-Unpin/Hide) matches, but the current menu has no "Unread" line because no bot was unread in the fixture at capture time; roster is flat rows vs reference card rows |
+| 9 | Unread thread with tooltip menu | `unread-thread.png` | seed fixture, hover row in thread view | [`docs/parity/unread-thread.png`](parity/unread-thread.png) | DRIFT — thread and row-menu styling match; roster is flat rows vs reference card rows, and the menu reads Unpin because LaunchMint is pinned |
+| 10 | Draft proposal card | (behavioral, NOT-410) | `--thread-cards` fixture, draft thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
+| 11 | Approval request (Approve/Deny) | (behavioral, NOT-410/411) | `--thread-cards` fixture, approval thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
+| 12 | File artifact card | (behavioral, NOT-410) | `--thread-cards` fixture, file thread | NOT CAPTURED | not in this pass (operator captured config states + 9 reference screens only) |
 
 ## Config page states (no reference counterpart)
 
@@ -53,13 +64,13 @@ restored home page and the screenshots above. Repro: seed fixture,
 
 | # | State | Repro | Image | Verdict |
 |---|-------|-------|-------|---------|
-| C1 | Loaded (skills present, rules, template source, snapshots) | open config page for a bot with skill + launches | `docs/parity/config-loaded.png` — PENDING | pending Atelier verdict |
-| C2 | Saving (`Saving…`, buttons disabled) | edit rules or skill, capture mid-save | `docs/parity/config-saving.png` — PENDING | pending Atelier verdict |
-| C3 | Saved (`Saved HH:MM:SS`) | capture within 5s of a save | `docs/parity/config-saved.png` — PENDING | pending Atelier verdict |
-| C4 | Load error with retry | stop API / seed failure, load page | `docs/parity/config-error.png` — PENDING | pending Atelier verdict |
-| C5 | Not found | `/bots/does-not-exist/config` | `docs/parity/config-not-found.png` — PENDING | pending Atelier verdict |
-| C6 | Empty snapshot list | bot with no launches | `docs/parity/config-snapshots-empty.png` — PENDING | pending Atelier verdict |
-| C7 | Snapshot list with two hashes | bot with two launches, one row expanded | `docs/parity/config-snapshots-two.png` — PENDING | pending Atelier verdict |
+| C1 | Loaded (skills present, rules, template source, snapshots) | open config page for a bot with skill + launches | [`docs/parity/config-loaded.png`](parity/config-loaded.png) | Consistent with home tokens (card, hairline inputs, accent primary, mono skill / sans rules). Snapshot row + template fields mocked via route interception. 390x800: [`config-loaded-390.png`](parity/config-loaded-390.png), stacks cleanly; pending Atelier verdict |
+| C2 | Saving (`Saving…`, buttons disabled) | edit rules or skill, capture mid-save | [`docs/parity/config-saving.png`](parity/config-saving.png) | Consistent — header "Saving…", Save button shows "Saving…" disabled; PATCH held open by route interception; pending Atelier verdict |
+| C3 | Saved (`Saved HH:MM:SS`) | capture within 5s of a save | [`docs/parity/config-saved.png`](parity/config-saved.png) | Consistent — "Saved 07:17:01" status, hash updated; pending Atelier verdict |
+| C4 | Load error with retry | stop API / seed failure, load page | [`docs/parity/config-error.png`](parity/config-error.png) | Consistent, minor drift — four cards with "Couldn't load this section. Retry"; the Back link sits flush on the first card (no gap); pending Atelier verdict |
+| C5 | Not found | `/bots/does-not-exist/config` | [`docs/parity/config-not-found.png`](parity/config-not-found.png) | Consistent — centered "Bot not found." + Back to chat; pending Atelier verdict |
+| C6 | Empty snapshot list | bot with no launches | [`docs/parity/config-snapshots-empty.png`](parity/config-snapshots-empty.png) | Consistent — "No launches recorded yet."; pending Atelier verdict |
+| C7 | Snapshot list with two hashes | bot with two launches, one row expanded | [`docs/parity/config-snapshots-two.png`](parity/config-snapshots-two.png) | Consistent — two hashes (one matches current, one "Config changed since"), first row expanded with all fields; launch rows mocked; pending Atelier verdict |
 
 Code check (verified in this PR, no browser needed): the restyled page
 contains no light-only surfaces —
