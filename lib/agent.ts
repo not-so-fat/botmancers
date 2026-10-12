@@ -535,6 +535,9 @@ export function mirrorSpecialistReply(args: {
   reply: string;
 }): { callerMessageId: string | null; targetMessageId: string | null } {
   const { callerConversationId, caller, target, taskMessage, reply } = args;
+  // One post-processed reply for both threads: a specialist whose skill says
+  // replies end with the exact token T posts with T on the gateway path too.
+  const posted = applySkillEndToken(target.name, reply);
   let callerMessageId: string | null = null;
   let targetMessageId: string | null = null;
 
@@ -567,11 +570,11 @@ export function mirrorSpecialistReply(args: {
       msg =>
         msg.sender_type === 'bot' &&
         msg.sender_id === target.id &&
-        msg.content === reply &&
+        msg.content === posted &&
         msg.created_at >= fromMsg.created_at
     );
     if (!hasReply) {
-      targetMessageId = messages.create(targetConversation.id, 'bot', reply, target.id).id;
+      targetMessageId = messages.create(targetConversation.id, 'bot', posted, target.id).id;
     }
   }
 
@@ -579,11 +582,11 @@ export function mirrorSpecialistReply(args: {
     msg =>
       msg.sender_type === 'bot' &&
       msg.sender_id === target.id &&
-      msg.content === reply &&
+      msg.content === posted &&
       msg.created_at >= roundAt
   );
   if (!hasMirror) {
-    callerMessageId = messages.create(callerConversationId, 'bot', reply, target.id).id;
+    callerMessageId = messages.create(callerConversationId, 'bot', posted, target.id).id;
   }
   return { callerMessageId, targetMessageId };
 }

@@ -239,6 +239,31 @@ async function main() {
   const question = lastBotMessage(askConv.id);
   assert(!!question && question.content.endsWith('\nparityask1'), 'ask question ends with the token');
   assert(countOccurrences(question.content, 'parityask1') === 1, 'ask question never doubles the token');
+
+  // End-token integration: the Hermes gateway mirror posts the token once on
+  // both threads, and a retried mirror of the same round stays silent.
+  log('\nEnd-token mirror');
+  writeSkill('Parityspec', 'Every reply ends with the exact token parityspec1');
+  const caller = bots.create({ name: 'Paritycaller', title: '', description: 'Delegates.' });
+  const specialist = bots.create({ name: 'Parityspec', title: '', description: 'Replies briefly.' });
+  const callerConv = conversations.getByBotId(caller.id);
+  const specConv = conversations.getByBotId(specialist.id);
+  const mirrorArgs = {
+    callerConversationId: callerConv.id,
+    caller,
+    target: specialist,
+    taskMessage: 'summarize the inbox',
+    reply: 'three items need you',
+  };
+  const first = agent.mirrorSpecialistReply(mirrorArgs);
+  assert(first.callerMessageId !== null && first.targetMessageId !== null, 'mirror posts to both threads');
+  const callerPosted = messages.getByConversation(callerConv.id).find(m => m.id === first.callerMessageId);
+  const targetPosted = messages.getByConversation(specConv.id).find(m => m.id === first.targetMessageId);
+  assert(callerPosted.content === 'three items need you\nparityspec1', 'caller-thread mirror ends with the token once');
+  assert(targetPosted.content === 'three items need you\nparityspec1', 'specialist-thread mirror ends with the token once');
+  assert(countOccurrences(callerPosted.content, 'parityspec1') === 1, 'caller-thread mirror never doubles the token');
+  const retry = agent.mirrorSpecialistReply(mirrorArgs);
+  assert(retry.callerMessageId === null && retry.targetMessageId === null, 'retried mirror of the same round posts nothing');
   agent.setDelegationChatStub(null);
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
