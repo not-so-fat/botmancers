@@ -229,6 +229,14 @@ if (!groupColumns.some(column => column.name === 'owner_bot_id')) {
   db.exec('ALTER TABLE groups ADD COLUMN owner_bot_id TEXT');
 }
 
+// Transport that served a launch ('openai' or 'hermes-gateway'). Outside the
+// hashed snapshot input: it records how the turn ran, not the effective
+// configuration, so backfilled rows read 'openai'.
+const snapshotColumns = db.prepare('PRAGMA table_info(launch_snapshots)').all() as { name: string }[];
+if (!snapshotColumns.some(column => column.name === 'transport')) {
+  db.exec("ALTER TABLE launch_snapshots ADD COLUMN transport TEXT NOT NULL DEFAULT 'openai'");
+}
+
 export interface Group {
   id: string;
   name: string;
@@ -645,6 +653,16 @@ export const approvals = {
 };
 
 export const queue = {
+  getById: (id: string): QueueItem | undefined => {
+    return db.prepare('SELECT * FROM processing_queue WHERE id = ?').get(id) as QueueItem | undefined;
+  },
+
+  listByConversation: (conversationId: string): QueueItem[] => {
+    return db.prepare(
+      'SELECT * FROM processing_queue WHERE conversation_id = ? ORDER BY created_at ASC'
+    ).all(conversationId) as QueueItem[];
+  },
+
   enqueue: (conversationId: string, botId: string): QueueItem => {
     const item: QueueItem = {
       id: randomUUID(),
@@ -704,13 +722,14 @@ export interface LaunchSnapshot {
   created_at: number;
   hash: string;
   snapshot: string;
+  transport: string;
 }
 
 export const launchSnapshots = {
-  record: (id: string, botId: string, hash: string, snapshot: string): void => {
+  record: (id: string, botId: string, hash: string, snapshot: string, transport = 'openai'): void => {
     db.prepare(
-      'INSERT OR IGNORE INTO launch_snapshots (id, bot_id, created_at, hash, snapshot) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, botId, Date.now(), hash, snapshot);
+      'INSERT OR IGNORE INTO launch_snapshots (id, bot_id, created_at, hash, snapshot, transport) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, botId, Date.now(), hash, snapshot, transport);
   },
 
   listByBot: (botId: string): LaunchSnapshot[] => {
