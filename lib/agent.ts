@@ -14,7 +14,7 @@ import {
 } from './artifacts';
 import { mcpTurn } from './mcp';
 import { applySkillEndToken, readSkillState } from './skills';
-import { buildSnapshotInput, hashSnapshot } from './snapshot';
+import { buildSnapshotInput, hashSnapshot, withDeckLaunch } from './snapshot';
 import {
   loadHermesConfig,
   hermesChat,
@@ -480,6 +480,23 @@ function flushSnapshot(item: QueueItem): void {
   } catch (error) {
     console.error('Error recording launch snapshot:', error);
   }
+}
+
+// NOT-433 repair: the held snapshot is captured from the stored bot row
+// before the model reply, but a DECK turn resolves its launch values later
+// (directive runtime, deck from the working directory's agent-deck
+// assignment, cwd from BOTMANCERS_DECK_CWD). Overwriting the held coding
+// path with those resolved values keeps the immutable snapshot truthful:
+// it records the deck/cwd/runtime the launch actually used, not the
+// stored configuration. No-op when no snapshot is held for the item.
+export function recordDeckLaunchInSnapshot(
+  itemId: string,
+  launch: { coding_runtime: string; deck_name: string; working_directory: string }
+): void {
+  const held = pendingSnapshots.get(itemId);
+  if (!held) return;
+  const next = withDeckLaunch(JSON.parse(held.json), launch);
+  pendingSnapshots.set(itemId, { json: JSON.stringify(next), hash: hashSnapshot(next), transport: held.transport });
 }
 
 export async function processNextQueueItem(): Promise<boolean> {
@@ -1707,8 +1724,11 @@ The standing rules decide the whole reply. If they require one short sentence, w
   // counted delegated turn, refuses with the same depth reason when
   // exhausted, and honours Stop before, during (via the adapter's stopped
   // callback), and after the sequence. The deck comes from the working
-  // directory's own agent-deck assignment, so no second copy of it lives
-  // on bot records. On success or adapter-reported failure the
+  // directory's own agent-deck assignment at launch time; the bot record's
+  // stored coding path is configuration, not the effective launch. The
+  // held launch snapshot is overwritten with the resolved values below so
+  // it records what the launch actually used. On success or adapter-reported
+  // failure the
   // caller-managed return below still applies, so a delegate's DECK turn
   // reports back to its caller like any other delegated turn.
   const deckDirective = parseDeckDirective(responseContent);
@@ -1769,6 +1789,14 @@ The standing rules decide the whole reply. If they require one short sentence, w
       chainProcessQueue();
       return;
     }
+    // The launch values are resolved: record them as the snapshot's
+    // effective coding path before delegating, so adapter success AND
+    // adapter failure both flush what actually ran.
+    recordDeckLaunchInSnapshot(item.id, {
+      coding_runtime: deckClient,
+      deck_name: deckId,
+      working_directory: deckCwd,
+    });
     if (chain) chain.handoffs += 1;
     let deckDelegation: DeckDelegationResult | null = null;
     let deckFailed = false;
