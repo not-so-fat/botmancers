@@ -297,23 +297,53 @@ export default function BotConfigPage() {
   }
 
   if (loadFailed && !data) {
+    const errorSections = ['Skills', 'Rules', 'Template source'];
     return (
       <div className="cfg-page">
-        <div className="max-w-6xl mx-auto space-y-6">
-          <Link href="/" className="cfg-link">
+        <div className="max-w-6xl mx-auto">
+          <Link href="/" className="cfg-link text-sm">
             ← Back to chat
           </Link>
-          {['Skills', 'Rules', 'Template source', 'Launch snapshots'].map(section => (
-            <div key={section} className="cfg-card">
-              <h2 className="cfg-title mb-2">{section}</h2>
+          <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
+            <div className="min-w-0">
+              <h1 className="text-xl font-bold truncate">{id}</h1>
+              <p className="text-sm cfg-faint truncate"> </p>
+            </div>
+            <div className="ml-auto text-right">
               <p className="text-sm cfg-muted">
-                Couldn&apos;t load this section.{' '}
-                <button onClick={retryLoad} className="cfg-link">
-                  Retry
-                </button>
+                Current config hash: <code className="cfg-code">—</code>
+              </p>
+              <p className="text-sm mt-1">
+                <span className="cfg-faint">● Saved</span>
               </p>
             </div>
-          ))}
+          </header>
+          <div className="grid gap-6 lg:grid-cols-5 items-start">
+            <div className="lg:col-span-3 space-y-6">
+              {errorSections.map(section => (
+                <div key={section} className="cfg-card">
+                  <h2 className="cfg-title mb-2">{section}</h2>
+                  <p className="text-sm cfg-muted">
+                    Couldn&apos;t load this section.{' '}
+                    <button onClick={retryLoad} className="cfg-link">
+                      Retry
+                    </button>
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div className="lg:col-span-2">
+              <div className="cfg-card">
+                <h2 className="cfg-title mb-2">Launch snapshots</h2>
+                <p className="text-sm cfg-muted">
+                  Couldn&apos;t load this section.{' '}
+                  <button onClick={retryLoad} className="cfg-link">
+                    Retry
+                  </button>
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -323,7 +353,7 @@ export default function BotConfigPage() {
 
   const { bot, skill, currentHash, snapshots } = data;
   const hasTemplateSource = Boolean(
-    bot.source_provider ?? bot.template_id ?? bot.template_url ?? bot.import_schema_version ?? bot.import_operation_id
+    bot.source_provider || bot.template_id || bot.template_url || bot.import_schema_version || bot.import_operation_id
   );
 
   const rulesStateLine =
@@ -467,7 +497,7 @@ export default function BotConfigPage() {
                         </button>
                         <button
                           onClick={discardSkill}
-                          disabled={skillPhase === 'saving'}
+                          disabled={!skillDirty || skillPhase === 'saving'}
                           className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
                         >
                           Discard
