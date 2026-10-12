@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
-import { groups } from '@/lib/db';
+import { bots, groups } from '@/lib/db';
+
+export const GROUP_MIN_MEMBERS = 2;
+export const GROUP_MAX_MEMBERS = 6;
+export const GROUP_SIZE_ERROR = 'Pick 2 to 6 bots.';
 
 export async function GET() {
   try {
@@ -18,7 +22,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, botIds } = body;
+    const { name, botIds, ownerId } = body;
 
     if (!name || !botIds || !Array.isArray(botIds) || botIds.length === 0) {
       return NextResponse.json(
@@ -27,7 +31,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const group = groups.create(name, botIds);
+    if (botIds.length < GROUP_MIN_MEMBERS || botIds.length > GROUP_MAX_MEMBERS) {
+      return NextResponse.json({ error: GROUP_SIZE_ERROR }, { status: 400 });
+    }
+
+    for (const botId of botIds) {
+      if (typeof botId !== 'string' || !bots.getById(botId)) {
+        return NextResponse.json({ error: 'Unknown botId' }, { status: 400 });
+      }
+    }
+
+    const owner = typeof ownerId === 'string' && botIds.includes(ownerId) ? ownerId : undefined;
+    const group = groups.create(name, botIds, owner);
     return NextResponse.json({
       ...group,
       members: groups.getMembers(group.id),

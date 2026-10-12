@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { messages, conversations, queue, groups, bots, draftActions, approvals, memories } from '@/lib/db';
+import type { Bot } from '@/lib/db';
 import { getApprovalByCode } from '@/lib/approvals';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { resumeBotIdsForConversation } from '@/lib/ask';
@@ -67,7 +68,14 @@ export async function POST(
       return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
     }
 
-    const addressed = addressedBots(String(content), mentionedBotId ? String(mentionedBotId) : undefined);
+    const isGroupThread = conversation.type === 'group';
+    const bareNameBots = isGroupThread && conversation.group_id ? groups.getMembers(conversation.group_id) : [];
+    const addressed = addressedBots(
+      String(content),
+      mentionedBotId ? String(mentionedBotId) : undefined,
+      isGroupThread,
+      bareNameBots
+    );
     const handoffIds = addressed.map(bot => bot.id);
     const message = messages.create(id, 'user', content, undefined, handoffIds);
     const queued = new Set<string>();
@@ -147,7 +155,27 @@ function mentionAt(content: string, name: string): boolean {
   return false;
 }
 
-function addressedBots(content: string, explicitId?: string) {
+function escapeName(name: string): string {
+  return name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function nameAsWord(content: string, name: string): boolean {
+  if (!name.trim()) return false;
+  const pattern = new RegExp('(^|[^\\p{L}\\p{N}_])' + escapeName(name) + '(?![\\p{L}\\p{N}_])', 'iu');
+  return pattern.test(content);
+}
+
+// Bare-name addressing rule (NOT-418):
+// - Group conversations only: callers pass bareNames=true with the group's
+//   members as bareNameBots; direct threads pass false and no bare match.
+// - Word boundaries (unicode letters/numbers/underscore): substrings never
+//   match, so "Ann" in "Annalise" is not an address.
+// - Two or more bare member names address them all; a single bare name
+//   never addresses (prevents common words from waking bots).
+// - Only names in the explicit bareNameBots allowlist are checked, never
+//   all bots implicitly.
+// @-mentions and the explicit picker id address in any thread.
+export function addressedBots(content: string, explicitId?: string, bareNames = false, bareNameBots: Bot[] = []) {
   const all = bots.getAll();
   const found = new Map<string, (typeof all)[number]>();
   if (explicitId) {
@@ -157,6 +185,16 @@ function addressedBots(content: string, explicitId?: string) {
   const sorted = [...all].sort((a, b) => b.name.length - a.name.length);
   for (const bot of sorted) {
     if (mentionAt(content, bot.name)) found.set(bot.id, bot);
+  }
+  if (bareNames && bareNameBots.length > 0) {
+    const candidates = [...bareNameBots].sort((a, b) => b.name.length - a.name.length);
+    const named: Bot[] = [];
+    for (const bot of candidates) {
+      if (nameAsWord(content, bot.name)) named.push(bot);
+    }
+    if (named.length >= 2) {
+      for (const bot of named) found.set(bot.id, bot);
+    }
   }
   return [...found.values()];
 }
