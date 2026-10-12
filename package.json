@@ -10,7 +10,9 @@
     "test:acceptance": "node test-acceptance-steps-1-7.js",
     "test:marketplace-import": "node test-import-marketplace-ui.js",
     "test:snapshot": "node test-snapshot.js",
-    "test:delegation": "node test-delegation.js"
+    "test:delegation": "node test-delegation.js",
+    "test:unread": "node test-unread.js",
+    "seed:design-fixture": "node scripts/seed-design-fixture.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
