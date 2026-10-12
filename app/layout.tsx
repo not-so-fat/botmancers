@@ -16,6 +16,15 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Botmancers",
   description: "Cloud-hosted AI teammate app",
+  icons: {
+    icon: [
+      { url: "/brand/botmancers-logo-filled-64.png", sizes: "64x64", type: "image/png" },
+      { url: "/brand/botmancers-logo-filled-256.png", sizes: "256x256", type: "image/png" },
+    ],
+    apple: [
+      { url: "/brand/botmancers-logo-filled-256.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
