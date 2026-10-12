@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { isSafeFileName } from '@/lib/draft';
+import { filesRoot } from '@/lib/artifacts';
 
-// Download a `[file]` artifact. Only simple names inside the repo's files/
-// directory are servable; anything else is rejected before touching disk.
+// Download a `[file]` artifact. Only simple names inside the files directory
+// are servable; anything else is rejected before touching disk.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ name: string }> }
@@ -14,7 +15,7 @@ export async function GET(
     if (!isSafeFileName(name)) {
       return NextResponse.json({ error: 'Invalid file name' }, { status: 400 });
     }
-    const dir = path.join(process.cwd(), 'files');
+    const dir = filesRoot();
     const filePath = path.join(dir, name);
     if (!filePath.startsWith(dir + path.sep)) {
       return NextResponse.json({ error: 'Invalid file name' }, { status: 400 });
