@@ -129,7 +129,7 @@ function runFresh() {
   assert(hasUnique('work_attempts', 'request_id', true), 'work_attempts: at most one open attempt per request (partial unique)');
   assert(hasUnique('session_bindings', 'agent_id,adapter,expr,expr', true), 'session_bindings: one active binding per scope (partial unique)');
   const migrations = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
-  assert(migrations.map(m => m.version).join(',') === '1,2' && store.ENGINE_SCHEMA_VERSION === 2, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
+  assert(migrations.map(m => m.version).join(',') === '1,2,3' && store.ENGINE_SCHEMA_VERSION === 3, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
   const edges = sqlite.prepare('SELECT from_state || \'>\' || to_state AS e FROM work_request_transitions').all().map(row => row.e);
   assert(edges.includes('queued>running') && !edges.includes('completed>running'), 'transition table seeded from WORK_REQUEST_TRANSITIONS');
 
@@ -235,6 +235,11 @@ function runFresh() {
   const failing = engine.createOrGetWorkRequest(baseInput()).request;
   throwsCode(() => engine.transitionWorkRequest(failing.id, { from: 'queued', to: 'completed' }), 'invalid_transition', 'queued -> completed is invalid');
   throwsMatching(() => sqlite.prepare("UPDATE work_requests SET state = 'completed', terminal_at = 1 WHERE id = ?").run(failing.id), /invalid work_requests state transition/, 'raw SQL cannot bypass the state machine');
+  throwsMatching(() => sqlite.prepare("INSERT INTO work_request_transitions (from_state, to_state) VALUES ('queued', 'completed')").run(), /read-only/, 'the transition allowlist cannot be widened');
+  throwsMatching(() => sqlite.prepare("UPDATE work_request_transitions SET to_state = 'completed' WHERE from_state = 'queued' AND to_state = 'running'").run(), /read-only/, 'the transition allowlist cannot be rewritten');
+  throwsMatching(() => sqlite.prepare("DELETE FROM work_request_transitions WHERE from_state = 'queued' AND to_state = 'running'").run(), /read-only/, 'the transition allowlist cannot be narrowed');
+  assert(count('SELECT COUNT(*) AS n FROM work_request_transitions') === Object.values(store.WORK_REQUEST_TRANSITIONS).flat().length, 'transition allowlist unchanged');
+  throwsMatching(() => sqlite.prepare("UPDATE work_requests SET state = 'completed', terminal_at = 1 WHERE id = ?").run(failing.id), /invalid work_requests state transition/, 'queued -> completed still rejected by raw SQL');
   engine.transitionWorkRequest(failing.id, { from: 'queued', to: 'running' });
   const eventsBefore = engine.listEvents(failing.id).length;
   throwsCode(() => engine.transitionWorkRequest(failing.id, { from: 'queued', to: 'running' }), 'stale_state', 'a stale expected state is rejected');
@@ -282,6 +287,9 @@ function runFresh() {
   assert(engine.listEvents(a.id).slice(1).map(e => JSON.parse(e.data).i).join(',') === '0,1,2,3,4,5,6,7,8,9', 'event data kept in append order');
   throwsMatching(() => sqlite.prepare("INSERT INTO engine_events (id, request_id, sequence, type, created_at) VALUES ('dup', ?, 1, 't', 1)").run(a.id), /UNIQUE/, 'a duplicate sequence is rejected');
   throwsMatching(() => sqlite.prepare("UPDATE engine_events SET type = 'edited' WHERE request_id = ?").run(a.id), /append-only/, 'events are append-only');
+  throwsMatching(() => sqlite.prepare('DELETE FROM engine_events WHERE request_id = ? AND sequence = 5').run(a.id), /append-only/, 'a single event cannot be deleted');
+  throwsMatching(() => sqlite.prepare('DELETE FROM engine_events WHERE request_id = ?').run(a.id), /append-only/, "a request's whole log cannot be deleted directly");
+  assert(engine.listEvents(a.id).map(e => e.sequence).join(',') === seqA.join(','), 'rejected deletes leave the sequence gap-free');
   throwsCode(() => engine.appendEvent('missing', { type: 'x' }), 'not_found', 'appending to an unknown request fails');
 
   console.log('\nAttempts');
@@ -321,6 +329,10 @@ function runFresh() {
   const active = engine.getActiveSessionBinding({ agentId: builder.id, adapter: 'agent-deck', conversationId: conv.id, requestId: work.id });
   assert(active && active.id === binding.id, 'active binding resolves by scope');
   const resumeSnapshot = { deck_id: 'deck-1', resume: true, nested: { k: [1, 2] } };
+  const attemptsBeforeLaunchResume = count('SELECT COUNT(*) AS n FROM work_attempts');
+  throwsCode(() => engine.createAttempt(work.id, { kind: 'launch', adapter: 'agent-deck', toolProfile: 'edit', launchSnapshot: snapshot, resumedSessionBindingId: binding.id }), 'invalid_input', 'a launch attempt cannot name a resumed session binding');
+  throwsMatching(() => sqlite.prepare("INSERT INTO work_attempts (id, request_id, attempt_number, kind, adapter, tool_profile, launch_snapshot, launch_snapshot_hash, resumed_session_binding_id, started_at) VALUES ('raw-l', ?, 9, 'launch', 'agent-deck', 'edit', '{}', 'h', ?, 1)").run(work.id, binding.id), /CHECK|kind does not match/, 'raw SQL cannot record a launch that resumes a binding');
+  assert(count('SELECT COUNT(*) AS n FROM work_attempts') === attemptsBeforeLaunchResume, 'rejected launch-with-binding writes no attempt');
   const attempt2 = engine.createAttempt(work.id, { kind: 'resume', adapter: 'agent-deck', toolProfile: 'edit', launchSnapshot: resumeSnapshot, resumedSessionBindingId: binding.id });
   assert(attempt2.attempt_number === 2 && attempt2.resumed_session_binding_id === binding.id, 'resume is a new attempt; earlier evidence is kept');
   assert(JSON.stringify(JSON.parse(attempt2.launch_snapshot)) === JSON.stringify(resumeSnapshot), 'object snapshots serialize once and round-trip');
@@ -414,12 +426,23 @@ function runFresh() {
   throwsMatching(() => sqlite.prepare('DELETE FROM session_bindings WHERE id = ?').run(childBinding.id), /resumed_session_binding_id/, 'a binding cannot be deleted while an attempt resumes it');
   throwsMatching(() => sqlite.prepare('DELETE FROM work_requests WHERE id = ?').run(childY.id), /work_attempts.request_id/, 'a request cannot be deleted while attempts reference it');
   assert(engine.getWorkRequest(rootX.id) && engine.getAttempt(childResume.id) && orphans().length === 0, 'rejected deletes leave every row in place');
+  throwsMatching(() => sqlite.prepare("UPDATE conversations SET id = 'renamed-conv' WHERE id = ?").run(sourceConv.id), /source_conversation_id/, 'a referenced conversation id cannot change');
+  throwsMatching(() => sqlite.prepare("UPDATE bots SET id = 'renamed-bot' WHERE id = ?").run(source.id), /target_agent_id/, 'a referenced Agent id cannot change');
+  const bindingOnly = bots.create({ deck_id: 'deck-1', name: 'BindingOnly', title: '', description: '' });
+  const bindingOnlyConv = conversations.getByBotId(bindingOnly.id);
+  engine.bindSession({ agentId: bindingOnly.id, adapter: 'hermes-gateway', externalSessionId: 'b-1', conversationId: bindingOnlyConv.id });
+  throwsMatching(() => sqlite.prepare("UPDATE conversations SET id = 'renamed-conv' WHERE id = ?").run(bindingOnlyConv.id), /session_bindings.conversation_id/, 'a conversation id referenced by a binding cannot change');
+  throwsMatching(() => sqlite.prepare("UPDATE bots SET id = 'renamed-bot' WHERE id = ?").run(bindingOnly.id), /session_bindings.agent_id/, 'an Agent id referenced by a binding cannot change');
+  sqlite.prepare("UPDATE conversations SET created_at = created_at WHERE id = ?").run(sourceConv.id);
+  assert(orphans().length === 0 && count('SELECT COUNT(*) AS n FROM conversations WHERE id = ?', sourceConv.id) === 1, 'rejected parent-key updates leave nothing dangling (PRAGMA foreign_key_check)');
+  bots.remove(bindingOnly.id);
   bots.remove(source.id);
   assert(!engine.getWorkRequest(rootX.id) && !engine.getWorkRequest(childY.id), 'deleting the source conversation removes the root and its cross-conversation child');
   assert(!engine.getAttempt(childAttempt.id) && !engine.getAttempt(childResume.id)
     && count('SELECT COUNT(*) AS n FROM session_bindings WHERE id IN (?, ?)', childBinding.id, sourceBinding.id) === 0
     && count('SELECT COUNT(*) AS n FROM engine_events WHERE request_id IN (?, ?)', rootX.id, childY.id) === 0, 'descendant attempts, bindings, and events are removed with them');
   assert(orphans().length === 0, 'no orphans after conversation and Agent deletion');
+  assert(count('SELECT COUNT(*) AS n FROM engine_event_purges') === 0, 'aggregate cleanup clears its purge marks');
 
   const target = bots.create({ deck_id: 'deck-1', name: 'Target', title: '', description: '' });
   const targeted = engine.createOrGetWorkRequest(baseInput({ targetAgentId: target.id })).request;

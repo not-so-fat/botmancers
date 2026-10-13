@@ -238,7 +238,7 @@ const MIGRATIONS: Migration[] = [
           started_at INTEGER NOT NULL,
           finished_at INTEGER,
           CHECK ((outcome IS NULL) = (finished_at IS NULL)),
-          CHECK (kind = 'launch' OR resumed_session_binding_id IS NOT NULL),
+          CHECK ((kind = 'resume') = (resumed_session_binding_id IS NOT NULL)),
           UNIQUE (request_id, attempt_number),
           FOREIGN KEY (request_id) REFERENCES work_requests(id),
           FOREIGN KEY (resumed_session_binding_id) REFERENCES session_bindings(id)
@@ -464,6 +464,79 @@ const MIGRATIONS: Migration[] = [
                 AND (b.conversation_id IS NULL OR b.conversation_id = r.source_conversation_id)
                 AND (b.request_id IS NULL OR br.root_request_id = r.root_request_id)
             );
+        END;
+      `);
+    },
+  },
+  {
+    version: 3,
+    name: 'core_engine_hardening',
+    up: db => {
+      const edges = WORK_REQUEST_STATES
+        .flatMap(from => WORK_REQUEST_TRANSITIONS[from].map(to => `'${from}>${to}'`))
+        .join(', ');
+      db.exec(`
+        -- The lifecycle allowlist lives in the trigger itself, so no data
+        -- write can widen or break it. work_request_transitions stays as a
+        -- readable copy and is locked against writes.
+        DROP TRIGGER trg_work_requests_transition;
+        CREATE TRIGGER trg_work_requests_transition BEFORE UPDATE OF state ON work_requests
+        WHEN NEW.state <> OLD.state
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid work_requests state transition')
+            WHERE (OLD.state || '>' || NEW.state) NOT IN (${edges});
+        END;
+
+        CREATE TRIGGER trg_work_request_transitions_insert BEFORE INSERT ON work_request_transitions
+        BEGIN
+          SELECT RAISE(ABORT, 'work_request_transitions is read-only');
+        END;
+        CREATE TRIGGER trg_work_request_transitions_update BEFORE UPDATE ON work_request_transitions
+        BEGIN
+          SELECT RAISE(ABORT, 'work_request_transitions is read-only');
+        END;
+        CREATE TRIGGER trg_work_request_transitions_delete BEFORE DELETE ON work_request_transitions
+        BEGIN
+          SELECT RAISE(ABORT, 'work_request_transitions is read-only');
+        END;
+
+        -- Engine events are never deleted one by one. Aggregate cleanup
+        -- (deleteEngineRecords) first marks the requests it removes in
+        -- engine_event_purges; only events of a marked request may go.
+        CREATE TABLE engine_event_purges (
+          request_id TEXT PRIMARY KEY
+        );
+        CREATE TRIGGER trg_engine_events_no_delete BEFORE DELETE ON engine_events
+        BEGIN
+          SELECT RAISE(ABORT, 'engine_events are append-only')
+            WHERE NOT EXISTS (SELECT 1 FROM engine_event_purges WHERE request_id = OLD.request_id);
+        END;
+
+        -- Foreign keys (parent-key update side): RESTRICT.
+        CREATE TRIGGER trg_conversations_engine_restrict_update BEFORE UPDATE OF id ON conversations
+        WHEN NEW.id IS NOT OLD.id
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: work_requests.source_conversation_id')
+            WHERE EXISTS (SELECT 1 FROM work_requests WHERE source_conversation_id = OLD.id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_bindings.conversation_id')
+            WHERE EXISTS (SELECT 1 FROM session_bindings WHERE conversation_id = OLD.id);
+        END;
+
+        CREATE TRIGGER trg_bots_engine_restrict_update BEFORE UPDATE OF id ON bots
+        WHEN NEW.id IS NOT OLD.id
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: work_requests.target_agent_id')
+            WHERE EXISTS (SELECT 1 FROM work_requests WHERE target_agent_id = OLD.id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_bindings.agent_id')
+            WHERE EXISTS (SELECT 1 FROM session_bindings WHERE agent_id = OLD.id);
+        END;
+
+        -- Attempt kind and continuity agree: only a resume names a binding.
+        -- (Fresh schemas also carry this as a CHECK.)
+        CREATE TRIGGER trg_work_attempts_kind BEFORE INSERT ON work_attempts
+        WHEN (NEW.kind = 'resume') <> (NEW.resumed_session_binding_id IS NOT NULL)
+        BEGIN
+          SELECT RAISE(ABORT, 'work_attempts kind does not match resumed_session_binding_id');
         END;
       `);
     },
@@ -880,6 +953,9 @@ export function createEngineStore(db: Db) {
       if (input.kind === 'resume' && !input.resumedSessionBindingId) {
         throw new EngineStoreError('invalid_input', 'A resume attempt names the session binding it resumes.');
       }
+      if (input.kind === 'launch' && input.resumedSessionBindingId) {
+        throw new EngineStoreError('invalid_input', 'A launch attempt does not resume a session binding.');
+      }
       const snapshot = typeof input.launchSnapshot === 'string' ? input.launchSnapshot : JSON.stringify(input.launchSnapshot);
       if (typeof snapshot !== 'string' || snapshot.length === 0) {
         throw new EngineStoreError('invalid_input', 'A launch snapshot is required.');
@@ -1082,7 +1158,12 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
     ));
     if (!grewRequests && !grewAttempts && !grewBindings) break;
   }
+  // Mark every request whose events go, so the append-only guard admits
+  // this aggregate delete; the marks are cleared before returning.
+  const purged = new Set([...requests, ...ids(`SELECT request_id AS id FROM work_attempts WHERE id IN ${inSet}`, list(attempts))]);
+  db.prepare(`INSERT OR IGNORE INTO engine_event_purges (request_id) SELECT value FROM json_each(?)`).run(list(purged));
   db.prepare(`DELETE FROM engine_events WHERE request_id IN ${inSet} OR attempt_id IN ${inSet}`).run(list(requests), list(attempts));
+  db.prepare(`DELETE FROM engine_event_purges WHERE request_id IN ${inSet}`).run(list(purged));
   // Attempts and bindings reference each other (resume / source), but
   // never in a cycle: each reference was to a row that already existed.
   // Peel unreferenced rows until both sets are empty.
