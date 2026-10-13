@@ -1,5 +1,9 @@
 # Bot single-runtime creation and configuration — design spec
 
+> **Historical — October 11, 2026.** This runtime-centered design is superseded
+> by the authoritative [core-engine design](../core-engine.md). It remains only
+> as decision history.
+
 Ticket: NOT-444. Owner: Atelier. Next: operator visual-approval, then UI build ticket.
 Status: spec only. No React, CSS, API, database, route, or runtime change is made by this ticket.
 Base: exact `origin/main` (`b52c1c1fbfd6d871721388f69d6356dd492fe4f4`) — roster, New Bot modal,

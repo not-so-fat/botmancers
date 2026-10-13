@@ -28,8 +28,9 @@ workflow. The first proof is repeat use of the complete
 implementation → review → resumed-implementation loop from the conversation
 the developer already uses.
 
-See [Product requirements](<docs/product-requirements.md>) for the complete
-behavioral contract.
+See the authoritative [core-engine design](<docs/core-engine.md>) for the current
+product and architecture contract. Earlier design documents are retained only as
+dated history.
 
 ## Current status
 

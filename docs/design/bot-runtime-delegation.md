@@ -1,5 +1,9 @@
 # Bot runtime and same-thread delegation — design spec
 
+> **Historical — October 11, 2026.** This dual-runtime design is superseded by
+> the authoritative [core-engine design](../core-engine.md). Do not implement
+> its Chat/Code split as current product behavior.
+
 Ticket: NOT-436. Owner: Atelier. Next: operator inspection approval, then build ticket.
 Status: spec only. No React, CSS, API, or database change is made by this ticket.
 Base: exact `origin/main` (`d7b97174aacea414615c42769da5a82d3df5c123`) — roster, New Bot modal, config page, and

@@ -1,6 +1,10 @@
 # Botmancers product requirements
 
-Status: baseline from the product discussion on October 11, 2026.
+> **Historical — October 11, 2026.** This baseline is superseded by the
+> authoritative [core-engine design](core-engine.md). It preserves decision
+> history and must not be used as the current implementation contract.
+
+Status: historical baseline from the product discussion on October 11, 2026.
 
 This document records the desired product behavior. It deliberately avoids
 choosing databases, protocols, vendors, SDKs, or deployment architecture. Those

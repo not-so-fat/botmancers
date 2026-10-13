@@ -1,5 +1,9 @@
 # Runner boundary requirements (Botmancers app side)
 
+> **Historical inventory — October 11, 2026.** Use the authoritative
+> [core-engine design](core-engine.md) for current product boundaries. This file
+> remains evidence for later runner work, not a current implementation contract.
+
 Ticket: NOT-397. Owner: Lorekeeper. Status: requirements inventory only.
 
 This document states, from the Botmancers app's point of view, what the app would need from a work queue, a status listener, and a runner that is not a laptop. It covers wake, delegation, and the runner boundary. It is the Botmancers side of a two-ticket split; the agent-dealer side is NOT-399, which compares these numbered requirements with what agent-dealer already has.
