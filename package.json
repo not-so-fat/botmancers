@@ -31,7 +31,8 @@
     "test:bot-deletion": "node test-bot-deletion.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js",
     "test:bot-runtime-ui": "node test-bot-runtime-ui.js",
-    "test:brand-hierarchy": "node test-brand-hierarchy.js"
+    "test:brand-hierarchy": "node test-brand-hierarchy.js",
+    "test:engine-store": "node test-engine-store.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
