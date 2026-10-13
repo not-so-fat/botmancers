@@ -8,15 +8,18 @@ import BotAvatar from '@/app/components/BotAvatar';
 import type { AvatarConfig } from '@/lib/avatar';
 import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 import {
-  AVAILABILITY_ERROR_COPY,
-  AVAILABILITY_EMPTY_COPY,
-  AVAILABILITY_LOADING_COPY,
-  CHAT_RUNTIME_FIXED_LINE,
+  AGENT_OPTIONS,
+  NEW_BOT_WORKDIR_HINT,
+  SELECT_DECK_ERROR,
+  deckEventDisplay,
   newBotSubmitBody,
-  rosterRuntimeLines,
-  runtimeOptions,
-  type AvailabilityState,
+  rosterRuntimeLine,
+  runtimeFormView,
+  type DeckListState,
+  type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
+import { RuntimeSection } from '@/app/components/AgentDeckRuntime';
+import { useDeckList } from '@/app/components/useDeckList';
 
 interface Bot {
   id: string;
@@ -133,18 +136,20 @@ function mentionAt(content: string, name: string) {
   return false;
 }
 
-function isDeckEventLineText(line: string): boolean {
-  return line.trimStart().startsWith('[Deck ');
-}
-
 function renderThreadBody(text: string, keyPrefix: string) {
   const lines = String(text ?? '').split('\n');
-  if (!lines.some(isDeckEventLineText)) return text;
+  if (!lines.some(line => deckEventDisplay(line) !== null)) return text;
   const out: ReactNode[] = [];
   lines.forEach((line, index) => {
     if (index > 0) out.push(<br key={keyPrefix + '-br-' + index} />);
-    if (isDeckEventLineText(line)) {
-      out.push(<span key={keyPrefix + '-' + index} className="deck-event">{line}</span>);
+    const event = deckEventDisplay(line);
+    if (event) {
+      out.push(
+        <span key={keyPrefix + '-' + index} className="deck-event">
+          <span className="deck-event-label">{event.label}</span>
+          {event.detail ? ' ' + event.detail : ''}
+        </span>
+      );
     } else {
       out.push(<span key={keyPrefix + '-' + index}>{line}</span>);
     }
@@ -223,8 +228,7 @@ export default function Home() {
   const returnId = useRef<string | null>(null);
   const returnHandled = useRef(false);
   const [importMiss, setImportMiss] = useState('');
-  const [availability, setAvailability] = useState<AvailabilityState>({ status: 'loading', runtimes: [] });
-  const [availabilityToken, setAvailabilityToken] = useState(0);
+  const { state: deckState, retry: retryDecks } = useDeckList();
 
   useEffect(() => {
     if (logoSettled.current || bots.length === 0) return;
@@ -247,32 +251,6 @@ export default function Home() {
       clearInterval(clockTimer);
     };
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/bots/availability', { cache: 'no-store' })
-      .then(async res => {
-        if (cancelled) return;
-        if (!res.ok) throw new Error('request failed');
-        const payload = await res.json().catch(() => null);
-        if (cancelled) return;
-        const options = runtimeOptions(payload);
-        setAvailability(options.length > 0
-          ? { status: 'ready', runtimes: options }
-          : { status: 'empty', runtimes: [] });
-      })
-      .catch(() => {
-        if (!cancelled) setAvailability({ status: 'error', runtimes: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [availabilityToken]);
-
-  const retryAvailability = () => {
-    setAvailability({ status: 'loading', runtimes: [] });
-    setAvailabilityToken(token => token + 1);
-  };
 
   useEffect(() => {
     if (defaulted.current || bots.length === 0 || activeConversation) return;
@@ -802,6 +780,9 @@ export default function Home() {
             </button>
             {importMiss ? <p className="import-note">{importMiss}</p> : null}
           </div>
+          <Link href="/settings" className="add-btn settings-link">
+            Settings
+          </Link>
         </div>
         {bots.length === 0 ? (
           <p className="empty-line">Pick someone to talk to.</p>
@@ -848,8 +829,7 @@ export default function Home() {
                   )}
                 </div>
                 {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-                <div className="bot-runtime">{rosterRuntimeLines(bot, availability).chat}</div>
-                <div className="bot-runtime">{rosterRuntimeLines(bot, availability).code}</div>
+                <div className="bot-runtime">{rosterRuntimeLine(bot, deckState)}</div>
                 <div className="row-tip" onClick={e => e.stopPropagation()}>
                   {bot.unread && !(activeConversation?.type === 'bot' && activeConversation.details.id === bot.id) ? (
                     <div className="card-role">Unread</div>
@@ -916,8 +896,7 @@ export default function Home() {
                     </div>
                   )}
                   {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-                  <div className="bot-runtime">{rosterRuntimeLines(bot, availability).chat}</div>
-                  <div className="bot-runtime">{rosterRuntimeLines(bot, availability).code}</div>
+                  <div className="bot-runtime">{rosterRuntimeLine(bot, deckState)}</div>
                 </div>
                 <div className="row-tip" onClick={e => e.stopPropagation()}>
                   {bot.unread && !(activeConversation?.type === 'bot' && activeConversation.details.id === bot.id) ? (
@@ -1370,8 +1349,8 @@ export default function Home() {
       {showBotModal && (
         <BotModal
           bots={bots}
-          availability={availability}
-          onRetryAvailability={retryAvailability}
+          deckState={deckState}
+          onRetryDecks={retryDecks}
           onClose={() => setShowBotModal(false)}
           onCreated={() => {
             loadBots();
@@ -1540,10 +1519,12 @@ function FileLinks({ names }: { names: string[] }) {
   );
 }
 
-function BotModal({ bots, availability, onRetryAvailability, onClose, onCreated }: {
+const HERMES_FORM: RuntimeFormInput = { runtime: 'hermes', agentClient: AGENT_OPTIONS[0], deckId: '', workingDirectory: '' };
+
+function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
   bots: Bot[];
-  availability: AvailabilityState;
-  onRetryAvailability: () => void;
+  deckState: DeckListState;
+  onRetryDecks: () => void;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -1551,38 +1532,33 @@ function BotModal({ bots, availability, onRetryAvailability, onClose, onCreated 
   const [name, setName] = useState('');
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [groupError, setGroupError] = useState('');
-  const [codingRuntime, setCodingRuntime] = useState('');
-  const [deckName, setDeckName] = useState('');
-  const [workingDirectory, setWorkingDirectory] = useState('');
+  const [form, setForm] = useState<RuntimeFormInput>(HERMES_FORM);
   const [botError, setBotError] = useState('');
 
-  // First availability entry is pre-selected until the user picks one.
-  const effectiveCodingRuntime = codingRuntime ||
-    (availability.status === 'ready' ? availability.runtimes[0] ?? '' : '');
+  useEffect(() => {
+    onRetryDecks();
+  }, [onRetryDecks]);
 
-  const codingPathReady = availability.status === 'ready';
-  const createDisabled = availability.status === 'loading';
+  const view = runtimeFormView(form, deckState);
+
+  // Switching back to Hermes discards (never submits) the Agent Deck values.
+  const changeForm = (patch: Partial<RuntimeFormInput>) => {
+    setBotError('');
+    setForm(current => (patch.runtime === 'hermes' ? HERMES_FORM : { ...current, ...patch }));
+  };
 
   const handleBot = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (createDisabled) return;
-    if (codingPathReady && deckName.trim()) {
-      if (!effectiveCodingRuntime) {
-        setBotError('Invalid coding runtime: "". Expected one of codex|claude|cursor|muse.');
-        return;
-      }
+    if (view.submitDisabled) return;
+    if (form.runtime === 'agent-deck' && !form.deckId.trim()) {
+      setBotError(SELECT_DECK_ERROR);
+      return;
     }
     setBotError('');
     const res = await fetch('/api/bots', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newBotSubmitBody({
-        name,
-        availability,
-        codingRuntime: effectiveCodingRuntime,
-        deckName,
-        workingDirectory,
-      })),
+      body: JSON.stringify(newBotSubmitBody({ name, ...form })),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
@@ -1633,48 +1609,25 @@ function BotModal({ bots, availability, onRetryAvailability, onClose, onCreated 
           </button>
         </div>
         {kind === 'bot' ? (
-        <form onSubmit={handleBot}>
+        <form onSubmit={handleBot} className="bot-form">
           <label htmlFor="bot-name">Name</label>
           <input id="bot-name" type="text" value={name} onChange={e => setName(e.target.value)} required />
-          <p className="runtime-fixed">{CHAT_RUNTIME_FIXED_LINE}</p>
-          <label>Coding runtime</label>
-          {availability.status === 'loading' ? (
-            <p className="runtime-note">{AVAILABILITY_LOADING_COPY}</p>
-          ) : availability.status === 'ready' ? (
-            <div className="runtime-picks" role="radiogroup" aria-label="Coding runtime">
-              {availability.runtimes.map(runtime => (
-                <label key={runtime} className="runtime-pick">
-                  <input
-                    type="radio"
-                    name="coding-runtime"
-                    value={runtime}
-                    checked={effectiveCodingRuntime === runtime}
-                    onChange={() => setCodingRuntime(runtime)}
-                  />
-                  {' ' + runtime}
-                </label>
-              ))}
-            </div>
-          ) : availability.status === 'empty' ? (
-            <p className="runtime-note">{AVAILABILITY_EMPTY_COPY}</p>
-          ) : (
-            <p className="runtime-note">
-              {AVAILABILITY_ERROR_COPY}{' '}
-              <button type="button" className="create-btn" onClick={onRetryAvailability}>
-                Retry
-              </button>
-            </p>
-          )}
-          <label htmlFor="bot-deck">Deck ID</label>
-          <input id="bot-deck" type="text" value={deckName} onChange={e => setDeckName(e.target.value)} placeholder="planner" />
-          <label htmlFor="bot-workdir">Working directory</label>
-          <input id="bot-workdir" type="text" value={workingDirectory} onChange={e => setWorkingDirectory(e.target.value)} placeholder="/Users/you/workspace/codes/botmancers" />
+          <RuntimeSection
+            idPrefix="bot"
+            variant="modal"
+            form={form}
+            onChange={changeForm}
+            deckState={deckState}
+            onRetry={onRetryDecks}
+            workdirPlaceholder=""
+            workdirHint={NEW_BOT_WORKDIR_HINT}
+          />
           {botError ? <p className="group-error">{botError}</p> : null}
           <div className="form-actions">
             <button type="button" className="cancel-btn" onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" className="create-btn" disabled={createDisabled}>
+            <button type="submit" className="create-btn" disabled={view.submitDisabled}>
               Create
             </button>
           </div>

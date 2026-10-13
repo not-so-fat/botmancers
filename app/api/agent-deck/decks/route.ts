@@ -20,8 +20,8 @@ export async function GET() {
       ? error.attemptedUrls
       : [agentDeckDecksUrl(serverUrl)];
     const message = error instanceof Error ? error.message : String(error);
-    const status = error instanceof AgentDeckDiscoveryError && error.code === 'invalid-payload' ? 502 : 502;
+    const code = error instanceof AgentDeckDiscoveryError ? error.code : 'agent-deck-discovery-failed';
     console.error('Agent Deck deck discovery failed:', message);
-    return NextResponse.json({ error: message, attemptedUrls, server_url: serverUrl }, { status });
+    return NextResponse.json({ error: message, code, attemptedUrls, server_url: serverUrl }, { status: 502 });
   }
 }
