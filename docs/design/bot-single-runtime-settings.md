@@ -57,7 +57,7 @@ button). The Bot/Group kind switch and the Name field are unchanged.
 | 2 | Runtime (new single picker) | Always | Radio or select with exactly two options: `Hermes` (pre-selected) and `Agent Deck`. Hermes is the default single runtime. |
 | 3 | Agent (new) | Only after `Agent Deck` is selected | Picker with exactly `codex \| claude \| cursor \| muse`. First entry (`codex`) pre-selected. Hidden while Hermes is selected; switching back to Hermes hides and discards (not submits) agent/deck/workdir values. |
 | 4 | Deck (new) | Only after `Agent Deck` is selected | Dropdown populated from the configured server via `GET /api/launch/decks` (see §5). No free-text input while options load successfully. No pre-selection: placeholder `Select a deck…` until the user picks one. |
-| 5 | Working directory (new) | Only after `Agent Deck` is selected | Overridable text input, left **blank** when untouched. A hint below the input shows the templated default `~/.botmancers/{bot-id}` where `{bot-id}` is the to-be-assigned bot id (server-generated at insert via `randomUUID` — the client cannot know it before creation, so the input is never pre-filled with an id). Submit omits `working_directory` when the field is untouched/blank and the server assigns the default; any typed value is submitted as the override. Clearing an edited value back to blank restores the omit/default behavior. Hidden while Hermes is selected. |
+| 5 | Working directory (new) | Only after `Agent Deck` is selected | Overridable text input, left **blank** when untouched. A hint below the input shows the templated default `~/.botmancers/{bot-id}` where `{bot-id}` is the to-be-assigned bot id (server-generated at insert via `randomUUID` — the client cannot know it before creation, so the input is never pre-filled with an id). Submit omits `working_directory` when the field is untouched/blank (the §4 backend prerequisite assigns the default); any typed value is submitted as the override. Clearing an edited value back to blank restores the omit/default behavior. Hidden while Hermes is selected. |
 
 Field visibility rule (builder-mandatory): Hermes-selected ⇒ only Name + Runtime are
 visible. Agent Deck-selected ⇒ Name + Runtime + Agent + Deck + Working directory are
@@ -109,7 +109,7 @@ Agent Deck selected, deck list loaded:
 │ ( * ) codex  ( ) claude           │  ← exactly codex|claude|cursor|muse
 │ ( ) cursor   ( ) muse             │
 │ Deck                              │
-│ [planner                   ▾]    │  ← server-populated dropdown
+│ [planner                    ▾]    │  ← server-populated dropdown
 │ Working directory (optional)      │
 │ [                            ]    │  ← blank = use default
 │ Default: ~/.botmancers/{bot-id}   │  ← hint; {bot-id} assigned at creation
@@ -121,8 +121,8 @@ Agent Deck selected, deck list loaded:
 contains an agent name (`codex|claude|cursor|muse`) and the input is never
 pre-filled with an id the client cannot know. The resolved path (e.g.
 `~/.botmancers/a8f3`) appears only after creation, on the per-bot config page.
-Submit with the field untouched/blank omits `working_directory` (server assigns
-the default); a typed value submits as the override.
+Submit with the field untouched/blank omits `working_directory` (the §4
+backend prerequisite assigns the default); a typed value submits as the override.
 
 Agent Deck selected, deck list loading: the Deck slot reads `Loading decks…`
 (disabled); Create is disabled until decks resolve. Agent picker stays interactive.
@@ -138,8 +138,8 @@ buttons go full-width:
 │ Name            │
 │ [Alice         ]│
 │ Runtime         │
-│ (*) Hermes     │
-│ ( ) Agent Deck │
+│ (*) Hermes      │
+│ ( ) Agent Deck  │
 │ [Create]        │
 │ [Cancel]        │
 └─────────────────┘
@@ -154,16 +154,16 @@ Agent Deck-selected narrow frame (deck loaded):
 │ Name            │
 │ [Alice         ]│
 │ Runtime         │
-│ ( ) Hermes     │
-│ (*) Agent Deck │
-│ Agent          │
-│ (*) codex      │
-│ ( ) claude     │
-│ ( ) cursor     │
-│ ( ) muse       │
-│ Deck           │
-│ [planner     ▾]│
-│ Workdir (opt.) │
+│ ( ) Hermes      │
+│ (*) Agent Deck  │
+│ Agent           │
+│ (*) codex       │
+│ ( ) claude      │
+│ ( ) cursor      │
+│ ( ) muse        │
+│ Deck            │
+│ [planner      ▾]│
+│ Workdir (opt.)  │
 │ [              ]│
 │ Default:        │
 │ ~/.botmancers/  │
@@ -186,19 +186,37 @@ disabled; agent picker and workdir stay interactive.
 - In New Bot the id is to-be-assigned and therefore unknown: the input is left
   **blank** with the templated default as a hint (`Default:
   ~/.botmancers/{bot-id}`), never pre-filled. Submit with the field untouched or
-  cleared omits `working_directory` and the server assigns the default; a typed
-  value submits as the override. Blank never submits as a literal value.
+  cleared omits `working_directory` (which relies on the backend prerequisite
+  below to assign the default); a typed value submits as the override. Blank
+  never submits as a literal value, and the client never guesses the id.
 - On the per-bot config page the id is known: the input shows the stored value
   (default or override). Clearing it back to blank restores the default on
-  blur/submit (omit → server default).
+  blur/submit (omit → server default under the backend prerequisite below).
 - The resolved default (e.g. `~/.botmancers/a8f3`) is shown only after creation,
   in config read view with no marker. A bot with an overridden workdir shows the
   stored value in config read view with the marker `(custom)` after it, e.g.
   `Working directory: /Users/you/workspace/codes (custom)`.
 - Validation: the workdir slot is never in a "required but blank" state (blank
-  resolves to omit → server default), so there is no workdir-required error
-  string in this spec. Server 400 text still renders verbatim if the backend
-  rejects a value.
+  resolves to omit → server default under the prerequisite below), so there is
+  no workdir-required error string in this spec. Server 400 text still renders
+  verbatim if the backend rejects a value.
+
+### Backend prerequisite (dependent ticket — no API change in this spec)
+
+Today's API does not assign the default: `POST /api/bots` stores exactly what
+it receives (`validateCreateRuntimePath` in `lib/bot-definition.ts`), and a
+launchable create without `working_directory` is rejected with 400
+(`lib/bot-definition.ts:118`, `app/api/bots/route.ts:36`). `PATCH` with an
+omitted `working_directory` keeps the stored value, and a blank one clears it
+to null (`lib/db.ts:484`), which reads back as partially stored and renders as
+`Runtime: Hermes` under §8. The omit→default wire rule above therefore requires
+a backend dependent ticket implementing: (a) POST assigns
+`~/.botmancers/{new-id}` when an Agent Deck create omits `working_directory`;
+(b) PATCH re-assigns `~/.botmancers/{id}` (instead of null) when an Agent Deck
+bot clears `working_directory`, so a UI-cleared value never demotes the bot to
+the §8 partially-stored/Hermes presentation (that row then covers only legacy
+stored rows, never a post-prerequisite UI clear). The UI wire rule in this spec
+is written against the post-prerequisite API.
 
 ## 5. Workspace settings surface — Agent Deck server URL
 
@@ -260,9 +278,10 @@ as `.bot-preview`:
 - Hermes bot: `Runtime: Hermes`
 - Agent Deck bot: `Runtime: Agent Deck · codex · planner`
 - Agent Deck bot whose saved deck is unavailable (deck id absent from the latest
-  successful deck list, or deck list currently unreachable): the stored line plus the
-  trailing marker ` (deck unavailable — see Config)`, e.g.
-  `Runtime: Agent Deck · codex · planner (deck unavailable — see Config)`.
+  successful deck list — the fresh list, or the cached list during an outage):
+  the stored line plus the trailing marker ` (deck unavailable — see Config)`,
+  e.g. `Runtime: Agent Deck · codex · planner (deck unavailable — see Config)`.
+  Unreachability alone never earns the marker (see the cached-list rules below).
   The stored values still render (configuration, honestly labelled); the marker is plain
   non-interactive text. The roster row's own click still opens the conversation; no inner
   link/button is rendered inside the row, so no `stopPropagation`, tab stop, or key
@@ -291,7 +310,7 @@ Roster rendering against deck-list states (§5.2):
 ```
 │ Alice                   │  ← .bot-name (26px inline, preserved)
 │ shipped the migration   │  ← .bot-preview: latest message
-│ Runtime: Hermes          │  ← single summary line (12px, 50% ink)
+│ Runtime: Hermes         │  ← single summary line (12px, 50% ink)
 │                         │
 │ Planner Bot             │  ← configured Agent Deck row
 │ reviewed the diff       │
@@ -317,7 +336,7 @@ order, sizes, and truncation; only the width changes:
 ```
 │ Alice                   │
 │ shipped the migration   │
-│ Runtime: Hermes          │
+│ Runtime: Hermes         │
 │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
 │ Planner Bot             │
 │ reviewed the diff       │
@@ -376,7 +395,8 @@ Working directory: /Users/you/workspace/codes (custom)
 [Edit]
 ```
 
-Agent Deck bot whose saved deck is unavailable:
+Agent Deck bot whose saved deck is unavailable (stored deck checked against a
+fresh or cached list and absent from it):
 
 ```
 RUNTIME                                     Saved
@@ -385,6 +405,12 @@ Working directory: ~/.botmancers/a8f3
 This deck isn't on the configured server right now. Pick another
 deck, or fix the server in Settings. [Edit]
 ```
+
+When no list is available at all (deck list unreachable with no cached list,
+or no server configured), the read view shows the stored runtime line with no
+`(deck unavailable)` marker; the notice names that state instead (unreachable /
+missing server) and links to Settings — the same cached-list rule as the
+roster (§6).
 
 ### 7.2 Edit view
 
@@ -402,7 +428,10 @@ Same save/dirty/saving/confirmed/error cycle as Skills/Rules:
 - Working directory: text input pre-filled with the stored value (resolved
   default such as `~/.botmancers/a8f3`, or the override). Clearing it restores
   the `~/.botmancers/{bot-id}` default on blur/submit — submit omits
-  `working_directory` and the server re-assigns the default (see §4).
+  `working_directory` and the server re-assigns the default (requires the §4
+  backend prerequisite; post-prerequisite a cleared value stores the default and
+  the bot keeps its Agent Deck presentation — it never falls into the §8
+  partially-stored/Hermes row).
 - No server URL input on this page. The deck slot's unreachable/missing-server copy
   links to Settings.
 
@@ -510,9 +539,9 @@ values to display as follows (roster and config read view share the mapping):
 | Stored state | Roster line | Config read view |
 |---|---|---|
 | Migrated Hermes bot (no coding path stored: all three coding fields null) | `Runtime: Hermes` | `Runtime: Hermes` + `[Change to Agent Deck]` |
-| Partially stored legacy coding path (only some of `coding_runtime` / `deck_name` / `working_directory` present — treated as unconfigured, matching `rosterRuntimeLines`/`configCodingPathLines`) | `Runtime: Hermes` | `Runtime: Hermes` + `[Change to Agent Deck]` |
+| Partially stored legacy coding path (only some of `coding_runtime` / `deck_name` / `working_directory` present — treated as unconfigured, matching `rosterRuntimeLines`/`configCodingPathLines`; post-§4-prerequisite this covers legacy stored rows only, never a UI-cleared workdir) | `Runtime: Hermes` | `Runtime: Hermes` + `[Change to Agent Deck]` |
 | Migrated Agent Deck bot (full coding path stored, deck on server) | `Runtime: Agent Deck · <agent> · <deck>` | `Runtime: Agent Deck · <agent> · <deck>` + workdir (+ `(custom)` only when overridden) + `[Edit]` |
-| Unavailable saved deck (stored deck absent from server list, or list unreachable) | Stored line + ` (deck unavailable — see Config)` | Stored line + ` (deck unavailable)` + notice + `[Edit]` |
+| Unavailable saved deck (stored deck absent from the fresh list, or from the cached list during an outage — never bare unreachability with no list) | Stored line + ` (deck unavailable — see Config)` | Stored line + ` (deck unavailable)` + notice + `[Edit]` |
 | Working-directory override (stored workdir ≠ default) | Same line as its runtime (workdir never in roster) | Workdir value + ` (custom)` |
 
 Desktop examples for each row appear in §6.1 / §7.1; narrow examples in §6.2 / §7.4.
@@ -556,12 +585,13 @@ turns, existing Stop buttons).
 |---|---|---|
 | New Bot single Runtime picker (Hermes default), Agent Deck group visibility (§3.1) | `app/page.tsx` — `BotModal` (form-card block) | Replace fixed chat line + availability-fed coding picker + free-text deck/workdir with Runtime picker; render Agent/Deck/Workdir group only when Agent Deck selected |
 | Agent picker `codex\|claude\|cursor\|muse` | `app/page.tsx` — `BotModal`; options enum shared with `lib/bot-definition.ts` `CODING_RUNTIMES` | New picker; pre-select first entry |
-| Deck dropdown + 6 states (§5.2), default/override workdir (§4), non-local note (§9) | `app/page.tsx` — `BotModal` | New dropdown fed by `GET /api/launch/decks`; workdir input blank with `~/.botmancers/{bot-id}` hint, omitted on submit when untouched; note as static copy |
+| Deck dropdown + 6 states (§5.2), default/override workdir (§4), non-local note (§9) | `app/page.tsx` — `BotModal` | New dropdown fed by `GET /api/launch/decks`; workdir input blank with `~/.botmancers/{bot-id}` hint, omitted on submit when untouched (omit→default requires the §4 backend prerequisite); note as static copy |
 | Roster one-line summary + unavailable-deck marker (§6) | `app/page.tsx` — roster rows (`.bot-row` / `.bot-preview` / `.bot-runtime` slots); summary-line helper succeeding `rosterRuntimeLines` in `lib/bot-runtime-ui.ts` | Replace two-line Chat/Code block with one summary line; keep row click/open behavior unchanged |
 | Runtime summary copy + deck-state copy (single source) | `lib/bot-runtime-ui.ts` | Succeed the `CHAT_*` / `Code:` / availability-probe copy with single-runtime summary builders and the §5.2 deck-list state copy; no per-bot URL copy |
 | Config Runtime card read/edit/save cycle (§7) | `app/bots/[id]/config/page.tsx` — Runtime card (position after Rules) | Replace Coding path card with Runtime card; agent picker, server-fed deck dropdown, workdir default/override, unavailable-deck notice, no URL field |
 | Workspace settings surface: server URL + 6 states (§5) | New settings surface (smallest fitting container: new route or app-level panel reusing `.card` / `.cfg-card` language) | New URL field, status line, Retry, dirty/save cycle, non-local note; sole writer of the server URL |
 | Deck-list fetch + malformed/unreachable/empty handling | Settings surface + dropdown data hook (builder-placed, shared by New Bot and config) | Single fetcher for `GET /api/launch/decks`; malformed = unparseable or shape-mismatched payload; unreachable = network/non-2xx/timeout |
+| Server-side workdir default prerequisite (§4) | Backend dependent ticket: `app/api/bots/route.ts`, `lib/bot-definition.ts`, `lib/db.ts` (`updateRuntimePath`) | POST assigns `~/.botmancers/{new-id}` on omitted workdir; PATCH re-assigns the default on blank clear; this spec makes no API change |
 
 Explicitly excluded (builder must not touch): workflow builder, task dashboard,
 per-bot Agent Deck server URL, free-text deck entry while the server returns options,
