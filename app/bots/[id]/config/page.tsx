@@ -9,7 +9,6 @@ import {
   configRuntimeView,
   configWorkdirHint,
   defaultWorkdirFor,
-  isAgentDeckRuntime,
   isMigratedPending,
   runtimeFormFromBot,
   runtimeFormView,
@@ -40,12 +39,11 @@ interface Bot {
   import_schema_version?: string | null;
   import_operation_id?: string | null;
   import_timestamp?: number | null;
-  runtime?: string | null;
-  agent_client?: string | null;
+  agent?: string | null;
   deck_id?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
-  needs_deck_reselection?: boolean | number | null;
+  needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
   avatar_color?: string | null;
   avatar_eyes?: string | null;
@@ -277,8 +275,7 @@ export default function BotConfigPage() {
 
   function startRuntimeEdit(): void {
     if (!data) return;
-    const seed = runtimeFormFromBot(data.bot);
-    setRuntimeForm(isAgentDeckRuntime(data.bot) ? seed : { ...seed, runtime: 'agent-deck' });
+    setRuntimeForm(runtimeFormFromBot(data.bot));
     setRuntimeEditing(true);
     setRuntimePhase('clean');
     setRuntimeError('');
@@ -347,7 +344,7 @@ export default function BotConfigPage() {
 
   async function saveRuntime(): Promise<void> {
     if (!data || !runtimeForm) return;
-    if (runtimeForm.runtime === 'agent-deck' && !runtimeForm.deckId.trim()) {
+    if (!runtimeForm.deckId.trim()) {
       setRuntimePhase('error');
       setRuntimeError(SELECT_DECK_ERROR);
       return;
@@ -469,7 +466,7 @@ export default function BotConfigPage() {
   }
 
   if (loadFailed && !data) {
-    const errorSections = ['Skills', 'Rules', 'Runtime', 'Avatar', 'Template source'];
+    const errorSections = ['Skills', 'Rules', 'Agent', 'Avatar', 'Template source'];
     return (
       <div className="cfg-page">
         <div className="max-w-6xl mx-auto">
@@ -750,7 +747,7 @@ export default function BotConfigPage() {
 
             <section className="cfg-card">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="cfg-title">Runtime</h2>
+                <h2 className="cfg-title">Agent</h2>
                 {runtimeStateLine}
               </div>
               {(() => {
@@ -780,7 +777,7 @@ export default function BotConfigPage() {
                   );
                 }
                 const formView = runtimeFormView(runtimeForm, deckState, { includeName: false });
-                const savedDeckId = isAgentDeckRuntime(bot) && !isMigratedPending(bot) ? bot.deck_id : null;
+                const savedDeckId = !isMigratedPending(bot) ? bot.deck_id : null;
                 return (
                   <>
                     <RuntimeSection

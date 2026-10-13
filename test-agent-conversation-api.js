@@ -229,10 +229,10 @@ async function main() {
   log('NOT-446 agent conversation API contract test (isolated DB, injected authenticator, stub runtimes)');
   log(`DB: ${DB_PATH}`);
 
-  const hermesAgent = bots.create({ name: 'Hermy', title: 'Analyst', description: 'Replies briefly.', runtime: 'hermes' });
-  const deckAgent = bots.create({ name: 'Decky', title: 'Coder', description: 'Codes.', runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-api' });
-  const teamBot = bots.create({ name: 'Teammate', title: 'Coordinator', description: 'Coordinates.', runtime: 'hermes' });
-  const unresolvedDeck = bots.create({ name: 'Stale', title: 'Coder', description: 'Old.', runtime: 'agent-deck', agent_client: 'codex', deck_name: 'old-deck', needs_deck_reselection: 1 });
+  const hermesAgent = bots.create({ deck_id: 'deck-test', name: 'Hermy', title: 'Analyst', description: 'Replies briefly.', agent: 'hermes' });
+  const deckAgent = bots.create({ name: 'Decky', title: 'Coder', description: 'Codes.', agent: 'codex', deck_id: 'deck-api' });
+  const teamBot = bots.create({ deck_id: 'deck-test', name: 'Teammate', title: 'Coordinator', description: 'Coordinates.', agent: 'hermes' });
+  const unresolvedDeck = bots.create({ name: 'Stale', title: 'Coder', description: 'Old.', agent: 'codex', deck_name: 'old-deck', needs_deck_selection: 1 });
 
   const person = { kind: 'person', id: 'alice' };
   const service_ = { kind: 'service', id: 'ci-pipeline' };
@@ -288,6 +288,8 @@ async function main() {
   }
   assert(hermesCalls.length === 3 && deckStarts.length === 3, `runtime-neutral dispatch: 3 Hermes turns and 3 Agent Deck runs (got ${hermesCalls.length}/${deckStarts.length})`);
   assert(hermesCalls.every(call => !call.url.includes(HERMES_KEY)), 'Hermes adapter used its own configured credentials');
+  const dispatchedAgents = raw.prepare("SELECT DISTINCT runtime FROM agent_requests WHERE runtime IS NOT NULL ORDER BY runtime").all().map(row => row.runtime);
+  assert(JSON.stringify(dispatchedAgents) === JSON.stringify(['codex', 'hermes']), `requests record the dispatched agent identity, never Agent Deck (got ${dispatchedAgents.join(',')})`);
 
   // AC2: idempotency.
   log('\nAC2 idempotency');

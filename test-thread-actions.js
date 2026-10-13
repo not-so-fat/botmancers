@@ -97,8 +97,8 @@ async function main() {
   log('NOT-410 thread-actions test (real handlers, isolated DB, stub model)');
   log(`DB: ${DB_PATH}`);
 
-  const drafter = bots.create({ name: 'Drafter', title: '', description: 'Writes drafts.' });
-  const checker = bots.create({ name: 'Checker', title: '', description: 'Checks drafts.' });
+  const drafter = bots.create({ deck_id: 'deck-test', name: 'Drafter', title: '', description: 'Writes drafts.' });
+  const checker = bots.create({ deck_id: 'deck-test', name: 'Checker', title: '', description: 'Checks drafts.' });
   const conv = conversations.getByBotId(drafter.id);
   const conv2 = conversations.getByBotId(checker.id);
   assert(!!conv && !!conv2, 'threads exist for both bots');
@@ -289,7 +289,7 @@ async function main() {
   assert(draftLib.outboundDraftFromUser('Just say hi.') === null, 'plain ask creates no draft');
   let stubCalls = 0;
   agent.setDelegationChatStub(() => { stubCalls++; return 'should not be used'; });
-  const hookBot = bots.create({ name: 'HookDrafter', title: '', description: 'Draft hook.' });
+  const hookBot = bots.create({ deck_id: 'deck-test', name: 'HookDrafter', title: '', description: 'Draft hook.' });
   const hookConv = conversations.getByBotId(hookBot.id);
   messages.create(hookConv.id, 'user', 'Please email Alice that says hello there');
   db.queue.enqueue(hookConv.id, hookBot.id);

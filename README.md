@@ -3,10 +3,12 @@
 Botmancers lets a developer stay in one conversation while a persistent bot
 delegates coding work to local coding agents on the Mac.
 
-The user's bot runs persistently on Hermes. Each bot also has a coding-agent
-path consisting of a runtime (`codex`, `claude`, `cursor`, or `muse`), an Agent
-Deck deck, and a working directory. Botmancers launches that path through
-`agent-deck run`.
+Each bot has one Agent — Hermes, Cursor, Claude, Codex, or Muse Code — and
+one Agent Deck selected from the workspace Agent Deck server, plus an optional
+working directory. Agent Deck is the deck configuration every agent launches
+with; it is not an agent or a runtime. Hermes turns run on the persistent
+Hermes gateway; the coding agents launch through `agent-deck run`. A bot
+without a selected Agent Deck stays readable but cannot launch.
 
 When asked to implement and review a change, the bot hands implementation to
 the configured coding agent, hands its result to a reviewer agent, resumes the
@@ -14,9 +16,8 @@ original coding session with the review, and returns the revised result in the
 same conversation. The user does not copy prompts or session identifiers and
 does not configure a workflow form.
 
-The roster and per-bot configuration page show the persistent runtime and the
-coding runtime plus deck. Only runtimes with a real, available launch path are
-offered. The thread shows the handoff, launched run/session, review, resume,
+The roster and per-bot configuration page show `Agent: <agent> · Agent Deck:
+<deck>`. Availability lists only agents with a real, available launch path. The thread shows the handoff, launched run/session, review, resume,
 final result, and failure as conversational events.
 
 The embedded example model loop has been removed. It is not part of the

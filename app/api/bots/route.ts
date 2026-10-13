@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { bots, conversations, messages, queue } from '@/lib/db';
+import db, { bots, conversations, messages, queue } from '@/lib/db';
 import { processQueue } from '@/lib/agent';
 import {
+  hasAgentUpdate,
   serializeBot,
-  validateCreateRuntimePath,
-  validateUpdateRuntimePath,
+  validateCreateAgent,
+  validateUpdateAgent,
 } from '@/lib/bot-definition';
 import { validateAvatarInput } from '@/lib/avatar';
 
@@ -30,14 +31,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // NOT-442: single-runtime contract. Hermes is the default; an
-    // agent-deck bot requires a valid agent client plus a selected deck
-    // ID. Unknown runtimes/clients and Agent Deck fields on a Hermes bot
-    // are rejected.
-    const runtimePath = validateCreateRuntimePath(body);
-    if (runtimePath.errors.length > 0) {
+    // NOT-456: one agent (hermes|cursor|claude|codex|muse, Hermes when
+    // omitted) plus a required Agent Deck selection. Unknown agents,
+    // malformed or missing deck IDs, and legacy runtime fields are
+    // rejected before anything is written.
+    const selection = validateCreateAgent(body);
+    if (selection.errors.length > 0) {
       return NextResponse.json(
-        { error: runtimePath.errors[0], errors: runtimePath.errors },
+        { error: selection.errors[0], errors: selection.errors },
         { status: 400 }
       );
     }
@@ -63,12 +64,11 @@ export async function POST(request: Request) {
       title: title ? String(title) : '',
       description: description ? String(description) : '',
       avatar: typeof avatar === 'string' ? avatar : undefined,
-      runtime: runtimePath.normalized.runtime,
-      agent_client: runtimePath.normalized.agent_client,
-      deck_id: runtimePath.normalized.deck_id,
-      deck_name: runtimePath.normalized.deck_name,
-      working_directory: runtimePath.normalized.working_directory,
-      needs_deck_reselection: runtimePath.normalized.needs_deck_reselection ? 1 : 0,
+      agent: selection.normalized.agent,
+      deck_id: selection.normalized.deck_id,
+      deck_name: null,
+      working_directory: selection.normalized.working_directory,
+      needs_deck_selection: 0,
       avatar_color: avatarConfig.fields.avatar_color ?? null,
       avatar_eyes: avatarConfig.fields.avatar_eyes ?? null,
       avatar_hands: avatarConfig.fields.avatar_hands ?? null,
@@ -97,37 +97,28 @@ export async function PATCH(request: Request) {
     if (!bot) {
       return NextResponse.json({ error: 'Bot not found' }, { status: 404 });
     }
+    // Validate every supplied field before writing anything, then apply
+    // all writes in one transaction: a rejected request changes nothing.
+    const reject = (errors: string[]) =>
+      NextResponse.json({ error: errors[0], errors }, { status: 400 });
+    let avatarConfig: ReturnType<typeof validateAvatarInput> | null = null;
+    let avatarImage: string | null | undefined;
     if (body.avatar !== undefined) {
       if (body.avatar === null || body.avatar === '') {
-        bots.setAvatar(id, null);
+        avatarImage = null;
       } else if (typeof body.avatar === 'object' && !Array.isArray(body.avatar)) {
         // NOT-431: nested avatar config object (color/eyes/hands/accessory).
-        const avatarConfig = validateAvatarInput(body.avatar);
-        if (avatarConfig.errors.length > 0) {
-          return NextResponse.json(
-            { error: avatarConfig.errors[0], errors: avatarConfig.errors },
-            { status: 400 }
-          );
-        }
-        bots.updateAvatarConfig(id, avatarConfig.fields);
+        avatarConfig = validateAvatarInput(body.avatar);
+        if (avatarConfig.errors.length > 0) return reject(avatarConfig.errors);
       } else {
         const avatar = String(body.avatar);
         if (!avatar.startsWith('data:image/')) {
           return NextResponse.json({ error: 'Image is required' }, { status: 400 });
         }
-        bots.setAvatar(id, avatar);
+        avatarImage = avatar;
       }
     }
-    if (body.pinned !== undefined) {
-      bots.setPinned(id, Boolean(body.pinned));
-    }
-    if (body.hidden !== undefined) {
-      bots.setHidden(id, Boolean(body.hidden));
-    }
-    if (body.unread !== undefined) {
-      if (body.unread) bots.markUnread(id);
-      else bots.markRead(id);
-    }
+    let identity: { name: string; title: string; description: string } | null = null;
     if (body.name !== undefined || body.title !== undefined || body.description !== undefined) {
       const name = body.name !== undefined ? String(body.name).trim() : bot.name;
       if (!name) {
@@ -135,30 +126,26 @@ export async function PATCH(request: Request) {
       }
       const title = body.title !== undefined ? String(body.title) : bot.title;
       const description = body.description !== undefined ? String(body.description) : bot.description;
-      bots.updateIdentity(id, name, title, description);
+      identity = { name, title, description };
     }
-    // NOT-442: owner-supplied single runtime. Unknown runtimes/clients
-    // are rejected; blank values clear a field. Switching to hermes
-    // clears Agent Deck fields; selecting a deck ID resolves the
-    // re-selection marker. A merged agent-deck result without a valid
-    // agent client or without a deck ID is rejected rather than stored
-    // unlaunchable (only unresolved migrated rows may lack a deck ID).
-    if (
-      body.runtime !== undefined ||
-      body.agent_client !== undefined ||
-      body.deck_id !== undefined ||
-      body.deck_name !== undefined ||
-      body.working_directory !== undefined
-    ) {
-      const update = validateUpdateRuntimePath(body, bot);
-      if (update.errors.length > 0) {
-        return NextResponse.json(
-          { error: update.errors[0], errors: update.errors },
-          { status: 400 }
-        );
+    // NOT-456: agent and Agent Deck selection are independent fields. The
+    // agent can change but never clear; a supplied deck ID must be a
+    // selected ID; legacy runtime fields and deck_name are rejected.
+    const selection = hasAgentUpdate(body) ? validateUpdateAgent(body) : null;
+    if (selection && selection.errors.length > 0) return reject(selection.errors);
+
+    db.transaction(() => {
+      if (avatarImage !== undefined) bots.setAvatar(id, avatarImage);
+      if (avatarConfig) bots.updateAvatarConfig(id, avatarConfig.fields);
+      if (body.pinned !== undefined) bots.setPinned(id, Boolean(body.pinned));
+      if (body.hidden !== undefined) bots.setHidden(id, Boolean(body.hidden));
+      if (body.unread !== undefined) {
+        if (body.unread) bots.markUnread(id);
+        else bots.markRead(id);
       }
-      bots.updateRuntimePath(id, update.fields);
-    }
+      if (identity) bots.updateIdentity(id, identity.name, identity.title, identity.description);
+      if (selection) bots.updateAgentSelection(id, selection.fields);
+    })();
     const updated = bots.getById(id);
     return NextResponse.json(updated ? serializeBot(updated) : updated);
   } catch (error) {

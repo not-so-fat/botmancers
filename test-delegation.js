@@ -67,9 +67,9 @@ async function main() {
   assert(typeof MAX_DEPTH === 'number' && MAX_DEPTH > 0, `depth constant imported (DELEGATION_MAX_DEPTH=${MAX_DEPTH})`);
   assert(typeof MAX_TURNS === 'number' && MAX_TURNS > 0, `budget constant imported (DELEGATION_MAX_DELEGATED_TURNS=${MAX_TURNS})`);
 
-  const origin = bots.create({ name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
-  const botA = bots.create({ name: 'A', title: 'Drafter', description: 'Drafts.' });
-  const botB = bots.create({ name: 'B', title: 'Checker', description: 'Checks drafts.' });
+  const origin = bots.create({ deck_id: 'deck-test', name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
+  const botA = bots.create({ deck_id: 'deck-test', name: 'A', title: 'Drafter', description: 'Drafts.' });
+  const botB = bots.create({ deck_id: 'deck-test', name: 'B', title: 'Checker', description: 'Checks drafts.' });
   const conv = conversations.getByBotId(origin.id);
   assert(!!conv, 'origin thread exists');
 
@@ -306,10 +306,10 @@ async function main() {
   // parsed); a Hermes reply that literally contains `DECK codex: ...`
   // is posted as ordinary text and launches nothing.
   log('\nScenario 6: direct dispatch from the stored runtime via the queue');
-  const coder = bots.create({ name: 'Coder', title: 'Coder', description: 'Builds widgets.' });
+  const coder = bots.create({ deck_id: 'deck-test', name: 'Coder', title: 'Coder', description: 'Builds widgets.' });
   const coderWorkdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-coder-workdir-'));
-  db.bots.updateRuntimePath(coder.id, {
-    runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-id-9', working_directory: coderWorkdir,
+  db.bots.updateAgentSelection(coder.id, {
+    agent: 'codex', deck_id: 'deck-id-9', working_directory: coderWorkdir,
   });
   const coderConv = conversations.getByBotId(coder.id);
   const deckRecorded6 = [];
@@ -539,19 +539,19 @@ async function main() {
   assert(!thread8.some(m => m.content.startsWith('[Deck resume]')), 'no resume observation after a fork');
   assert(!thread8.some(m => m.content.startsWith('[Deck result]')), 'no final result after a fork');
 
-  // Scenario 9: a bot that still needs deck re-selection cannot launch,
+  // Scenario 9: a bot that still needs Agent Deck selection cannot launch,
   // so the notice names the legacy deck and the caller still returns to
   // report instead of stalling with its frame on the stack. No deck run
   // starts and no deck ID is guessed from the legacy name.
-  log('\nScenario 9: needs-reselection returns to the caller');
-  const stuck = bots.create({ name: 'Stuck', title: 'Stuck', description: 'Migrated before a deck was selected.' });
-  db.bots.updateRuntimePath(stuck.id, {
-    runtime: 'agent-deck', agent_client: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/stuck-work',
+  log('\nScenario 9: needs-deck-selection returns to the caller');
+  const stuck = bots.create({
+    name: 'Stuck', title: 'Stuck', description: 'Migrated before a deck was selected.',
+    agent: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/stuck-work',
   });
   const stuckRow = bots.getById(stuck.id);
   assert(
-    !!stuckRow && stuckRow.deck_id === null && Number(stuckRow.needs_deck_reselection) === 1,
-    'needs-reselection row stores no deck ID with the marker set'
+    !!stuckRow && stuckRow.deck_id === null && Number(stuckRow.needs_deck_selection) === 1,
+    'needs-deck-selection row stores no deck ID with the marker set'
   );
   const deckRecorded9 = [];
   deckRun.setDeckRunProcess(async argv => {
@@ -571,8 +571,8 @@ async function main() {
   deckRun.setDeckRunProcess(null);
   const thread9 = chainAfter(conv.id, user9.id);
   assert(
-    thread9.some(m => m.sender_type === 'bot' && m.sender_id === stuck.id && m.content.startsWith('[Deck needs reselection]') && m.content.includes('relay-deck')),
-    'unresolved deck posts [Deck needs reselection] naming the legacy deck'
+    thread9.some(m => m.sender_type === 'bot' && m.sender_id === stuck.id && m.content.startsWith('[Deck needs selection]') && m.content.includes('relay-deck')),
+    'unresolved deck posts [Deck needs selection] naming the legacy deck'
   );
   assert(deckRecorded9.length === 0, 'unresolved deck starts no deck run and guesses no deck ID');
   assert(

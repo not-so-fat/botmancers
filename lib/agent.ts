@@ -57,10 +57,9 @@ import {
 } from './agent-deck-run';
 import type { DeckDelegationResult } from './agent-deck-run';
 import {
-  normalizeRuntime,
-  resolveRuntime,
-  RUNTIME_AGENT_DECK,
-  RUNTIME_HERMES,
+  agentTransport,
+  resolveAgent,
+  type BotAgent,
 } from './bot-definition';
 import {
   getAgentDeckServerUrl,
@@ -79,7 +78,7 @@ export const DELEGATION_DEPTH_REASON =
 export const DELEGATION_BUDGET_REASON =
   `[Delegation limit] Budget limit reached (max ${DELEGATION_MAX_DELEGATED_TURNS} delegated turns per user message). No further delegated turn.`;
 // NOT-442: prompts no longer advertise a DECK directive. Ordinary turns
-// dispatch through the bot's own stored runtime (see runtimeForBot and
+// dispatch through the bot's own stored agent (see agentForBot and
 // processAgentDeckTurn); the model is never asked to route work, so no
 // capability-probe text is presented and no probe state is cached here.
 
@@ -103,30 +102,29 @@ const delegationChains = new Map<string, DelegationChain>();
 
 // NOT-435: the embedded example model loop is removed. Hermes turns run
 // on the persistent Hermes gateway and record HERMES_GATEWAY_TRANSPORT;
-// Agent Deck turns launch the stored agent client directly and record
-// AGENT_DECK_TRANSPORT.
+// Cursor/Claude/Codex/Muse Code turns launch through `agent-deck run` and
+// record AGENT_DECK_TRANSPORT. Both are adapters of the same agent +
+// Agent Deck contract (NOT-456).
 export const HERMES_GATEWAY_TRANSPORT = 'hermes-gateway';
 export const AGENT_DECK_TRANSPORT = 'agent-deck';
 
-// NOT-442: every stored bot resolves to exactly one runtime. Hermes is
-// the default for rows that predate the single runtime (null/blank
-// reads back as Hermes). Any other stored value is unconfirmed future
-// work and falls back to the Hermes default here.
-export function runtimeForBot(bot: Pick<Bot, 'runtime'>): string {
-  try {
-    return normalizeRuntime(bot.runtime);
-  } catch {
-    return RUNTIME_HERMES;
-  }
+// NOT-456: every stored bot resolves to exactly one agent
+// (hermes|cursor|claude|codex|muse); a missing agent reads as Hermes.
+export function agentForBot(bot: Pick<Bot, 'agent'>): BotAgent {
+  return resolveAgent(bot).agent;
 }
 
-// Visible thread error when an Agent Deck bot cannot launch because no
-// deck ID is selected. The legacy free-text deck name (when present) is
-// named so the owner knows what to re-select; no deck discovery runs
-// here and no ID is ever guessed from the name.
-export function deckNeedsReselectionMessage(botName: string, legacyDeckName: string | null): string {
+function transportForBot(bot: Pick<Bot, 'agent'>): string {
+  return agentTransport(agentForBot(bot)) === 'hermes-gateway' ? HERMES_GATEWAY_TRANSPORT : AGENT_DECK_TRANSPORT;
+}
+
+// Visible thread error when an agent cannot launch because no Agent Deck
+// is selected. Applies to every agent, Hermes included. The legacy
+// free-text deck name (when present) is named so the owner knows what to
+// select; no deck discovery runs here and no ID is ever guessed from it.
+export function deckNeedsSelectionMessage(botName: string, legacyDeckName: string | null): string {
   const legacy = legacyDeckName ? ` (legacy deck "${legacyDeckName}")` : '';
-  return `[Deck needs reselection] ${botName} cannot launch: no deck ID is selected${legacy}. Select a deck before launching.`;
+  return `[Deck needs selection] ${botName} cannot launch: no Agent Deck is selected${legacy}. Select a deck before launching.`;
 }
 
 // Visible thread error when the persistent Hermes gateway is not
@@ -488,7 +486,7 @@ function holdSnapshot(
   bot: Bot,
   skill: { path: string | null; present: boolean | null; content: string | null },
   facts: string[] | null = null,
-  transport: string = HERMES_GATEWAY_TRANSPORT
+  transport: string = transportForBot(bot)
 ): void {
   const input = buildSnapshotInput(bot, skill, facts);
   pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input), transport });
@@ -534,9 +532,26 @@ function handoffTaskFor(conversationMessages: Message[], botName: string): strin
   return null;
 }
 
-// NOT-442: direct Agent Deck dispatch. An ordinary message to an
-// agent-deck bot launches the stored agent client on the stored deck ID
-// directly: no Hermes turn runs first and no model-reply directive is
+// NOT-456: one launch gate for every agent. A bot without a selected
+// Agent Deck posts a visible notice (naming any legacy deck reference)
+// and hands control back to its delegating caller; nothing launches.
+function postDeckNeedsSelection(item: QueueItem, bot: Bot, chain: DelegationChain | null): void {
+  messages.create(
+    item.conversation_id,
+    'bot',
+    deckNeedsSelectionMessage(bot.name, resolveAgent(bot).deck_name),
+    bot.id
+  );
+  if (chain && !chain.stopped) {
+    const callerId = popCaller(chain, bot.id);
+    if (callerId) queue.enqueue(item.conversation_id, callerId);
+  }
+  chainProcessQueue();
+}
+
+// NOT-442/NOT-456: direct deck-run dispatch. An ordinary message to a
+// Cursor/Claude/Codex/Muse Code agent launches that agent on its selected
+// deck ID directly: no Hermes turn runs first and no model-reply directive is
 // parsed. The launch snapshot is held with the agent-deck transport and
 // the effective working directory (stored override or
 // ~/.botmancers/{botId}, created on demand), so it records what ran.
@@ -552,9 +567,8 @@ async function processAgentDeckTurn(args: {
   delegated: boolean;
 }): Promise<void> {
   const { item, bot, conversationMessages, latestUser, chain, openGroupTurn, delegated } = args;
-  // The held snapshot starts Hermes-flavoured (captured at the bot-row
-  // read); re-hold for this runtime first so every exit below flushes
-  // the agent-deck transport with the stored configuration.
+  // Re-hold the snapshot captured at the bot-row read so every exit
+  // below flushes the agent-deck transport with the stored configuration.
   holdSnapshot(item, bot, { path: null, present: null, content: null }, null, AGENT_DECK_TRANSPORT);
   // Unaddressed group turns stay silent: a deck launch is never spent
   // on a message nobody directed at this bot.
@@ -569,29 +583,19 @@ async function processAgentDeckTurn(args: {
     chainProcessQueue();
     return;
   }
-  const resolved = resolveRuntime(bot);
-  if (resolved.needs_deck_reselection || !resolved.agent_client || !resolved.deck_id) {
-    messages.create(
-      item.conversation_id,
-      'bot',
-      deckNeedsReselectionMessage(bot.name, resolved.deck_name),
-      bot.id
-    );
-    if (chain && !chain.stopped) {
-      const callerId = popCaller(chain, bot.id);
-      if (callerId) queue.enqueue(item.conversation_id, callerId);
-    }
-    chainProcessQueue();
+  const resolved = resolveAgent(bot);
+  if (!resolved.launchable || !resolved.deck_id) {
+    postDeckNeedsSelection(item, bot, chain);
     return;
   }
   let client;
   try {
-    client = parseDeckRuntime(resolved.agent_client);
+    client = parseDeckRuntime(resolved.agent);
   } catch {
     messages.create(
       item.conversation_id,
       'bot',
-      `[Deck failed] runtime=${resolved.agent_client} deck=${resolved.deck_id} error=Invalid agent-deck runtime.`,
+      `[Deck failed] agent=${resolved.agent} deck=${resolved.deck_id} error=Invalid agent-deck run client.`,
       bot.id
     );
     if (chain && !chain.stopped) {
@@ -639,7 +643,7 @@ async function processAgentDeckTurn(args: {
     messages.create(
       item.conversation_id,
       'bot',
-      `[Deck failed] runtime=${client} deck=${resolved.deck_id} error=${String(error instanceof Error ? error.message : error).slice(0, 300)}`,
+      `[Deck failed] agent=${client} deck=${resolved.deck_id} error=${String(error instanceof Error ? error.message : error).slice(0, 300)}`,
       bot.id
     );
     if (chain && !chain.stopped) {
@@ -656,7 +660,7 @@ async function processAgentDeckTurn(args: {
   // client and deck ID plus the effective working directory.
   holdSnapshot(
     item,
-    { ...bot, agent_client: client, deck_id: resolved.deck_id, working_directory: cwd },
+    { ...bot, agent: client, deck_id: resolved.deck_id, working_directory: cwd },
     skillState,
     rememberedFacts,
     AGENT_DECK_TRANSPORT
@@ -1580,11 +1584,13 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
-  // NOT-442: single-runtime dispatch. An agent-deck bot launches its
-  // stored agent client on its stored deck ID directly from the
-  // ordinary message; everything below this branch is the Hermes
-  // conversational path. No model reply is parsed for a DECK directive.
-  if (runtimeForBot(bot) === RUNTIME_AGENT_DECK) {
+  // NOT-456: agent + Agent Deck dispatch. Every agent launches only on a
+  // selected deck. Cursor/Claude/Codex/Muse Code launch through
+  // `agent-deck run` directly from the ordinary message; everything below
+  // this branch is the Hermes gateway adapter. No model reply is parsed
+  // for a DECK directive.
+  const launch = resolveAgent(bot);
+  if (agentTransport(launch.agent) === 'agent-deck-run') {
     await processAgentDeckTurn({
       item,
       bot,
@@ -1594,6 +1600,16 @@ async function processQueueItem(item: QueueItem) {
       openGroupTurn,
       delegated: isDelegatedTurn,
     });
+    return;
+  }
+  if (!launch.launchable) {
+    // Unaddressed group turns stay silent, as for the coding agents.
+    if (openGroupTurn) {
+      dropSnapshot(item);
+      chainProcessQueue();
+      return;
+    }
+    postDeckNeedsSelection(item, bot, chain);
     return;
   }
 
@@ -1923,9 +1939,14 @@ The standing rules decide the whole reply. If they require one short sentence, w
     const directives = parseWakeDirectives(responseContent);
     if (directives.length > 0) {
       const resolved = resolveWakeTargets(directives, conversation);
+      // NOT-456: only launchable Hermes agents are poked through the
+      // gateway; any other target falls through to the queued path,
+      // which applies that agent's own adapter and deck gate.
       const specialistTargets = resolved.filter(
         (target): target is { directive: WakeDirective; bot: Bot; group: false; unknown: false } =>
-          !target.group && !target.unknown
+          !target.group && !target.unknown &&
+          agentTransport(resolveAgent(target.bot).agent) === 'hermes-gateway' &&
+          resolveAgent(target.bot).launchable
       );
       if (specialistTargets.length === resolved.length) {
         await handleHermesWakeTurn({

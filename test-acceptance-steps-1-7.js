@@ -63,8 +63,8 @@ async function stubPeerWake() {
     const jiti = require('jiti').createJiti(${JSON.stringify(__filename)});
     const db = jiti('./lib/db.ts'); const agent = jiti('./lib/agent.ts');
     (async () => {
-      const alice = db.bots.create({ name: 'Alice', title: 'Research Assistant', description: 'Researches, then WAKE Bob.' });
-      const bob = db.bots.create({ name: 'Bob', title: 'Code Reviewer', description: 'Reviews handoffs.' });
+      const alice = db.bots.create({ deck_id: 'deck-test', name: 'Alice', title: 'Research Assistant', description: 'Researches, then WAKE Bob.' });
+      const bob = db.bots.create({ deck_id: 'deck-test', name: 'Bob', title: 'Code Reviewer', description: 'Reviews handoffs.' });
       const group = db.groups.create('Research Team', [alice.id, bob.id]);
       const conv = db.conversations.getByGroupId(group.id);
       agent.setDelegationChatStub(ctx => ctx.botName === 'Alice'

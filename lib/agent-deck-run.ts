@@ -19,6 +19,8 @@
 // unverified clients stay valid adapter targets but are not advertised.
 import { execFile } from 'child_process';
 import { messages } from './db';
+import { AGENTS, agentTransport, type BotAgent } from './bot-definition';
+import { loadHermesConfig } from './hermes';
 
 export const DECK_RUNTIMES = ['codex', 'claude', 'cursor', 'muse'] as const;
 
@@ -337,6 +339,37 @@ export async function listAvailableDeckRuntimes(): Promise<DeckRuntime[]> {
   return available;
 }
 
+// NOT-456: agent capability path. Every agent (Hermes included) is
+// launched on its selected Agent Deck through its adapter: Hermes through
+// the persistent Hermes gateway, the coding agents through `agent-deck
+// run`. An agent is advertised only when its adapter is verified ready:
+// the Hermes gateway configuration for Hermes, the deck-run probe above
+// for the coding agents. Agent Deck itself is never an agent here.
+let hermesAdapterProbe: () => boolean = () => loadHermesConfig() !== null;
+
+export function setHermesAdapterProbe(probe: (() => boolean) | null): void {
+  hermesAdapterProbe = probe ?? (() => loadHermesConfig() !== null);
+}
+
+export async function probeAgent(agent: BotAgent): Promise<boolean> {
+  if (agentTransport(agent) === 'hermes-gateway') {
+    try {
+      return hermesAdapterProbe();
+    } catch {
+      return false;
+    }
+  }
+  return probeDeckRuntime(agent);
+}
+
+export async function listAvailableAgents(): Promise<BotAgent[]> {
+  const available: BotAgent[] = [];
+  for (const agent of AGENTS) {
+    if (await probeAgent(agent)) available.push(agent);
+  }
+  return available;
+}
+
 // NOT-442: the model is never presented a DECK how-to. Ordinary turns
 // dispatch through the bot's own stored runtime in the conversation loop
 // (processAgentDeckTurn in ./agent), so no directive vocabulary is
@@ -388,7 +421,7 @@ export async function delegateCodingViaDeck(request: DeckDelegationRequest): Pro
   const stopped = request.isStopped ?? (() => false);
   try {
     if (stopped()) return null;
-    observe(request, `[Deck handoff] runtime=${client} deck=${request.deck}\n${request.task}`);
+    observe(request, `[Deck handoff] agent=${client} deck=${request.deck}\n${request.task}`);
     const impl = await startDeckRun({
       deck: request.deck,
       client,
@@ -456,7 +489,7 @@ export async function delegateCodingViaDeck(request: DeckDelegationRequest): Pro
     // A Stop that lands with an error in flight stays silent: Stop promises
     // no late messages and already posted its own notice.
     if (stopped()) return null;
-    observe(request, `[Deck failed] runtime=${client} deck=${request.deck} error=${String(error).slice(0, 300)}`);
+    observe(request, `[Deck failed] agent=${client} deck=${request.deck} error=${String(error).slice(0, 300)}`);
     throw error;
   }
 }

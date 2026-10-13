@@ -1,294 +1,372 @@
 #!/usr/bin/env node
-// NOT-442: single bot runtime contract test (deterministic, no network).
+// NOT-456: Agent + Agent Deck contract test (deterministic, no network).
 //
-// Proves: the bot-definition schema and create/read/update API accept only
-// runtime=hermes or runtime=agent-deck (Agent Deck requires one of
-// codex|claude|cursor|muse plus a deck ID; Hermes rejects Agent Deck-only
-// fields); the deterministic migration converts every complete legacy
-// coding path to agent-deck (legacy deck_name preserved only as an
-// unresolved reference, null deck ID, needs-reselection) with zero
-// deck-discovery calls, while every incomplete/absent path becomes hermes.
+// Proves:
+// (1) the canonical agent enum is exactly hermes|cursor|claude|codex|muse
+//     (Hermes, Cursor, Claude, Codex, Muse Code) and nothing offers Agent
+//     Deck as an agent or runtime, in source or in serialized bots;
+// (2) POST/PATCH /api/bots store the agent independently from deck_id,
+//     require a selected deck, and reject unknown agents, malformed decks,
+//     and legacy runtime fields without partial writes;
+// (3) every legacy row shape migrates deterministically on DB load while
+//     conversations, messages, provenance, launch snapshots, deck
+//     references, and working directories are preserved;
+// (4) Hermes and the four coding agents share one capability + dispatch
+//     contract (agent plus selected deck), with no separate runtime mode;
+// (5) unresolved rows stay readable, cannot launch, and never get a deck
+//     ID guessed from their legacy deck name.
 
 'use strict';
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
+const ROOT = __dirname;
 const DB_PATH = path.join(os.tmpdir(), `botmancers-bot-definition-test-${process.pid}.db`);
-for (const suffix of ['', '-shm', '-wal']) {
-  try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* fresh start */ }
+const MIGRATION_DB_PATH = path.join(os.tmpdir(), `botmancers-agent-migration-test-${process.pid}.db`);
+function removeDb(file) {
+  for (const suffix of ['', '-shm', '-wal']) {
+    try { fs.rmSync(file + suffix, { force: true }); } catch { /* fresh start */ }
+  }
 }
+removeDb(DB_PATH);
+removeDb(MIGRATION_DB_PATH);
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
+process.env.HERMES_API_SERVER_KEY = 'test-hermes-key';
+process.env.HERMES_BASE_URL = 'http://127.0.0.1:65530';
 
 const { createJiti } = require('jiti');
-const jiti = createJiti(__filename);
+const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 const db = jiti('./lib/db.ts');
 const def = jiti('./lib/bot-definition.ts');
 const deck = jiti('./lib/agent-deck-run.ts');
+const dispatch = jiti('./lib/agent-dispatch.ts');
+const botsRoute = jiti('./app/api/bots/route.ts');
+const raw = db.default;
 
 let failures = 0;
-
-function pass(label) {
-  console.log(`PASS: ${label}`);
-}
-
-function fail(label, detail) {
-  failures += 1;
-  console.log(`FAIL: ${label}${detail ? ` -- ${detail}` : ''}`);
-}
-
 function check(label, condition, detail) {
-  if (condition) pass(label);
-  else fail(label, detail);
+  if (condition) console.log(`PASS: ${label}`);
+  else {
+    failures += 1;
+    console.log(`FAIL: ${label}${detail ? ` -- ${detail}` : ''}`);
+  }
 }
 
-// --- Criterion 1: valid Hermes round trip (default for newly created bots).
-const hermesCreated = db.bots.create({
-  name: 'Herald',
-  title: 'Herald',
-  description: 'Converses persistently.',
-  runtime: 'hermes',
-  agent_client: null,
-  deck_id: null,
-  deck_name: null,
-  working_directory: null,
-  needs_deck_reselection: 0,
-});
-console.log(`valid Hermes round trip: runtime=${hermesCreated.runtime} agent_client=${hermesCreated.agent_client} deck_id=${hermesCreated.deck_id}`);
-check('valid Hermes bot stores runtime=hermes', hermesCreated.runtime === 'hermes', JSON.stringify(hermesCreated.runtime));
-const hermesReadBack = db.bots.getById(hermesCreated.id);
-const hermesView = def.serializeBot(hermesReadBack);
-console.log(`Hermes read-back: runtime=${hermesView.runtime} agent_client=${hermesView.agent_client} deck_id=${hermesView.deck_id} launchable=${hermesView.launchable}`);
-check(
-  'Hermes read-back resolves to hermes with cleared Agent Deck fields',
-  hermesView.runtime === 'hermes' && hermesView.agent_client === null && hermesView.deck_id === null &&
-    hermesView.deck_name === null && hermesView.working_directory === null && hermesView.launchable === true,
-  JSON.stringify({ runtime: hermesView.runtime, agent_client: hermesView.agent_client, deck_id: hermesView.deck_id })
-);
-
-// --- Criterion 1: valid Agent Deck round trip.
-const deckCreated = db.bots.create({
-  name: 'Relay',
-  title: 'Coding Relay',
-  description: 'Launches a local coding agent directly.',
-  runtime: 'agent-deck',
-  agent_client: 'codex',
-  deck_id: 'deck-123',
-  deck_name: null,
-  working_directory: '/tmp/relay-work',
-  needs_deck_reselection: 0,
-});
-console.log(`valid Agent Deck round trip: runtime=${deckCreated.runtime} agent_client=${deckCreated.agent_client} deck_id=${deckCreated.deck_id} working_directory=${deckCreated.working_directory}`);
-check('valid Agent Deck bot stores its client and deck ID', deckCreated.runtime === 'agent-deck' && deckCreated.agent_client === 'codex' && deckCreated.deck_id === 'deck-123', JSON.stringify(deckCreated));
-const deckReadBack = db.bots.getById(deckCreated.id);
-const deckView = def.serializeBot(deckReadBack);
-check(
-  'Agent Deck read-back resolves with its stored configuration',
-  deckView.runtime === 'agent-deck' && deckView.agent_client === 'codex' && deckView.deck_id === 'deck-123' &&
-    deckView.working_directory === '/tmp/relay-work' && deckView.launchable === true,
-  JSON.stringify(deckView)
-);
-check('agent-client enum matches the run-adapter runtimes', JSON.stringify(def.AGENT_CLIENTS) === JSON.stringify(deck.DECK_RUNTIMES));
-
-// --- Criterion 1: invalid fixtures (mixed/partial) are rejected.
-const unknownRuntime = def.validateCreateRuntimePath({ runtime: 'watson' });
-console.log(`invalid mixed fixture unknown-runtime: ${unknownRuntime.errors[0] || '(no error)'}`);
-check('unknown runtime is rejected', unknownRuntime.errors.length > 0 && /Invalid runtime/.test(unknownRuntime.errors[0]), JSON.stringify(unknownRuntime.errors));
-
-const unknownClient = def.validateCreateRuntimePath({ runtime: 'agent-deck', agent_client: 'watson', deck_id: 'd1' });
-console.log(`invalid mixed fixture unknown-client: ${unknownClient.errors[0] || '(no error)'}`);
-check('unknown agent client is rejected', unknownClient.errors.length > 0 && /Invalid agent client/.test(unknownClient.errors[0]), JSON.stringify(unknownClient.errors));
-
-const missingClient = def.validateCreateRuntimePath({ runtime: 'agent-deck', deck_id: 'd1' });
-console.log(`invalid partial fixture missing-client: ${missingClient.errors[0] || '(no error)'}`);
-check('agent-deck without a client is rejected', missingClient.errors.some(e => /agent client/i.test(e)), JSON.stringify(missingClient.errors));
-
-const missingDeckId = def.validateCreateRuntimePath({ runtime: 'agent-deck', agent_client: 'claude' });
-console.log(`invalid partial fixture missing-deck-id: ${missingDeckId.errors[0] || '(no error)'}`);
-check('agent-deck without a deck ID is rejected', missingDeckId.errors.some(e => /Deck ID is required/.test(e)), JSON.stringify(missingDeckId.errors));
-
-const hermesWithDeckFields = def.validateCreateRuntimePath({ runtime: 'hermes', agent_client: 'codex', deck_id: 'd1' });
-console.log(`invalid mixed fixture hermes-with-deck-fields: ${hermesWithDeckFields.errors[0] || '(no error)'}`);
-check('Hermes with Agent Deck fields is rejected', hermesWithDeckFields.errors.some(e => /not accepted for a Hermes bot/.test(e)), JSON.stringify(hermesWithDeckFields.errors));
-
-// PATCH contract: unknown runtime/client rejected, blank values clear.
-const badUpdate = def.validateUpdateRuntimePath({ runtime: 'watson' });
-check('update with an unknown runtime is rejected', badUpdate.errors.length > 0 && /Invalid runtime/.test(badUpdate.errors[0]), JSON.stringify(badUpdate.errors));
-const badClientUpdate = def.validateUpdateRuntimePath({ agent_client: 'watson' });
-check('update with an unknown agent client is rejected', badClientUpdate.errors.length > 0 && /Invalid agent client/.test(badClientUpdate.errors[0]), JSON.stringify(badClientUpdate.errors));
-
-// PATCH contract against the stored row: agent-deck requires a client.
-const hermesRow = { runtime: 'hermes', agent_client: null, deck_id: null, deck_name: null, working_directory: null, needs_deck_reselection: 0 };
-const switchNoClient = def.validateUpdateRuntimePath({ runtime: 'agent-deck' }, hermesRow);
-console.log(`invalid update fixture switch-without-client: ${switchNoClient.errors[0] || '(no error)'}`);
-check('switching to agent-deck without a client is rejected', switchNoClient.errors.some(e => /agent client/i.test(e)), JSON.stringify(switchNoClient.errors));
-
-const deckRow = { runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-123', deck_name: null, working_directory: '/tmp/w', needs_deck_reselection: 0 };
-const clearClient = def.validateUpdateRuntimePath({ agent_client: '' }, deckRow);
-console.log(`invalid update fixture clear-client: ${clearClient.errors[0] || '(no error)'}`);
-check('clearing the client on an agent-deck bot is rejected', clearClient.errors.some(e => /agent client/i.test(e)), JSON.stringify(clearClient.errors));
-
-const nullClientDeck = def.validateUpdateRuntimePath({ agent_client: '', deck_id: 'deck-999' }, deckRow);
-console.log(`invalid update fixture null-client-with-deck: ${nullClientDeck.errors[0] || '(no error)'}`);
-check('deck ID with a null client is rejected', nullClientDeck.errors.some(e => /agent client/i.test(e)), JSON.stringify(nullClientDeck.errors));
-
-// Switching to agent-deck without a deck ID is rejected on any stored
-// row that is not already an unresolved migrated row: only the
-// migration may introduce the needs-reselection state.
-const switchNoDeck = def.validateUpdateRuntimePath({ runtime: 'agent-deck', agent_client: 'codex' }, hermesRow);
-console.log(`invalid update fixture switch-without-deck-id: ${switchNoDeck.errors[0] || '(no error)'}`);
-check('switching to agent-deck without a deck ID is rejected', switchNoDeck.errors.some(e => /Deck ID is required/.test(e)), JSON.stringify(switchNoDeck.errors));
-
-const switchNoDeckFull = def.validateUpdateRuntimePath({ runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-123' }, hermesRow);
-check('switching to agent-deck with a client and deck ID is accepted', switchNoDeckFull.errors.length === 0, JSON.stringify(switchNoDeckFull.errors));
-
-const unresolvedWorkdir = def.validateUpdateRuntimePath(
-  { working_directory: '/tmp/other' },
-  { runtime: 'agent-deck', agent_client: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/w', needs_deck_reselection: 1 }
-);
-check(
-  'updating an unresolved migrated row without a deck ID stays allowed',
-  unresolvedWorkdir.errors.length === 0,
-  JSON.stringify(unresolvedWorkdir.errors)
-);
-
-// Defense in depth: a direct client-less merge is flagged, never launchable.
-const clientLessMerge = def.applyRuntimeUpdate(deckRow, { agent_client: null, deck_id: 'deck-999' });
-console.log(`client-less merge: needs_deck_reselection=${clientLessMerge.needs_deck_reselection} launchable=${def.resolveRuntime({ ...deckRow, agent_client: null }).launchable}`);
-check(
-  'client-less merge is flagged as needing re-selection and not launchable',
-  clientLessMerge.needs_deck_reselection === true &&
-    def.resolveRuntime({ runtime: 'agent-deck', agent_client: null, deck_id: 'deck-999' }).launchable === false,
-  JSON.stringify(clientLessMerge)
-);
-
-// Valid update: selecting a deck ID on a needs-reselection row resolves it.
-const unresolvedRow = { runtime: 'agent-deck', agent_client: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/w', needs_deck_reselection: 1 };
-const reselect = def.validateUpdateRuntimePath({ deck_id: 'deck-123' }, unresolvedRow);
-const reselected = def.applyRuntimeUpdate(unresolvedRow, reselect.fields);
-console.log(`valid update fixture reselect: errors=${reselect.errors.length} deck_id=${reselected.deck_id} needs_deck_reselection=${reselected.needs_deck_reselection}`);
-check(
-  'selecting a deck ID resolves the re-selection marker',
-  reselect.errors.length === 0 && reselected.deck_id === 'deck-123' &&
-    reselected.deck_name === null && reselected.needs_deck_reselection === false,
-  JSON.stringify({ errors: reselect.errors, reselected })
-);
-
-// Switching to hermes clears Agent Deck fields.
-db.bots.updateRuntimePath(deckCreated.id, { runtime: 'hermes' });
-const clearedToHermes = def.serializeBot(db.bots.getById(deckCreated.id));
-check(
-  'switching to hermes clears Agent Deck fields',
-  clearedToHermes.runtime === 'hermes' && clearedToHermes.agent_client === null && clearedToHermes.deck_id === null &&
-    clearedToHermes.working_directory === null && clearedToHermes.needs_deck_reselection === false,
-  JSON.stringify(clearedToHermes)
-);
-// Restore the deck bot for later suites (independent DB files, but keep tidy).
-db.bots.updateRuntimePath(deckCreated.id, { runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-123', working_directory: '/tmp/relay-work' });
-
-// --- Criterion 2: deterministic migration fixtures (pure, no network).
-// Count deck-discovery calls: the migration must never fetch.
-let deckDiscoveryCalls = 0;
-const originalFetch = globalThis.fetch;
-globalThis.fetch = async (...args) => {
-  deckDiscoveryCalls += 1;
-  if (originalFetch) return originalFetch(...args);
-  throw new Error('fetch not available in test sandbox');
-};
-
-function showMigration(label, before, after) {
-  console.log(
-    `migration fixture ${label}: before=${JSON.stringify(before)} after=${JSON.stringify(after)}`
-  );
+function jsonRequest(method, body) {
+  return new Request('http://localhost:43123/api/bots', {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
+async function call(method, body) {
+  const res = await botsRoute[method](jsonRequest(method, body));
+  return { status: res.status, json: await res.json() };
+}
+const botCount = () => raw.prepare('SELECT COUNT(*) AS n FROM bots').get().n;
+const rowOf = id => raw.prepare('SELECT * FROM bots WHERE id = ?').get(id);
 
-const completeBefore = { runtime: null, coding_runtime: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/relay-work' };
-const completeAfter = def.migrateLegacyRuntimeFields({ ...completeBefore });
-showMigration('complete', completeBefore, completeAfter);
-console.log(`complete legacy path: legacy deck_name="${completeAfter.deck_name}" deck_id=${completeAfter.deck_id} needs_deck_reselection=${completeAfter.needs_deck_reselection}`);
-check(
-  'complete legacy coding path becomes agent-deck with the legacy name as an unresolved reference',
-  completeAfter.runtime === 'agent-deck' && completeAfter.agent_client === 'codex' &&
-    completeAfter.deck_name === 'relay-deck' && completeAfter.deck_id === null &&
-    completeAfter.needs_deck_reselection === true && completeAfter.working_directory === '/tmp/relay-work',
-  JSON.stringify(completeAfter)
-);
-
-const partialBefore = { runtime: null, coding_runtime: 'claude', deck_name: null, working_directory: '/tmp/w' };
-const partialAfter = def.migrateLegacyRuntimeFields({ ...partialBefore });
-showMigration('partial-missing-deck', partialBefore, partialAfter);
-check(
-  'partial path (missing deck name) becomes hermes with cleared fields',
-  partialAfter.runtime === 'hermes' && partialAfter.agent_client === null && partialAfter.deck_id === null &&
-    partialAfter.deck_name === null && partialAfter.working_directory === null && partialAfter.needs_deck_reselection === false,
-  JSON.stringify(partialAfter)
-);
-
-const partialCwdBefore = { runtime: null, coding_runtime: 'cursor', deck_name: 'some-deck', working_directory: null };
-const partialCwdAfter = def.migrateLegacyRuntimeFields({ ...partialCwdBefore });
-showMigration('partial-missing-cwd', partialCwdBefore, partialCwdAfter);
-check(
-  'partial path (missing working directory) becomes hermes',
-  partialCwdAfter.runtime === 'hermes' && partialCwdAfter.deck_name === null,
-  JSON.stringify(partialCwdAfter)
-);
-
-const invalidClientBefore = { runtime: null, coding_runtime: 'watson', deck_name: 'd', working_directory: '/tmp/w' };
-const invalidClientAfter = def.migrateLegacyRuntimeFields({ ...invalidClientBefore });
-showMigration('partial-invalid-client', invalidClientBefore, invalidClientAfter);
-check('invalid client becomes hermes', invalidClientAfter.runtime === 'hermes', JSON.stringify(invalidClientAfter));
-
-const importedBefore = { runtime: null };
-const importedAfter = def.migrateLegacyRuntimeFields({ ...importedBefore });
-showMigration('imported', importedBefore, importedAfter);
-check('imported row without a coding path becomes hermes', importedAfter.runtime === 'hermes' && importedAfter.migrated === true, JSON.stringify(importedAfter));
-
-const unconfiguredBefore = { runtime: null, coding_runtime: null, deck_name: null, working_directory: null };
-const unconfiguredAfter = def.migrateLegacyRuntimeFields({ ...unconfiguredBefore });
-showMigration('unconfigured', unconfiguredBefore, unconfiguredAfter);
-check('unconfigured row becomes hermes', unconfiguredAfter.runtime === 'hermes' && unconfiguredAfter.deck_name === null, JSON.stringify(unconfiguredAfter));
-
-const alreadyHermes = def.migrateLegacyRuntimeFields({ runtime: 'hermes', agent_client: 'codex', deck_id: 'd1' });
-check('row that already stores a runtime is untouched (hermes)', alreadyHermes.runtime === 'hermes' && alreadyHermes.migrated === false, JSON.stringify(alreadyHermes));
-
-// Imported bots are Hermes with no Agent Deck path at the DB layer.
-const imported = db.bots.createFromImport(
-  { name: 'Imported', title: 'Imported', description: 'Imported bot.' },
-  { source_provider: 'test', template_id: 't1', template_url: 'https://example.test/t1', import_schema_version: '1', import_operation_id: `op-${process.pid}`, import_timestamp: Date.now() }
-);
-const importedView = def.serializeBot(db.bots.getById(imported.id));
-console.log(`imported row: runtime=${importedView.runtime} agent_client=${importedView.agent_client} deck_id=${importedView.deck_id}`);
-check('imported bot reads back as hermes', importedView.runtime === 'hermes' && importedView.agent_client === null, JSON.stringify(importedView));
-
-globalThis.fetch = originalFetch;
-console.log(`deck-discovery calls during migration: ${deckDiscoveryCalls}`);
-check('migration performs zero deck-discovery calls (no network)', deckDiscoveryCalls === 0, `got ${deckDiscoveryCalls}`);
+const FIVE = ['hermes', 'cursor', 'claude', 'codex', 'muse'];
+const LEGACY_KEYS = ['runtime', 'agent_client', 'persistent_runtime', 'coding_runtime', 'needs_deck_reselection'];
 
 async function main() {
-  // Availability still follows the capability probe, never the enum.
-  deck.setDeckRunProcess(async argv => {
-    if (argv[0] === 'codex' && argv[1] === '--version') return { stdout: 'codex-cli 0.157.1\n', stderr: '', exitCode: 0 };
-    if ((argv[0] === 'claude' || argv[0] === 'cursor' || argv[0] === 'muse') && argv[1] === '--version') {
-      return { stdout: '', stderr: `command not found: ${argv[0]}`, exitCode: 127 };
-    }
-    if (argv[0] === 'agent-deck' && argv[1] === '--version') return { stdout: 'agent-deck 2.1.0\n', stderr: '', exitCode: 0 };
-    return { stdout: '', stderr: 'unexpected probe', exitCode: 1 };
-  });
-  const ready = await deck.listAvailableDeckRuntimes();
-  const payload = def.buildAvailabilityPayload(ready);
-  console.log(`availability payload (codex ready, others unavailable): ${JSON.stringify(payload)}`);
+  // ---- (1) canonical enum + source assertions -----------------------------
+  console.log('\n(1) Canonical agent enum');
+  check('AGENTS is exactly hermes,cursor,claude,codex,muse in order', JSON.stringify(def.AGENTS) === JSON.stringify(FIVE), JSON.stringify(def.AGENTS));
   check(
-    'availability includes only probe-ready clients',
-    payload.runtimes.length === 1 && payload.runtimes[0].runtime === 'codex' && payload.runtimes[0].launchable === true,
+    'agent labels are Hermes, Cursor, Claude, Codex, Muse Code',
+    FIVE.map(a => def.AGENT_LABELS[a]).join('|') === 'Hermes|Cursor|Claude|Codex|Muse Code',
+    JSON.stringify(def.AGENT_LABELS)
+  );
+  check('Agent Deck is not an agent', !def.AGENTS.includes('agent-deck') && !Object.values(def.AGENT_LABELS).includes('Agent Deck'));
+  check('no runtime enum is exported', def.RUNTIMES === undefined && def.RUNTIME_AGENT_DECK === undefined && def.AGENT_CLIENTS === undefined);
+  check('Hermes uses the same deck-selected contract (gateway adapter)', def.agentTransport('hermes') === 'hermes-gateway');
+  check('coding agents use the deck-run adapter', ['cursor', 'claude', 'codex', 'muse'].every(a => def.agentTransport(a) === 'agent-deck-run'));
+  for (const file of ['lib/bot-definition.ts', 'lib/bot-runtime-ui.ts', 'app/components/AgentDeckRuntime.tsx', 'app/page.tsx', 'app/bots/[id]/config/page.tsx']) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    check(`${file}: no "Runtime: Agent Deck" copy`, !source.includes('Runtime: Agent Deck') && !source.includes("label: 'Agent Deck'"));
+  }
+  const uiSource = fs.readFileSync(path.join(ROOT, 'lib/bot-runtime-ui.ts'), 'utf8');
+  check('UI helpers offer no runtime option list', !/RUNTIME_OPTIONS|value: 'agent-deck'/.test(uiSource));
+  check('agent-deck-run CLI clients stay the four coding agents', JSON.stringify(deck.DECK_RUNTIMES) === JSON.stringify(['codex', 'claude', 'cursor', 'muse']));
+
+  // ---- (2) API validation ---------------------------------------------------
+  console.log('\n(2) Create/update validation');
+  const created = {};
+  for (const agent of FIVE) {
+    const res = await call('POST', { name: `Agent-${agent}`, agent, deck_id: `deck-${agent}` });
+    created[agent] = res.json;
+    check(
+      `POST agent=${agent} with a deck stores agent and deck independently`,
+      res.status === 200 && res.json.agent === agent && res.json.deck_id === `deck-${agent}` && res.json.launchable === true && res.json.needs_deck_selection === false,
+      JSON.stringify(res)
+    );
+    const row = rowOf(res.json.id);
+    check(
+      `stored row for ${agent}: agent column set, legacy runtime/agent_client never written`,
+      row.agent === agent && row.deck_id === `deck-${agent}` && row.runtime === null && row.agent_client === null,
+      JSON.stringify({ agent: row.agent, runtime: row.runtime, agent_client: row.agent_client })
+    );
+    check(`serialized ${agent} bot exposes no legacy runtime keys`, LEGACY_KEYS.every(key => !(key in res.json)), Object.keys(res.json).join(','));
+  }
+  const defaulted = await call('POST', { name: 'Defaulted', deck_id: 'deck-default' });
+  check('POST without agent defaults to hermes (deck still required)', defaulted.status === 200 && defaulted.json.agent === 'hermes');
+
+  const rejectCases = [
+    ['missing deck', { name: 'NoDeck', agent: 'codex' }, /Deck ID is required/],
+    ['blank deck', { name: 'BlankDeck', agent: 'hermes', deck_id: '   ' }, /Deck ID is required/],
+    ['non-string deck', { name: 'ObjDeck', agent: 'claude', deck_id: { id: 'x' } }, /Invalid deck ID/],
+    ['numeric deck', { name: 'NumDeck', agent: 'claude', deck_id: 42 }, /Invalid deck ID/],
+    ['whitespace deck', { name: 'SpaceDeck', agent: 'claude', deck_id: 'two words' }, /Invalid deck ID/],
+    ['unknown agent', { name: 'Watson', agent: 'watson', deck_id: 'd1' }, /Invalid agent/],
+    ['agent-deck as agent', { name: 'DeckAsAgent', agent: 'agent-deck', deck_id: 'd1' }, /Invalid agent/],
+    ['legacy runtime field', { name: 'Legacy', runtime: 'agent-deck', agent_client: 'codex', deck_id: 'd1' }, /no longer accepted/],
+    ['legacy runtime=hermes', { name: 'LegacyH', runtime: 'hermes', deck_id: 'd1' }, /no longer accepted/],
+    ['client-written deck_name', { name: 'Named', agent: 'codex', deck_id: 'd1', deck_name: 'guess-me' }, /read-only legacy reference/],
+  ];
+  for (const [label, body, pattern] of rejectCases) {
+    const before = botCount();
+    const res = await call('POST', body);
+    check(`POST rejects ${label} with 400 and creates nothing`, res.status === 400 && pattern.test(res.json.error) && botCount() === before, JSON.stringify(res));
+  }
+
+  const target = created.codex;
+  const patchRejects = [
+    ['unknown agent', { agent: 'watson' }],
+    ['blank agent', { agent: '' }],
+    ['agent-deck as agent', { agent: 'agent-deck' }],
+    ['cleared deck', { deck_id: '' }],
+    ['malformed deck', { deck_id: 'a b' }],
+    ['legacy runtime', { runtime: 'hermes' }],
+    ['legacy agent_client', { agent_client: 'claude' }],
+    ['deck_name write', { deck_name: 'relay-deck' }],
+  ];
+  for (const [label, fields] of patchRejects) {
+    const before = rowOf(target.id);
+    const res = await call('PATCH', { id: target.id, name: 'Renamed', pinned: true, avatar: { color: 'teal' }, ...fields });
+    const after = rowOf(target.id);
+    check(
+      `PATCH rejects ${label} with 400 and no partial write (name/pin/avatar/agent/deck unchanged)`,
+      res.status === 400 && JSON.stringify(before) === JSON.stringify(after),
+      JSON.stringify({ status: res.status, error: res.json.error })
+    );
+  }
+  const switched = await call('PATCH', { id: target.id, agent: 'muse' });
+  check('PATCH agent alone keeps the deck selection', switched.status === 200 && switched.json.agent === 'muse' && switched.json.deck_id === 'deck-codex' && switched.json.launchable === true, JSON.stringify(switched.json));
+  const redecked = await call('PATCH', { id: target.id, deck_id: 'deck-next', working_directory: '/tmp/next' });
+  check('PATCH deck alone keeps the agent', redecked.status === 200 && redecked.json.agent === 'muse' && redecked.json.deck_id === 'deck-next' && redecked.json.working_directory === '/tmp/next', JSON.stringify(redecked.json));
+  const toHermes = await call('PATCH', { id: target.id, agent: 'hermes' });
+  check('switching to Hermes keeps the deck and workdir (Hermes is an agent, not a mode)', toHermes.json.agent === 'hermes' && toHermes.json.deck_id === 'deck-next' && toHermes.json.working_directory === '/tmp/next', JSON.stringify(toHermes.json));
+
+  const listed = await botsRoute.GET();
+  const list = await listed.json();
+  check('GET /api/bots serializes agent + Agent Deck state for every bot', list.length > 0 && list.every(bot => FIVE.includes(bot.agent) && 'deck_id' in bot && typeof bot.needs_deck_selection === 'boolean' && LEGACY_KEYS.every(key => !(key in bot))));
+
+  // ---- (5) unresolved rows --------------------------------------------------
+  console.log('\n(5) Unresolved rows');
+  const imported = db.bots.createFromImport(
+    { name: 'Imported', title: 'Imported', description: 'Imported bot.' },
+    { source_provider: 'test', template_id: 't1', template_url: 'https://example.test/t1', import_schema_version: '1', import_operation_id: `op-${process.pid}`, import_timestamp: Date.now() }
+  );
+  const importedView = def.serializeBot(db.bots.getById(imported.id));
+  check('imported bot reads back as hermes needing Agent Deck selection', importedView.agent === 'hermes' && importedView.deck_id === null && importedView.needs_deck_selection === true && importedView.launchable === false, JSON.stringify(importedView));
+  const stale = db.bots.create({ name: 'Stale', title: '', description: 'Legacy.', agent: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/stale' });
+  const staleView = def.serializeBot(db.bots.getById(stale.id));
+  check('unresolved row stays readable with its legacy deck reference', staleView.agent === 'codex' && staleView.deck_name === 'relay-deck' && staleView.working_directory === '/tmp/stale');
+  check('unresolved row: no deck ID guessed from the name, not launchable', staleView.deck_id === null && staleView.needs_deck_selection === true && staleView.launchable === false);
+  const workdirPatch = await call('PATCH', { id: stale.id, working_directory: '/tmp/stale-2' });
+  check('editing an unresolved row without a deck keeps it unresolved', workdirPatch.json.needs_deck_selection === true && workdirPatch.json.deck_id === null && workdirPatch.json.deck_name === 'relay-deck');
+
+  let deckCalls = 0;
+  let hermesCalls = 0;
+  deck.setDeckRunProcess(async () => { deckCalls += 1; return { stdout: '', stderr: 'must not run', exitCode: 1 }; });
+  dispatch.setAgentDispatchHermesFetch(async () => { hermesCalls += 1; return new Response('{}', { status: 500 }); });
+  for (const bot of [db.bots.getById(stale.id), db.bots.getById(imported.id)]) {
+    let code = null;
+    try {
+      await dispatch.dispatchToAgent({ bot, history: [{ speakerLabel: 'user', fromAgent: false, content: 'hi' }] });
+    } catch (error) {
+      code = error.code;
+    }
+    check(`dispatch refuses unresolved ${bot.agent} row (${bot.name}) as agent_unavailable`, code === 'agent_unavailable', String(code));
+  }
+  check('no adapter (deck run or Hermes gateway) ran for unresolved rows', deckCalls === 0 && hermesCalls === 0, `deck=${deckCalls} hermes=${hermesCalls}`);
+  const selected = await call('PATCH', { id: stale.id, deck_id: 'deck-picked' });
+  check('selecting a deck resolves the row and drops the legacy name', selected.json.deck_id === 'deck-picked' && selected.json.deck_name === null && selected.json.needs_deck_selection === false && selected.json.launchable === true, JSON.stringify(selected.json));
+
+  // ---- (4) capability + dispatch for all five agents ------------------------
+  console.log('\n(4) One agent + deck contract for Hermes and the coding agents');
+  deck.setHermesAdapterProbe(() => true);
+  deck.setDeckRunProcess(async argv => {
+    if (argv[1] === '--version') {
+      return ['codex', 'claude', 'agent-deck'].includes(argv[0])
+        ? { stdout: `${argv[0]} 1.0\n`, stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: 'not found', exitCode: 127 };
+    }
+    return { stdout: '', stderr: 'unexpected', exitCode: 1 };
+  });
+  const ready = await deck.listAvailableAgents();
+  check('capability probe lists Hermes alongside probe-ready coding agents', JSON.stringify(ready) === JSON.stringify(['hermes', 'claude', 'codex']), JSON.stringify(ready));
+  const payload = def.buildAvailabilityPayload(ready);
+  check(
+    'availability payload lists agents (labels) and never Agent Deck',
+    JSON.stringify(payload) === JSON.stringify({ agents: [
+      { agent: 'hermes', label: 'Hermes', launchable: true },
+      { agent: 'claude', label: 'Claude', launchable: true },
+      { agent: 'codex', label: 'Codex', launchable: true },
+    ] }),
     JSON.stringify(payload)
   );
-  deck.resetDeckRunProcessForTests();
+  deck.setHermesAdapterProbe(() => false);
+  check('Hermes is advertised only when its gateway adapter is ready', !(await deck.listAvailableAgents()).includes('hermes'));
+  deck.setHermesAdapterProbe(null);
 
-  for (const suffix of ['', '-shm', '-wal']) {
-    try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* cleanup */ }
+  const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-contract-'));
+  const starts = [];
+  deck.setDeckRunProcess(async argv => {
+    if (argv[1] === 'run' && argv[2] === 'status') {
+      return { stdout: JSON.stringify({ runId: argv[3], deck: 'x', client: 'x', state: 'ended', sessionId: 's', logPath: '/tmp/x' }), stderr: '', exitCode: 0 };
+    }
+    if (argv[1] === 'run' && argv[2] === 'log') {
+      return { stdout: `${JSON.stringify({ t: 'result', sessionId: 's', result: `deck reply ${argv[3]}` })}\n${JSON.stringify({ t: 'end' })}\n`, stderr: '', exitCode: 0 };
+    }
+    if (argv[1] === 'run') {
+      starts.push(argv);
+      return { stdout: `run run-${starts.length} detached: pid 1 log /tmp/x\n`, stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: 'unexpected', exitCode: 1 };
+  });
+  const hermesRequests = [];
+  dispatch.setAgentDispatchHermesFetch(async (url, init) => {
+    hermesRequests.push(url);
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'hermes reply' } }] }), { status: 200 });
+  });
+  for (const agent of FIVE) {
+    const bot = db.bots.create({ name: `Dispatch-${agent}`, title: '', description: 'Replies.', agent, deck_id: `deck-run-${agent}`, working_directory: workdir });
+    const startsBefore = starts.length;
+    const hermesBefore = hermesRequests.length;
+    const reply = await dispatch.dispatchToAgent({ bot, history: [{ speakerLabel: 'user', fromAgent: false, content: 'hello' }] });
+    check(`agentForDispatch reports ${agent}`, dispatch.agentForDispatch(bot) === agent);
+    if (agent === 'hermes') {
+      check('Hermes with a selected deck dispatches through its gateway adapter only', reply === 'hermes reply' && hermesRequests.length === hermesBefore + 1 && starts.length === startsBefore);
+    } else {
+      const argv = starts[starts.length - 1];
+      const flag = name => argv[argv.indexOf(name) + 1];
+      check(
+        `${agent} with a selected deck dispatches agent-deck run on that deck with --client ${agent}`,
+        starts.length === startsBefore + 1 && argv[2] === `deck-run-${agent}` && flag('--client') === agent && flag('--cwd') === workdir && hermesRequests.length === hermesBefore && reply.startsWith('deck reply'),
+        JSON.stringify(argv)
+      );
+    }
   }
+  deck.resetDeckRunProcessForTests();
+  dispatch.setAgentDispatchHermesFetch(null);
+  fs.rmSync(workdir, { recursive: true, force: true });
+
+  // ---- (3) migration of every legacy shape ---------------------------------
+  console.log('\n(3) Deterministic migration (pure rule)');
+  const pure = [
+    [{ runtime: 'hermes' }, { agent: 'hermes', deck_id: null, needs_deck_selection: true }],
+    [{ runtime: 'hermes', deck_id: 'kept' }, { agent: 'hermes', deck_id: 'kept', needs_deck_selection: false }],
+    ...['codex', 'claude', 'cursor', 'muse'].map(client => [
+      { runtime: 'agent-deck', agent_client: client, deck_id: `d-${client}`, working_directory: '/w' },
+      { agent: client, deck_id: `d-${client}`, working_directory: '/w', needs_deck_selection: false },
+    ]),
+    [{ runtime: 'agent-deck', agent_client: 'codex', deck_name: 'relay-deck', needs_deck_reselection: 1 }, { agent: 'codex', deck_id: null, deck_name: 'relay-deck', needs_deck_selection: true }],
+    [{ runtime: 'agent-deck', agent_client: 'codex', deck_id: 'd1', needs_deck_reselection: 1 }, { agent: 'codex', deck_id: 'd1', needs_deck_selection: true }],
+    [{ runtime: 'agent-deck', agent_client: 'watson', deck_id: 'd1' }, { agent: 'hermes', deck_id: 'd1', needs_deck_selection: true }],
+    [{ runtime: null, coding_runtime: 'muse', deck_name: 'legacy', working_directory: '/w' }, { agent: 'muse', deck_id: null, deck_name: 'legacy', needs_deck_selection: true }],
+    [{ runtime: null, coding_runtime: 'claude', deck_name: null, working_directory: '/w' }, { agent: 'hermes', deck_id: null, needs_deck_selection: true }],
+    [{ runtime: null }, { agent: 'hermes', deck_id: null, needs_deck_selection: true }],
+    [{ agent: 'cursor', deck_id: 'd9', runtime: 'hermes' }, { agent: 'cursor', deck_id: 'd9', needs_deck_selection: false, migrated: false }],
+  ];
+  for (const [input, expected] of pure) {
+    const first = def.migrateLegacyAgentFields(input);
+    const again = def.migrateLegacyAgentFields(input);
+    const matches = Object.entries(expected).every(([key, value]) => first[key] === value);
+    check(`migrate ${JSON.stringify(input)} -> ${JSON.stringify(expected)}`, matches && JSON.stringify(first) === JSON.stringify(again), JSON.stringify(first));
+  }
+
+  console.log('\n(3) Deterministic migration (DB load, fixtures before/after)');
+  const loadDb = () => execFileSync(process.execPath, ['-e', `
+    process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
+    const { createJiti } = require('jiti');
+    createJiti(${JSON.stringify(path.join(ROOT, 'loader.js'))})('./lib/db.ts');
+  `], { cwd: ROOT, env: { ...process.env, BOTMANCERS_DB_PATH: MIGRATION_DB_PATH } });
+  loadDb();
+  const Database = require('better-sqlite3');
+  const mig = new Database(MIGRATION_DB_PATH);
+  const t = Date.now();
+  const fixtures = [
+    { id: 'm-hermes', runtime: 'hermes', agent_client: null, deck_id: null, deck_name: null, working_directory: null, needs: 0, expect: { agent: 'hermes', deck_id: null, needs_deck_selection: 1 } },
+    { id: 'm-claude', runtime: 'agent-deck', agent_client: 'claude', deck_id: 'deck-live', deck_name: null, working_directory: '/tmp/claude-work', needs: 0, expect: { agent: 'claude', deck_id: 'deck-live', working_directory: '/tmp/claude-work', needs_deck_selection: 0 } },
+    { id: 'm-cursor', runtime: 'agent-deck', agent_client: 'cursor', deck_id: 'deck-c', deck_name: null, working_directory: null, needs: 0, expect: { agent: 'cursor', deck_id: 'deck-c', needs_deck_selection: 0 } },
+    { id: 'm-muse', runtime: 'agent-deck', agent_client: 'muse', deck_id: 'deck-m', deck_name: null, working_directory: null, needs: 0, expect: { agent: 'muse', deck_id: 'deck-m', needs_deck_selection: 0 } },
+    { id: 'm-unresolved', runtime: 'agent-deck', agent_client: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/relay', needs: 1, expect: { agent: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/relay', needs_deck_selection: 1 } },
+    { id: 'm-pre442', runtime: null, coding_runtime: 'codex', agent_client: null, deck_id: null, deck_name: 'old-deck', working_directory: '/tmp/old', needs: 0, expect: { agent: 'codex', deck_id: null, deck_name: 'old-deck', needs_deck_selection: 1 } },
+    { id: 'm-imported', runtime: 'hermes', agent_client: null, deck_id: null, deck_name: null, working_directory: null, needs: 0, provenance: true, expect: { agent: 'hermes', needs_deck_selection: 1 } },
+  ];
+  for (const [index, row] of fixtures.entries()) {
+    mig.prepare(
+      'INSERT INTO bots (id, name, title, description, color, created_at, runtime, agent_client, coding_runtime, deck_id, deck_name, working_directory, needs_deck_reselection, agent, source_provider, template_id, template_url, import_schema_version, import_operation_id, import_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      row.id, `Legacy ${row.id}`, '', 'Legacy rules.', '#C6F54A', t + index,
+      row.runtime, row.agent_client, row.coding_runtime ?? null, row.deck_id, row.deck_name, row.working_directory, row.needs,
+      row.provenance ? 'marketplace' : null, row.provenance ? 'tmpl-1' : null, row.provenance ? 'https://example.test/tmpl-1' : null,
+      row.provenance ? '1.0.0' : null, row.provenance ? `op-mig-${process.pid}` : null, row.provenance ? t : null
+    );
+    // Post-NOT-446 shape (origin already bound), as at 63070e3.
+    mig.prepare("INSERT INTO conversations (id, type, bot_id, origin_kind, origin_id, created_at) VALUES (?, 'bot', ?, 'person', 'local-owner', ?)").run(`conv-${row.id}`, row.id, t);
+    mig.prepare("INSERT INTO messages (id, conversation_id, sender_type, sender_id, content, created_at) VALUES (?, ?, 'user', NULL, ?, ?)").run(`msg-u-${row.id}`, `conv-${row.id}`, `hello ${row.id}`, t);
+    mig.prepare("INSERT INTO messages (id, conversation_id, sender_type, sender_id, content, created_at) VALUES (?, ?, 'bot', ?, ?, ?)").run(`msg-b-${row.id}`, `conv-${row.id}`, row.id, `reply ${row.id}`, t + 1);
+    mig.prepare('INSERT INTO launch_snapshots (id, bot_id, created_at, hash, snapshot, transport) VALUES (?, ?, ?, ?, ?, ?)').run(
+      `snap-${row.id}`, row.id, t, 'f'.repeat(64), JSON.stringify({ runtime: row.runtime, agent_client: row.agent_client, deck_id: row.deck_id }), row.runtime === 'agent-deck' ? 'agent-deck' : 'hermes-gateway'
+    );
+  }
+  const snapshotOf = conn => ({
+    conversations: conn.prepare('SELECT * FROM conversations ORDER BY id').all(),
+    messages: conn.prepare('SELECT id, conversation_id, sender_type, sender_id, content, created_at FROM messages ORDER BY id').all(),
+    launch_snapshots: conn.prepare('SELECT * FROM launch_snapshots ORDER BY id').all(),
+    provenance: conn.prepare('SELECT id, source_provider, template_id, template_url, import_schema_version, import_operation_id, import_timestamp FROM bots ORDER BY id').all(),
+  });
+  const before = snapshotOf(mig);
+  const legacyBefore = mig.prepare('SELECT id, runtime, agent_client, coding_runtime FROM bots ORDER BY id').all();
+  mig.close();
+
+  loadDb();
+  const after1 = new Database(MIGRATION_DB_PATH);
+  const migrated = Object.fromEntries(after1.prepare('SELECT * FROM bots').all().map(row => [row.id, row]));
+  for (const row of fixtures) {
+    const got = migrated[row.id];
+    const ok = got && Object.entries(row.expect).every(([key, value]) => got[key] === value);
+    console.log(`  before ${row.id}: runtime=${row.runtime} agent_client=${row.agent_client} coding_runtime=${row.coding_runtime ?? null} deck_id=${row.deck_id} deck_name=${row.deck_name} wd=${row.working_directory}`);
+    console.log(`  after  ${row.id}: agent=${got && got.agent} deck_id=${got && got.deck_id} deck_name=${got && got.deck_name} wd=${got && got.working_directory} needs_deck_selection=${got && got.needs_deck_selection}`);
+    check(`DB migration ${row.id} -> ${JSON.stringify(row.expect)}`, ok, JSON.stringify(got));
+    if (got) {
+      check(`${row.id}: deck_id/deck_name/working_directory preserved verbatim`, got.deck_id === row.deck_id && got.deck_name === row.deck_name && got.working_directory === row.working_directory);
+      const view = def.serializeBot(got);
+      check(`${row.id}: launchable only with a deck`, view.launchable === (row.deck_id !== null && row.needs === 0));
+    }
+  }
+  const afterState = snapshotOf(after1);
+  check('conversations preserved byte-for-byte', JSON.stringify(afterState.conversations) === JSON.stringify(before.conversations));
+  check('messages preserved byte-for-byte', JSON.stringify(afterState.messages) === JSON.stringify(before.messages));
+  check('launch snapshots preserved byte-for-byte', JSON.stringify(afterState.launch_snapshots) === JSON.stringify(before.launch_snapshots));
+  check('import provenance preserved byte-for-byte', JSON.stringify(afterState.provenance) === JSON.stringify(before.provenance));
+  check('legacy columns left as read-only migration inputs', JSON.stringify(after1.prepare('SELECT id, runtime, agent_client, coding_runtime FROM bots ORDER BY id').all()) === JSON.stringify(legacyBefore));
+  const firstPass = JSON.stringify(after1.prepare('SELECT * FROM bots ORDER BY id').all());
+  after1.close();
+  loadDb();
+  const after2 = new Database(MIGRATION_DB_PATH);
+  check('migration is idempotent on reload', JSON.stringify(after2.prepare('SELECT * FROM bots ORDER BY id').all()) === firstPass);
+  after2.close();
+
+  removeDb(DB_PATH);
+  removeDb(MIGRATION_DB_PATH);
   if (failures > 0) {
     console.log(`\ntest:bot-definition: ${failures} FAILURE(S)`);
     process.exit(1);
@@ -297,6 +375,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(`FAIL: availability probe test threw: ${error && error.stack ? error.stack : error}`);
+  console.error(`FAIL: bot-definition test threw: ${error && error.stack ? error.stack : error}`);
   process.exit(1);
 });

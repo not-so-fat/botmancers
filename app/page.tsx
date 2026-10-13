@@ -8,7 +8,7 @@ import BotAvatar from '@/app/components/BotAvatar';
 import type { AvatarConfig } from '@/lib/avatar';
 import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 import {
-  AGENT_OPTIONS,
+  DEFAULT_RUNTIME_FORM,
   NEW_BOT_WORKDIR_HINT,
   SELECT_DECK_ERROR,
   deckEventDisplay,
@@ -38,12 +38,11 @@ interface Bot {
   last_seen?: number | null;
   unread?: number;
   latest?: string;
-  runtime?: string | null;
-  agent_client?: string | null;
+  agent?: string | null;
   deck_id?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
-  needs_deck_reselection?: boolean | number | null;
+  needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
 }
 
@@ -1469,7 +1468,6 @@ function FileLinks({ names }: { names: string[] }) {
   );
 }
 
-const HERMES_FORM: RuntimeFormInput = { runtime: 'hermes', agentClient: AGENT_OPTIONS[0], deckId: '', workingDirectory: '' };
 
 function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
   bots: Bot[];
@@ -1482,7 +1480,7 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
   const [name, setName] = useState('');
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [groupError, setGroupError] = useState('');
-  const [form, setForm] = useState<RuntimeFormInput>(HERMES_FORM);
+  const [form, setForm] = useState<RuntimeFormInput>(DEFAULT_RUNTIME_FORM);
   const [botError, setBotError] = useState('');
 
   useEffect(() => {
@@ -1491,16 +1489,15 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
 
   const view = runtimeFormView(form, deckState);
 
-  // Switching back to Hermes discards (never submits) the Agent Deck values.
   const changeForm = (patch: Partial<RuntimeFormInput>) => {
     setBotError('');
-    setForm(current => (patch.runtime === 'hermes' ? HERMES_FORM : { ...current, ...patch }));
+    setForm(current => ({ ...current, ...patch }));
   };
 
   const handleBot = async (e: React.FormEvent) => {
     e.preventDefault();
     if (view.submitDisabled) return;
-    if (form.runtime === 'agent-deck' && !form.deckId.trim()) {
+    if (!form.deckId.trim()) {
       setBotError(SELECT_DECK_ERROR);
       return;
     }

@@ -81,9 +81,9 @@ async function main() {
   // Case 1: ask then answer resumes once (model-marker path, direct thread).
   log('\nCase 1: ask then answer resumes once');
   let caseFailures = failures;
-  const tripA = bots.create({ name: 'TripA', title: 'Planner', description: 'Plans trips.' });
+  const tripA = bots.create({ deck_id: 'deck-test', name: 'TripA', title: 'Planner', description: 'Plans trips.' });
   const convA = conversations.getByBotId(tripA.id);
-  const unrelated = bots.create({ name: 'Unrelated', title: 'Other', description: 'Untouched.' });
+  const unrelated = bots.create({ deck_id: 'deck-test', name: 'Unrelated', title: 'Other', description: 'Untouched.' });
   const convOther = conversations.getByBotId(unrelated.id);
   const otherBefore = messages.getByConversation(convOther.id).length;
   agent.setDelegationChatStub(askThenResumeStub('Trip booked'));
@@ -131,7 +131,7 @@ async function main() {
   // Case 2: restart persistence (pending row survives in-memory reset).
   log('\nCase 2: restart persistence');
   caseFailures = failures;
-  const tripB = bots.create({ name: 'TripB', title: 'Planner', description: 'Plans trips.' });
+  const tripB = bots.create({ deck_id: 'deck-test', name: 'TripB', title: 'Planner', description: 'Plans trips.' });
   const convB = conversations.getByBotId(tripB.id);
   agent.setDelegationChatStub(askThenResumeStub('Trip booked'));
   const task2 = messages.create(convB.id, 'user', 'Plan my trip.');
@@ -157,8 +157,8 @@ async function main() {
   // Case 3: two bots in one group, only the asked bot resumes.
   log('\nCase 3: two bots in one group, only the asked bot resumes');
   caseFailures = failures;
-  const g1 = bots.create({ name: 'GroupA', title: 'Planner', description: 'Plans trips.' });
-  const g2 = bots.create({ name: 'GroupB', title: 'Watcher', description: 'Watches quietly.' });
+  const g1 = bots.create({ deck_id: 'deck-test', name: 'GroupA', title: 'Planner', description: 'Plans trips.' });
+  const g2 = bots.create({ deck_id: 'deck-test', name: 'GroupB', title: 'Watcher', description: 'Watches quietly.' });
   const group = groups.create('TripGroup', [g1.id, g2.id]);
   const convG = conversations.getByGroupId(group.id);
   agent.setDelegationChatStub(ctx => {
@@ -195,7 +195,7 @@ async function main() {
   // Case 4: Stop clears pending.
   log('\nCase 4: Stop clears pending');
   caseFailures = failures;
-  const tripC = bots.create({ name: 'TripC', title: 'Planner', description: 'Plans trips.' });
+  const tripC = bots.create({ deck_id: 'deck-test', name: 'TripC', title: 'Planner', description: 'Plans trips.' });
   const convC = conversations.getByBotId(tripC.id);
   let sawResume4 = false;
   agent.setDelegationChatStub(ctx => {
@@ -230,7 +230,7 @@ async function main() {
   // Case 5: expired question ignored.
   log('\nCase 5: expired question ignored');
   caseFailures = failures;
-  const tripD = bots.create({ name: 'TripD', title: 'Planner', description: 'Plans trips.' });
+  const tripD = bots.create({ deck_id: 'deck-test', name: 'TripD', title: 'Planner', description: 'Plans trips.' });
   const convD = conversations.getByBotId(tripD.id);
   let sawResume5 = false;
   agent.setDelegationChatStub(ctx => {
@@ -275,7 +275,7 @@ async function main() {
   assert(ask.parseAskMarker('<ask>which city?</ask>') === 'which city?', 'tag marker parsed');
   assert(ask.parseAskMarker('I will ask you later') === null, 'plain prose is not a marker');
 
-  const tripE = bots.create({ name: 'TripE', title: 'Planner', description: 'Plans trips.' });
+  const tripE = bots.create({ deck_id: 'deck-test', name: 'TripE', title: 'Planner', description: 'Plans trips.' });
   const convE = conversations.getByBotId(tripE.id);
   let modelCalls6 = 0;
   agent.setDelegationChatStub(ctx => {
@@ -308,7 +308,7 @@ async function main() {
   // Case 7: normal message with nothing pending is a normal turn.
   log('\nCase 7: normal message with nothing pending is a normal turn');
   caseFailures = failures;
-  const tripF = bots.create({ name: 'TripF', title: 'Planner', description: 'Plans trips.' });
+  const tripF = bots.create({ deck_id: 'deck-test', name: 'TripF', title: 'Planner', description: 'Plans trips.' });
   const convF = conversations.getByBotId(tripF.id);
   agent.setDelegationChatStub(() => 'NORMAL-REPLY-7');
   const task7 = messages.create(convF.id, 'user', 'Hello, how are you?');

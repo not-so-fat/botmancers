@@ -188,10 +188,10 @@ async function main() {
   log(`Wait log: ${WAIT_LOG}`);
   agent.resetDelegationForTests();
 
-  const origin = bots.create({ name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
-  const botA = bots.create({ name: 'A', title: 'Drafter', description: 'Drafts.' });
-  const botB = bots.create({ name: 'B', title: 'Checker', description: 'Checks drafts.' });
-  const chief = bots.create({ name: 'Chief', title: 'Chief of staff', description: 'Coordinates.', hermes_profile: 'cos' });
+  const origin = bots.create({ deck_id: 'deck-test', name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
+  const botA = bots.create({ deck_id: 'deck-test', name: 'A', title: 'Drafter', description: 'Drafts.' });
+  const botB = bots.create({ deck_id: 'deck-test', name: 'B', title: 'Checker', description: 'Checks drafts.' });
+  const chief = bots.create({ deck_id: 'deck-test', name: 'Chief', title: 'Chief of staff', description: 'Coordinates.', hermes_profile: 'cos' });
   const conv = conversations.getByBotId(origin.id);
   const convA = conversations.getByBotId(botA.id);
   const convB = conversations.getByBotId(botB.id);
@@ -360,7 +360,7 @@ async function main() {
   // error, with zero gateway requests.
   log('\nScenario 4: Hermes failure fixtures (absent and unreachable), no fallback');
   agent.setDelegationChatStub(null);
-  const failBot = bots.create({ name: 'FailBot', title: 'Failure probe', description: 'Probes Hermes failure behavior.' });
+  const failBot = bots.create({ deck_id: 'deck-test', name: 'FailBot', title: 'Failure probe', description: 'Probes Hermes failure behavior.' });
   const failConv = conversations.getByBotId(failBot.id);
   assert(!!failConv, 'failure-probe thread exists');
 
@@ -507,11 +507,11 @@ async function main() {
   agent.setDelegationChatStub(null);
   process.env.HERMES_API_SERVER_KEY = 'test-key';
   process.env.HERMES_BASE_URL = gateway.baseUrl;
-  const solo = bots.create({ name: 'Solo', title: 'Soloist', description: 'Answers directly.', runtime: 'hermes' });
+  const solo = bots.create({ deck_id: 'deck-test', name: 'Solo', title: 'Soloist', description: 'Answers directly.', agent: 'hermes' });
   const soloReadBack = bots.getById(solo.id);
   assert(
-    soloReadBack.runtime === 'hermes' && agent.runtimeForBot(soloReadBack) === 'hermes',
-    'default-runtime assertion: newly created bot without an opt-in switch reads back as hermes'
+    soloReadBack.agent === 'hermes' && agent.agentForBot(soloReadBack) === 'hermes',
+    'default-agent assertion: newly created Hermes agent with a deck reads back as hermes'
   );
   const soloConv = conversations.getByBotId(solo.id);
   assert(!!soloConv, 'solo thread exists');
@@ -614,9 +614,9 @@ async function main() {
   agent.setDelegationChatStub(null);
   process.env.HERMES_API_SERVER_KEY = 'test-key';
   process.env.HERMES_BASE_URL = gateway.baseUrl;
-  const hermesDirect = bots.create({
+  const hermesDirect = bots.create({ deck_id: 'deck-test',
     name: 'HermesDirect', title: 'HermesDirect', description: 'Answers directly.',
-    runtime: 'hermes',
+    agent: 'hermes',
   });
   const hermesDirectConv = conversations.getByBotId(hermesDirect.id);
   assert(!!hermesDirectConv, 'hermes-direct thread exists');
@@ -674,7 +674,7 @@ async function main() {
   });
   const coder = bots.create({
     name: 'Coder', title: 'Coder', description: 'Launches directly.',
-    runtime: 'agent-deck', agent_client: 'codex', deck_id: 'stored-deck-id', working_directory: deckWorkdir,
+    agent: 'codex', deck_id: 'stored-deck-id', working_directory: deckWorkdir,
   });
   const coderConv = conversations.getByBotId(coder.id);
   assert(!!coderConv, 'coder thread exists');

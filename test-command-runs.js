@@ -95,7 +95,7 @@ async function main() {
   log('NOT-419 command runs test (real handlers, isolated DB, no network)');
   log(`DB: ${DB_PATH}`);
 
-  const cos = bots.create({ name: 'chief-of-staff', title: '', description: 'Runs commands.' });
+  const cos = bots.create({ deck_id: 'deck-test', name: 'chief-of-staff', title: '', description: 'Runs commands.' });
   const conv = conversations.getByBotId(cos.id);
   assert(!!conv, 'thread exists for chief-of-staff');
 

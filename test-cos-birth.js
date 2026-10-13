@@ -102,7 +102,7 @@ async function main() {
     return 'noted.';
   });
 
-  const cos = bots.create({ name: 'chief-of-staff', title: 'Chief of staff', description: 'Runs the team.' });
+  const cos = bots.create({ deck_id: 'deck-test', name: 'chief-of-staff', title: 'Chief of staff', description: 'Runs the team.' });
   const conv = conversations.getByBotId(cos.id);
   assert(!!conv, 'chief-of-staff thread exists');
 
