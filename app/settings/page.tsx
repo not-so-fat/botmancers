@@ -118,7 +118,7 @@ export default function SettingsPage() {
         </Link>
         <header className="mt-3 mb-6">
           <h1 className="text-xl font-bold">Settings</h1>
-          <p className="text-sm cfg-faint">Workspace settings for every bot in this Botmancers.</p>
+          <p className="text-sm cfg-faint">Workspace settings for every agent in this Botmancers.</p>
         </header>
 
         <section className="cfg-card">

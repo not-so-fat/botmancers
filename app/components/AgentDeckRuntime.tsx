@@ -19,6 +19,7 @@ type Variant = 'modal' | 'config';
 
 const CLASSES: Record<Variant, {
   label: string;
+  legend: string;
   picks: string;
   pick: string;
   note: string;
@@ -29,6 +30,7 @@ const CLASSES: Record<Variant, {
 }> = {
   modal: {
     label: '',
+    legend: 'field-legend',
     picks: 'runtime-picks',
     pick: 'runtime-pick',
     note: 'runtime-note',
@@ -39,6 +41,7 @@ const CLASSES: Record<Variant, {
   },
   config: {
     label: 'block text-sm cfg-muted mt-3 mb-1',
+    legend: 'block text-sm cfg-muted mt-3 mb-1 p-0',
     picks: 'flex flex-wrap gap-x-4 gap-y-1 text-sm cfg-muted',
     pick: 'text-sm cfg-muted',
     note: 'text-sm cfg-muted mt-1',
@@ -49,35 +52,41 @@ const CLASSES: Record<Variant, {
   },
 };
 
-// NOT-456: one agent choice (Hermes, Cursor, Claude, Codex, Muse Code).
-export function AgentPicker({ value, onChange, name, variant, labelledBy }: {
+// NOT-456/NOT-457: the one Agent choice (Hermes, Cursor, Claude, Codex,
+// Muse Code). A fieldset + legend names the radio group; Agent Deck is a
+// separate field that follows it and is never an option here.
+export function AgentPicker({ value, onChange, name, variant, legendId }: {
   value: string;
   onChange: (value: RuntimeFormInput['agent']) => void;
   name: string;
   variant: Variant;
-  labelledBy: string;
+  legendId: string;
 }) {
   const css = CLASSES[variant];
   return (
-    <div className={css.picks} role="radiogroup" aria-labelledby={labelledBy} data-field="agent">
-      {AGENT_OPTIONS.map(option => (
-        <label key={option.value} className={css.pick}>
-          <input
-            type="radio"
-            name={name}
-            value={option.value}
-            checked={value === option.value}
-            onChange={() => onChange(option.value)}
-          />
-          {' ' + option.label}
-        </label>
-      ))}
-    </div>
+    <fieldset className="agent-fieldset" data-field="agent">
+      <legend id={legendId} className={css.legend}>Agent</legend>
+      <div className={css.picks} role="radiogroup" aria-labelledby={legendId} aria-required="true">
+        {AGENT_OPTIONS.map(option => (
+          <label key={option.value} className={css.pick}>
+            <input
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={value === option.value}
+              onChange={() => onChange(option.value)}
+            />
+            {' ' + option.label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
   );
 }
 
-export function DeckSlot({ id, state, value, onChange, onRetry, savedDeckId, variant }: {
+export function DeckSlot({ id, labelId, state, value, onChange, onRetry, savedDeckId, variant }: {
   id: string;
+  labelId: string;
   state: DeckListState;
   value: string;
   onChange: (deckId: string) => void;
@@ -95,6 +104,9 @@ export function DeckSlot({ id, state, value, onChange, onRetry, savedDeckId, var
         <select
           id={id}
           className={css.control}
+          required
+          aria-required="true"
+          aria-describedby={savedMissing && value === saved ? `${id}-saved-note` : undefined}
           value={value}
           title={value || undefined}
           onChange={e => onChange(e.target.value)}
@@ -105,15 +117,15 @@ export function DeckSlot({ id, state, value, onChange, onRetry, savedDeckId, var
             <option key={deck.id} value={deck.id} title={deck.id}>{deck.name}</option>
           ))}
         </select>
-        {savedMissing && value === saved ? <p className={css.note}>{SAVED_DECK_MISSING_NOTE}</p> : null}
+        {savedMissing && value === saved ? <p id={`${id}-saved-note`} className={css.note}>{SAVED_DECK_MISSING_NOTE}</p> : null}
       </div>
     );
   }
   return (
     <div data-field="deck" data-state={state.status}>
-      {saved ? <p className={css.note}>Saved deck: <span title={saved}>{saved}</span></p> : null}
-      <p id={id} className={`${css.note} deck-slot`} role="status">
-        {blocking}
+      {saved ? <p className={css.note}>Saved Agent Deck: <span title={saved}>{saved}</span></p> : null}
+      <p id={id} className={`${css.note} deck-slot`} role="status" aria-labelledby={`${labelId} ${id}-copy`}>
+        <span id={`${id}-copy`}>{blocking}</span>
         {deckStateShowsRetry(state) ? (
           <>
             {' '}
@@ -153,9 +165,10 @@ export function AgentDeckFields({
   const css = CLASSES[variant];
   return (
     <div className="agent-deck-fields">
-      <label className={css.label} htmlFor={`${idPrefix}-deck`}>Agent Deck</label>
+      <label className={css.label} id={`${idPrefix}-deck-label`} htmlFor={`${idPrefix}-deck`}>Agent Deck</label>
       <DeckSlot
         id={`${idPrefix}-deck`}
+        labelId={`${idPrefix}-deck-label`}
         state={deckState}
         value={deckId}
         onChange={onDeckId}
@@ -170,18 +183,20 @@ export function AgentDeckFields({
         type="text"
         className={variant === 'config' ? css.control : undefined}
         data-field="workdir"
+        aria-describedby={`${idPrefix}-workdir-hint ${idPrefix}-workdir-note`}
         value={workingDirectory}
         placeholder={workdirPlaceholder}
         onChange={e => onWorkingDirectory(e.target.value)}
       />
-      <p className={css.hint}>{workdirHint}</p>
-      <p className={css.hint}>{NON_LOCAL_NOTE}</p>
+      <p id={`${idPrefix}-workdir-hint`} className={css.hint}>{workdirHint}</p>
+      <p id={`${idPrefix}-workdir-note`} className={css.hint}>{NON_LOCAL_NOTE}</p>
     </div>
   );
 }
 
-// Agent picker plus the Agent Deck selection every agent needs.
-export function RuntimeSection({
+// New Agent / per-agent Config fields, in order: Agent, then the Agent
+// Deck every agent needs, then the optional working directory.
+export function AgentSection({
   idPrefix,
   variant,
   form,
@@ -204,13 +219,12 @@ export function RuntimeSection({
 }) {
   return (
     <>
-      <label className={CLASSES[variant].label} id={`${idPrefix}-agent-label`}>Agent</label>
       <AgentPicker
         value={form.agent}
         onChange={value => onChange({ agent: value })}
         name={`${idPrefix}-agent`}
         variant={variant}
-        labelledBy={`${idPrefix}-agent-label`}
+        legendId={`${idPrefix}-agent-label`}
       />
       <AgentDeckFields
         idPrefix={idPrefix}
