@@ -12,7 +12,7 @@ import {
 } from './artifacts';
 import { mcpTurn } from './mcp';
 import { applySkillEndToken, readSkillState } from './skills';
-import { buildSnapshotInput, hashSnapshot, withDeckLaunch } from './snapshot';
+import { buildSnapshotInput, hashSnapshot } from './snapshot';
 import {
   loadHermesConfig,
   hermesChat,
@@ -52,18 +52,16 @@ import {
 } from './approvals';
 import {
   delegateCodingViaDeck,
-  formatDeckHowTo,
-  listAvailableDeckRuntimes,
-  parseDeckDirective,
   parseDeckRuntime,
-  resolveDeckForCwd,
-  DECK_DIRECTIVE_PATTERN,
   DECK_REVIEW_FOCUS_DEFAULT,
 } from './agent-deck-run';
 import type { DeckDelegationResult } from './agent-deck-run';
 import {
-  normalizePersistentRuntime,
-  PERSISTENT_RUNTIME_HERMES,
+  effectiveWorkingDirectory,
+  normalizeRuntime,
+  resolveRuntime,
+  RUNTIME_AGENT_DECK,
+  RUNTIME_HERMES,
 } from './bot-definition';
 
 // Conversational delegation limits (NOT-395). Placeholder values until the
@@ -75,27 +73,10 @@ export const DELEGATION_DEPTH_REASON =
   `[Delegation limit] Depth limit reached (max ${DELEGATION_MAX_DEPTH} handoffs). No further handoff.`;
 export const DELEGATION_BUDGET_REASON =
   `[Delegation limit] Budget limit reached (max ${DELEGATION_MAX_DELEGATED_TURNS} delegated turns per user message). No further delegated turn.`;
-// Capability-probe result advertised to the model in the DECK how-to. Starts
-// unprobed (null) and refreshes in the background, so prompt construction
-// stays synchronous and never blocks a turn on `--version` checks. Until the
-// first probe completes the how-to reports 'none verified yet'; no runtime
-// is named before its launch path is verified. Tests override it directly.
-let cachedDeckRuntimes: string[] | null = null;
-
-export function setCachedDeckRuntimesForTests(runtimes: string[] | null): void {
-  cachedDeckRuntimes = runtimes;
-}
-
-function refreshCachedDeckRuntimes(): void {
-  listAvailableDeckRuntimes().then(
-    runtimes => {
-      cachedDeckRuntimes = runtimes;
-    },
-    () => {
-      // Keep the last advertised set; a failed probe never blanks the prompt.
-    }
-  );
-}
+// NOT-442: prompts no longer advertise a DECK directive. Ordinary turns
+// dispatch through the bot's own stored runtime (see runtimeForBot and
+// processAgentDeckTurn); the model is never asked to route work, so no
+// capability-probe text is presented and no probe state is cached here.
 
 export const DELEGATION_STOPPED_REASON =
   '[Delegation stopped] Delegation stopped. No further handoffs or delegated turns.';
@@ -115,25 +96,32 @@ interface DelegationChain {
 
 const delegationChains = new Map<string, DelegationChain>();
 
-// NOT-435: the embedded example model loop is removed. Ordinary turns
-// run on the persistent Hermes gateway and record HERMES_GATEWAY_TRANSPORT;
-// coding work runs through Agent Deck (see the DECK directive path below).
+// NOT-435: the embedded example model loop is removed. Hermes turns run
+// on the persistent Hermes gateway and record HERMES_GATEWAY_TRANSPORT;
+// Agent Deck turns launch the stored agent client directly and record
+// AGENT_DECK_TRANSPORT.
 export const HERMES_GATEWAY_TRANSPORT = 'hermes-gateway';
+export const AGENT_DECK_TRANSPORT = 'agent-deck';
 
-// NOT-434: Hermes is the default persistent runtime for ordinary
-// conversational turns. The bot definition carries the explicit value;
-// rows that predate the runtime path (null/blank) read back as Hermes,
-// the documented default, without acquiring a coding path (coding
-// fields stay null until the owner supplies them; see
-// ./bot-definition.ts resolveCodingPath). Only 'hermes' is a supported
-// persistent runtime today; any other stored value is (unconfirmed)
-// future work and falls back to the Hermes default here.
-export function persistentRuntimeForBot(bot: Pick<Bot, 'persistent_runtime'>): string {
+// NOT-442: every stored bot resolves to exactly one runtime. Hermes is
+// the default for rows that predate the single runtime (null/blank
+// reads back as Hermes). Any other stored value is unconfirmed future
+// work and falls back to the Hermes default here.
+export function runtimeForBot(bot: Pick<Bot, 'runtime'>): string {
   try {
-    return normalizePersistentRuntime(bot.persistent_runtime);
+    return normalizeRuntime(bot.runtime);
   } catch {
-    return PERSISTENT_RUNTIME_HERMES;
+    return RUNTIME_HERMES;
   }
+}
+
+// Visible thread error when an Agent Deck bot cannot launch because no
+// deck ID is selected. The legacy free-text deck name (when present) is
+// named so the owner knows what to re-select; no deck discovery runs
+// here and no ID is ever guessed from the name.
+export function deckNeedsReselectionMessage(botName: string, legacyDeckName: string | null): string {
+  const legacy = legacyDeckName ? ` (legacy deck "${legacyDeckName}")` : '';
+  return `[Deck needs reselection] ${botName} cannot launch: no deck ID is selected${legacy}. Select a deck before launching.`;
 }
 
 // Visible thread error when the persistent Hermes gateway is not
@@ -512,21 +500,154 @@ function flushSnapshot(item: QueueItem): void {
   }
 }
 
-// NOT-433 repair: the held snapshot is captured from the stored bot row
-// before the model reply, but a DECK turn resolves its launch values later
-// (directive runtime, deck from the working directory's agent-deck
-// assignment, cwd from BOTMANCERS_DECK_CWD). Overwriting the held coding
-// path with those resolved values keeps the immutable snapshot truthful:
-// it records the deck/cwd/runtime the launch actually used, not the
-// stored configuration. No-op when no snapshot is held for the item.
-export function recordDeckLaunchInSnapshot(
-  itemId: string,
-  launch: { coding_runtime: string; deck_name: string; working_directory: string }
-): void {
-  const held = pendingSnapshots.get(itemId);
-  if (!held) return;
-  const next = withDeckLaunch(JSON.parse(held.json), launch);
-  pendingSnapshots.set(itemId, { json: JSON.stringify(next), hash: hashSnapshot(next), transport: held.transport });
+// Drops the held snapshot without recording it, for turns where nothing
+// launches and nothing posts (unaddressed group turns, stopped chains,
+// turns with no task): a launch snapshot must describe what actually
+// ran, never a turn that stayed silent. Paths that post a refusal or a
+// failure keep their snapshot and flush normally.
+function dropSnapshot(item: QueueItem): void {
+  pendingSnapshots.delete(item.id);
+}
+
+// Latest `[Handing off to <bot>]` task addressed to this bot after the
+// latest user message, if any. A WAKE- or handoff-delegated Agent Deck
+// turn runs this task; a direct turn runs the latest user message.
+function handoffTaskFor(conversationMessages: Message[], botName: string): string | null {
+  let lastUserIdx = -1;
+  for (let i = 0; i < conversationMessages.length; i++) {
+    if (conversationMessages[i].sender_type === 'user') lastUserIdx = i;
+  }
+  if (lastUserIdx < 0) return null;
+  const needle = `[Handing off to ${botName}]`;
+  for (let i = conversationMessages.length - 1; i > lastUserIdx; i--) {
+    const msg = conversationMessages[i];
+    if (msg.sender_type === 'bot' && msg.content.includes(needle)) {
+      const task = msg.content.slice(msg.content.indexOf(needle) + needle.length).trim();
+      return task || null;
+    }
+  }
+  return null;
+}
+
+// NOT-442: direct Agent Deck dispatch. An ordinary message to an
+// agent-deck bot launches the stored agent client on the stored deck ID
+// directly: no Hermes turn runs first and no model-reply directive is
+// parsed. The launch snapshot is held with the agent-deck transport and
+// the effective working directory (stored override or the process
+// working directory), so it records what actually ran.
+async function processAgentDeckTurn(args: {
+  item: QueueItem;
+  bot: Bot;
+  conversationMessages: Message[];
+  latestUser: Message | null;
+  chain: DelegationChain | null;
+  openGroupTurn: boolean;
+  delegated: boolean;
+}): Promise<void> {
+  const { item, bot, conversationMessages, latestUser, chain, openGroupTurn, delegated } = args;
+  // The held snapshot starts Hermes-flavoured (captured at the bot-row
+  // read); re-hold for this runtime first so every exit below flushes
+  // the agent-deck transport with the stored configuration.
+  holdSnapshot(item, bot, { path: null, present: null, content: null }, null, AGENT_DECK_TRANSPORT);
+  // Unaddressed group turns stay silent: a deck launch is never spent
+  // on a message nobody directed at this bot.
+  if (openGroupTurn) {
+    dropSnapshot(item);
+    chainProcessQueue();
+    return;
+  }
+  if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
+    messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
+    queue.cancelPending(item.conversation_id);
+    chainProcessQueue();
+    return;
+  }
+  const resolved = resolveRuntime(bot);
+  if (resolved.needs_deck_reselection || !resolved.agent_client || !resolved.deck_id) {
+    messages.create(
+      item.conversation_id,
+      'bot',
+      deckNeedsReselectionMessage(bot.name, resolved.deck_name),
+      bot.id
+    );
+    if (chain && !chain.stopped) {
+      const callerId = popCaller(chain, bot.id);
+      if (callerId) queue.enqueue(item.conversation_id, callerId);
+    }
+    chainProcessQueue();
+    return;
+  }
+  let client;
+  try {
+    client = parseDeckRuntime(resolved.agent_client);
+  } catch {
+    messages.create(
+      item.conversation_id,
+      'bot',
+      `[Deck failed] runtime=${resolved.agent_client} deck=${resolved.deck_id} error=Invalid agent-deck runtime.`,
+      bot.id
+    );
+    if (chain && !chain.stopped) {
+      const callerId = popCaller(chain, bot.id);
+      if (callerId) queue.enqueue(item.conversation_id, callerId);
+    }
+    chainProcessQueue();
+    return;
+  }
+  const task = (delegated ? handoffTaskFor(conversationMessages, bot.name) : null)
+    ?? latestUser?.content
+    ?? null;
+  if (!task || !task.trim()) {
+    // Nothing to run (for example the auto-enqueued greeting turn of a
+    // freshly created bot): stay silent rather than launching an empty
+    // run or posting a failure for a turn with no request.
+    dropSnapshot(item);
+    chainProcessQueue();
+    return;
+  }
+  if (chain?.stopped) {
+    dropSnapshot(item);
+    chainProcessQueue();
+    return;
+  }
+  const cwd = effectiveWorkingDirectory(bot, process.cwd());
+  if (chain) chain.turns += 1;
+  const skillState = readSkillState(bot.name);
+  const rememberedFacts = memories.latestFacts(bot.id);
+  // Re-hold with the resolved launch configuration: the stored agent
+  // client and deck ID plus the effective working directory.
+  holdSnapshot(
+    item,
+    { ...bot, agent_client: client, deck_id: resolved.deck_id, working_directory: cwd },
+    skillState,
+    rememberedFacts,
+    AGENT_DECK_TRANSPORT
+  );
+  let deckDelegation: DeckDelegationResult | null = null;
+  let deckFailed = false;
+  try {
+    deckDelegation = await delegateCodingViaDeck({
+      conversationId: item.conversation_id,
+      botId: bot.id,
+      deck: resolved.deck_id,
+      client,
+      cwd,
+      task: task.trim(),
+      reviewFocus: DECK_REVIEW_FOCUS_DEFAULT,
+      isStopped: () => chain?.stopped ?? false,
+    });
+  } catch {
+    // [Deck failed] is already in the thread; the caller-managed return
+    // below still runs so the caller can report it.
+    deckFailed = true;
+  }
+  // A Stop-silent null (neither result nor failure) suppresses the
+  // return, like every other stopped path.
+  if ((deckDelegation || deckFailed) && chain && !chain.stopped) {
+    const callerId = popCaller(chain, bot.id);
+    if (callerId) queue.enqueue(item.conversation_id, callerId);
+  }
+  chainProcessQueue();
 }
 
 export async function processNextQueueItem(): Promise<boolean> {
@@ -1421,6 +1542,23 @@ async function processQueueItem(item: QueueItem) {
     }
   }
 
+  // NOT-442: single-runtime dispatch. An agent-deck bot launches its
+  // stored agent client on its stored deck ID directly from the
+  // ordinary message; everything below this branch is the Hermes
+  // conversational path. No model reply is parsed for a DECK directive.
+  if (runtimeForBot(bot) === RUNTIME_AGENT_DECK) {
+    await processAgentDeckTurn({
+      item,
+      bot,
+      conversationMessages,
+      latestUser: latestUser ?? null,
+      chain,
+      openGroupTurn,
+      delegated: isDelegatedTurn,
+    });
+    return;
+  }
+
   if (openGroupTurn && latestUser && conversation.group_id) {
     const ask = exactWordAsk(latestUser.content);
     if (ask) {
@@ -1458,23 +1596,15 @@ async function processQueueItem(item: QueueItem) {
     });
   }
 
-  // Advertise the deck path to the model: without this, only test stubs ever
-  // emit DECK. The probe result is reported as-is: while it is still null
-  // the how-to says 'none verified yet', and the background refresh fills
-  // in the actual probed set for later turns.
-  if (cachedDeckRuntimes === null) {
-    refreshCachedDeckRuntimes();
-  }
-  const deckHowTo = formatDeckHowTo(cachedDeckRuntimes);
-
+  // NOT-442: the model is never asked to route work. Hermes prompts
+  // carry only the WAKE delegation rules; an agent-deck bot never reaches
+  // this path (it dispatches directly in processAgentDeckTurn above).
   const delegatedHowTo = delegatingCallerName
     ? `You were delegated by @${delegatingCallerName}. Complete the task in your context and reply with your result in this thread.
 Your reply will be returned to @${delegatingCallerName}, who manages the sequence and reports back.
 Only use WAKE to sub-delegate part of this task to another bot:
 - WAKE <bot_name>: <message>
-Otherwise reply normally with your result; do not WAKE your caller back.
-
-${deckHowTo}`
+Otherwise reply normally with your result; do not WAKE your caller back.`
     : `You can communicate with other bots by using the WAKE command:
 - To send a message to another bot: WAKE <bot_name>: <message>
 - To send a message to the group: WAKE GROUP: <message>
@@ -1483,9 +1613,7 @@ Examples:
 - WAKE Alice: Can you research this topic?
 - WAKE GROUP: I've completed my analysis.
 
-Important: Only use WAKE when you need to hand off work to another bot or inform the group. When you hand off, you stay the caller: the delegate's reply will come back to you, and you decide the next step and the final report. For regular responses to the user, just reply normally.
-
-${deckHowTo}`;
+Important: Only use WAKE when you need to hand off work to another bot or inform the group. When you hand off, you stay the caller: the delegate's reply will come back to you, and you decide the next step and the final report. For regular responses to the user, just reply normally.`;
 
   const wakeHowTo = openGroupTurn
     ? `Do not use WAKE on this turn. Do not hand off. Do not repeat an earlier handoff.`
@@ -1536,14 +1664,12 @@ The standing rules decide the whole reply. If they require one short sentence, w
     sent.push({ role: 'system' as const, content: rememberedBlock });
   }
   const skillState = readSkillState(bot.name);
-  // NOT-434: ordinary turns run on the bot definition's persistent
-  // runtime. Hermes is the only supported persistent runtime (see
-  // persistentRuntimeForBot); its turns record the Hermes gateway
-  // transport in the launch snapshot. Coding work stays separate: only
-  // a DECK directive below enters the Agent Deck adapter, never an
-  // ordinary turn. NOT-435 removed the embedded example model loop,
-  // so no fallback transport exists after a Hermes failure.
-  const persistentRuntime = persistentRuntimeForBot(bot);
+  // NOT-442: this is the Hermes conversational path (agent-deck bots
+  // dispatched above). The turn runs on the bot's Hermes session and
+  // records the Hermes gateway transport. No model reply is routed to
+  // Agent Deck: ordinary messages to agent-deck bots dispatch directly.
+  // NOT-435 removed the embedded example model loop, so no fallback
+  // transport exists after a Hermes failure.
   holdSnapshot(item, bot, skillState, rememberedFacts, HERMES_GATEWAY_TRANSPORT);
   const localSkill = skillState.content;
   if (localSkill) {
@@ -1580,22 +1706,12 @@ The standing rules decide the whole reply. If they require one short sentence, w
     });
   }
   let responseContent: string;
-  // NOT-434: a Hermes persistent turn goes through the bot's Hermes
-  // session. The deterministic test stub stands in for the gateway reply
-  // when set (existing loop tests), so those tests keep running without a
+  // A Hermes turn goes through the bot's Hermes session. The
+  // deterministic test stub stands in for the gateway reply when set
+  // (existing loop tests), so those tests keep running without a
   // gateway; without a stub the turn requires Hermes configuration and
   // calls the gateway. Missing or unreachable Hermes configuration posts
   // a visible Hermes error and never falls back to another transport.
-  if (persistentRuntime !== PERSISTENT_RUNTIME_HERMES) {
-    messages.create(
-      item.conversation_id,
-      'bot',
-      `[Unsupported persistent runtime for ${bot.name}: ${persistentRuntime}. Hermes is the only supported persistent runtime.]`,
-      bot.id
-    );
-    chainProcessQueue();
-    return;
-  }
   {
     const hermesConfig = loadHermesConfig();
     const hermesSessionId = hermesConfig ? hermesSessionIdForBot(bot.id, hermesConfig) : null;
@@ -1644,9 +1760,9 @@ The standing rules decide the whole reply. If they require one short sentence, w
     return;
   }
 
-  // A DECK directive on an open group turn violates that turn's no-handoff
+  // A handoff on an open group turn violates that turn's no-handoff
   // instruction the same way a canned WAKE does, so it is dropped silently.
-  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent) || parseDeckDirective(responseContent))) {
+  if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent))) {
     chainProcessQueue();
     return;
   }
@@ -1787,114 +1903,10 @@ The standing rules decide the whole reply. If they require one short sentence, w
     }
   }
 
-  // Deck coding delegation (NOT-395): a `DECK <runtime>: <task>` directive
-  // in the model reply routes this turn through the agent-deck adapter
-  // (implement, review, resume) instead of another bot. It consumes one
-  // handoff of the existing depth budget on top of this turn's already
-  // counted delegated turn, refuses with the same depth reason when
-  // exhausted, and honours Stop before, during (via the adapter's stopped
-  // callback), and after the sequence. The deck comes from the working
-  // directory's own agent-deck assignment at launch time; the bot record's
-  // stored coding path is configuration, not the effective launch. The
-  // held launch snapshot is overwritten with the resolved values below so
-  // it records what the launch actually used. On success or adapter-reported
-  // failure the
-  // caller-managed return below still applies, so a delegate's DECK turn
-  // reports back to its caller like any other delegated turn.
-  const deckDirective = parseDeckDirective(responseContent);
-  if (deckDirective) {
-    // Prefix is text before the anchored directive line; the shared pattern
-    // keeps this consistent with the parser so WAKE text and prose survive.
-    const deckMatch = responseContent.match(DECK_DIRECTIVE_PATTERN);
-    const deckMatchAt = deckMatch?.index ?? -1;
-    const deckPrefix = (deckMatchAt >= 0 ? responseContent.slice(0, deckMatchAt) : '').trim();
-    if (deckPrefix) {
-      recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, deckPrefix), bot.id));
-    }
-    if (chain?.stopped) {
-      chainProcessQueue();
-      return;
-    }
-    let deckClient;
-    try {
-      deckClient = parseDeckRuntime(deckDirective.client);
-    } catch {
-      messages.create(
-        item.conversation_id,
-        'bot',
-        `[Deck failed] runtime=${deckDirective.client} deck=unknown error=Invalid agent-deck runtime.`,
-        bot.id
-      );
-      // Adapter failures still return to the caller: without this the
-      // caller frame stays on the stack and the chain stalls.
-      if (chain && !chain.stopped) {
-        const callerId = popCaller(chain, bot.id);
-        if (callerId) queue.enqueue(item.conversation_id, callerId);
-      }
-      chainProcessQueue();
-      return;
-    }
-    if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
-      messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
-      chainProcessQueue();
-      return;
-    }
-    const deckCwd = process.env.BOTMANCERS_DECK_CWD || process.cwd();
-    let deckId: string;
-    try {
-      deckId = resolveDeckForCwd(deckCwd);
-    } catch (error) {
-      messages.create(
-        item.conversation_id,
-        'bot',
-        `[Deck failed] runtime=${deckClient} deck=unknown error=${String(error).slice(0, 300)}`,
-        bot.id
-      );
-      // Same caller-managed return as above: the failure belongs to the
-      // caller, so the caller is re-enqueued to report it.
-      if (chain && !chain.stopped) {
-        const callerId = popCaller(chain, bot.id);
-        if (callerId) queue.enqueue(item.conversation_id, callerId);
-      }
-      chainProcessQueue();
-      return;
-    }
-    // The launch values are resolved: record them as the snapshot's
-    // effective coding path before delegating, so adapter success AND
-    // adapter failure both flush what actually ran.
-    recordDeckLaunchInSnapshot(item.id, {
-      coding_runtime: deckClient,
-      deck_name: deckId,
-      working_directory: deckCwd,
-    });
-    if (chain) chain.handoffs += 1;
-    let deckDelegation: DeckDelegationResult | null = null;
-    let deckFailed = false;
-    try {
-      deckDelegation = await delegateCodingViaDeck({
-        conversationId: item.conversation_id,
-        botId: bot.id,
-        deck: deckId,
-        client: deckClient,
-        cwd: deckCwd,
-        task: deckDirective.task,
-        reviewFocus: DECK_REVIEW_FOCUS_DEFAULT,
-        isStopped: () => chain?.stopped ?? false,
-      });
-    } catch {
-      // [Deck failed] is already in the thread; the caller-managed return
-      // below still runs so the caller can report it.
-      deckFailed = true;
-    }
-    // A Stop-silent null (neither result nor failure) suppresses the
-    // return, like every other stopped path.
-    if ((deckDelegation || deckFailed) && chain && !chain.stopped) {
-      const callerId = popCaller(chain, bot.id);
-      if (callerId) queue.enqueue(item.conversation_id, callerId);
-    }
-    chainProcessQueue();
-    return;
-  }
+  // NOT-442: no directive routing. A model reply is never parsed for a
+  // DECK directive: agent-deck bots dispatch directly from the ordinary
+  // message in processAgentDeckTurn, and Hermes replies stay
+  // conversational (WAKE handoffs below are the only reply routing).
 
   const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);
 

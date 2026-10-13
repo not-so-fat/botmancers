@@ -10,7 +10,7 @@ import { validateAvatarInput } from '@/lib/avatar';
 
 export async function GET() {
   try {
-    const allBots = bots.getAll().map(bot => ({ ...serializeBot(bot), unread: bot.unread ? 1 : 0, hidden: bot.hidden ? 1 : 0, latest: messages.latestFromBot(bot.id) }));
+    const allBots = bots.getAll().map(bot => ({ ...(serializeBot(bot) as unknown as Record<string, unknown>), unread: bot.unread ? 1 : 0, hidden: bot.hidden ? 1 : 0, latest: messages.latestFromBot(bot.id) }));
     return NextResponse.json(allBots);
   } catch (error) {
     console.error('Error fetching bots:', error);
@@ -30,9 +30,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // NOT-433: runtime-path contract. Unknown runtimes are rejected; a
-    // manually created bot marked launchable must carry the full coding
-    // path (runtime, deck name, working directory).
+    // NOT-442: single-runtime contract. Hermes is the default; an
+    // agent-deck bot requires a valid agent client plus a selected deck
+    // ID. Unknown runtimes/clients and Agent Deck fields on a Hermes bot
+    // are rejected.
     const runtimePath = validateCreateRuntimePath(body);
     if (runtimePath.errors.length > 0) {
       return NextResponse.json(
@@ -62,10 +63,12 @@ export async function POST(request: Request) {
       title: title ? String(title) : '',
       description: description ? String(description) : '',
       avatar: typeof avatar === 'string' ? avatar : undefined,
-      persistent_runtime: runtimePath.normalized.persistent_runtime,
-      coding_runtime: runtimePath.normalized.coding_runtime,
+      runtime: runtimePath.normalized.runtime,
+      agent_client: runtimePath.normalized.agent_client,
+      deck_id: runtimePath.normalized.deck_id,
       deck_name: runtimePath.normalized.deck_name,
       working_directory: runtimePath.normalized.working_directory,
+      needs_deck_reselection: runtimePath.normalized.needs_deck_reselection ? 1 : 0,
       avatar_color: avatarConfig.fields.avatar_color ?? null,
       avatar_eyes: avatarConfig.fields.avatar_eyes ?? null,
       avatar_hands: avatarConfig.fields.avatar_hands ?? null,
@@ -134,15 +137,20 @@ export async function PATCH(request: Request) {
       const description = body.description !== undefined ? String(body.description) : bot.description;
       bots.updateIdentity(id, name, title, description);
     }
-    // NOT-433: owner-supplied runtime path. Unknown coding/persistent
-    // runtimes are rejected; blank coding values clear back to unconfigured.
+    // NOT-442: owner-supplied single runtime. Unknown runtimes/clients
+    // are rejected; blank values clear a field. Switching to hermes
+    // clears Agent Deck fields; selecting a deck ID resolves the
+    // re-selection marker. A merged agent-deck result without a valid
+    // agent client or without a deck ID is rejected rather than stored
+    // unlaunchable (only unresolved migrated rows may lack a deck ID).
     if (
-      body.persistent_runtime !== undefined ||
-      body.coding_runtime !== undefined ||
+      body.runtime !== undefined ||
+      body.agent_client !== undefined ||
+      body.deck_id !== undefined ||
       body.deck_name !== undefined ||
       body.working_directory !== undefined
     ) {
-      const update = validateUpdateRuntimePath(body);
+      const update = validateUpdateRuntimePath(body, bot);
       if (update.errors.length > 0) {
         return NextResponse.json(
           { error: update.errors[0], errors: update.errors },

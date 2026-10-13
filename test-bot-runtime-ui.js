@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// NOT-437: bot runtime/deck UI regression coverage.
+// NOT-442: single bot runtime UI regression coverage.
 //
-// Proves, without a browser: (1) New Bot submits coding runtime, deck
-// name, and working directory through the real POST /api/bots handler and
-// the saved bot reads back Hermes chat runtime plus coding runtime · deck;
-// (2) the picker lists only backend-ready launch paths and legacy data
-// renders the honest unconfigured/unavailable states; (3) handoff, bound
+// Proves, without a browser: (1) New Bot submits the single runtime
+// (agent client, deck ID, working directory) through the real POST
+// /api/bots handler and the saved bot reads back agent-deck with
+// client · deck, while a name-only bot reads back Hermes; the config
+// save maps its fields to the same single runtime via the real PATCH
+// handler; (2) the picker lists only backend-ready launch paths and
+// Hermes / unverified data renders the honest states; (3) handoff, bound
 // session, review, resume, final result, and failure observations render in
 // order inside the originating thread via the real NOT-395 adapter.
 // Self-contained: isolated SQLite file, injected process seam at the
@@ -118,8 +120,8 @@ async function main() {
   log(`DB: ${DB_PATH}`);
   agent.setDelegationChatStub(async () => 'hello there');
 
-  // 1. New Bot submits the coding path; the saved bot reads back Hermes
-  // plus coding runtime · deck.
+  // 1. New Bot submits the single runtime; the saved bot reads back
+  // agent-deck with its client, deck ID, and working directory.
   log('\nNew Bot create/read/render');
   const readyAvailability = { status: 'ready', runtimes: ['codex'] };
   const submitBody = ui.newBotSubmitBody({
@@ -131,36 +133,57 @@ async function main() {
   });
   assert(
     submitBody.name === 'Alice' &&
-    submitBody.launchable === true &&
-    submitBody.coding_runtime === 'codex' &&
-    submitBody.deck_name === 'planner' &&
-    submitBody.working_directory === '/Users/you/workspace/codes/botmancers',
-    'create: New Bot submits coding runtime, deck name, and working directory'
+    submitBody.runtime === 'agent-deck' &&
+    submitBody.agent_client === 'codex' &&
+    submitBody.deck_id === 'planner' &&
+    submitBody.working_directory === '/Users/you/workspace/codes/botmancers' &&
+    !('coding_runtime' in submitBody) && !('launchable' in submitBody),
+    'create: New Bot submits the single runtime with agent client, deck ID, and working directory'
   );
   const created = await postBot(submitBody);
-  assert(created.status === 200, `create: POST /api/bots accepts the coding path (got ${created.status})`);
+  assert(created.status === 200, `create: POST /api/bots accepts the single runtime (got ${created.status})`);
   const saved = await created.json();
-  assert(saved.persistent_runtime === 'hermes', 'read: saved bot chats via Hermes');
+  assert(saved.runtime === 'agent-deck', 'read: saved bot runs on the single agent-deck runtime');
   assert(
-    saved.coding_runtime === 'codex' && saved.deck_name === 'planner' &&
+    saved.agent_client === 'codex' && saved.deck_id === 'planner' &&
     saved.working_directory === '/Users/you/workspace/codes/botmancers' &&
-    saved.coding_configured === true,
-    'read: saved bot stores the coding runtime, deck, and working directory'
+    saved.deck_name === null && saved.needs_deck_reselection === false &&
+    saved.launchable === true,
+    'read: saved bot stores the agent client, deck ID, and working directory with no pending re-selection'
   );
   const listed = await botsRoute.GET();
   const listedBody = await listed.json();
   const listedAlice = listedBody.find(bot => bot.id === saved.id);
   assert(
-    !!listedAlice && listedAlice.persistent_runtime === 'hermes' && listedAlice.coding_configured === true,
-    'read: GET /api/bots lists the Hermes chat runtime and configured coding path'
+    !!listedAlice && listedAlice.runtime === 'agent-deck' && listedAlice.launchable === true,
+    'read: GET /api/bots lists the single runtime as launchable'
   );
   const roster = ui.rosterRuntimeLines(saved, readyAvailability);
-  assert(roster.chat === 'Chat: Hermes', 'render: roster shows the Hermes chat runtime');
-  assert(roster.code === 'Code: codex · planner', 'render: roster shows coding runtime · deck');
+  assert(roster.chat === 'Runtime: Agent Deck', 'render: roster shows the single Agent Deck runtime');
+  assert(roster.code === 'Code: codex · planner', 'render: roster shows agent client · deck ID');
   const config = ui.configCodingPathLines(saved);
-  assert(config.chat === 'Chat: Hermes (fixed)', 'render: config shows the fixed Hermes chat runtime');
-  assert(config.code === 'Code: codex · planner', 'render: config shows coding runtime · deck');
+  assert(config.chat === 'Runtime: Agent Deck', 'render: config shows the single Agent Deck runtime');
+  assert(config.code === 'Code: codex · planner', 'render: config shows agent client · deck ID');
   assert(config.workingDirectory === '/Users/you/workspace/codes/botmancers', 'render: config shows the working directory');
+  assert(config.configured === true, 'render: config offers Edit for the configured Agent Deck bot');
+
+  // 1b. A Hermes bot chats via Hermes and runs nothing else.
+  log('\nHermes create/read/render');
+  const hermesCreated = await postBot({ name: 'Hermie' });
+  assert(hermesCreated.status === 200, `create: POST /api/bots defaults to Hermes (got ${hermesCreated.status})`);
+  const hermesSaved = await hermesCreated.json();
+  assert(
+    hermesSaved.runtime === 'hermes' && hermesSaved.agent_client === null &&
+    hermesSaved.deck_id === null && hermesSaved.launchable === true,
+    'read: Hermes bot stores runtime=hermes with cleared Agent Deck fields'
+  );
+  const hermesRoster = ui.rosterRuntimeLines(hermesSaved, readyAvailability);
+  assert(hermesRoster.chat === 'Chat: Hermes', 'render: roster shows the Hermes chat runtime');
+  assert(hermesRoster.code === 'Code: none — Hermes only', 'render: roster shows no code path for Hermes');
+  const hermesConfig = ui.configCodingPathLines(hermesSaved);
+  assert(hermesConfig.chat === 'Runtime: Hermes (fixed)', 'render: config shows the fixed Hermes runtime');
+  assert(hermesConfig.code === 'Code: none — this bot runs on Hermes.', 'render: config shows no code path for Hermes');
+  assert(hermesConfig.configured === false, 'render: config offers Add (not Edit) for the Hermes bot');
 
   // 2. The picker holds only backend-ready launch paths; legacy data
   // renders honest unconfigured/unavailable states.
@@ -187,41 +210,96 @@ async function main() {
   const legacy = await legacyRes.json();
   const legacyRoster = ui.rosterRuntimeLines(legacy, readyAvailability);
   assert(
-    legacyRoster.chat === 'Chat: Hermes' && legacyRoster.code === 'Code: not set — add it in Config.',
-    'legacy: roster renders the honest unconfigured state'
+    legacyRoster.chat === 'Chat: Hermes' && legacyRoster.code === 'Code: none — Hermes only',
+    'legacy: roster renders the honest Hermes state'
   );
   const legacyConfig = ui.configCodingPathLines(legacy);
   assert(
-    legacyConfig.code === 'Code: not configured — this bot chats only.' && legacyConfig.workingDirectory === null,
-    'legacy: config renders the honest unconfigured state'
+    legacyConfig.code === 'Code: none — this bot runs on Hermes.' && legacyConfig.workingDirectory === null &&
+    legacyConfig.configured === false,
+    'legacy: config renders the honest Hermes state'
   );
-  await botsRoute.PATCH(new Request('http://localhost:43123/api/bots', {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: legacy.id, coding_runtime: 'claude', deck_name: 'planner', working_directory: '/tmp/stale' }),
-  }));
+  // The config save maps its fields to the single runtime: switching a
+  // Hermes bot to agent-deck stores the client and deck ID, and a switch
+  // without a client is rejected rather than stored unlaunchable.
+  async function patchBot(body) {
+    return botsRoute.PATCH(new Request('http://localhost:43123/api/bots', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+  }
+  const switchRes = await patchBot({ id: legacy.id, runtime: 'agent-deck', agent_client: 'claude', deck_id: 'planner', working_directory: '/tmp/stale' });
+  assert(switchRes.status === 200, `update: PATCH maps the config save to the single runtime (got ${switchRes.status})`);
   const stale = bots.getById(legacy.id);
+  assert(
+    stale.runtime === 'agent-deck' && stale.agent_client === 'claude' && stale.deck_id === 'planner',
+    'update: config save stores the agent client and deck ID on the single runtime'
+  );
   const staleRoster = ui.rosterRuntimeLines(stale, readyAvailability);
   assert(
+    staleRoster.chat === 'Runtime: Agent Deck' &&
     staleRoster.code === 'Code: claude · planner (not verified — see Config).',
     'unavailable: roster marks the stored-but-unverified path without inventing a value'
+  );
+  const noClientRes = await patchBot({ id: legacy.id, agent_client: '' });
+  assert(noClientRes.status === 400, `update: PATCH clearing the client on an agent-deck bot is rejected (got ${noClientRes.status})`);
+  const stillDeck = bots.getById(legacy.id);
+  assert(
+    stillDeck.agent_client === 'claude' && stillDeck.deck_id === 'planner',
+    'update: rejected clear stores nothing'
   );
   const emptyBody = ui.newBotSubmitBody({
     name: 'Bobby', availability: { status: 'empty', runtimes: [] },
     codingRuntime: 'codex', deckName: 'typed-anyway', workingDirectory: '/tmp/typed',
   });
   assert(
-    !('coding_runtime' in emptyBody) && !('deck_name' in emptyBody) &&
-    !('working_directory' in emptyBody) && !('launchable' in emptyBody),
-    'unavailable: empty probe submits a fully unconfigured bot (typed text discarded)'
+    !('runtime' in emptyBody) && !('agent_client' in emptyBody) &&
+    !('deck_id' in emptyBody) && !('working_directory' in emptyBody),
+    'unavailable: empty probe submits a Hermes default (typed text discarded)'
   );
   const errorBody = ui.newBotSubmitBody({
     name: 'Casey', availability: { status: 'error', runtimes: [] },
     codingRuntime: '', deckName: '', workingDirectory: '',
   });
   assert(
-    !('coding_runtime' in errorBody) && !('launchable' in errorBody),
-    'unavailable: probe error submits a fully unconfigured bot'
+    !('runtime' in errorBody) && !('agent_client' in errorBody),
+    'unavailable: probe error submits a Hermes default'
+  );
+  const blankDeckBody = ui.newBotSubmitBody({
+    name: 'Dee', availability: readyAvailability,
+    codingRuntime: 'codex', deckName: '   ', workingDirectory: '',
+  });
+  assert(
+    blankDeckBody.name === 'Dee' && !('runtime' in blankDeckBody) &&
+    !('agent_client' in blankDeckBody) && !('deck_id' in blankDeckBody),
+    'ready: blank Deck ID submits a Hermes default (Hermes stays the default for newly created bots)'
+  );
+  const blankDeckCreated = await postBot(blankDeckBody);
+  assert(blankDeckCreated.status === 200, `create: blank-deck submit is accepted as Hermes (got ${blankDeckCreated.status})`);
+  const blankDeckSaved = await blankDeckCreated.json();
+  assert(
+    blankDeckSaved.runtime === 'hermes' && blankDeckSaved.agent_client === null &&
+    blankDeckSaved.deck_id === null && blankDeckSaved.launchable === true,
+    'read: blank-deck submit stores runtime=hermes with cleared Agent Deck fields'
+  );
+  const noWorkdirBody = ui.newBotSubmitBody({
+    name: 'Wally', availability: readyAvailability,
+    codingRuntime: 'codex', deckName: 'planner', workingDirectory: '   ',
+  });
+  assert(
+    noWorkdirBody.runtime === 'agent-deck' &&
+    noWorkdirBody.agent_client === 'codex' &&
+    noWorkdirBody.deck_id === 'planner',
+    'ready: filled Deck ID with a blank working directory still submits agent-deck (workdir is an optional override)'
+  );
+  const noWorkdirCreated = await postBot(noWorkdirBody);
+  assert(noWorkdirCreated.status === 200, `create: agent-deck without a working directory is accepted (got ${noWorkdirCreated.status})`);
+  const noWorkdirSaved = await noWorkdirCreated.json();
+  assert(
+    noWorkdirSaved.runtime === 'agent-deck' && noWorkdirSaved.deck_id === 'planner' &&
+    noWorkdirSaved.working_directory === null && noWorkdirSaved.launchable === true,
+    'read: agent-deck bot without a working-directory override stores null and stays launchable'
   );
 
   // 3. Handoff, bound session, review, resume, final result, and failure
@@ -292,6 +370,11 @@ async function main() {
   );
   log(`  conversation: ${failingConv.id}`);
   log(`  ordered events: ${failingKinds.join(' > ')}`);
+
+  assert(
+    ui.deckEventKindOfLine('[Deck needs reselection] Relay cannot launch: no deck ID is selected.') === 'reselection',
+    'trace: the needs-reselection notice renders as a deck event'
+  );
 
   deck.setDeckRunProcess(null);
   agent.setDelegationChatStub(null);
