@@ -29,7 +29,8 @@
     "test:command-runs": "node test-command-runs.js",
     "test:parity-small": "node test-parity-small.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js",
-    "test:bot-runtime-ui": "node test-bot-runtime-ui.js"
+    "test:bot-runtime-ui": "node test-bot-runtime-ui.js",
+    "test:brand-hierarchy": "node test-brand-hierarchy.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

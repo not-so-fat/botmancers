@@ -189,6 +189,7 @@ function messagePicture(content: string) {
 
 export default function Home() {
   const [bots, setBots] = useState<Bot[]>([]);
+  const [botsLoaded, setBotsLoaded] = useState(false);
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
@@ -339,6 +340,7 @@ export default function Home() {
     if (!Array.isArray(data)) return;
     const list: Bot[] = data;
     setBots(list);
+    setBotsLoaded(true);
   }
 
   async function loadGroups() {
@@ -498,6 +500,9 @@ export default function Home() {
     });
   };
 
+  // True zero-bot roster only once /api/bots has answered, so a populated
+  // workspace never flashes the welcome state on cold load.
+  const noBots = botsLoaded && bots.length === 0;
   const rosterBots = [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b));
   const hiddenBots = bots.filter(bot => bot.hidden);
 
@@ -717,10 +722,10 @@ export default function Home() {
         <div className="brand">
           <div className={logoDrop ? 'logo-shape is-settling' : 'logo-shape'}>
             <Image
-              src="/brand/botmancers-logo-filled-64.png"
+              src="/brand/botmancers-logo-filled-256.png"
               alt=""
-              width={28}
-              height={28}
+              width={40}
+              height={40}
             />
           </div>
           <div className="logo-word">botmancers</div>
@@ -733,9 +738,7 @@ export default function Home() {
             Settings
           </Link>
         </div>
-        {bots.length === 0 ? (
-          <p className="empty-line">Pick someone to talk to.</p>
-        ) : (
+        {noBots ? null : (
           <div className={rowMenu ? 'roster menu-open' : 'roster'}>
             {rosterBots.map(bot => isChiefOfStaff(bot) ? (
               <div
@@ -1260,6 +1263,18 @@ export default function Home() {
                 Send
               </button>
             </div>
+          </div>
+        ) : noBots ? (
+          <div className="welcome">
+            <Image
+              className="welcome-mark"
+              src="/brand/botmancers-logo-outline-256.png"
+              alt="Botmancers"
+              width={144}
+              height={144}
+              priority
+            />
+            <p className="empty-line">Pick someone to talk to.</p>
           </div>
         ) : (
           <p className="empty-line">Pick someone to talk to.</p>
