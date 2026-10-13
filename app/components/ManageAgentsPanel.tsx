@@ -69,7 +69,6 @@ export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
   const needle = query.trim().toLowerCase();
   const shown = (rows ?? []).filter(row => row.name.toLowerCase().includes(needle));
   const shownDeletable = shown.filter(row => !row.blocked);
-  const allShownSelected = shownDeletable.length > 0 && shownDeletable.every(row => selected.includes(row.id));
 
   const toggle = (id: string) => {
     setSelected(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
@@ -121,10 +120,10 @@ export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
           placeholder="Name contains…"
         />
         <div className="manage-tools">
-          <button type="button" className="pin-word" onClick={selectAllShown} disabled={shownDeletable.length === 0 || allShownSelected}>
+          <button type="button" className="pin-word" onClick={selectAllShown} disabled={shownDeletable.length === 0}>
             Select all shown
           </button>
-          <button type="button" className="pin-word" onClick={() => setSelected([])} disabled={selected.length === 0}>
+          <button type="button" className="pin-word" onClick={() => { setSelected([]); searchRef.current?.focus(); }} disabled={selected.length === 0}>
             Clear selection
           </button>
           <span className="manage-count" aria-live="polite">
