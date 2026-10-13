@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { applyAgentUpdate, DEFAULT_AGENT, migrateLegacyAgentFields, type AgentUpdateFields } from './bot-definition';
+import { isChiefOfStaffName } from './avatar';
+import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } from './bot-deletion';
 
 // Overridable so the stub-model delegation test uses an isolated file.
 const DB_PATH = process.env.BOTMANCERS_DB_PATH || 'botmancers.db';
@@ -733,30 +735,169 @@ export const bots = {
   },
 
   remove: (id: string): void => {
-    const conversations = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').all(id) as { id: string }[];
-    db.transaction(() => {
-      for (const conversation of conversations) {
-        db.prepare('DELETE FROM processing_queue WHERE conversation_id = ?').run(conversation.id);
-        db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversation.id);
-        db.prepare('DELETE FROM pending_questions WHERE conversation_id = ?').run(conversation.id);
-        db.prepare('DELETE FROM approval_requests WHERE conversation_id = ?').run(conversation.id);
-        db.prepare('DELETE FROM conversation_participants WHERE conversation_id = ?').run(conversation.id);
-        db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
+    bots.removeMany([id]);
+  },
+
+  // NOT-459: impact of deleting ids, computed against current rows.
+  // Missing ids, the Chief of Staff, and agents with a pending or
+  // processing queue row are reported; nothing is written.
+  deletionPreview: (ids: string[]): DeletePreview => {
+    const selected = new Set(ids);
+    const agents: DeleteAgentRef[] = [];
+    const missing: string[] = [];
+    const blocked: DeleteBlocked[] = [];
+    const activeIds = new Set(activeBotIds());
+    for (const id of ids) {
+      const bot = bots.getById(id);
+      if (!bot) {
+        missing.push(id);
+        continue;
       }
-      db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
-      db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
-      db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
-      db.prepare(
-        "DELETE FROM conversation_participants WHERE participant_kind = 'bot' AND participant_id = ? AND conversation_id IN (SELECT id FROM conversations WHERE type = 'group')"
-      ).run(id);
-      db.prepare('DELETE FROM memories WHERE bot_id = ?').run(id);
-      db.prepare('DELETE FROM one_shots WHERE bot_id = ?').run(id);
-      db.prepare('DELETE FROM routines WHERE bot_id = ?').run(id);
-      db.prepare('DELETE FROM pending_questions WHERE bot_id = ?').run(id);
-      db.prepare('DELETE FROM bots WHERE id = ?').run(id);
+      agents.push({ id: bot.id, name: bot.name });
+      if (isChiefOfStaffName(bot.name)) blocked.push({ id: bot.id, name: bot.name, reason: 'chief' });
+      else if (activeIds.has(bot.id)) blocked.push({ id: bot.id, name: bot.name, reason: 'active' });
+    }
+    return { agents, groups: groupImpacts(selected), missing, blocked };
+  },
+
+  // All-or-nothing: validation, group reconciliation, and every row
+  // delete run in one transaction. Filesystem content is never touched.
+  // onAgentDeleted runs inside the transaction (tests inject a failure).
+  removeMany: (ids: string[], options?: { onAgentDeleted?: (id: string) => void }): DeletePreview => {
+    return db.transaction(() => {
+      const preview = bots.deletionPreview(ids);
+      if (preview.missing.length > 0 || preview.blocked.length > 0) throw new BotDeletionError(preview);
+      const selected = new Set(ids);
+      for (const impact of preview.groups) {
+        if (impact.outcome === 'removed') {
+          deleteGroupRecords(impact.id);
+          continue;
+        }
+        const conversationIds = (db.prepare('SELECT id FROM conversations WHERE group_id = ?').all(impact.id) as { id: string }[]).map(row => row.id);
+        for (const id of selected) {
+          db.prepare('DELETE FROM group_members WHERE group_id = ? AND bot_id = ?').run(impact.id, id);
+          for (const conversationId of conversationIds) {
+            db.prepare(
+              "DELETE FROM conversation_participants WHERE conversation_id = ? AND participant_kind = 'bot' AND participant_id = ?"
+            ).run(conversationId, id);
+          }
+        }
+        if (impact.newOwner) db.prepare('UPDATE groups SET owner_bot_id = ? WHERE id = ?').run(impact.newOwner.id, impact.id);
+      }
+      for (const id of ids) {
+        const owned = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').all(id) as { id: string }[];
+        for (const conversation of owned) deleteConversationRecords(conversation.id);
+        db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
+        db.prepare(
+          "DELETE FROM conversation_participants WHERE participant_kind = 'bot' AND participant_id = ? AND conversation_id IN (SELECT id FROM conversations WHERE type = 'group')"
+        ).run(id);
+        db.prepare('DELETE FROM memories WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM one_shots WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM routines WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM pending_questions WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM approval_requests WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM bots WHERE id = ?').run(id);
+        options?.onAgentDeleted?.(id);
+      }
+      return preview;
     })();
   },
+
+  // Manage agents: every agent (hidden included) with created date, last
+  // message activity, and whether a queue row is pending/processing.
+  managementRows: (): ManagementRow[] => {
+    const all = db.prepare('SELECT * FROM bots ORDER BY created_at DESC, id ASC').all() as Bot[];
+    const activeIds = new Set(activeBotIds());
+    const last = new Map<string, number>();
+    const bump = (rows: { id: string | null; at: number | null }[]) => {
+      for (const row of rows) {
+        if (!row.id || !row.at) continue;
+        if ((last.get(row.id) ?? 0) < row.at) last.set(row.id, row.at);
+      }
+    };
+    bump(db.prepare(
+      "SELECT c.bot_id AS id, MAX(m.created_at) AS at FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.type = 'bot' GROUP BY c.bot_id"
+    ).all() as { id: string | null; at: number | null }[]);
+    bump(db.prepare(
+      "SELECT sender_id AS id, MAX(created_at) AS at FROM messages WHERE sender_type = 'bot' AND sender_id IS NOT NULL GROUP BY sender_id"
+    ).all() as { id: string | null; at: number | null }[]);
+    return all.map(bot => ({
+      bot,
+      last_activity: last.get(bot.id) ?? null,
+      blocked: isChiefOfStaffName(bot.name) ? 'chief' : activeIds.has(bot.id) ? 'active' : null,
+    }));
+  },
 };
+
+export interface ManagementRow {
+  bot: Bot;
+  last_activity: number | null;
+  blocked: DeleteBlocked['reason'] | null;
+}
+
+export class BotDeletionError extends Error {
+  preview: DeletePreview;
+  constructor(preview: DeletePreview) {
+    super(preview.missing.length > 0 ? 'Agent not found' : 'Some agents cannot be deleted');
+    this.preview = preview;
+  }
+}
+
+function activeBotIds(): string[] {
+  return (db.prepare(
+    "SELECT DISTINCT bot_id FROM processing_queue WHERE status IN ('pending', 'processing')"
+  ).all() as { bot_id: string }[]).map(row => row.bot_id);
+}
+
+// Groups touched by deleting `selected`: fewer than two remaining members
+// removes the group; a deleted owner passes to the remaining member with
+// the earliest created_at, ties broken by id.
+function groupImpacts(selected: Set<string>): DeleteGroupImpact[] {
+  if (selected.size === 0) return [];
+  const touched = db.prepare(
+    `SELECT DISTINCT g.id, g.name, g.owner_bot_id, g.created_at FROM groups g
+     JOIN group_members gm ON gm.group_id = g.id
+     WHERE gm.bot_id IN (${[...selected].map(() => '?').join(', ')})
+     ORDER BY g.created_at ASC, g.id ASC`
+  ).all(...selected) as Group[];
+  return touched.map(group => {
+    const remaining = (db.prepare(
+      `SELECT b.id, b.name FROM bots b JOIN group_members gm ON gm.bot_id = b.id
+       WHERE gm.group_id = ? ORDER BY b.created_at ASC, b.id ASC`
+    ).all(group.id) as DeleteAgentRef[]).filter(member => !selected.has(member.id));
+    if (remaining.length < 2) {
+      return { id: group.id, name: group.name, outcome: 'removed', remaining: remaining.length, newOwner: null };
+    }
+    if (group.owner_bot_id && selected.has(group.owner_bot_id)) {
+      return { id: group.id, name: group.name, outcome: 'reassigned', remaining: remaining.length, newOwner: remaining[0] };
+    }
+    return { id: group.id, name: group.name, outcome: 'shrunk', remaining: remaining.length, newOwner: null };
+  });
+}
+
+function deleteConversationRecords(conversationId: string): void {
+  db.prepare('DELETE FROM draft_actions WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)').run(conversationId);
+  db.prepare('DELETE FROM agent_request_events WHERE request_id IN (SELECT id FROM agent_requests WHERE conversation_id = ?)').run(conversationId);
+  db.prepare('DELETE FROM agent_requests WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM processing_queue WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM pending_questions WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM approvals WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM approval_requests WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM one_shots WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM routines WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM conversation_participants WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
+}
+
+function deleteGroupRecords(groupId: string): void {
+  const owned = db.prepare('SELECT id FROM conversations WHERE group_id = ?').all(groupId) as { id: string }[];
+  for (const conversation of owned) deleteConversationRecords(conversation.id);
+  db.prepare('DELETE FROM group_members WHERE group_id = ?').run(groupId);
+  db.prepare('DELETE FROM groups WHERE id = ?').run(groupId);
+}
 
 export const groups = {
   create: (name: string, botIds: string[], ownerId?: string, overrides?: { created_at?: number }): Group => {

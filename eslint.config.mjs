@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     "test-*.js",
     // Seed scripts use CommonJS:
     "scripts/*.js",
+    // Gitignored scratch scripts and logs:
+    ".temporal/**",
   ]),
 ]);
 

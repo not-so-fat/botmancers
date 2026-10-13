@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
+import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
+import { DELETE_KEEPS_COPY, DELETE_REMOVES_COPY } from '@/lib/bot-deletion';
 import {
   SELECT_DECK_ERROR,
   configRuntimePatchBody,
@@ -126,6 +128,8 @@ function looksLikeUrl(value: string): boolean {
 export default function BotConfigPage() {
   const params = useParams();
   const id = String((params as Record<string, string | string[]>).id ?? '');
+  const router = useRouter();
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const [data, setData] = useState<ConfigData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -971,6 +975,19 @@ export default function BotConfigPage() {
               </dl>
               <MarketplaceImportControl phase={importPhase} onImport={() => { void startImport(); }} />
             </section>
+
+            <section className="cfg-card cfg-danger" aria-labelledby="cfg-danger-title">
+              <h2 id="cfg-danger-title" className="cfg-title mb-3">Danger zone</h2>
+              <p className="text-sm cfg-muted">{DELETE_REMOVES_COPY}</p>
+              <p className="text-sm cfg-faint mt-2">{DELETE_KEEPS_COPY}</p>
+              <button
+                type="button"
+                onClick={() => setDeleteOpen(true)}
+                className="mt-3 delete-btn text-sm w-full sm:w-auto"
+              >
+                Delete agent
+              </button>
+            </section>
           </div>
 
           <div className="lg:col-span-2">
@@ -1063,6 +1080,13 @@ export default function BotConfigPage() {
           </div>
         </div>
       </div>
+      {deleteOpen ? (
+        <DeleteAgentsDialog
+          ids={[bot.id]}
+          onCancel={() => setDeleteOpen(false)}
+          onDeleted={deleted => router.push(`/?deleted=${Math.max(deleted.length, 1)}`)}
+        />
+      ) : null}
     </div>
   );
 }

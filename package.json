@@ -28,6 +28,7 @@
     "test:group-semantics": "node test-group-semantics.js",
     "test:command-runs": "node test-command-runs.js",
     "test:parity-small": "node test-parity-small.js",
+    "test:bot-deletion": "node test-bot-deletion.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js",
     "test:bot-runtime-ui": "node test-bot-runtime-ui.js",
     "test:brand-hierarchy": "node test-brand-hierarchy.js"
