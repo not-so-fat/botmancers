@@ -399,6 +399,116 @@ if (!snapshotColumns.some(column => column.name === 'transport')) {
   db.exec("ALTER TABLE launch_snapshots ADD COLUMN transport TEXT NOT NULL DEFAULT 'hermes-gateway'");
 }
 
+// NOT-446: one history model for UI threads and agent API conversations.
+// Participants and the origin principal are explicit rows/columns instead
+// of being implied by conversations.bot_id/group_id. sender_kind carries
+// the principal kind (person|bot|service) next to the legacy UI
+// sender_type (user|bot); request_id links a message to the agent request
+// that accepted or answered it.
+const conversationColumns = db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[];
+if (!conversationColumns.some(column => column.name === 'origin_kind')) {
+  db.exec('ALTER TABLE conversations ADD COLUMN origin_kind TEXT');
+}
+if (!conversationColumns.some(column => column.name === 'origin_id')) {
+  db.exec('ALTER TABLE conversations ADD COLUMN origin_id TEXT');
+}
+if (!messageColumns.some(column => column.name === 'sender_kind')) {
+  db.exec('ALTER TABLE messages ADD COLUMN sender_kind TEXT');
+}
+if (!messageColumns.some(column => column.name === 'request_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN request_id TEXT');
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS conversation_participants (
+    conversation_id TEXT NOT NULL,
+    participant_kind TEXT NOT NULL,
+    participant_id TEXT NOT NULL,
+    joined_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, participant_kind, participant_id),
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_requests (
+    id TEXT PRIMARY KEY,
+    principal_kind TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    target_bot_id TEXT NOT NULL,
+    accepted_message_id TEXT NOT NULL,
+    runtime TEXT,
+    state TEXT NOT NULL,
+    reply_message_id TEXT,
+    failure_code TEXT,
+    failure_message TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_requests_idempotency
+    ON agent_requests(principal_kind, principal_id, operation, idempotency_key);
+  CREATE INDEX IF NOT EXISTS idx_agent_requests_conversation
+    ON agent_requests(conversation_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS agent_request_events (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    data TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (request_id) REFERENCES agent_requests(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_request_events_request
+    ON agent_request_events(request_id, created_at);
+`);
+
+export type PrincipalKind = 'person' | 'bot' | 'service';
+
+export interface Principal {
+  kind: PrincipalKind;
+  id: string;
+}
+
+// The person behind the local UI. Pre-NOT-446 UI threads had no explicit
+// human participant; the compatibility migration binds them to this one.
+export const UI_OWNER_PRINCIPAL: Principal = { kind: 'person', id: 'local-owner' };
+
+const insertParticipant = db.prepare(
+  'INSERT OR IGNORE INTO conversation_participants (conversation_id, participant_kind, participant_id, joined_at) VALUES (?, ?, ?, ?)'
+);
+
+function bindUiConversation(conversationId: string, botIds: string[], at: number): void {
+  db.prepare(
+    'UPDATE conversations SET origin_kind = ?, origin_id = ? WHERE id = ? AND origin_kind IS NULL'
+  ).run(UI_OWNER_PRINCIPAL.kind, UI_OWNER_PRINCIPAL.id, conversationId);
+  insertParticipant.run(conversationId, UI_OWNER_PRINCIPAL.kind, UI_OWNER_PRINCIPAL.id, at);
+  for (const botId of botIds) insertParticipant.run(conversationId, 'bot', botId, at);
+}
+
+// Compatibility migration (idempotent, additive): existing UI threads get
+// the UI owner as origin plus their bot/group members as participants,
+// and existing messages get a sender_kind. Message rows are never moved,
+// copied, or deleted.
+db.transaction(() => {
+  db.exec("UPDATE messages SET sender_kind = 'person' WHERE sender_kind IS NULL AND sender_type = 'user'");
+  db.exec("UPDATE messages SET sender_kind = 'bot' WHERE sender_kind IS NULL AND sender_type = 'bot'");
+  const legacy = db.prepare(
+    "SELECT id, type, bot_id, group_id, created_at FROM conversations WHERE origin_kind IS NULL AND type IN ('bot', 'group')"
+  ).all() as { id: string; type: string; bot_id: string | null; group_id: string | null; created_at: number }[];
+  const membersOf = db.prepare('SELECT bot_id FROM group_members WHERE group_id = ?');
+  for (const row of legacy) {
+    const botIds = row.type === 'bot'
+      ? (row.bot_id ? [row.bot_id] : [])
+      : (row.group_id ? (membersOf.all(row.group_id) as { bot_id: string }[]).map(member => member.bot_id) : []);
+    bindUiConversation(row.id, botIds, row.created_at);
+  }
+})();
+
 export interface Group {
   id: string;
   name: string;
@@ -408,9 +518,12 @@ export interface Group {
 
 export interface Conversation {
   id: string;
-  type: 'bot' | 'group';
+  // 'agent' conversations are opened through the agent conversation API.
+  type: 'bot' | 'group' | 'agent';
   bot_id?: string;
   group_id?: string;
+  origin_kind?: PrincipalKind | null;
+  origin_id?: string | null;
   created_at: number;
 }
 
@@ -419,6 +532,8 @@ export interface Message {
   conversation_id: string;
   sender_type: 'user' | 'bot';
   sender_id?: string;
+  sender_kind?: PrincipalKind | null;
+  request_id?: string | null;
   content: string;
   handoff_targets?: string | null;
   created_at: number;
@@ -466,6 +581,7 @@ export const bots = {
     db.prepare(
       'INSERT INTO conversations (id, type, bot_id, created_at) VALUES (?, ?, ?, ?)'
     ).run(conversationId, 'bot', bot.id, bot.created_at);
+    bindUiConversation(conversationId, [bot.id], bot.created_at);
     
     return bot;
   },
@@ -515,6 +631,7 @@ export const bots = {
     db.prepare(
       'INSERT INTO conversations (id, type, bot_id, created_at) VALUES (?, ?, ?, ?)'
     ).run(conversationId, 'bot', bot.id, bot.created_at);
+    bindUiConversation(conversationId, [bot.id], bot.created_at);
     
     return bot;
   },
@@ -620,11 +737,15 @@ export const bots = {
         db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM pending_questions WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM approval_requests WHERE conversation_id = ?').run(conversation.id);
+        db.prepare('DELETE FROM conversation_participants WHERE conversation_id = ?').run(conversation.id);
         db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
       }
       db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
+      db.prepare(
+        "DELETE FROM conversation_participants WHERE participant_kind = 'bot' AND participant_id = ? AND conversation_id IN (SELECT id FROM conversations WHERE type = 'group')"
+      ).run(id);
       db.prepare('DELETE FROM memories WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM one_shots WHERE bot_id = ?').run(id);
       db.prepare('DELETE FROM routines WHERE bot_id = ?').run(id);
@@ -659,7 +780,9 @@ export const groups = {
       for (const botId of botIds) {
         insertMember.run(group.id, botId);
       }
-      insertConversation.run(randomUUID(), 'group', group.id, group.created_at);
+      const conversationId = randomUUID();
+      insertConversation.run(conversationId, 'group', group.id, group.created_at);
+      bindUiConversation(conversationId, botIds, group.created_at);
     })();
     
     return group;
@@ -698,6 +821,12 @@ export const conversations = {
   getById: (id: string): Conversation | undefined => {
     return db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as Conversation | undefined;
   },
+
+  // Unauthenticated UI routes must not reach 'agent' conversations; those are
+  // only readable and writable through the authenticated agent API.
+  getUiById: (id: string): Conversation | undefined => {
+    return db.prepare("SELECT * FROM conversations WHERE id = ? AND type != 'agent'").get(id) as Conversation | undefined;
+  },
 };
 
 export const messages = {
@@ -707,18 +836,20 @@ export const messages = {
       conversation_id: conversationId,
       sender_type: senderType,
       sender_id: senderId,
+      sender_kind: senderType === 'bot' ? 'bot' : UI_OWNER_PRINCIPAL.kind,
       content,
       handoff_targets: handoffTargets && handoffTargets.length > 0 ? JSON.stringify(handoffTargets) : null,
       created_at: Date.now(),
     };
     
     db.prepare(
-      'INSERT INTO messages (id, conversation_id, sender_type, sender_id, content, handoff_targets, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, content, handoff_targets, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       message.id,
       message.conversation_id,
       message.sender_type,
       message.sender_id || null,
+      message.sender_kind,
       message.content,
       message.handoff_targets || null,
       message.created_at
