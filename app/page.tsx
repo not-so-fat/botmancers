@@ -236,7 +236,7 @@ export default function Home() {
   }, [bots.length]);
 
   useEffect(() => {
-    // Handoffs started before the entry moved to Config return here; forward to the imported bot's Config.
+    // A legacy `/?imported=<id>` return forwards to the imported bot's Config; the rail never handles imports.
     const imported = importedBotId(window.location.search);
     if (imported) {
       window.location.replace(importedConfigPath(imported));
