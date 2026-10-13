@@ -141,7 +141,8 @@ export async function PATCH(request: Request) {
     // are rejected; blank values clear a field. Switching to hermes
     // clears Agent Deck fields; selecting a deck ID resolves the
     // re-selection marker. A merged agent-deck result without a valid
-    // agent client is rejected rather than stored unlaunchable.
+    // agent client or without a deck ID is rejected rather than stored
+    // unlaunchable (only unresolved migrated rows may lack a deck ID).
     if (
       body.runtime !== undefined ||
       body.agent_client !== undefined ||

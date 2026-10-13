@@ -1566,17 +1566,9 @@ function BotModal({ bots, availability, onRetryAvailability, onClose, onCreated 
   const handleBot = async (e: React.FormEvent) => {
     e.preventDefault();
     if (createDisabled) return;
-    if (codingPathReady) {
+    if (codingPathReady && deckName.trim()) {
       if (!effectiveCodingRuntime) {
         setBotError('Invalid coding runtime: "". Expected one of codex|claude|cursor|muse.');
-        return;
-      }
-      if (!deckName.trim()) {
-        setBotError('Deck ID is required for an Agent Deck bot.');
-        return;
-      }
-      if (!workingDirectory.trim()) {
-        setBotError('Working directory is required for a launchable bot.');
         return;
       }
     }

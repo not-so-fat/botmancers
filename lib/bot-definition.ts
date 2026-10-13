@@ -410,11 +410,12 @@ export function validateCreateRuntimePath(body: Record<string, unknown>): {
 // When the stored row is supplied, the merged agent-deck state is also
 // checked: an agent-deck bot requires a valid agent client (clearing it
 // or leaving it absent is rejected, never stored as an unlaunchable
-// row). A merged agent-deck row without a deck ID stays representable
-// as needs-deck-reselection (the migration produces such rows and deck
-// re-selection resolves them), but a missing client has no such state
-// and is always an error. Without the stored row only a self-contained
-// switch to agent-deck can be checked.
+// row) and a selected deck ID, unless the stored row is already an
+// unresolved migrated row (null deck ID / needs_deck_reselection, which
+// only the migration produces and only deck re-selection resolves). A
+// switch to agent-deck from any other stored state without a deck ID is
+// rejected rather than stored as a new unlaunchable row. Without the
+// stored row only a self-contained switch to agent-deck can be checked.
 export function validateUpdateRuntimePath(body: Record<string, unknown>, current?: BotLike): {
   errors: string[];
   fields: { runtime?: BotRuntime; agent_client?: AgentClient | null; deck_id?: string | null; deck_name?: string | null; working_directory?: string | null };
@@ -445,8 +446,11 @@ export function validateUpdateRuntimePath(body: Record<string, unknown>, current
     fields.working_directory = normalizeWorkingDirectory(body.working_directory);
   }
   // Merged agent-deck invariant: the resulting row must carry a valid
-  // agent client. Deck-ID absence is representable (needs reselection);
-  // client absence is not, so it is rejected here instead of stored.
+  // agent client and a selected deck ID, unless the stored row is
+  // already an unresolved migrated row (needs-deck-reselection with no
+  // deck ID): only the migration may introduce that state, and only
+  // selecting a deck ID resolves it. Client absence has no such
+  // representable state and is always rejected instead of stored.
   const stored = current !== undefined ? resolveRuntime(current) : null;
   const mergedRuntime = fields.runtime ?? stored?.runtime;
   if (mergedRuntime === RUNTIME_AGENT_DECK) {
@@ -464,6 +468,22 @@ export function validateUpdateRuntimePath(body: Record<string, unknown>, current
       errors.push(
         `Invalid agent client: ${JSON.stringify(String(((body as Record<string, unknown>).agent_client ?? stored?.agent_client ?? '')))}. Expected one of ${AGENT_CLIENTS.join('|')}.`
       );
+    }
+    const mergedDeckId = fields.deck_id !== undefined ? fields.deck_id : stored?.deck_id;
+    const storedUnresolved =
+      stored !== null &&
+      stored.runtime === RUNTIME_AGENT_DECK &&
+      (stored.deck_id === null || stored.needs_deck_reselection === true);
+    if (!storedUnresolved) {
+      if (mergedDeckId === undefined) {
+        // No stored row to merge with: a self-contained switch to
+        // agent-deck must carry its deck ID in the same body.
+        if (fields.runtime === RUNTIME_AGENT_DECK) {
+          errors.push('Deck ID is required for an agent-deck bot. Select a deck before creating it.');
+        }
+      } else if (mergedDeckId === null) {
+        errors.push('Deck ID is required for an agent-deck bot. Select a deck before creating it.');
+      }
     }
   }
   return { errors, fields };

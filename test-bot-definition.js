@@ -134,6 +134,26 @@ const nullClientDeck = def.validateUpdateRuntimePath({ agent_client: '', deck_id
 console.log(`invalid update fixture null-client-with-deck: ${nullClientDeck.errors[0] || '(no error)'}`);
 check('deck ID with a null client is rejected', nullClientDeck.errors.some(e => /agent client/i.test(e)), JSON.stringify(nullClientDeck.errors));
 
+// Switching to agent-deck without a deck ID is rejected on any stored
+// row that is not already an unresolved migrated row: only the
+// migration may introduce the needs-reselection state.
+const switchNoDeck = def.validateUpdateRuntimePath({ runtime: 'agent-deck', agent_client: 'codex' }, hermesRow);
+console.log(`invalid update fixture switch-without-deck-id: ${switchNoDeck.errors[0] || '(no error)'}`);
+check('switching to agent-deck without a deck ID is rejected', switchNoDeck.errors.some(e => /Deck ID is required/.test(e)), JSON.stringify(switchNoDeck.errors));
+
+const switchNoDeckFull = def.validateUpdateRuntimePath({ runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-123' }, hermesRow);
+check('switching to agent-deck with a client and deck ID is accepted', switchNoDeckFull.errors.length === 0, JSON.stringify(switchNoDeckFull.errors));
+
+const unresolvedWorkdir = def.validateUpdateRuntimePath(
+  { working_directory: '/tmp/other' },
+  { runtime: 'agent-deck', agent_client: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/w', needs_deck_reselection: 1 }
+);
+check(
+  'updating an unresolved migrated row without a deck ID stays allowed',
+  unresolvedWorkdir.errors.length === 0,
+  JSON.stringify(unresolvedWorkdir.errors)
+);
+
 // Defense in depth: a direct client-less merge is flagged, never launchable.
 const clientLessMerge = def.applyRuntimeUpdate(deckRow, { agent_client: null, deck_id: 'deck-999' });
 console.log(`client-less merge: needs_deck_reselection=${clientLessMerge.needs_deck_reselection} launchable=${def.resolveRuntime({ ...deckRow, agent_client: null }).launchable}`);

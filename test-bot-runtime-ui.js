@@ -266,6 +266,41 @@ async function main() {
     !('runtime' in errorBody) && !('agent_client' in errorBody),
     'unavailable: probe error submits a Hermes default'
   );
+  const blankDeckBody = ui.newBotSubmitBody({
+    name: 'Dee', availability: readyAvailability,
+    codingRuntime: 'codex', deckName: '   ', workingDirectory: '',
+  });
+  assert(
+    blankDeckBody.name === 'Dee' && !('runtime' in blankDeckBody) &&
+    !('agent_client' in blankDeckBody) && !('deck_id' in blankDeckBody),
+    'ready: blank Deck ID submits a Hermes default (Hermes stays the default for newly created bots)'
+  );
+  const blankDeckCreated = await postBot(blankDeckBody);
+  assert(blankDeckCreated.status === 200, `create: blank-deck submit is accepted as Hermes (got ${blankDeckCreated.status})`);
+  const blankDeckSaved = await blankDeckCreated.json();
+  assert(
+    blankDeckSaved.runtime === 'hermes' && blankDeckSaved.agent_client === null &&
+    blankDeckSaved.deck_id === null && blankDeckSaved.launchable === true,
+    'read: blank-deck submit stores runtime=hermes with cleared Agent Deck fields'
+  );
+  const noWorkdirBody = ui.newBotSubmitBody({
+    name: 'Wally', availability: readyAvailability,
+    codingRuntime: 'codex', deckName: 'planner', workingDirectory: '   ',
+  });
+  assert(
+    noWorkdirBody.runtime === 'agent-deck' &&
+    noWorkdirBody.agent_client === 'codex' &&
+    noWorkdirBody.deck_id === 'planner',
+    'ready: filled Deck ID with a blank working directory still submits agent-deck (workdir is an optional override)'
+  );
+  const noWorkdirCreated = await postBot(noWorkdirBody);
+  assert(noWorkdirCreated.status === 200, `create: agent-deck without a working directory is accepted (got ${noWorkdirCreated.status})`);
+  const noWorkdirSaved = await noWorkdirCreated.json();
+  assert(
+    noWorkdirSaved.runtime === 'agent-deck' && noWorkdirSaved.deck_id === 'planner' &&
+    noWorkdirSaved.working_directory === null && noWorkdirSaved.launchable === true,
+    'read: agent-deck bot without a working-directory override stores null and stays launchable'
+  );
 
   // 3. Handoff, bound session, review, resume, final result, and failure
   // observations render in order inside the originating thread.

@@ -81,9 +81,13 @@ export function availabilityFromPayload(
 
 // New Bot submit body. In the empty / load-error states the request
 // carries only the name, so the server default (Hermes) applies and
-// nothing partial is stored. Otherwise the modal's coding fields map to
-// the single runtime: an agent-deck bot with the picked agent client,
-// the typed deck ID, and the working-directory override.
+// nothing partial is stored. When the Deck ID field is blank the same
+// Hermes default applies: the Agent Deck coding path needs a selected
+// deck, so without one the pre-selected client and any typed override
+// are not stored. Otherwise the modal's coding fields map to the single
+// runtime: an agent-deck bot with the picked agent client, the typed
+// deck ID, and the working-directory override (blank means no override;
+// the server normalizes it to null).
 export function newBotSubmitBody(input: {
   name: string;
   availability: AvailabilityState;
@@ -93,6 +97,9 @@ export function newBotSubmitBody(input: {
 }): Record<string, unknown> {
   const name = String(input.name ?? '').trim();
   if (input.availability.status === 'empty' || input.availability.status === 'error') {
+    return { name };
+  }
+  if (!String(input.deckName ?? '').trim()) {
     return { name };
   }
   return {
