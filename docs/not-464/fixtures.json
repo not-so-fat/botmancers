@@ -1,0 +1,318 @@
+{
+  "roster": [
+    { "id": "agent_hermes", "name": "Hermes", "type": "Hermes", "wake_grants": ["conversation", "implementation"] },
+    { "id": "agent_codex", "name": "Codex", "type": "Codex", "wake_grants": ["conversation"] },
+    { "id": "agent_claude", "name": "Claude", "type": "Claude", "wake_grants": ["conversation"] }
+  ],
+  "contexts": {
+    "hermes_human": {
+      "conversation": { "id": "conv_hermes", "type": "direct", "agent_id": "agent_hermes" },
+      "source_event": { "id": "evt_h1", "author": { "type": "human" } },
+      "parent_request_id": null
+    },
+    "hermes_reply": {
+      "conversation": { "id": "conv_hermes", "type": "direct", "agent_id": "agent_hermes" },
+      "source_event": { "id": "evt_r1", "author": { "type": "agent", "agent_id": "agent_hermes" } },
+      "parent_request_id": "wr_hermes_turn"
+    },
+    "codex_human": {
+      "conversation": { "id": "conv_codex", "type": "direct", "agent_id": "agent_codex" },
+      "source_event": { "id": "evt_c1", "author": { "type": "human" } },
+      "parent_request_id": null
+    },
+    "codex_reply": {
+      "conversation": { "id": "conv_codex", "type": "direct", "agent_id": "agent_codex" },
+      "source_event": { "id": "evt_c2", "author": { "type": "agent", "agent_id": "agent_codex" } },
+      "parent_request_id": "wr_codex_turn"
+    }
+  },
+  "flows": [
+    {
+      "name": "flow-1: Hermes wakes Codex to implement and Claude to review",
+      "steps": [
+        {
+          "entry": "human_message",
+          "context": "hermes_human",
+          "text": "Have Codex add input validation to lib/commands.ts and get Claude to review it.",
+          "expect": {
+            "wakes": [
+              {
+                "version": "botmancers.wake/v1",
+                "target": { "agent_id": "agent_hermes" },
+                "kind": "conversation",
+                "outcome": "Have Codex add input validation to lib/commands.ts and get Claude to review it.",
+                "reviewer": null,
+                "policy": { "timeout_seconds": 1800 },
+                "lineage": {
+                  "conversation_id": "conv_hermes",
+                  "source_event_id": "evt_h1",
+                  "wake_index": 0,
+                  "parent_request_id": null,
+                  "requested_by": { "type": "human" },
+                  "origin": "direct_message"
+                },
+                "idempotency_key": "wake:v1:conv_hermes:evt_h1:0:agent_hermes"
+              }
+            ],
+            "plans": [
+              [
+                { "ref": "turn", "kind": "conversation", "target": "agent_hermes", "parent": null, "tools": "readonly", "attempts": [{ "n": 1, "tools": "readonly", "resume": null }] }
+              ]
+            ]
+          }
+        },
+        {
+          "entry": "agent_reply",
+          "context": "hermes_reply",
+          "text": "Handing this to Codex with Claude reviewing.\n\n```botmancers-wake\n{\"version\":\"botmancers.wake/v1\",\"target\":{\"agent\":\"Codex\"},\"kind\":\"implementation\",\"outcome\":\"Add input validation to lib/commands.ts and cover it with tests.\",\"reviewer\":{\"agent\":\"Claude\",\"focus\":\"Validation coverage and error messages\"},\"policy\":{\"max_revisions\":1}}\n```",
+          "expect": {
+            "wakes": [
+              {
+                "version": "botmancers.wake/v1",
+                "target": { "agent_id": "agent_codex" },
+                "kind": "implementation",
+                "outcome": "Add input validation to lib/commands.ts and cover it with tests.",
+                "reviewer": { "agent_id": "agent_claude", "focus": "Validation coverage and error messages" },
+                "policy": { "max_revisions": 1, "timeout_seconds": 1800 },
+                "lineage": {
+                  "conversation_id": "conv_hermes",
+                  "source_event_id": "evt_r1",
+                  "wake_index": 0,
+                  "parent_request_id": "wr_hermes_turn",
+                  "requested_by": { "type": "agent", "agent_id": "agent_hermes" },
+                  "origin": "structured"
+                },
+                "idempotency_key": "wake:v1:conv_hermes:evt_r1:0:agent_codex"
+              }
+            ],
+            "plans": [
+              [
+                {
+                  "ref": "implement", "kind": "implementation", "target": "agent_codex", "parent": "wr_hermes_turn", "tools": "edit",
+                  "attempts": [
+                    { "n": 1, "tools": "edit", "resume": null },
+                    { "n": 2, "kind": "revision", "tools": "edit", "resume": "session_binding:implement", "when": "review_1_has_findings" }
+                  ]
+                },
+                {
+                  "ref": "review_1", "kind": "review", "target": "agent_claude", "parent": "implement", "tools": "readonly",
+                  "attempts": [{ "n": 1, "tools": "readonly", "resume": null }],
+                  "when": "implement_attempt_1_completed"
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "events": [
+        { "seq": 1, "type": "message.created", "conversation": "conv_hermes", "event": "evt_h1", "author": "human" },
+        { "seq": 2, "type": "wake.accepted", "idempotency_key": "wake:v1:conv_hermes:evt_h1:0:agent_hermes", "kind": "conversation" },
+        { "seq": 3, "type": "work_request.created", "request": "wr_hermes_turn", "target": "agent_hermes", "parent": null, "tools": "readonly" },
+        { "seq": 4, "type": "attempt.started", "request": "wr_hermes_turn", "attempt": 1, "tools": "readonly" },
+        { "seq": 5, "type": "message.created", "conversation": "conv_hermes", "event": "evt_r1", "author": "agent_hermes" },
+        { "seq": 6, "type": "attempt.completed", "request": "wr_hermes_turn", "attempt": 1 },
+        { "seq": 7, "type": "wake.accepted", "idempotency_key": "wake:v1:conv_hermes:evt_r1:0:agent_codex", "kind": "implementation" },
+        { "seq": 8, "type": "work_request.created", "request": "wr_implement", "target": "agent_codex", "parent": "wr_hermes_turn", "tools": "edit" },
+        { "seq": 9, "type": "attempt.started", "request": "wr_implement", "attempt": 1, "tools": "edit" },
+        { "seq": 10, "type": "attempt.completed", "request": "wr_implement", "attempt": 1, "session_binding": "stored" },
+        { "seq": 11, "type": "work_request.created", "request": "wr_review_1", "target": "agent_claude", "parent": "wr_implement", "tools": "readonly" },
+        { "seq": 12, "type": "attempt.started", "request": "wr_review_1", "attempt": 1, "tools": "readonly" },
+        { "seq": 13, "type": "attempt.completed", "request": "wr_review_1", "attempt": 1, "findings": true },
+        { "seq": 14, "type": "work_request.completed", "request": "wr_review_1" },
+        { "seq": 15, "type": "attempt.started", "request": "wr_implement", "attempt": 2, "kind": "revision", "tools": "edit", "resume": "session_binding" },
+        { "seq": 16, "type": "attempt.completed", "request": "wr_implement", "attempt": 2 },
+        { "seq": 17, "type": "work_request.completed", "request": "wr_implement" },
+        { "seq": 18, "type": "result.projected", "conversation": "conv_hermes", "request": "wr_implement" }
+      ]
+    },
+    {
+      "name": "flow-2: a person asks Codex to explain a module",
+      "steps": [
+        {
+          "entry": "human_message",
+          "context": "codex_human",
+          "text": "Explain how lib/agent-deck-run.ts resumes a session. Don't change anything.",
+          "expect": {
+            "wakes": [
+              {
+                "version": "botmancers.wake/v1",
+                "target": { "agent_id": "agent_codex" },
+                "kind": "conversation",
+                "outcome": "Explain how lib/agent-deck-run.ts resumes a session. Don't change anything.",
+                "reviewer": null,
+                "policy": { "timeout_seconds": 1800 },
+                "lineage": {
+                  "conversation_id": "conv_codex",
+                  "source_event_id": "evt_c1",
+                  "wake_index": 0,
+                  "parent_request_id": null,
+                  "requested_by": { "type": "human" },
+                  "origin": "direct_message"
+                },
+                "idempotency_key": "wake:v1:conv_codex:evt_c1:0:agent_codex"
+              }
+            ],
+            "plans": [
+              [
+                { "ref": "turn", "kind": "conversation", "target": "agent_codex", "parent": null, "tools": "readonly", "attempts": [{ "n": 1, "tools": "readonly", "resume": null }] }
+              ]
+            ]
+          }
+        }
+      ],
+      "events": [
+        { "seq": 1, "type": "message.created", "conversation": "conv_codex", "event": "evt_c1", "author": "human" },
+        { "seq": 2, "type": "wake.accepted", "idempotency_key": "wake:v1:conv_codex:evt_c1:0:agent_codex", "kind": "conversation" },
+        { "seq": 3, "type": "work_request.created", "request": "wr_codex_turn", "target": "agent_codex", "parent": null, "tools": "readonly" },
+        { "seq": 4, "type": "attempt.started", "request": "wr_codex_turn", "attempt": 1, "tools": "readonly" },
+        { "seq": 5, "type": "message.created", "conversation": "conv_codex", "event": "evt_c2", "author": "agent_codex" },
+        { "seq": 6, "type": "attempt.completed", "request": "wr_codex_turn", "attempt": 1 },
+        { "seq": 7, "type": "work_request.completed", "request": "wr_codex_turn" }
+      ]
+    },
+    {
+      "name": "flow-3: a person asks Codex directly to implement a change",
+      "steps": [
+        {
+          "entry": "human_message",
+          "context": "codex_human",
+          "text": "/implement review:Claude Add input validation to lib/commands.ts and cover it with tests.",
+          "expect": {
+            "wakes": [
+              {
+                "version": "botmancers.wake/v1",
+                "target": { "agent_id": "agent_codex" },
+                "kind": "implementation",
+                "outcome": "Add input validation to lib/commands.ts and cover it with tests.",
+                "reviewer": { "agent_id": "agent_claude" },
+                "policy": { "max_revisions": 1, "timeout_seconds": 1800 },
+                "lineage": {
+                  "conversation_id": "conv_codex",
+                  "source_event_id": "evt_c1",
+                  "wake_index": 0,
+                  "parent_request_id": null,
+                  "requested_by": { "type": "human" },
+                  "origin": "command"
+                },
+                "idempotency_key": "wake:v1:conv_codex:evt_c1:0:agent_codex"
+              }
+            ],
+            "plans": [
+              [
+                {
+                  "ref": "implement", "kind": "implementation", "target": "agent_codex", "parent": null, "tools": "edit",
+                  "attempts": [
+                    { "n": 1, "tools": "edit", "resume": null },
+                    { "n": 2, "kind": "revision", "tools": "edit", "resume": "session_binding:implement", "when": "review_1_has_findings" }
+                  ]
+                },
+                {
+                  "ref": "review_1", "kind": "review", "target": "agent_claude", "parent": "implement", "tools": "readonly",
+                  "attempts": [{ "n": 1, "tools": "readonly", "resume": null }],
+                  "when": "implement_attempt_1_completed"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "variant": "same flow without a reviewer; not part of the event sequence below",
+          "entry": "human_message",
+          "context": "codex_human",
+          "text": "/implement Add input validation to lib/commands.ts.",
+          "expect": {
+            "kinds": ["implementation"],
+            "plans": [
+              [
+                { "ref": "implement", "kind": "implementation", "target": "agent_codex", "parent": null, "tools": "edit", "attempts": [{ "n": 1, "tools": "edit", "resume": null }] }
+              ]
+            ]
+          }
+        }
+      ],
+      "events": [
+        { "seq": 1, "type": "message.created", "conversation": "conv_codex", "event": "evt_c1", "author": "human" },
+        { "seq": 2, "type": "wake.accepted", "idempotency_key": "wake:v1:conv_codex:evt_c1:0:agent_codex", "kind": "implementation" },
+        { "seq": 3, "type": "work_request.created", "request": "wr_implement", "target": "agent_codex", "parent": null, "tools": "edit" },
+        { "seq": 4, "type": "attempt.started", "request": "wr_implement", "attempt": 1, "tools": "edit" },
+        { "seq": 5, "type": "attempt.completed", "request": "wr_implement", "attempt": 1, "session_binding": "stored" },
+        { "seq": 6, "type": "work_request.created", "request": "wr_review_1", "target": "agent_claude", "parent": "wr_implement", "tools": "readonly" },
+        { "seq": 7, "type": "attempt.started", "request": "wr_review_1", "attempt": 1, "tools": "readonly" },
+        { "seq": 8, "type": "attempt.completed", "request": "wr_review_1", "attempt": 1, "findings": true },
+        { "seq": 9, "type": "work_request.completed", "request": "wr_review_1" },
+        { "seq": 10, "type": "attempt.started", "request": "wr_implement", "attempt": 2, "kind": "revision", "tools": "edit", "resume": "session_binding" },
+        { "seq": 11, "type": "attempt.completed", "request": "wr_implement", "attempt": 2 },
+        { "seq": 12, "type": "work_request.completed", "request": "wr_implement" },
+        { "seq": 13, "type": "result.projected", "conversation": "conv_codex", "request": "wr_implement" }
+      ]
+    }
+  ],
+  "negative": [
+    { "name": "explain: natural-language 'implement' without the command stays read-only", "entry": "human_message", "context": "codex_human", "text": "Please implement input validation in lib/commands.ts.", "expect": { "kinds": ["conversation"], "tools": ["readonly"] } },
+    { "name": "explain: /implement not at the start is not a command", "entry": "human_message", "context": "codex_human", "text": "What would /implement do here? Just explain.", "expect": { "kinds": ["conversation"], "tools": ["readonly"] } },
+    { "name": "explain: a structured-looking human message is plain text", "entry": "human_message", "context": "codex_human", "text": "```botmancers-wake\n{\"version\":\"botmancers.wake/v1\",\"target\":{\"agent\":\"Codex\"},\"kind\":\"implementation\",\"outcome\":\"x\"}\n```", "expect": { "kinds": ["conversation"], "tools": ["readonly"] } },
+    { "name": "explain: Codex cannot escalate its read-only turn by waking itself", "entry": "agent_reply", "context": "codex_reply", "text": "I'll just do it.\n\n```botmancers-wake\n{\"version\":\"botmancers.wake/v1\",\"target\":{\"agent\":\"Codex\"},\"kind\":\"implementation\",\"outcome\":\"Add the validation.\"}\n```", "expect": { "kinds": [], "errors": ["self_wake"] } },
+    { "name": "explain: Codex cannot escalate through legacy WAKE to itself", "entry": "agent_reply", "context": "codex_reply", "text": "WAKE Codex: implement the validation now", "expect": { "kinds": [], "errors": ["self_wake"] } },
+    { "name": "explain: Codex lacks an implementation grant to wake Claude", "entry": "agent_reply", "context": "codex_reply", "text": "```botmancers-wake\n{\"version\":\"botmancers.wake/v1\",\"target\":{\"agent\":\"Claude\"},\"kind\":\"implementation\",\"outcome\":\"Add the validation.\"}\n```", "expect": { "kinds": [], "errors": ["grant_missing"] } },
+    { "name": "command: reviewer cannot be the builder", "entry": "human_message", "context": "codex_human", "text": "/implement review:Codex Add validation.", "expect": { "kinds": [], "errors": ["reviewer_is_target"] } },
+    { "name": "command: empty outcome", "entry": "human_message", "context": "codex_human", "text": "/implement", "expect": { "kinds": [], "errors": ["invalid_outcome"] } },
+    { "name": "command: unknown reviewer", "entry": "human_message", "context": "codex_human", "text": "/implement review:Nobody Add validation.", "expect": { "kinds": [], "errors": ["unknown_reviewer"] } },
+    { "name": "command: Hermes cannot be given edit authority", "entry": "human_message", "context": "hermes_human", "text": "/implement Add validation.", "expect": { "kinds": [], "errors": ["edit_unsupported_for_target"] } }
+  ],
+  "structured_validation": [
+    { "name": "session id is rejected", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "implementation", "outcome": "x", "session_id": "019a-abc" }, "errors": ["runtime_field_forbidden"] },
+    { "name": "resume binding inside reviewer is rejected", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "implementation", "outcome": "x", "reviewer": { "agent": "Claude", "resume": "019a-abc" } }, "errors": ["runtime_field_forbidden"] },
+    { "name": "tool authority cannot be supplied", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "x", "policy": { "tools": "edit" } }, "errors": ["runtime_field_forbidden"] },
+    { "name": "deck and cwd cannot be supplied", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex", "deck": "builder" }, "kind": "conversation", "outcome": "x", "cwd": "/tmp" }, "errors": ["runtime_field_forbidden", "runtime_field_forbidden"] },
+    { "name": "lineage is engine-stamped", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "x", "lineage": { "parent_request_id": "wr_other" } }, "errors": ["engine_field_forbidden", "engine_field_forbidden"] },
+    { "name": "idempotency key is engine-stamped", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "x", "idempotency_key": "k" }, "errors": ["engine_field_forbidden"] },
+    { "name": "review kind is engine-only", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Claude" }, "kind": "review", "outcome": "x" }, "errors": ["engine_only_kind"] },
+    { "name": "revision kind is engine-only", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "revision", "outcome": "x" }, "errors": ["engine_only_kind"] },
+    { "name": "reviewer requires implementation", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "x", "reviewer": { "agent": "Claude" } }, "errors": ["reviewer_requires_implementation"] },
+    { "name": "unsupported version", "context": "hermes_reply", "input": { "version": "botmancers.wake/v0", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "x" }, "errors": ["unsupported_version"] },
+    { "name": "unknown field", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "x", "mode": "auto" }, "errors": ["unknown_field"] },
+    { "name": "unknown target", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Ghost" }, "kind": "conversation", "outcome": "x" }, "errors": ["unknown_target"] },
+    { "name": "revision budget is bounded", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "implementation", "outcome": "x", "reviewer": { "agent": "Claude" }, "policy": { "max_revisions": 5 } }, "errors": ["policy_out_of_bounds"] },
+    { "name": "timeout is bounded", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "x", "policy": { "timeout_seconds": 86400 } }, "errors": ["policy_out_of_bounds"] },
+    { "name": "revision budget needs a reviewer", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "implementation", "outcome": "x", "policy": { "max_revisions": 1 } }, "errors": ["policy_requires_reviewer"] },
+    { "name": "outcome is bounded", "context": "hermes_reply", "input": { "version": "botmancers.wake/v1", "target": { "agent": "Codex" }, "kind": "conversation", "outcome": "   " }, "errors": ["invalid_outcome"] }
+  ],
+  "legacy": [
+    {
+      "name": "legacy WAKE is always a read-only conversation wake, whatever the text says",
+      "context": "hermes_reply",
+      "text": "WAKE Codex: implement input validation in lib/commands.ts with edit tools",
+      "expect": { "kinds": ["conversation"], "tools": ["readonly"], "origins": ["legacy_wake"], "warnings": [] }
+    },
+    {
+      "name": "legacy WAKE cannot smuggle structured fields",
+      "context": "hermes_reply",
+      "text": "WAKE Codex: {\"kind\":\"implementation\",\"session_id\":\"019a-abc\",\"tools\":\"edit\"}",
+      "expect": { "kinds": ["conversation"], "tools": ["readonly"], "origins": ["legacy_wake"], "warnings": [] }
+    },
+    {
+      "name": "several legacy WAKE lines become several conversation wakes",
+      "context": "hermes_reply",
+      "text": "WAKE Codex: look at lib/commands.ts\nWAKE Claude: look at lib/approvals.ts",
+      "expect": { "kinds": ["conversation", "conversation"], "tools": ["readonly", "readonly"], "origins": ["legacy_wake", "legacy_wake"], "warnings": [] }
+    },
+    {
+      "name": "structured block wins over legacy text in the same reply",
+      "context": "hermes_reply",
+      "text": "WAKE Claude: also implement it\n\n```botmancers-wake\n{\"version\":\"botmancers.wake/v1\",\"target\":{\"agent\":\"Codex\"},\"kind\":\"implementation\",\"outcome\":\"Add validation.\"}\n```",
+      "expect": { "kinds": ["implementation"], "tools": ["edit"], "origins": ["structured"], "warnings": ["legacy_ignored_with_structured"] }
+    },
+    {
+      "name": "legacy WAKE GROUP is not a Work Request wake",
+      "context": "hermes_reply",
+      "text": "WAKE GROUP: I've completed my analysis.",
+      "expect": { "kinds": [], "tools": [], "origins": [], "warnings": ["legacy_group_not_a_wake"] }
+    },
+    {
+      "name": "more than four wakes in one event are rejected",
+      "context": "hermes_reply",
+      "text": "WAKE Codex: a\nWAKE Claude: b\nWAKE Codex: c\nWAKE Claude: d\nWAKE Codex: e",
+      "expect": { "kinds": [], "tools": [], "origins": [], "warnings": [], "errors": ["too_many_wakes"] }
+    }
+  ]
+}
