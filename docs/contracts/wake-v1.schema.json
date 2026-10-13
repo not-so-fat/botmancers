@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botmancers.local/contracts/wake-v1.schema.json",
+  "title": "Botmancers Wake envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "target", "executionKind", "objective"],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "executionKind": {
+      "enum": ["conversation", "implementation", "review", "revision"]
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "contextWorkRequests": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160
+      }
+    },
+    "resumeWorkRequest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "deadlineSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "executionKind": {
+            "const": "revision"
+          }
+        },
+        "required": ["executionKind"]
+      },
+      "then": {
+        "required": ["resumeWorkRequest"]
+      },
+      "else": {
+        "not": {
+          "required": ["resumeWorkRequest"]
+        }
+      }
+    }
+  ]
+}

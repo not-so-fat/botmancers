@@ -18,6 +18,7 @@
     "test:agent-conversation-api": "node test-agent-conversation-api.js",
     "test:agent-deck-settings": "node test-agent-deck-settings.js",
     "test:hermes-wake": "node test-hermes-wake.js",
+    "test:wake-contract": "node test-wake-contract.js",
     "test:agent-loop-extras": "node test-agent-loop-extras.js",
     "test:unread": "node test-unread.js",
     "test:thread-actions": "node test-thread-actions.js",
