@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
+import { applyRuntimeUpdate, migrateLegacyRuntimeFields } from './bot-definition';
 
 // Overridable so the stub-model delegation test uses an isolated file.
 const DB_PATH = process.env.BOTMANCERS_DB_PATH || 'botmancers.db';
@@ -228,6 +229,73 @@ if (!botColumns.some(column => column.name === 'deck_name')) {
 if (!botColumns.some(column => column.name === 'working_directory')) {
   db.exec('ALTER TABLE bots ADD COLUMN working_directory TEXT');
 }
+// NOT-442: single runtime per bot. New-shape columns; legacy
+// persistent_runtime/coding_runtime stay on disk only as migration
+// inputs (dispatch and the API never read them). runtime is nullable so
+// the migration below can tell unmigrated rows apart from hermes rows:
+// a null runtime means "not yet migrated".
+if (!botColumns.some(column => column.name === 'runtime')) {
+  db.exec('ALTER TABLE bots ADD COLUMN runtime TEXT');
+}
+if (!botColumns.some(column => column.name === 'agent_client')) {
+  db.exec('ALTER TABLE bots ADD COLUMN agent_client TEXT');
+}
+if (!botColumns.some(column => column.name === 'deck_id')) {
+  db.exec('ALTER TABLE bots ADD COLUMN deck_id TEXT');
+}
+if (!botColumns.some(column => column.name === 'needs_deck_reselection')) {
+  db.exec('ALTER TABLE bots ADD COLUMN needs_deck_reselection INTEGER NOT NULL DEFAULT 0');
+}
+
+// NOT-442 data migration (deterministic, no network calls): every row
+// without a new-shape runtime is assigned exactly one runtime by
+// migrateLegacyRuntimeFields in ./bot-definition. A complete valid
+// legacy coding path becomes agent-deck (legacy deck_name kept only as
+// an unresolved reference, no deck ID, re-selection required); every
+// other row becomes hermes with Agent Deck fields cleared. Idempotent:
+// rows that already store a runtime are never touched.
+{
+  const unmigrated = db.prepare(
+    'SELECT id, runtime, persistent_runtime, coding_runtime, agent_client, deck_id, deck_name, working_directory, needs_deck_reselection FROM bots WHERE runtime IS NULL'
+  ).all() as {
+    id: string;
+    runtime: string | null;
+    persistent_runtime: string | null;
+    coding_runtime: string | null;
+    agent_client: string | null;
+    deck_id: string | null;
+    deck_name: string | null;
+    working_directory: string | null;
+    needs_deck_reselection: number | null;
+  }[];
+  const apply = db.prepare(
+    'UPDATE bots SET runtime = ?, agent_client = ?, deck_id = ?, deck_name = ?, working_directory = ?, needs_deck_reselection = ? WHERE id = ?'
+  );
+  const migrateAll = db.transaction((rows: typeof unmigrated) => {
+    for (const row of rows) {
+      const next = migrateLegacyRuntimeFields({
+        runtime: row.runtime,
+        persistent_runtime: row.persistent_runtime,
+        coding_runtime: row.coding_runtime,
+        agent_client: row.agent_client,
+        deck_id: row.deck_id,
+        deck_name: row.deck_name,
+        working_directory: row.working_directory,
+        needs_deck_reselection: row.needs_deck_reselection,
+      });
+      apply.run(
+        next.runtime,
+        next.agent_client,
+        next.deck_id,
+        next.deck_name,
+        next.working_directory,
+        next.needs_deck_reselection ? 1 : 0,
+        row.id
+      );
+    }
+  });
+  migrateAll(unmigrated);
+}
 // NOT-431: composable avatar configuration. Null means unconfigured and
 // reads back as the defaults (purple/dots/folded/none; crown accessory
 // for the Chief of Staff) via resolveAvatar in lib/avatar.
@@ -284,10 +352,18 @@ export interface Bot {
   import_operation_id?: string | null;
   import_timestamp?: number | null;
   hermes_profile?: string | null;
+  // Legacy dual-model columns (NOT-433/NOT-434): migration inputs only.
   persistent_runtime?: string | null;
   coding_runtime?: string | null;
+  // NOT-442 single runtime: exactly one of hermes|agent-deck. deck_name
+  // on an agent-deck row without a deck ID is the unresolved legacy
+  // reference; working_directory is the optional launch override.
+  runtime?: string | null;
+  agent_client?: string | null;
+  deck_id?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
+  needs_deck_reselection?: number | null;
   avatar_color?: string | null;
   avatar_eyes?: string | null;
   avatar_hands?: string | null;
@@ -313,10 +389,11 @@ if (!groupColumns.some(column => column.name === 'owner_bot_id')) {
   db.exec('ALTER TABLE groups ADD COLUMN owner_bot_id TEXT');
 }
 
-// Transport that served a launch ('hermes-gateway'). Outside the hashed
-// snapshot input: it records how the turn ran, not the effective
-// configuration, so backfilled rows read 'hermes-gateway'. NOT-435 removed
-// the embedded example model loop and its former transport value.
+// Transport that served a launch ('hermes-gateway' for Hermes turns,
+// 'agent-deck' for direct Agent Deck turns). Outside the hashed snapshot
+// input: it records how the turn ran, not the effective configuration,
+// so backfilled rows read 'hermes-gateway'. NOT-435 removed the embedded
+// example model loop and its former transport value.
 const snapshotColumns = db.prepare('PRAGMA table_info(launch_snapshots)').all() as { name: string }[];
 if (!snapshotColumns.some(column => column.name === 'transport')) {
   db.exec("ALTER TABLE launch_snapshots ADD COLUMN transport TEXT NOT NULL DEFAULT 'hermes-gateway'");
@@ -366,14 +443,18 @@ export const bots = {
       created_at: overrides?.created_at ?? Date.now(),
     };
     db.prepare(
-      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, persistent_runtime, coding_runtime, deck_name, working_directory, avatar_color, avatar_eyes, avatar_hands, avatar_accessory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, persistent_runtime, coding_runtime, runtime, agent_client, deck_id, deck_name, working_directory, needs_deck_reselection, avatar_color, avatar_eyes, avatar_hands, avatar_accessory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color,
       bot.hermes_profile || null,
-      bot.persistent_runtime || 'hermes',
+      bot.persistent_runtime || null,
       bot.coding_runtime || null,
+      bot.runtime || 'hermes',
+      bot.agent_client || null,
+      bot.deck_id || null,
       bot.deck_name || null,
       bot.working_directory || null,
+      bot.needs_deck_reselection ? 1 : 0,
       bot.avatar_color || null,
       bot.avatar_eyes || null,
       bot.avatar_hands || null,
@@ -390,7 +471,7 @@ export const bots = {
   },
 
   createFromImport: (
-    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile' | 'persistent_runtime' | 'coding_runtime' | 'deck_name' | 'working_directory'>,
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile' | 'persistent_runtime' | 'coding_runtime' | 'runtime' | 'agent_client' | 'deck_id' | 'deck_name' | 'working_directory' | 'needs_deck_reselection'>,
     provenance: ImportProvenance
   ): Bot => {
     const bot: Bot = {
@@ -398,6 +479,15 @@ export const bots = {
       ...data,
       color: nextBotColor(),
       created_at: Date.now(),
+      // NOT-442: imported bots are Hermes with no Agent Deck path. The
+      // stored row carries the single runtime directly (the load-time
+      // migration only rewrites runtime-less rows).
+      runtime: 'hermes',
+      agent_client: null,
+      deck_id: null,
+      deck_name: null,
+      working_directory: null,
+      needs_deck_reselection: 0,
       source_provider: provenance.source_provider,
       template_id: provenance.template_id,
       template_url: provenance.template_url,
@@ -409,12 +499,16 @@ export const bots = {
       `INSERT INTO bots (
         id, name, title, description, avatar, color, created_at,
         source_provider, template_id, template_url, import_schema_version,
-        import_operation_id, import_timestamp
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        import_operation_id, import_timestamp,
+        runtime, agent_client, deck_id, deck_name, working_directory,
+        needs_deck_reselection
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color, bot.created_at,
       bot.source_provider, bot.template_id, bot.template_url, bot.import_schema_version,
-      bot.import_operation_id, bot.import_timestamp
+      bot.import_operation_id, bot.import_timestamp,
+      bot.runtime, bot.agent_client, bot.deck_id, bot.deck_name, bot.working_directory,
+      bot.needs_deck_reselection
     );
     
     const conversationId = randomUUID();
@@ -458,37 +552,28 @@ export const bots = {
     db.prepare('UPDATE bots SET hermes_profile = ? WHERE id = ?').run(value, id);
   },
 
-  // NOT-433: owner-supplied runtime path. Null/blank clears a coding field
-  // back to unconfigured; persistent_runtime defaults to Hermes.
+  // NOT-442: owner-supplied single runtime. Merged through
+  // applyRuntimeUpdate so the single-runtime invariants hold: switching
+  // to hermes clears Agent Deck fields, and selecting a deck ID
+  // resolves the re-selection marker.
   updateRuntimePath: (
     id: string,
-    fields: { persistent_runtime?: string | null; coding_runtime?: string | null; deck_name?: string | null; working_directory?: string | null }
+    fields: { runtime?: string; agent_client?: string | null; deck_id?: string | null; deck_name?: string | null; working_directory?: string | null }
   ): void => {
     const current = bots.getById(id);
     if (!current) return;
-    const persistent = fields.persistent_runtime === undefined
-      ? current.persistent_runtime || 'hermes'
-      : fields.persistent_runtime && fields.persistent_runtime.trim()
-        ? fields.persistent_runtime.trim()
-        : 'hermes';
-    const coding = fields.coding_runtime === undefined
-      ? current.coding_runtime || null
-      : fields.coding_runtime && String(fields.coding_runtime).trim()
-        ? String(fields.coding_runtime).trim()
-        : null;
-    const deck = fields.deck_name === undefined
-      ? current.deck_name || null
-      : fields.deck_name && String(fields.deck_name).trim()
-        ? String(fields.deck_name).trim()
-        : null;
-    const cwd = fields.working_directory === undefined
-      ? current.working_directory || null
-      : fields.working_directory && String(fields.working_directory).trim()
-        ? String(fields.working_directory).trim()
-        : null;
+    const next = applyRuntimeUpdate(current, fields as Parameters<typeof applyRuntimeUpdate>[1]);
     db.prepare(
-      'UPDATE bots SET persistent_runtime = ?, coding_runtime = ?, deck_name = ?, working_directory = ? WHERE id = ?'
-    ).run(persistent, coding, deck, cwd, id);
+      'UPDATE bots SET runtime = ?, agent_client = ?, deck_id = ?, deck_name = ?, working_directory = ?, needs_deck_reselection = ? WHERE id = ?'
+    ).run(
+      next.runtime,
+      next.agent_client,
+      next.deck_id,
+      next.deck_name,
+      next.working_directory,
+      next.needs_deck_reselection ? 1 : 0,
+      id
+    );
   },
 
   // NOT-431: owner-supplied avatar configuration. Only supplied fields

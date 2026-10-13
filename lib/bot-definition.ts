@@ -1,180 +1,341 @@
-// NOT-433: Bot-definition runtime-path contract.
+// NOT-442: single bot runtime contract.
 //
-// A bot definition carries two distinct runtime concerns:
-// - persistent_runtime: the persistent conversational runtime. Today the
-//   only value is 'hermes', which is also the default for rows that predate
-//   this ticket (legacy and imported bots read back as Hermes).
-// - coding path: a local coding-agent launch path made of coding_runtime
-//   (exactly codex|claude|cursor|muse, launched only through the NOT-395
-//   agent-deck adapter), deck_name, and working_directory. Existing and
-//   imported bots have no trustworthy deck or working directory, so those
-//   stay null (explicitly unconfigured) until the owner supplies them.
+// Each bot resolves to exactly one runtime:
 //
-// This module holds the shared validation/serialization used by the API
-// routes and the deterministic tests. Plain TypeScript with no I/O so the
-// plain-node test suite can load it through jiti.
+// - 'hermes': the persistent conversational runtime (default for newly
+//   created bots). Hermes bots reject Agent Deck-only fields.
+// - 'agent-deck': an ordinary message launches the stored agent client
+//   (exactly codex|claude|cursor|muse) on the stored deck ID directly,
+//   with the stored working directory as an optional override. No
+//   Hermes turn runs first and no Hermes-generated DECK directive is
+//   parsed: the stored configuration IS the launch.
+//
+// An Agent Deck bot whose deck was never resolved (migrated legacy rows)
+// carries the old free-text deck_name as an unresolved reference, a null
+// deck ID, and needs_deck_reselection=true, and cannot launch until the
+// owner selects a deck ID (NOT-443/NOT-445 resolve the name only through
+// deck discovery, never by guessing).
+//
+// This module is pure (no I/O, no network) so the plain-node test suite
+// can load it through jiti. The DB migration in ./db.ts applies
+// migrateLegacyRuntimeFields to every runtime-less row.
 import { resolveAvatar, type AvatarConfig } from './avatar';
 
-export const PERSISTENT_RUNTIME_HERMES = 'hermes' as const;
+export const RUNTIME_HERMES = 'hermes' as const;
+export const RUNTIME_AGENT_DECK = 'agent-deck' as const;
 
-export const PERSISTENT_RUNTIMES = [PERSISTENT_RUNTIME_HERMES] as const;
+export const RUNTIMES = [RUNTIME_HERMES, RUNTIME_AGENT_DECK] as const;
 
-export type PersistentRuntime = (typeof PERSISTENT_RUNTIMES)[number];
+export type BotRuntime = (typeof RUNTIMES)[number];
 
-// Mirrors DECK_RUNTIMES in ./agent-deck-run (the NOT-395 adapter). The
-// enum alone never marks a runtime launchable; only the capability probe
+// Mirrors DECK_RUNTIMES in ./agent-deck-run (the run adapter). The enum
+// alone never marks a client launchable; only the capability probe
 // (probeDeckRuntime / listAvailableDeckRuntimes) advertises launchability.
-export const CODING_RUNTIMES = ['codex', 'claude', 'cursor', 'muse'] as const;
+export const AGENT_CLIENTS = ['codex', 'claude', 'cursor', 'muse'] as const;
 
-export type CodingRuntime = (typeof CODING_RUNTIMES)[number];
+export type AgentClient = (typeof AGENT_CLIENTS)[number];
 
-export class InvalidCodingRuntimeError extends Error {
-  readonly code = 'invalid-coding-runtime';
+export class InvalidRuntimeError extends Error {
+  readonly code = 'invalid-runtime';
   constructor(value: unknown) {
     super(
-      `Invalid coding runtime: ${JSON.stringify(String(value))}. Expected one of ${CODING_RUNTIMES.join('|')}.`
+      `Invalid runtime: ${JSON.stringify(String(value))}. Expected one of ${RUNTIMES.join('|')}.`
     );
   }
 }
 
-export interface CodingPathInput {
-  coding_runtime?: unknown;
-  deck_name?: unknown;
-  working_directory?: unknown;
+export class InvalidAgentClientError extends Error {
+  readonly code = 'invalid-agent-client';
+  constructor(value: unknown) {
+    super(
+      `Invalid agent client: ${JSON.stringify(String(value))}. Expected one of ${AGENT_CLIENTS.join('|')}.`
+    );
+  }
 }
 
 export interface BotLike {
   name?: unknown;
-  persistent_runtime?: string | null;
-  coding_runtime?: string | null;
+  runtime?: string | null;
+  agent_client?: string | null;
+  deck_id?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
+  needs_deck_reselection?: boolean | number | null;
   avatar_color?: string | null;
   avatar_eyes?: string | null;
   avatar_hands?: string | null;
   avatar_accessory?: string | null;
 }
 
-// Persistent runtime: Hermes is the default. Null/undefined/blank reads
-// back as 'hermes' (this is the default, not an invented coding path).
-// Any other non-blank value fails closed.
-export function normalizePersistentRuntime(value: unknown): PersistentRuntime {
-  if (value === null || value === undefined) return PERSISTENT_RUNTIME_HERMES;
+// Runtime: Hermes is the default for newly created bots.
+// Null/undefined/blank reads back as 'hermes'. Any other value fails
+// closed.
+export function normalizeRuntime(value: unknown): BotRuntime {
+  if (value === null || value === undefined) return RUNTIME_HERMES;
   const text = String(value).trim();
-  if (!text) return PERSISTENT_RUNTIME_HERMES;
-  if ((PERSISTENT_RUNTIMES as readonly string[]).includes(text)) {
-    return text as PersistentRuntime;
+  if (!text) return RUNTIME_HERMES;
+  if ((RUNTIMES as readonly string[]).includes(text)) {
+    return text as BotRuntime;
   }
-  throw new Error(
-    `Invalid persistent runtime: ${JSON.stringify(text)}. Expected one of ${PERSISTENT_RUNTIMES.join('|')}.`
-  );
+  throw new InvalidRuntimeError(value);
 }
 
-// Coding runtime: null/undefined/blank means "not supplied" (null, never
-// invented). A supplied value must be exactly one of the four runtimes.
-export function normalizeCodingRuntime(value: unknown): CodingRuntime | null {
+// Agent client: null/undefined/blank means "not supplied" (null, never
+// invented). A supplied value must be exactly one of the four clients.
+export function normalizeAgentClient(value: unknown): AgentClient | null {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   if (!text) return null;
-  if ((CODING_RUNTIMES as readonly string[]).includes(text)) {
-    return text as CodingRuntime;
+  if ((AGENT_CLIENTS as readonly string[]).includes(text)) {
+    return text as AgentClient;
   }
-  throw new InvalidCodingRuntimeError(value);
+  throw new InvalidAgentClientError(value);
 }
 
-function normalizePathText(value: unknown): string | null {
+function normalizeIdText(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text ? text : null;
 }
 
+// Resolved deck ID. Only a selected ID launches; the legacy free-text
+// deck_name never resolves to an ID here (NOT-443/NOT-445 resolve it
+// through deck discovery only).
+export function normalizeDeckId(value: unknown): string | null {
+  return normalizeIdText(value);
+}
+
+// Unresolved deck reference: the migrated legacy free-text deck name,
+// preserved so the owner can re-select it. Null once a deck ID is
+// selected. Never used as a launch target.
 export function normalizeDeckName(value: unknown): string | null {
-  return normalizePathText(value);
+  return normalizeIdText(value);
 }
 
+// Optional working-directory override for Agent Deck launches. Null
+// means "launch with the process working directory".
 export function normalizeWorkingDirectory(value: unknown): string | null {
-  return normalizePathText(value);
+  return normalizeIdText(value);
 }
 
-// Launchability gate for a manually created bot: when the caller marks the
-// bot launchable, the full coding path must be present and valid. Returns
-// the API error strings (empty when launchable); throws nothing.
-export function validateLaunchableCodingPath(input: CodingPathInput): string[] {
-  const errors: string[] = [];
-  let runtime: CodingRuntime | null = null;
-  try {
-    runtime = normalizeCodingRuntime(input.coding_runtime);
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
+export function normalizeNeedsDeckReselection(value: unknown): boolean {
+  if (value === true) return true;
+  if (value === 1) return true;
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    return text === '1' || text === 'true';
   }
-  if (!runtime) {
-    errors.push(
-      `Invalid coding runtime: ${JSON.stringify(String(input.coding_runtime ?? ''))}. Expected one of ${CODING_RUNTIMES.join('|')}.`
-    );
-  }
-  if (!normalizeDeckName(input.deck_name)) {
-    errors.push('Deck name is required for a launchable bot.');
-  }
-  if (!normalizeWorkingDirectory(input.working_directory)) {
-    errors.push('Working directory is required for a launchable bot.');
-  }
-  return errors;
+  return false;
 }
 
-export interface CodingPath {
-  configured: boolean;
-  persistent_runtime: PersistentRuntime;
-  coding_runtime: CodingRuntime | null;
+export interface ResolvedRuntime {
+  runtime: BotRuntime;
+  agent_client: AgentClient | null;
+  deck_id: string | null;
   deck_name: string | null;
   working_directory: string | null;
+  needs_deck_reselection: boolean;
+  // Hermes bots are always launchable (they chat). Agent Deck bots
+  // launch only with a valid client, a selected deck ID, and no pending
+  // re-selection.
+  launchable: boolean;
 }
 
-// Resolved coding path for a stored bot row. Legacy and imported rows carry
-// null coding fields and report configured: false; nothing is invented.
-export function resolveCodingPath(bot: BotLike): CodingPath {
-  const persistent_runtime = normalizePersistentRuntime(bot.persistent_runtime);
-  let coding_runtime: CodingRuntime | null = null;
+// Resolved single runtime for a stored bot row. Unknown stored runtimes
+// fail closed to Hermes; Hermes rows never report Agent Deck fields.
+export function resolveRuntime(bot: BotLike): ResolvedRuntime {
+  let runtime: BotRuntime;
   try {
-    coding_runtime = normalizeCodingRuntime(bot.coding_runtime);
+    runtime = normalizeRuntime(bot.runtime);
   } catch {
-    coding_runtime = null;
+    runtime = RUNTIME_HERMES;
   }
+  if (runtime !== RUNTIME_AGENT_DECK) {
+    return {
+      runtime: RUNTIME_HERMES,
+      agent_client: null,
+      deck_id: null,
+      deck_name: null,
+      working_directory: null,
+      needs_deck_reselection: false,
+      launchable: true,
+    };
+  }
+  let agent_client: AgentClient | null = null;
+  try {
+    agent_client = normalizeAgentClient(bot.agent_client);
+  } catch {
+    agent_client = null;
+  }
+  const deck_id = normalizeDeckId(bot.deck_id);
   const deck_name = normalizeDeckName(bot.deck_name);
   const working_directory = normalizeWorkingDirectory(bot.working_directory);
-  const configured = coding_runtime !== null && deck_name !== null && working_directory !== null;
-  return { configured, persistent_runtime, coding_runtime, deck_name, working_directory };
+  const needs_deck_reselection = normalizeNeedsDeckReselection(bot.needs_deck_reselection);
+  const launchable = agent_client !== null && deck_id !== null && !needs_deck_reselection;
+  return { runtime, agent_client, deck_id, deck_name, working_directory, needs_deck_reselection, launchable };
 }
 
-export function isCodingPathConfigured(bot: BotLike): boolean {
-  return resolveCodingPath(bot).configured;
+export function isAgentDeckBot(bot: BotLike): boolean {
+  return resolveRuntime(bot).runtime === RUNTIME_AGENT_DECK;
+}
+
+// Effective working directory for an Agent Deck launch: the stored
+// override, or the caller-supplied fallback (the process working
+// directory at dispatch time).
+export function effectiveWorkingDirectory(bot: BotLike, fallback: string): string {
+  const override = normalizeWorkingDirectory(bot.working_directory);
+  return override ?? fallback;
+}
+
+export interface LegacyRuntimeRow {
+  runtime?: unknown;
+  // Legacy dual-model fields (NOT-433/NOT-434): read-only inputs to the
+  // migration below. New code never reads them for dispatch.
+  persistent_runtime?: unknown;
+  coding_runtime?: unknown;
+  agent_client?: unknown;
+  deck_id?: unknown;
+  deck_name?: unknown;
+  working_directory?: unknown;
+  needs_deck_reselection?: unknown;
+}
+
+export interface MigratedRuntimeFields {
+  runtime: BotRuntime;
+  agent_client: AgentClient | null;
+  deck_id: string | null;
+  deck_name: string | null;
+  working_directory: string | null;
+  needs_deck_reselection: boolean;
+  // True when the row carried no new-shape runtime and the rule assigned
+  // one. False when the row already stored a runtime (untouched).
+  migrated: boolean;
+}
+
+function legacyCompleteCodingPath(row: LegacyRuntimeRow): {
+  client: AgentClient;
+  deck_name: string;
+  working_directory: string;
+} | null {
+  let client: AgentClient | null = null;
+  try {
+    client = normalizeAgentClient(row.coding_runtime);
+  } catch {
+    return null;
+  }
+  if (!client) return null;
+  const deck_name = normalizeDeckName(row.deck_name);
+  const working_directory = normalizeWorkingDirectory(row.working_directory);
+  if (!deck_name || !working_directory) return null;
+  return { client, deck_name, working_directory };
+}
+
+// Deterministic NOT-442 migration for one stored row. Pure: no I/O and
+// no network calls (deck discovery never runs here).
+//
+// - A row that already stores a runtime is returned untouched.
+// - A runtime-less row with a complete valid legacy coding path (valid
+//   client plus non-blank deck_name and working_directory) becomes
+//   agent-deck: it retains its agent client and working-directory
+//   override, keeps the legacy free-text deck_name only as an unresolved
+//   reference, stores no deck ID, and is marked as needing deck
+//   re-selection before it can launch.
+// - Every other runtime-less row (partial, invalid, imported, or
+//   unconfigured) becomes hermes with all Agent Deck fields cleared.
+export function migrateLegacyRuntimeFields(row: LegacyRuntimeRow): MigratedRuntimeFields {
+  const hasRuntime =
+    row.runtime !== null && row.runtime !== undefined && String(row.runtime).trim() !== '';
+  if (hasRuntime) {
+    try {
+      const runtime = normalizeRuntime(row.runtime);
+      if (runtime === RUNTIME_AGENT_DECK) {
+        let agent_client: AgentClient | null = null;
+        try {
+          agent_client = normalizeAgentClient(row.agent_client);
+        } catch {
+          agent_client = null;
+        }
+        return {
+          runtime,
+          agent_client,
+          deck_id: normalizeDeckId(row.deck_id),
+          deck_name: normalizeDeckName(row.deck_name),
+          working_directory: normalizeWorkingDirectory(row.working_directory),
+          needs_deck_reselection: normalizeNeedsDeckReselection(row.needs_deck_reselection),
+          migrated: false,
+        };
+      }
+      return {
+        runtime: RUNTIME_HERMES,
+        agent_client: null,
+        deck_id: null,
+        deck_name: null,
+        working_directory: null,
+        needs_deck_reselection: false,
+        migrated: false,
+      };
+    } catch {
+      // Invalid stored runtime falls through to the legacy rule, which
+      // fails closed to hermes unless a complete legacy path exists.
+    }
+  }
+  const complete = legacyCompleteCodingPath(row);
+  if (complete) {
+    return {
+      runtime: RUNTIME_AGENT_DECK,
+      agent_client: complete.client,
+      deck_id: null,
+      deck_name: complete.deck_name,
+      working_directory: complete.working_directory,
+      needs_deck_reselection: true,
+      migrated: true,
+    };
+  }
+  return {
+    runtime: RUNTIME_HERMES,
+    agent_client: null,
+    deck_id: null,
+    deck_name: null,
+    working_directory: null,
+    needs_deck_reselection: false,
+    migrated: true,
+  };
 }
 
 export interface SerializedBot {
-  persistent_runtime: PersistentRuntime;
-  coding_runtime: CodingRuntime | null;
+  runtime: BotRuntime;
+  agent_client: AgentClient | null;
+  deck_id: string | null;
   deck_name: string | null;
   working_directory: string | null;
-  coding_configured: boolean;
-  coding_path: CodingPath;
+  needs_deck_reselection: boolean;
+  launchable: boolean;
   avatar_config: AvatarConfig;
 }
 
-// API read shape: legacy/imported bots stay readable and report their
-// coding path as unconfigured until the owner supplies it. Avatar fields
-// resolve to the NOT-431 defaults (Chief of Staff gets the crown) until
-// the owner configures them.
-export function serializeBot<T extends BotLike>(bot: T): T & SerializedBot {
-  const coding_path = resolveCodingPath(bot);
-  return {
-    ...bot,
-    persistent_runtime: coding_path.persistent_runtime,
-    coding_runtime: coding_path.coding_runtime,
-    deck_name: coding_path.deck_name,
-    working_directory: coding_path.working_directory,
-    coding_configured: coding_path.configured,
-    coding_path,
-    avatar_config: resolveAvatar(bot),
+// API read shape: exactly one runtime plus its resolved configuration.
+// Legacy dual-model keys (persistent_runtime/coding_runtime) are
+// stripped: responses carry the single runtime only. Avatar fields
+// resolve to the NOT-431 defaults until the owner configures them.
+export function serializeBot<T extends BotLike>(bot: T): Omit<T, 'persistent_runtime' | 'coding_runtime'> & SerializedBot {
+  const resolved = resolveRuntime(bot);
+  const { persistent_runtime: _droppedPersistent, coding_runtime: _droppedCoding, ...rest } = bot as BotLike & {
+    persistent_runtime?: unknown;
+    coding_runtime?: unknown;
   };
+  void _droppedPersistent;
+  void _droppedCoding;
+  return {
+    ...rest,
+    runtime: resolved.runtime,
+    agent_client: resolved.agent_client,
+    deck_id: resolved.deck_id,
+    deck_name: resolved.deck_name,
+    working_directory: resolved.working_directory,
+    needs_deck_reselection: resolved.needs_deck_reselection,
+    launchable: resolved.launchable,
+    avatar_config: resolveAvatar(bot),
+  } as Omit<T, 'persistent_runtime' | 'coding_runtime'> & SerializedBot;
 }
 
 export interface AvailabilityEntry {
@@ -183,67 +344,90 @@ export interface AvailabilityEntry {
 }
 
 export interface NormalizedRuntimePath {
-  persistent_runtime: PersistentRuntime;
-  coding_runtime: CodingRuntime | null;
+  runtime: BotRuntime;
+  agent_client: AgentClient | null;
+  deck_id: string | null;
   deck_name: string | null;
   working_directory: string | null;
+  needs_deck_reselection: boolean;
 }
 
-// Shared create contract for POST /api/bots: validates the supplied
-// runtime path and, when the caller marks the bot launchable, requires the
-// full coding path (runtime, deck name, working directory). Returns the API
-// error strings (empty when acceptable) plus the normalized values to store.
+// Shared create contract for POST /api/bots: Hermes is the default.
+// Agent Deck requires a valid client plus a selected deck ID; the
+// working-directory override stays optional. Non-blank Agent Deck fields
+// on a Hermes bot are rejected (never silently stored). Legacy
+// dual-model keys (persistent_runtime/coding_runtime) are not read:
+// stored rows migrate through the DB migration, not the API.
 export function validateCreateRuntimePath(body: Record<string, unknown>): {
   errors: string[];
   normalized: NormalizedRuntimePath;
 } {
   const errors: string[] = [];
-  let persistent_runtime: PersistentRuntime = PERSISTENT_RUNTIME_HERMES;
+  let runtime: BotRuntime = RUNTIME_HERMES;
   try {
-    persistent_runtime = normalizePersistentRuntime(body.persistent_runtime);
+    runtime = normalizeRuntime(body.runtime);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
-  let coding_runtime: CodingRuntime | null = null;
+  let agent_client: AgentClient | null = null;
   try {
-    coding_runtime = normalizeCodingRuntime(body.coding_runtime);
+    agent_client = normalizeAgentClient(body.agent_client);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
+  const deck_id = normalizeDeckId(body.deck_id);
   const deck_name = normalizeDeckName(body.deck_name);
   const working_directory = normalizeWorkingDirectory(body.working_directory);
-  if (body.launchable === true) {
-    for (const error of validateLaunchableCodingPath({ coding_runtime: body.coding_runtime, deck_name: body.deck_name, working_directory: body.working_directory })) {
-      if (!errors.includes(error)) errors.push(error);
+  if (runtime === RUNTIME_AGENT_DECK) {
+    if (!agent_client) {
+      errors.push(
+        `Invalid agent client: ${JSON.stringify(String((body.agent_client ?? '')))}. Expected one of ${AGENT_CLIENTS.join('|')}.`
+      );
     }
+    if (!deck_id) {
+      errors.push('Deck ID is required for an agent-deck bot. Select a deck before creating it.');
+    }
+  } else if (agent_client !== null || deck_id !== null || deck_name !== null || working_directory !== null) {
+    errors.push('Agent Deck fields are not accepted for a Hermes bot. Use runtime=agent-deck to store them.');
   }
-  return { errors, normalized: { persistent_runtime, coding_runtime, deck_name, working_directory } };
+  return {
+    errors,
+    normalized: {
+      runtime,
+      agent_client: runtime === RUNTIME_AGENT_DECK ? agent_client : null,
+      deck_id: runtime === RUNTIME_AGENT_DECK ? deck_id : null,
+      deck_name: runtime === RUNTIME_AGENT_DECK ? deck_name : null,
+      working_directory: runtime === RUNTIME_AGENT_DECK ? working_directory : null,
+      needs_deck_reselection: false,
+    },
+  };
 }
 
-// Shared update contract for PATCH /api/bots: validates only the supplied
-// fields. Unknown coding/persistent runtimes are rejected; blank values
-// clear a coding field back to unconfigured.
+// Shared update contract for PATCH /api/bots: validates only the
+// supplied fields. Unknown runtimes/clients are rejected; blank values
+// clear a field.
 export function validateUpdateRuntimePath(body: Record<string, unknown>): {
   errors: string[];
-  fields: { persistent_runtime?: string | null; coding_runtime?: string | null; deck_name?: string | null; working_directory?: string | null };
+  fields: { runtime?: BotRuntime; agent_client?: AgentClient | null; deck_id?: string | null; deck_name?: string | null; working_directory?: string | null };
 } {
   const errors: string[] = [];
-  const fields: { persistent_runtime?: string | null; coding_runtime?: string | null; deck_name?: string | null; working_directory?: string | null } = {};
-  if (body.persistent_runtime !== undefined) {
+  const fields: { runtime?: BotRuntime; agent_client?: AgentClient | null; deck_id?: string | null; deck_name?: string | null; working_directory?: string | null } = {};
+  if (body.runtime !== undefined) {
     try {
-      normalizePersistentRuntime(body.persistent_runtime);
-      fields.persistent_runtime = body.persistent_runtime === null ? null : String(body.persistent_runtime);
+      fields.runtime = normalizeRuntime(body.runtime);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  if (body.coding_runtime !== undefined) {
+  if (body.agent_client !== undefined) {
     try {
-      const runtime = normalizeCodingRuntime(body.coding_runtime);
-      fields.coding_runtime = runtime;
+      fields.agent_client = normalizeAgentClient(body.agent_client);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
+  }
+  if (body.deck_id !== undefined) {
+    fields.deck_id = normalizeDeckId(body.deck_id);
   }
   if (body.deck_name !== undefined) {
     fields.deck_name = normalizeDeckName(body.deck_name);
@@ -254,13 +438,67 @@ export function validateUpdateRuntimePath(body: Record<string, unknown>): {
   return { errors, fields };
 }
 
-// Availability response: includes ONLY runtimes returned ready by the
-// NOT-395 capability probe. Enum membership alone never marks a runtime
-// launchable, so unknown or unprobed values are dropped here.
+export interface RuntimeUpdateFields {
+  runtime?: BotRuntime;
+  agent_client?: AgentClient | null;
+  deck_id?: string | null;
+  deck_name?: string | null;
+  working_directory?: string | null;
+}
+
+// Pure runtime transition for PATCH: merges supplied fields onto the
+// stored row and enforces the single-runtime invariants:
+//
+// - Switching to hermes clears every Agent Deck field.
+// - Selecting a deck ID resolves the pending re-selection and drops the
+//   legacy unresolved deck_name.
+// - Switching to agent-deck without a deck ID keeps the unresolved
+//   reference (if any) and requires re-selection before launch.
+export function applyRuntimeUpdate(
+  current: BotLike,
+  update: RuntimeUpdateFields
+): { runtime: BotRuntime; agent_client: AgentClient | null; deck_id: string | null; deck_name: string | null; working_directory: string | null; needs_deck_reselection: boolean } {
+  const stored = resolveRuntime(current);
+  const runtime = update.runtime ?? stored.runtime;
+  if (runtime !== RUNTIME_AGENT_DECK) {
+    return {
+      runtime: RUNTIME_HERMES,
+      agent_client: null,
+      deck_id: null,
+      deck_name: null,
+      working_directory: null,
+      needs_deck_reselection: false,
+    };
+  }
+  const agent_client = update.agent_client !== undefined ? update.agent_client : stored.agent_client;
+  const deck_id = update.deck_id !== undefined ? update.deck_id : stored.deck_id;
+  // A freshly selected deck ID resolves any pending re-selection and
+  // drops the legacy unresolved name it replaces.
+  if (update.deck_id !== undefined && update.deck_id !== null) {
+    return {
+      runtime,
+      agent_client,
+      deck_id,
+      deck_name: null,
+      working_directory: update.working_directory !== undefined ? update.working_directory : stored.working_directory,
+      needs_deck_reselection: false,
+    };
+  }
+  const deck_name = update.deck_name !== undefined ? update.deck_name : stored.deck_name;
+  const working_directory = update.working_directory !== undefined ? update.working_directory : stored.working_directory;
+  // Without a selected deck ID the bot cannot launch: selecting one is
+  // the only transition that clears the marker (handled above).
+  const needs_deck_reselection = deck_id === null;
+  return { runtime, agent_client, deck_id, deck_name, working_directory, needs_deck_reselection };
+}
+
+// Availability response: includes ONLY clients returned ready by the
+// run-adapter capability probe. Enum membership alone never marks a
+// client launchable, so unknown or unprobed values are dropped here.
 export function buildAvailabilityPayload(ready: readonly unknown[]): { runtimes: AvailabilityEntry[] } {
   const runtimes: AvailabilityEntry[] = [];
   for (const runtime of ready) {
-    if (typeof runtime === 'string' && (CODING_RUNTIMES as readonly string[]).includes(runtime)) {
+    if (typeof runtime === 'string' && (AGENT_CLIENTS as readonly string[]).includes(runtime)) {
       runtimes.push({ runtime, launchable: true });
     }
   }
