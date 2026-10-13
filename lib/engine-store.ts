@@ -541,7 +541,45 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    name: 'engine_event_purge_authority',
+    up: db => {
+      db.exec(`
+        -- Purge authority no longer lives in data: any writer could insert
+        -- an engine_event_purges row and then delete single events. The
+        -- guard now asks engine_event_purge_authorized(), a connection
+        -- function that is true only while deleteEngineRecords removes that
+        -- request whole. Connections without it cannot delete events.
+        DROP TRIGGER trg_engine_events_no_delete;
+        DROP TABLE engine_event_purges;
+        CREATE TRIGGER trg_engine_events_no_delete BEFORE DELETE ON engine_events
+        BEGIN
+          SELECT RAISE(ABORT, 'engine_events are append-only')
+            WHERE NOT engine_event_purge_authorized(OLD.request_id);
+        END;
+      `);
+    },
+  },
 ];
+
+// Requests whose events the running aggregate cleanup may delete, per
+// connection. Module-private: only deleteEngineRecords fills it, and it is
+// emptied before that function returns or throws.
+const purgeAuthority = new WeakMap<Db, Set<string>>();
+
+function purgeSet(db: Db): Set<string> {
+  let set = purgeAuthority.get(db);
+  if (!set) {
+    set = new Set();
+    purgeAuthority.set(db, set);
+    const authorized = set;
+    db.function('engine_event_purge_authorized', { deterministic: false }, (requestId: unknown) =>
+      typeof requestId === 'string' && authorized.has(requestId) ? 1 : 0
+    );
+  }
+  return set;
+}
 
 export const ENGINE_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 
@@ -549,6 +587,7 @@ export const ENGINE_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 // backfill. Safe to call on every open and from concurrent processes:
 // each step runs in an IMMEDIATE transaction and rechecks its version.
 export function migrateEngineSchema(db: Db): void {
+  purgeSet(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -785,6 +824,7 @@ function json(value: unknown): string | null {
 }
 
 export function createEngineStore(db: Db) {
+  purgeSet(db);
   const getRequest = db.prepare('SELECT * FROM work_requests WHERE id = ?');
   const getByIdempotency = db.prepare(
     'SELECT * FROM work_requests WHERE requester_kind = ? AND requester_id = ? AND idempotency_key = ?'
@@ -1129,7 +1169,8 @@ export type EngineStore = ReturnType<typeof createEngineStore>;
 // the conversation or Agent, it closes over everything that depends on
 // them: descendant requests (parent or root lineage, even when sourced
 // from another conversation), their attempts, attempts resuming a removed
-// binding, and bindings scoped to or sourced from removed rows. Rows are
+// binding (with the whole request that owns it), and bindings scoped to
+// or sourced from removed rows. Rows are
 // then deleted dependants first. Callers run it inside their transaction.
 function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string; arg: string }): void {
   const ids = (sql: string, ...args: unknown[]) => (db.prepare(sql).all(...args) as { id: string }[]).map(row => row.id);
@@ -1148,6 +1189,9 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
       `SELECT id FROM work_requests WHERE parent_request_id IN ${inSet} OR root_request_id IN ${inSet}`,
       list(requests), list(requests)
     ));
+    // An attempt removed with a binding takes its whole request with it:
+    // events are only ever deleted as part of a removed request.
+    const grewOwners = add(requests, ids(`SELECT request_id AS id FROM work_attempts WHERE id IN ${inSet}`, list(attempts)));
     const grewAttempts = add(attempts, ids(
       `SELECT id FROM work_attempts WHERE request_id IN ${inSet} OR resumed_session_binding_id IN ${inSet}`,
       list(requests), list(bindings)
@@ -1156,14 +1200,17 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
       `SELECT id FROM session_bindings WHERE request_id IN ${inSet} OR source_attempt_id IN ${inSet}`,
       list(requests), list(attempts)
     ));
-    if (!grewRequests && !grewAttempts && !grewBindings) break;
+    if (!grewRequests && !grewOwners && !grewAttempts && !grewBindings) break;
   }
-  // Mark every request whose events go, so the append-only guard admits
-  // this aggregate delete; the marks are cleared before returning.
-  const purged = new Set([...requests, ...ids(`SELECT request_id AS id FROM work_attempts WHERE id IN ${inSet}`, list(attempts))]);
-  db.prepare(`INSERT OR IGNORE INTO engine_event_purges (request_id) SELECT value FROM json_each(?)`).run(list(purged));
-  db.prepare(`DELETE FROM engine_events WHERE request_id IN ${inSet} OR attempt_id IN ${inSet}`).run(list(requests), list(attempts));
-  db.prepare(`DELETE FROM engine_event_purges WHERE request_id IN ${inSet}`).run(list(purged));
+  // Authorize the append-only guard for exactly the requests removed
+  // here, only for the duration of this delete.
+  const authorized = purgeSet(db);
+  for (const id of requests) authorized.add(id);
+  try {
+    db.prepare(`DELETE FROM engine_events WHERE request_id IN ${inSet}`).run(list(requests));
+  } finally {
+    authorized.clear();
+  }
   // Attempts and bindings reference each other (resume / source), but
   // never in a cycle: each reference was to a row that already existed.
   // Peel unreferenced rows until both sets are empty.

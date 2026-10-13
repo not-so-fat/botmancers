@@ -129,7 +129,7 @@ function runFresh() {
   assert(hasUnique('work_attempts', 'request_id', true), 'work_attempts: at most one open attempt per request (partial unique)');
   assert(hasUnique('session_bindings', 'agent_id,adapter,expr,expr', true), 'session_bindings: one active binding per scope (partial unique)');
   const migrations = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
-  assert(migrations.map(m => m.version).join(',') === '1,2,3' && store.ENGINE_SCHEMA_VERSION === 3, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
+  assert(migrations.map(m => m.version).join(',') === '1,2,3,4' && store.ENGINE_SCHEMA_VERSION === 4, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
   const edges = sqlite.prepare('SELECT from_state || \'>\' || to_state AS e FROM work_request_transitions').all().map(row => row.e);
   assert(edges.includes('queued>running') && !edges.includes('completed>running'), 'transition table seeded from WORK_REQUEST_TRANSITIONS');
 
@@ -289,6 +289,13 @@ function runFresh() {
   throwsMatching(() => sqlite.prepare("UPDATE engine_events SET type = 'edited' WHERE request_id = ?").run(a.id), /append-only/, 'events are append-only');
   throwsMatching(() => sqlite.prepare('DELETE FROM engine_events WHERE request_id = ? AND sequence = 5').run(a.id), /append-only/, 'a single event cannot be deleted');
   throwsMatching(() => sqlite.prepare('DELETE FROM engine_events WHERE request_id = ?').run(a.id), /append-only/, "a request's whole log cannot be deleted directly");
+  // Regression: purge authority used to be a writable marker row.
+  throwsMatching(() => sqlite.prepare('INSERT INTO engine_event_purges (request_id) VALUES (?)').run(a.id), /no such table/, 'no writable purge marker exists');
+  throwsMatching(() => sqlite.prepare('DELETE FROM engine_events WHERE request_id = ? AND sequence = 1').run(a.id), /append-only/, 'a single event still cannot be deleted after the marker attempt');
+  throwsMatching(() => sqlite.prepare('DELETE FROM engine_events WHERE request_id = ? AND sequence = 1 AND engine_event_purge_authorized(?) = 0').run(a.id, a.id), /append-only/, 'calling the authority function does not grant purge rights');
+  const bareConnection = new Database(DB_PATH);
+  throwsMatching(() => bareConnection.prepare('DELETE FROM engine_events WHERE request_id = ? AND sequence = 1').run(a.id), /engine_event_purge_authorized/, 'a connection without purge authority cannot delete events');
+  bareConnection.close();
   assert(engine.listEvents(a.id).map(e => e.sequence).join(',') === seqA.join(','), 'rejected deletes leave the sequence gap-free');
   throwsCode(() => engine.appendEvent('missing', { type: 'x' }), 'not_found', 'appending to an unknown request fails');
 
@@ -442,7 +449,7 @@ function runFresh() {
     && count('SELECT COUNT(*) AS n FROM session_bindings WHERE id IN (?, ?)', childBinding.id, sourceBinding.id) === 0
     && count('SELECT COUNT(*) AS n FROM engine_events WHERE request_id IN (?, ?)', rootX.id, childY.id) === 0, 'descendant attempts, bindings, and events are removed with them');
   assert(orphans().length === 0, 'no orphans after conversation and Agent deletion');
-  assert(count('SELECT COUNT(*) AS n FROM engine_event_purges') === 0, 'aggregate cleanup clears its purge marks');
+  throwsMatching(() => sqlite.prepare('DELETE FROM engine_events WHERE request_id = ?').run(work.id), /append-only/, 'purge authority does not outlive the aggregate cleanup');
 
   const target = bots.create({ deck_id: 'deck-1', name: 'Target', title: '', description: '' });
   const targeted = engine.createOrGetWorkRequest(baseInput({ targetAgentId: target.id })).request;
