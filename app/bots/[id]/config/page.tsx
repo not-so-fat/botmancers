@@ -11,6 +11,15 @@ import {
   runtimeOptions,
   type AvailabilityState,
 } from '@/lib/bot-runtime-ui';
+import BotAvatar from '@/app/components/BotAvatar';
+import {
+  AVATAR_ACCESSORIES,
+  AVATAR_COLORS,
+  AVATAR_EYES,
+  AVATAR_HANDS,
+  resolveAvatar,
+  type AvatarConfig,
+} from '@/lib/avatar';
 
 interface Bot {
   id: string;
@@ -29,6 +38,11 @@ interface Bot {
   deck_name?: string | null;
   working_directory?: string | null;
   coding_configured?: boolean;
+  avatar_color?: string | null;
+  avatar_eyes?: string | null;
+  avatar_hands?: string | null;
+  avatar_accessory?: string | null;
+  avatar_config?: AvatarConfig | null;
 }
 
 interface SkillStateDto {
@@ -57,6 +71,10 @@ interface ConfigData {
 type Phase = 'clean' | 'saving' | 'confirmed' | 'error';
 
 const SNAPSHOT_FIELDS: Array<{ key: string; label: string }> = [
+  { key: 'avatar_accessory', label: 'Avatar accessory' },
+  { key: 'avatar_color', label: 'Avatar color' },
+  { key: 'avatar_eyes', label: 'Avatar eyes' },
+  { key: 'avatar_hands', label: 'Avatar hands' },
   { key: 'description', label: 'Description (rules)' },
   { key: 'import_operation_id', label: 'Import operation ID' },
   { key: 'import_schema_version', label: 'Import schema version' },
@@ -132,6 +150,11 @@ export default function BotConfigPage() {
   const [codingError, setCodingError] = useState('');
   const [codingConfirmedAt, setCodingConfirmedAt] = useState(0);
 
+  const [avatarDraft, setAvatarDraft] = useState<AvatarConfig | null>(null);
+  const [avatarPhase, setAvatarPhase] = useState<Phase>('clean');
+  const [avatarError, setAvatarError] = useState('');
+  const [avatarConfirmedAt, setAvatarConfirmedAt] = useState(0);
+
   function retryLoad(): void {
     setLoading(true);
     setLoadFailed(false);
@@ -206,7 +229,11 @@ export default function BotConfigPage() {
     codingDeck !== storedCodingDeck ||
     codingDir !== storedCodingDir
   );
-  const anyDirty = rulesDirty || skillDirty || codingDirty;
+  const storedAvatar: AvatarConfig = data?.bot.avatar_config ?? resolveAvatar(data?.bot ?? {});
+  const avatarShown: AvatarConfig = avatarDraft ?? storedAvatar;
+  const avatarDirty =
+    avatarDraft !== null && JSON.stringify(avatarDraft) !== JSON.stringify(storedAvatar);
+  const anyDirty = rulesDirty || skillDirty || codingDirty || avatarDirty;
 
   useEffect(() => {
     if (!anyDirty) return;
@@ -284,6 +311,53 @@ export default function BotConfigPage() {
     setCodingEditing(false);
     setCodingPhase('clean');
     setCodingError('');
+  }
+
+  function pickAvatar(patch: Partial<AvatarConfig>): void {
+    setAvatarDraft({ ...(avatarDraft ?? storedAvatar), ...patch });
+    setAvatarPhase('clean');
+    setAvatarError('');
+  }
+
+  function discardAvatar(): void {
+    setAvatarDraft(null);
+    setAvatarPhase('clean');
+    setAvatarError('');
+  }
+
+  async function saveAvatar(): Promise<void> {
+    if (!data || !avatarDraft) return;
+    setAvatarPhase('saving');
+    setAvatarError('');
+    try {
+      const res = await fetch('/api/bots', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: data.bot.id, avatar: avatarDraft }),
+      });
+      if (!res.ok) {
+        let reason = 'request failed';
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body.error) reason = body.error;
+        } catch {
+          // keep default reason
+        }
+        throw new Error(reason);
+      }
+      const refreshed = await fetch(`/api/bots/${encodeURIComponent(id)}/config`);
+      if (!refreshed.ok) throw new Error('request failed');
+      setData((await refreshed.json()) as ConfigData);
+      setAvatarDraft(null);
+      setAvatarPhase('confirmed');
+      setAvatarConfirmedAt(Date.now());
+      setTimeout(() => {
+        setAvatarPhase(current => (current === 'confirmed' ? 'clean' : current));
+      }, 5000);
+    } catch (error) {
+      setAvatarPhase('error');
+      setAvatarError(error instanceof Error ? error.message : 'request failed');
+    }
   }
 
   async function saveCoding(): Promise<void> {
@@ -409,7 +483,7 @@ export default function BotConfigPage() {
   }
 
   if (loadFailed && !data) {
-    const errorSections = ['Skills', 'Rules', 'Coding path', 'Template source'];
+    const errorSections = ['Skills', 'Rules', 'Coding path', 'Avatar', 'Template source'];
     return (
       <div className="cfg-page">
         <div className="max-w-6xl mx-auto">
@@ -510,6 +584,20 @@ export default function BotConfigPage() {
       <span className="text-sm cfg-faint">Saved</span>
     );
 
+  const avatarStateLine =
+    avatarPhase === 'saving' ? (
+      <span className="text-sm cfg-faint">Saving…</span>
+    ) : avatarDirty || avatarPhase === 'error' ? (
+      <span className="text-sm cfg-dirty">
+        <span className="inline-block w-2 h-2 rounded-full cfg-dot-amber mr-1" />
+        Unsaved changes
+      </span>
+    ) : avatarPhase === 'confirmed' ? (
+      <span className="text-sm cfg-faint">Saved {formatClock(avatarConfirmedAt)}</span>
+    ) : (
+      <span className="text-sm cfg-faint">Saved</span>
+    );
+
   return (
     <div className="cfg-page">
       <div className="max-w-6xl mx-auto">
@@ -518,10 +606,7 @@ export default function BotConfigPage() {
         </Link>
 
         <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
-          {bot.avatar ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={bot.avatar} alt="" className="w-12 h-12 cfg-avatar" />
-          ) : null}
+          <BotAvatar bot={bot} size={48} title={`${bot.name} avatar`} />
           <div className="min-w-0">
             <h1 className="text-xl font-bold truncate">{bot.name}</h1>
             <p className="text-sm cfg-faint truncate">{bot.title || ' '}</p>
@@ -814,6 +899,108 @@ export default function BotConfigPage() {
                   </>
                 );
               })()}
+            </section>
+
+            <section className="cfg-card">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="cfg-title">Avatar</h2>
+                {avatarStateLine}
+              </div>
+              <div className="flex items-center gap-4 mb-4">
+                <BotAvatar config={avatarShown} size={96} title="Avatar live preview" />
+                <p className="text-sm cfg-muted">
+                  Outline style: the color is the line color, nothing is filled.
+                  Pick an option to preview, then Save.
+                </p>
+              </div>
+              <p className="avatar-group-label">Color</p>
+              <div className="avatar-opt-grid mb-3" role="group" aria-label="Avatar color">
+                {AVATAR_COLORS.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => pickAvatar({ color: option.id })}
+                    aria-pressed={avatarShown.color === option.id}
+                    title={option.label}
+                    className="avatar-opt"
+                  >
+                    <BotAvatar config={{ ...avatarShown, color: option.id }} size={44} />
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="avatar-group-label">Eyes</p>
+              <div className="avatar-opt-grid mb-3" role="group" aria-label="Avatar eyes">
+                {AVATAR_EYES.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => pickAvatar({ eyes: option.id })}
+                    aria-pressed={avatarShown.eyes === option.id}
+                    title={option.label}
+                    className="avatar-opt"
+                  >
+                    <BotAvatar config={{ ...avatarShown, eyes: option.id }} size={44} />
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="avatar-group-label">Hands</p>
+              <div className="avatar-opt-grid mb-3" role="group" aria-label="Avatar hands">
+                {AVATAR_HANDS.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => pickAvatar({ hands: option.id })}
+                    aria-pressed={avatarShown.hands === option.id}
+                    title={option.label}
+                    className="avatar-opt"
+                  >
+                    <BotAvatar config={{ ...avatarShown, hands: option.id }} size={44} />
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="avatar-group-label">Accessory</p>
+              <div className="avatar-opt-grid" role="group" aria-label="Avatar accessory">
+                {AVATAR_ACCESSORIES.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => pickAvatar({ accessory: option.id })}
+                    aria-pressed={avatarShown.accessory === option.id}
+                    title={option.label}
+                    className="avatar-opt"
+                  >
+                    <BotAvatar config={{ ...avatarShown, accessory: option.id }} size={44} />
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </div>
+              {avatarPhase === 'error' && (
+                <p className="mt-2 text-sm cfg-error">
+                  Couldn&apos;t save: {avatarError}.{' '}
+                  <button onClick={saveAvatar} className="underline hover:no-underline">
+                    Retry
+                  </button>
+                </p>
+              )}
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={saveAvatar}
+                  disabled={!avatarDirty || avatarPhase === 'saving'}
+                  className="flex-1 sm:flex-none cfg-btn-primary text-sm"
+                >
+                  {avatarPhase === 'saving' ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  onClick={discardAvatar}
+                  disabled={!avatarDirty || avatarPhase === 'saving'}
+                  className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
+                >
+                  Discard
+                </button>
+              </div>
             </section>
 
             <section className="cfg-card">
