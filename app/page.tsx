@@ -1079,7 +1079,7 @@ export default function Home() {
                       {revealed[msg.id] ? (
                         <div className="agent-bar">
                           {revealed[msg.id].map(item => (
-                            <div key={item.id}>{(item.sender_name || 'Bot') + ': ' + displayBody(item.content)}</div>
+                            <div key={item.id}>{(item.sender_name || 'Agent') + ': ' + displayBody(item.content)}</div>
                           ))}
                         </div>
                       ) : null}
@@ -1161,7 +1161,7 @@ export default function Home() {
                     {revealed[msg.id] ? (
                       <div className="msg-body">
                         {revealed[msg.id].map(item => (
-                          <div key={item.id}>{(item.sender_name || 'Bot') + ': ' + displayBody(item.content)}</div>
+                          <div key={item.id}>{(item.sender_name || 'Agent') + ': ' + displayBody(item.content)}</div>
                         ))}
                       </div>
                     ) : null}

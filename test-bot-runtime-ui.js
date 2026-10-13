@@ -517,7 +517,7 @@ async function traceSection() {
 function fieldOrder(html, prefix) {
   return [
     html.indexOf(`<legend id="${prefix}-agent-label"`),
-    html.indexOf(`for="${prefix}-deck">Agent Deck</label>`),
+    html.search(new RegExp(`<label[^>]*id="${prefix}-deck-label"[^>]*>Agent Deck</label>`)),
     html.indexOf(`for="${prefix}-workdir">Working directory (optional)</label>`),
   ];
 }
@@ -560,9 +560,10 @@ async function hierarchySection() {
       assert(!/Runtime/.test(html) && !has(html, 'value="agent-deck"') && !/<input type="radio"[^>]*>\s*Agent Deck</.test(html), `${tag}: no Runtime copy and Agent Deck is never an Agent option`);
       assert(has(html, `id="${prefix}-workdir"`) && !/id="[^"]*-workdir"[^>]*required/.test(html) && has(html, `aria-describedby="${prefix}-workdir-hint ${prefix}-workdir-note"`), `${tag}: working directory is optional and described by its hint`);
       if (status === 'connected') {
-        assert(/<select id="(bot|cfg)-deck"[^>]*required=""[^>]*aria-required="true"/.test(html), `${tag}: Agent Deck is a required <select> associated with its label`);
+        assert(has(html, `for="${prefix}-deck">Agent Deck</label>`) && /<select id="(bot|cfg)-deck"[^>]*aria-required="true"/.test(html), `${tag}: Agent Deck is a required <select> associated with its label`);
+        assert(!/<select[^>]*\srequired=""/.test(html), `${tag}: no native required, so the "${ui.SELECT_DECK_ERROR}" validation is reachable on submit`);
       } else {
-        assert(!has(html, '<select') && has(html, `role="status" aria-labelledby="${prefix}-deck-label ${prefix}-deck-copy"`) && has(html, escapeHtml(ui.DECK_SLOT_COPY[status])), `${tag}: Agent Deck slot shows the state copy, labelled "Agent Deck"`);
+        assert(!has(html, '<select') && !has(html, `for="${prefix}-deck"`) && has(html, `role="group" aria-labelledby="${prefix}-deck-label"`) && /<p id="(bot|cfg)-deck" class="[^"]*" role="status">/.test(html) && has(html, escapeHtml(ui.DECK_SLOT_COPY[status])), `${tag}: Agent Deck slot is a group labelled "Agent Deck" whose status keeps its own text`);
         assert(has(html, '>Retry<') === ui.deckStateShowsRetry(state), `${tag}: Retry ${ui.deckStateShowsRetry(state) ? 'offered' : 'not offered'}`);
       }
     }
@@ -588,13 +589,13 @@ async function hierarchySection() {
   }
 
   const rendered = sourceFiles(path.join(ROOT, 'app')).concat([path.join(ROOT, 'lib', 'bot-runtime-ui.ts')]);
-  const offenders = rendered.filter(file => /Runtime: (Agent Deck|Hermes)|>\s*Runtime\s*<|'Runtime'|"Runtime"/.test(fs.readFileSync(file, 'utf8')));
+  const offenders = rendered.filter(file => /\bRuntime\s*:|>\s*Runtime\b|['"`]Runtime\b/.test(fs.readFileSync(file, 'utf8')));
   log(`  copy scan: ${rendered.length} UI source files; offenders=${JSON.stringify(offenders.map(f => path.relative(ROOT, f)))}`);
-  assert(offenders.length === 0, 'copy: no UI source renders "Runtime: Agent Deck", "Runtime: Hermes", or a Runtime label');
+  assert(offenders.length === 0, 'copy: no UI source renders "Runtime: <anything>" or a Runtime label/string');
   const pageSource = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
   const configSource = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
   assert(/>\s*New Agent\s*<\/button>/.test(pageSource) && has(pageSource, 'aria-label="New Agent"'), 'copy: the modal labels the agent form "New Agent"');
-  assert(!/>\s*Bot\s*</.test(pageSource) && !has(pageSource, 'Rename Bot') && !has(pageSource, 'Failed to create bot'), 'copy: no "Bot" label in the roster/modal');
+  assert(!/>\s*Bot\s*</.test(pageSource) && !has(pageSource, 'Rename Bot') && !has(pageSource, 'Failed to create bot') && !has(pageSource, "|| 'Bot'"), 'copy: no "Bot" label in the roster/modal');
   assert(has(configSource, 'Agent configuration') && has(configSource, 'Agent not found.') && !/Bot (configuration|not found)/.test(configSource), 'copy: Config page says Agent, not Bot');
   assert(ui.SELECT_DECK_ERROR === 'Select an Agent Deck for this agent.' && ui.DECK_PLACEHOLDER === 'Select an Agent Deck…', 'copy: validation and placeholder name the Agent Deck');
 }

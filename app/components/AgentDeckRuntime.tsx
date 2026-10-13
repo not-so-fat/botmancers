@@ -104,7 +104,6 @@ export function DeckSlot({ id, labelId, state, value, onChange, onRetry, savedDe
         <select
           id={id}
           className={css.control}
-          required
           aria-required="true"
           aria-describedby={savedMissing && value === saved ? `${id}-saved-note` : undefined}
           value={value}
@@ -122,9 +121,9 @@ export function DeckSlot({ id, labelId, state, value, onChange, onRetry, savedDe
     );
   }
   return (
-    <div data-field="deck" data-state={state.status}>
+    <div data-field="deck" data-state={state.status} role="group" aria-labelledby={labelId}>
       {saved ? <p className={css.note}>Saved Agent Deck: <span title={saved}>{saved}</span></p> : null}
-      <p id={id} className={`${css.note} deck-slot`} role="status" aria-labelledby={`${labelId} ${id}-copy`}>
+      <p id={id} className={`${css.note} deck-slot`} role="status">
         <span id={`${id}-copy`}>{blocking}</span>
         {deckStateShowsRetry(state) ? (
           <>
@@ -163,9 +162,12 @@ export function AgentDeckFields({
   workdirHint: string;
 }) {
   const css = CLASSES[variant];
+  // Only the connected state renders a <select>; otherwise the label names
+  // the status group instead of pointing at a non-labelable element.
+  const deckIsSelect = deckSlotCopy(deckState) === null;
   return (
     <div className="agent-deck-fields">
-      <label className={css.label} id={`${idPrefix}-deck-label`} htmlFor={`${idPrefix}-deck`}>Agent Deck</label>
+      <label className={css.label} id={`${idPrefix}-deck-label`} htmlFor={deckIsSelect ? `${idPrefix}-deck` : undefined}>Agent Deck</label>
       <DeckSlot
         id={`${idPrefix}-deck`}
         labelId={`${idPrefix}-deck-label`}
