@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines } from './db';
+import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines, wakeTargets } from './db';
 import { parseApprovalCode, parseDraft, parseFileNames, serializeDraft } from './draft';
 import { createDraft, parseDraftRequest } from './draft-producer';
 import {
@@ -750,12 +750,12 @@ function resolveWakeTargets(
   directives: WakeDirective[],
   conversation: Conversation
 ): ResolvedWakeTarget[] {
-  const all = bots.getAll();
   return directives.map(directive => {
     if (directive.target.toUpperCase() === 'GROUP' && conversation.type === 'group') {
       return { directive, bot: null, group: true as const, unknown: false as const };
     }
-    const bot = all.find(candidate => candidate.name.toLowerCase() === directive.target.toLowerCase());
+    // NOT-478: the unique name key yields at most one Agent.
+    const bot = bots.getByName(directive.target);
     if (bot) return { directive, bot, group: false as const, unknown: false as const };
     return { directive, bot: null, group: false as const, unknown: true as const };
   });
@@ -1017,10 +1017,9 @@ async function handleHermesWakeTurn(args: {
     recordApprovalIfPresent(conversation.id, messages.create(conversation.id, 'bot', applySkillEndToken(bot.name, prefix), bot.id));
   }
   for (const { directive, bot: targetBot } of allowed) {
-    recordApprovalIfPresent(
-      conversation.id,
-      messages.create(conversation.id, 'bot', `[Handing off to ${targetBot.name}]\n${directive.message}`, bot.id)
-    );
+    const handoff = messages.create(conversation.id, 'bot', `[Handing off to ${targetBot.name}]\n${directive.message}`, bot.id);
+    recordApprovalIfPresent(conversation.id, handoff);
+    wakeTargets.accept({ conversationId: conversation.id, requestedTarget: directive.target, sourceBotId: bot.id, sourceMessageId: handoff.id });
   }
 
   if (chain) {
@@ -1974,7 +1973,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
     const isGroupWake = target.toUpperCase() === 'GROUP' && conversation.type === 'group';
     const targetBot = isGroupWake
       ? null
-      : bots.getAll().find(b => b.name.toLowerCase() === target.toLowerCase());
+      : bots.getByName(target);
 
     if (!isGroupWake && !targetBot) {
       recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, responseContent), bot.id));
@@ -2017,7 +2016,9 @@ The standing rules decide the whole reply. If they require one short sentence, w
         // Same-thread caller-managed delegation: the target replies in this
         // thread, so the draft, the check, and the final report stay together.
         // The caller stays on the stack; the delegate's reply returns to it.
-        recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id));
+        const handoff = messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
+        recordApprovalIfPresent(item.conversation_id, handoff);
+        wakeTargets.accept({ conversationId: item.conversation_id, requestedTarget: target, sourceBotId: bot.id, sourceMessageId: handoff.id });
         queue.enqueue(item.conversation_id, targetBot.id);
         if (chain) {
           chain.handoffs += 1;
