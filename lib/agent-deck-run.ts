@@ -18,8 +18,6 @@
 // (the runtime binary plus the agent-deck CLI that launches it):
 // unverified clients stay valid adapter targets but are not advertised.
 import { execFile } from 'child_process';
-import fs from 'fs';
-import path from 'path';
 import { messages } from './db';
 
 export const DECK_RUNTIMES = ['codex', 'claude', 'cursor', 'muse'] as const;
@@ -463,57 +461,12 @@ export async function delegateCodingViaDeck(request: DeckDelegationRequest): Pro
   }
 }
 
-// Default review focus for conversation-triggered deck delegations, where
-// the model directive carries only the task. Exported so the conversation
-// loop and tests share the exact string.
+// Default review focus for direct Agent Deck turns, where the ordinary
+// message carries only the task. Exported so the conversation loop and
+// tests share the exact string.
 export const DECK_REVIEW_FOCUS_DEFAULT = 'Correctness, edge cases, and fit to the stated goal.';
 
-// Resolves the deck for a working directory from the repo's own agent-deck
-// assignment (`agent-deck use <deck>` writes `.agent-deck/use.json` there),
-// so the conversation loop passes the folder's deck exactly and never a
-// second copy of it. Prefers the stable deck id, falls back to the name.
-// Fails closed when the folder names no deck: `run` itself would fail
-// closed on the mismatch, so the adapter refuses before starting anything.
-export function resolveDeckForCwd(cwd: string): string {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(path.join(cwd, '.agent-deck', 'use.json'), 'utf8');
-  } catch {
-    throw new Error(
-      `no agent-deck deck assignment for ${cwd} (expected .agent-deck/use.json via 'agent-deck use <deck>').`
-    );
-  }
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    throw new Error(`unreadable agent-deck deck assignment for ${cwd} (expected JSON in .agent-deck/use.json).`);
-  }
-  const deck = parsed.deckId ?? parsed.deckName;
-  if (typeof deck !== 'string' || deck.length === 0) {
-    throw new Error(`agent-deck deck assignment for ${cwd} names no deck (expected deckId or deckName).`);
-  }
-  return deck;
-}
-
-export interface DeckDirective {
-  client: string;
-  task: string;
-}
-
-// A model-reply directive paralleling WAKE: `DECK <runtime>: <task>` routes
-// the turn through the deck adapter instead of another bot. Anchored to a
-// line start, uppercase DECK only, and known runtime tokens only, so prose
-// that merely mentions a deck ('update the deck notes: ...', 'the deck
-// below: ...') and WAKE handoffs fall through to the normal reply path.
-// An unknown runtime is not a directive either: it stays a normal reply
-// (with the usual caller-managed return) instead of hijacking the turn.
-// Requires a non-empty task: `run` needs exactly one of
-// --prompt/--prompt-file.
-export const DECK_DIRECTIVE_PATTERN = /^DECK[ \t]+(codex|claude|cursor|muse)[ \t]*:[ \t]*(\S[\s\S]*)/m;
-
-export function parseDeckDirective(responseContent: string): DeckDirective | null {
-  const match = responseContent.match(DECK_DIRECTIVE_PATTERN);
-  if (!match) return null;
-  return { client: match[1], task: match[2].trim() };
-}
+// NOT-442: no DECK directive and no working-directory deck resolution.
+// Ordinary messages to an agent-deck bot launch the stored agent client on
+// the stored deck ID directly; the Hermes reply is never parsed for
+// routing and no `.agent-deck/use.json` file is read here.

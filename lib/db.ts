@@ -447,7 +447,7 @@ export const bots = {
     ).run(
       bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color,
       bot.hermes_profile || null,
-      bot.persistent_runtime || null,
+      bot.persistent_runtime || 'hermes',
       bot.coding_runtime || null,
       bot.runtime || 'hermes',
       bot.agent_client || null,

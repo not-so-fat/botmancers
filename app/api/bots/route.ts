@@ -10,7 +10,7 @@ import { validateAvatarInput } from '@/lib/avatar';
 
 export async function GET() {
   try {
-    const allBots = bots.getAll().map(bot => ({ ...serializeBot(bot), unread: bot.unread ? 1 : 0, hidden: bot.hidden ? 1 : 0, latest: messages.latestFromBot(bot.id) }));
+    const allBots = bots.getAll().map(bot => ({ ...(serializeBot(bot) as unknown as Record<string, unknown>), unread: bot.unread ? 1 : 0, hidden: bot.hidden ? 1 : 0, latest: messages.latestFromBot(bot.id) }));
     return NextResponse.json(allBots);
   } catch (error) {
     console.error('Error fetching bots:', error);
