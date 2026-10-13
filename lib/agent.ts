@@ -57,12 +57,17 @@ import {
 } from './agent-deck-run';
 import type { DeckDelegationResult } from './agent-deck-run';
 import {
-  effectiveWorkingDirectory,
   normalizeRuntime,
   resolveRuntime,
   RUNTIME_AGENT_DECK,
   RUNTIME_HERMES,
 } from './bot-definition';
+import {
+  getAgentDeckServerUrl,
+  isLocalAgentDeckUrl,
+  remoteLaunchUnsupportedMessage,
+  resolveAndEnsureBotWorkdir,
+} from './agent-deck-settings';
 
 // Conversational delegation limits (NOT-395). Placeholder values until the
 // owner confirms them; change one line here. Tests assert these constants.
@@ -533,8 +538,10 @@ function handoffTaskFor(conversationMessages: Message[], botName: string): strin
 // agent-deck bot launches the stored agent client on the stored deck ID
 // directly: no Hermes turn runs first and no model-reply directive is
 // parsed. The launch snapshot is held with the agent-deck transport and
-// the effective working directory (stored override or the process
-// working directory), so it records what actually ran.
+// the effective working directory (stored override or
+// ~/.botmancers/{botId}, created on demand), so it records what ran.
+// NOT-443: a non-local workspace server URL fails explicitly here;
+// remote `agent-deck run` targeting is unconfirmed.
 async function processAgentDeckTurn(args: {
   item: QueueItem;
   bot: Bot;
@@ -610,7 +617,38 @@ async function processAgentDeckTurn(args: {
     chainProcessQueue();
     return;
   }
-  const cwd = effectiveWorkingDirectory(bot, process.cwd());
+  // NOT-443: remote launch is unconfirmed. A non-local workspace server
+  // URL fails explicitly here instead of running locally against a
+  // same-named deck; no `agent-deck run` child starts on this path.
+  const agentDeckServerUrl = getAgentDeckServerUrl();
+  if (!isLocalAgentDeckUrl(agentDeckServerUrl)) {
+    messages.create(item.conversation_id, 'bot', remoteLaunchUnsupportedMessage(agentDeckServerUrl), bot.id);
+    if (chain && !chain.stopped) {
+      const callerId = popCaller(chain, bot.id);
+      if (callerId) queue.enqueue(item.conversation_id, callerId);
+    }
+    chainProcessQueue();
+    return;
+  }
+  // NOT-443: per-bot default workdir (~/.botmancers/{botId}), created on
+  // demand immediately before launch; a stored override wins.
+  let cwd: string;
+  try {
+    cwd = resolveAndEnsureBotWorkdir(bot.id, resolved.working_directory);
+  } catch (error) {
+    messages.create(
+      item.conversation_id,
+      'bot',
+      `[Deck failed] runtime=${client} deck=${resolved.deck_id} error=${String(error instanceof Error ? error.message : error).slice(0, 300)}`,
+      bot.id
+    );
+    if (chain && !chain.stopped) {
+      const callerId = popCaller(chain, bot.id);
+      if (callerId) queue.enqueue(item.conversation_id, callerId);
+    }
+    chainProcessQueue();
+    return;
+  }
   if (chain) chain.turns += 1;
   const skillState = readSkillState(bot.name);
   const rememberedFacts = memories.latestFacts(bot.id);

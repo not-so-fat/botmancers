@@ -181,7 +181,9 @@ export function isAgentDeckBot(bot: BotLike): boolean {
 
 // Effective working directory for an Agent Deck launch: the stored
 // override, or the caller-supplied fallback (the process working
-// directory at dispatch time).
+// directory at dispatch time). NOT-443 dispatch no longer uses this
+// fallback: lib/agent-deck-settings resolveAndEnsureBotWorkdir resolves
+// a missing override to ~/.botmancers/{botId} instead.
 export function effectiveWorkingDirectory(bot: BotLike, fallback: string): string {
   const override = normalizeWorkingDirectory(bot.working_directory);
   return override ?? fallback;
