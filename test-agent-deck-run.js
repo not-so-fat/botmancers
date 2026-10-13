@@ -313,6 +313,148 @@ async function main() {
   loopAgent.resetDelegationForTests();
   try { require('fs').rmSync(workdir, { recursive: true, force: true }); } catch { /* best effort */ }
 
+  // NOT-443: per-bot default workdir (~/.botmancers/{agentID}) created
+  // on demand before launch; a stored override wins.
+  log('\nDefault workdir resolution and on-demand creation (isolated home)');
+  const widSettings = jitiLoop('./lib/agent-deck-settings.ts');
+  const fsExtra = require('fs');
+  const pathExtra = require('path');
+  const osExtra = require('os');
+  const savedHome = process.env.HOME;
+  const isolatedHome = fsExtra.mkdtempSync(pathExtra.join(osExtra.tmpdir(), 'botmancers-home-'));
+  process.env.HOME = isolatedHome;
+  try {
+    widSettings.setAgentDeckServerUrl('http://127.0.0.1:1111');
+    const defaultPath = widSettings.defaultBotWorkdir('bot-abc', isolatedHome);
+    log(`default workdir fixture: agentID=bot-abc home=${isolatedHome} resolved=${defaultPath}`);
+    assert(pathExtra.isAbsolute(defaultPath), 'default workdir is an absolute path');
+    assert(defaultPath === pathExtra.join(isolatedHome, '.botmancers', 'bot-abc'), 'default workdir is ~/.botmancers/{agentID}');
+
+    const overrideKept = widSettings.resolveBotWorkdir('bot-abc', '/tmp/custom-override', isolatedHome);
+    log(`override fixture: override=/tmp/custom-override resolved=${overrideKept}`);
+    assert(overrideKept === '/tmp/custom-override', 'explicit override is preserved and used');
+
+    const ensured = widSettings.resolveAndEnsureBotWorkdir('bot-ensure-1', null, isolatedHome);
+    const ensuredExists = fsExtra.existsSync(ensured) && fsExtra.statSync(ensured).isDirectory();
+    log(`on-demand creation fixture: resolved=${ensured} exists=${ensuredExists}`);
+    assert(ensuredExists, 'default workdir is created on demand');
+
+    // Pre-launch existence through the real queue loop: a bot without an
+    // override launches with its default workdir, already on disk when
+    // `agent-deck run` is spawned.
+    let preLaunchExists = null;
+    let defaultLaunchedArgv = null;
+    deck.setDeckRunProcess(async argv => {
+      if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+        const runId = argv[3];
+        return { stdout: JSON.stringify({ runId, deck: 'deck-default', client: 'codex', state: 'ended', sessionId: `ses-for-${runId}`, logPath: `/tmp/fake/${runId}.jsonl` }), stderr: '', exitCode: 0 };
+      }
+      if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+        const runId = argv[3];
+        const lines = [
+          JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, result: `output of ${runId}` }),
+          JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+        ].join('\n') + '\n';
+        return { stdout: lines, stderr: '', exitCode: 0 };
+      }
+      if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+        const cwdFlag = argv[argv.indexOf('--cwd') + 1];
+        try { preLaunchExists = fsExtra.existsSync(cwdFlag) && fsExtra.statSync(cwdFlag).isDirectory(); } catch { preLaunchExists = false; }
+        if (!defaultLaunchedArgv) defaultLaunchedArgv = argv.slice();
+        return { stdout: 'run run-default-1 detached: pid 4242 log /tmp/fake/run-default-1/run.jsonl\n', stderr: '', exitCode: 0 };
+      }
+      return { stdout: '', stderr: `unexpected: ${argv.join(' ')}`, exitCode: 1 };
+    });
+    const defaultBot = loopDb.bots.create({
+      name: 'DefaultWorkdir', title: 'Default', description: 'Uses the default workdir.',
+      runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-default',
+    });
+    const expectedDefault = widSettings.defaultBotWorkdir(defaultBot.id, isolatedHome);
+    const defaultConv = loopDb.conversations.getByBotId(defaultBot.id);
+    loopDb.messages.create(defaultConv.id, 'user', 'Build the widget in the default dir.');
+    loopDb.queue.enqueue(defaultConv.id, defaultBot.id);
+    processed = 0;
+    while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+    const defaultCwd = defaultLaunchedArgv ? defaultLaunchedArgv[defaultLaunchedArgv.indexOf('--cwd') + 1] : null;
+    log(`pre-launch default fixture: expected=${expectedDefault} launchedCwd=${defaultCwd} existedBeforeSpawn=${preLaunchExists}`);
+    assert(!!defaultLaunchedArgv, 'bot without an override launches a deck run');
+    assert(defaultCwd === expectedDefault, 'bot without an override resolves to ~/.botmancers/{agentID}');
+    assert(preLaunchExists === true, 'pre-launch directory existence assertion: default workdir exists before `agent-deck run` spawns');
+
+    // Override preserved through the real queue loop.
+    const overrideDir = fsExtra.mkdtempSync(pathExtra.join(osExtra.tmpdir(), 'botmancers-override-'));
+    let overrideLaunchedArgv = null;
+    deck.setDeckRunProcess(async argv => {
+      if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+        const runId = argv[3];
+        return { stdout: JSON.stringify({ runId, deck: 'deck-default', client: 'codex', state: 'ended', sessionId: `ses-for-${runId}`, logPath: `/tmp/fake/${runId}.jsonl` }), stderr: '', exitCode: 0 };
+      }
+      if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+        const runId = argv[3];
+        const lines = [
+          JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, result: `output of ${runId}` }),
+          JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+        ].join('\n') + '\n';
+        return { stdout: lines, stderr: '', exitCode: 0 };
+      }
+      if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+        if (!overrideLaunchedArgv) overrideLaunchedArgv = argv.slice();
+        return { stdout: 'run run-override-1 detached: pid 4242 log /tmp/fake/run-override-1/run.jsonl\n', stderr: '', exitCode: 0 };
+      }
+      return { stdout: '', stderr: `unexpected: ${argv.join(' ')}`, exitCode: 1 };
+    });
+    const overrideBot = loopDb.bots.create({
+      name: 'OverrideWorkdir', title: 'Override', description: 'Uses an override.',
+      runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-default', working_directory: overrideDir,
+    });
+    const overrideConv = loopDb.conversations.getByBotId(overrideBot.id);
+    loopDb.messages.create(overrideConv.id, 'user', 'Build the widget in the override dir.');
+    loopDb.queue.enqueue(overrideConv.id, overrideBot.id);
+    processed = 0;
+    while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+    const overrideCwd = overrideLaunchedArgv ? overrideLaunchedArgv[overrideLaunchedArgv.indexOf('--cwd') + 1] : null;
+    log(`override launch fixture: override=${overrideDir} launchedCwd=${overrideCwd}`);
+    assert(overrideCwd === overrideDir, 'explicit override is preserved and used at launch');
+    try { fsExtra.rmSync(overrideDir, { recursive: true, force: true }); } catch { /* best effort */ }
+
+    // NOT-443: non-local servers never trigger a local run.
+    log('\nNon-local server guard (no remote launch implied)');
+    widSettings.setAgentDeckServerUrl('http://192.168.1.10:1111');
+    let remoteRunSpawns = 0;
+    deck.setDeckRunProcess(async argv => {
+      if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] !== 'status' && argv[2] !== 'log') {
+        remoteRunSpawns += 1;
+        return { stdout: 'run run-remote-1 detached: pid 4242 log /tmp/fake/run-remote-1/run.jsonl\n', stderr: '', exitCode: 0 };
+      }
+      if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+        return { stdout: '', stderr: 'no runs expected on the non-local path', exitCode: 1 };
+      }
+      return { stdout: '', stderr: `unexpected: ${argv.join(' ')}`, exitCode: 1 };
+    });
+    const remoteBot = loopDb.bots.create({
+      name: 'RemoteGuard', title: 'Remote', description: 'Must not launch remotely.',
+      runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-default',
+    });
+    const remoteConv = loopDb.conversations.getByBotId(remoteBot.id);
+    loopDb.messages.create(remoteConv.id, 'user', 'Build the widget against the remote server.');
+    loopDb.queue.enqueue(remoteConv.id, remoteBot.id);
+    processed = 0;
+    while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+    const threadTexts = loopDb.messages.getByConversation(remoteConv.id).map(m => m.content);
+    const visibleFailure = threadTexts.reverse().find(t => t.includes('Remote Agent Deck launch is not supported'));
+    log(`non-local fixture: server_url=http://192.168.1.10:1111 agent-deck run spawns=${remoteRunSpawns}`);
+    log(`user-visible failure: ${JSON.stringify((visibleFailure || '').slice(0, 240))}`);
+    assert(remoteRunSpawns === 0, 'non-local fixture proves no `agent-deck run` child was started');
+    assert(!!visibleFailure && visibleFailure.includes('unconfirmed'), 'non-local launch records the explicit unsupported/unconfirmed failure');
+    widSettings.setAgentDeckServerUrl('http://127.0.0.1:1111');
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    try { fsExtra.rmSync(isolatedHome, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+  loopAgent.setDelegationChatStub(null);
+  loopAgent.resetDelegationForTests();
+
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }
