@@ -174,6 +174,84 @@ check('mask: reaching knockout sits on the right-side outline', () => {
   assert.ok(nearRightSide, 'reaching knockout must sit near the right-side outline');
 });
 
+// Overlap coverage: a knockout count alone cannot prove the body line is
+// hidden (the bow's old right-only knockout passed while the dome showed
+// through the left loop). Each sample below is a point on the body outline
+// that falls inside the named attachment; the mask must erase it, i.e. the
+// point must lie within half a knockout width of a knockout segment.
+function parseMaskLines(maskBody) {
+  return [...maskBody.matchAll(/<line x1="([\d.]+)" y1="([\d.]+)" x2="([\d.]+)" y2="([\d.]+)" stroke="#000000" stroke-width="([\d.]+)"/g)]
+    .map(match => ({
+      x1: Number(match[1]),
+      y1: Number(match[2]),
+      x2: Number(match[3]),
+      y2: Number(match[4]),
+      w: Number(match[5]),
+    }));
+}
+
+function distPointToSegment(px, py, line) {
+  const dx = line.x2 - line.x1;
+  const dy = line.y2 - line.y1;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.min(1, Math.max(0, ((px - line.x1) * dx + (py - line.y1) * dy) / len2));
+  return Math.hypot(px - (line.x1 + t * dx), py - (line.y1 + t * dy));
+}
+
+function assertKnockoutCovers(label, svg, points) {
+  const { maskBody } = splitMask(svg);
+  const lines = parseMaskLines(maskBody);
+  assert.ok(lines.length >= 1, `${label}: expected at least one knockout line`);
+  for (const [px, py] of points) {
+    const covered = lines.some(line => distPointToSegment(px, py, line) <= line.w / 2 + 1e-9);
+    assert.ok(covered, `${label}: body point (${px},${py}) must be erased by a knockout`);
+  }
+}
+
+check('mask: knockouts cover the body outline inside each attachment', () => {
+  assertKnockoutCovers(
+    'reaching',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching' }),
+    [[87, 65]]
+  );
+  assertKnockoutCovers(
+    'waving',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'waving' }),
+    [[33, 65]]
+  );
+  assertKnockoutCovers(
+    'crown',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, accessory: 'crown' }),
+    [[60, 28], [70, 30]]
+  );
+  assertKnockoutCovers(
+    'hat',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, accessory: 'hat' }),
+    [[70, 30]]
+  );
+  assertKnockoutCovers(
+    'bow covers the dome under the knot and both loops',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, accessory: 'bow' }),
+    [[64.3, 28.3], [70, 30], [79, 29]]
+  );
+  assertKnockoutCovers(
+    'headset',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, accessory: 'headset' }),
+    [[60, 28], [34, 58], [85, 58]]
+  );
+  assertKnockoutCovers(
+    'glasses',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, accessory: 'glasses' }),
+    [[33, 59], [87, 59]]
+  );
+  // Combined hands + accessory: the union must cover both attachments.
+  assertKnockoutCovers(
+    'reaching+bow',
+    renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching', accessory: 'bow' }),
+    [[87, 65], [64.3, 28.3]]
+  );
+});
+
 // 5. Determinism: repeated renders are byte-identical; uid only re-scopes
 // the mask id so many avatars can share a page.
 check('render is deterministic across repeated renders', () => {

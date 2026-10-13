@@ -239,7 +239,11 @@ function knockoutsFor(hands: AvatarHandsId, accessory: AvatarAccessoryId): Knock
     out.push({ x1: 38, y1: 34, x2: 82, y2: 34, w: 9 });
   }
   if (accessory === 'bow') {
-    out.push({ x1: 73, y1: 30, x2: 84, y2: 28, w: 9 });
+    // Both loops sit on the dome: the left loop (M76 27 L62 18 Q60 26
+    // 66 32 Z) encloses the dome segment around (64, 28), which the old
+    // right-only knockout missed. One wide eraser covers the dome under
+    // the knot and both loops.
+    out.push({ x1: 60, y1: 28.5, x2: 84, y2: 28, w: 10 });
   }
   if (accessory === 'headset') {
     // Band crossing the dome plus both ear-side contacts.
