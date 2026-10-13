@@ -114,6 +114,8 @@ async function dispatchHermes(turn: DispatchTurn, hooks: DispatchHooks): Promise
   }
 }
 
+// NOT-462: an ordinary direct conversation/API turn, not the composite
+// implementation workflow (delegateCodingViaDeck), so it stays read-only.
 async function dispatchDeckRun(turn: DispatchTurn, hooks: DispatchHooks): Promise<string> {
   const resolved = resolveAgent(turn.bot);
   if (!resolved.deck_id) {

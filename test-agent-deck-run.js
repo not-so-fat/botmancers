@@ -132,6 +132,14 @@ async function main() {
   assert(hasFlag(start, '--cwd', '/repo/checkout'), 'start command preserves the working directory');
   assert(hasFlag(start, '--prompt', 'Implement the widget.'), 'start command preserves the prompt');
   assert(hasFlag(start, '--tools', 'edit'), 'start command preserves the tool profile');
+  // NOT-462: the low-level builder stays fail-safe for unrelated callers.
+  const defaulted = deck.buildDeckRunStartCommand({
+    deck: 'planner',
+    client: 'codex',
+    cwd: '/repo/checkout',
+    prompt: 'Explain the widget.',
+  });
+  assert(hasFlag(defaulted, '--tools', 'readonly'), 'start command defaults to readonly when no profile is given');
 
   const started = await deck.startDeckRun({
     deck: 'planner',
