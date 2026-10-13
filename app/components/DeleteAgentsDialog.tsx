@@ -56,6 +56,18 @@ export default function DeleteAgentsDialog({ ids, onCancel, onDeleted }: {
     cancelRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    // Capture phase on document so Escape works even after focus falls to
+    // the body, and never also reaches an enclosing Manage agents panel.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      if (!busy) onCancel();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [busy, onCancel]);
+
   const count = ids.length;
   const blocked = preview ? preview.blocked.length > 0 || preview.missing.length > 0 : true;
 
@@ -72,22 +84,19 @@ export default function DeleteAgentsDialog({ ids, onCancel, onDeleted }: {
       const body = await res.json().catch(() => null);
       if (!res.ok) {
         setError(typeof body?.error === 'string' && body.error ? body.error : `Delete failed (${res.status}).`);
+        setBusy(false);
+        requestAnimationFrame(() => cancelRef.current?.focus());
         return;
       }
       onDeleted(Array.isArray(body?.deleted) ? body.deleted : []);
     } catch {
       setError('Delete failed: the server did not respond.');
-    } finally {
       setBusy(false);
+      requestAnimationFrame(() => cancelRef.current?.focus());
     }
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      if (!busy) onCancel();
-      return;
-    }
     if (e.key !== 'Tab' || !cardRef.current) return;
     const focusable = Array.from(cardRef.current.querySelectorAll<HTMLElement>('button:not(:disabled)'));
     if (focusable.length === 0) return;

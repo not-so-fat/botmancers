@@ -78,15 +78,17 @@ export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
     setSelected(current => Array.from(new Set([...current, ...shownDeletable.map(row => row.id)])));
   };
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape' && !confirming) {
-      e.stopPropagation();
-      onClose();
-    }
-  };
+  useEffect(() => {
+    if (confirming) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [confirming, onClose]);
 
   return (
-    <div className="modal-scrim manage-scrim" onKeyDown={onKeyDown}>
+    <div className="modal-scrim manage-scrim">
       <div className="manage-card" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="manage-head">
           <h2 id={titleId} className="delete-title">Manage agents</h2>
