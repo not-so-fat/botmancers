@@ -13,12 +13,11 @@ import {
   SELECT_DECK_ERROR,
   deckEventDisplay,
   newBotSubmitBody,
-  rosterRuntimeLine,
   runtimeFormView,
   type DeckListState,
   type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
-import { RuntimeSection } from '@/app/components/AgentDeckRuntime';
+import { RosterRuntimeLine, RuntimeSection } from '@/app/components/AgentDeckRuntime';
 import { useDeckList } from '@/app/components/useDeckList';
 
 interface Bot {
@@ -831,7 +830,7 @@ export default function Home() {
                   )}
                 </div>
                 {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-                <div className="bot-runtime">{rosterRuntimeLine(bot, deckState)}</div>
+                <RosterRuntimeLine bot={bot} state={deckState} />
                 <div className="row-tip" onClick={e => e.stopPropagation()}>
                   {bot.unread && !(activeConversation?.type === 'bot' && activeConversation.details.id === bot.id) ? (
                     <div className="card-role">Unread</div>
@@ -898,7 +897,7 @@ export default function Home() {
                     </div>
                   )}
                   {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-                  <div className="bot-runtime">{rosterRuntimeLine(bot, deckState)}</div>
+                  <RosterRuntimeLine bot={bot} state={deckState} />
                 </div>
                 <div className="row-tip" onClick={e => e.stopPropagation()}>
                   {bot.unread && !(activeConversation?.type === 'bot' && activeConversation.details.id === bot.id) ? (

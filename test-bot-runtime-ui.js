@@ -427,7 +427,15 @@ async function rosterConfigSection(created) {
     assert(fixture.notice === null ? config.notices.length === 0 : config.notices.includes(fixture.notice), `${fixture.label}: config notice`);
     assert(config.action === fixture.action, `${fixture.label}: config action "${fixture.action}"`);
     assert(!/Chat:|Code:/.test(roster + config.summary) && !roster.includes('\n'), `${fixture.label}: exactly one line, no Chat:/Code:`);
+    const parts = ui.rosterRuntimeParts(fixture.bot, fixture.state);
+    assert(parts.prefix + parts.deck + parts.suffix === roster, `${fixture.label}: roster parts join back to the line`);
   }
+  const staleUuidParts = ui.rosterRuntimeParts(
+    { id: 'b2', runtime: 'agent-deck', agent_client: 'codex', deck_id: '00000000-dead-4bee-8000-000000000000', launchable: true },
+    CONNECTED
+  );
+  log(`  [uuid unavailable deck] parts=${JSON.stringify(staleUuidParts)}`);
+  assert(staleUuidParts.deck === '00000000-dead-4bee-8000-000000000000' && staleUuidParts.suffix === ui.ROSTER_UNAVAILABLE_SUFFIX, 'roster parts: a UUID-only deck truncates separately from the unavailable marker');
   const uuidState = deckState('connected', { decks: [{ id: '078fde81-3422-4630-8dce-c22070c4d09a', name: 'planner' }] });
   const uuidBot = { id: 'b1', runtime: 'agent-deck', agent_client: 'codex', deck_id: '078fde81-3422-4630-8dce-c22070c4d09a', launchable: true };
   const uuidHtml = sectionHtml({ runtime: 'agent-deck', agentClient: 'codex', deckId: '', workingDirectory: '' }, uuidState);

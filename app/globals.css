@@ -358,6 +358,15 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.bot-runtime-deck {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
 .mark {
   position: relative;
   width: 28px;
@@ -780,6 +789,8 @@ button.thread-name {
 .modal-scrim {
   position: fixed;
   inset: 0;
+  z-index: 10;
+  overflow-y: auto;
   background: rgba(10, 10, 7, 0.72);
   display: flex;
   align-items: flex-start;

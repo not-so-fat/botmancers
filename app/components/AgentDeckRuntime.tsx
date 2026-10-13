@@ -9,8 +9,10 @@ import {
   SETTINGS_PATH,
   deckSlotCopy,
   deckStateShowsRetry,
+  rosterRuntimeParts,
   runtimeFormView,
   settingsStatusLine,
+  type BotRuntimeLike,
   type DeckListState,
   type RuntimeChoice,
   type RuntimeFormInput,
@@ -249,6 +251,17 @@ export function RuntimeSection({
         />
       ) : null}
     </>
+  );
+}
+
+export function RosterRuntimeLine({ bot, state }: { bot: BotRuntimeLike; state: DeckListState }) {
+  const { prefix, deck, suffix } = rosterRuntimeParts(bot, state);
+  return (
+    <div className="bot-runtime" title={prefix + deck + suffix}>
+      {prefix}
+      {deck ? <span className="bot-runtime-deck">{deck}</span> : null}
+      {suffix}
+    </div>
   );
 }
 

@@ -267,6 +267,20 @@ export function rosterRuntimeLine(bot: BotRuntimeLike, state: DeckListState | nu
   return summary;
 }
 
+// The roster line split so the deck token can truncate on its own (a
+// deck known only by its UUID) without clipping the trailing marker.
+// prefix + deck + suffix === rosterRuntimeLine(bot, state).
+export function rosterRuntimeParts(
+  bot: BotRuntimeLike,
+  state: DeckListState | null | undefined
+): { prefix: string; deck: string; suffix: string } {
+  const line = rosterRuntimeLine(bot, state);
+  if (!isAgentDeckRuntime(bot) || isMigratedPending(bot)) return { prefix: line, deck: '', suffix: '' };
+  const prefix = `Runtime: Agent Deck · ${(bot.agent_client ?? '').trim() || 'no agent'} · `;
+  const deck = deckLabel(bot.deck_id ?? '', state);
+  return { prefix, deck, suffix: line.slice(prefix.length + deck.length) };
+}
+
 export function defaultWorkdirFor(botId: string): string {
   return `~/.botmancers/${botId}`;
 }
