@@ -277,7 +277,7 @@ async function testImportReturnWithValidBotId() {
     console.log('✓ Bot found in list after creation');
     console.log(`  Name: ${foundBot.name}`);
     console.log(`  ID: ${foundBot.id}`);
-    console.log(`  Return URL would be: ${BASE_URL}/?imported=${botId}\n`);
+    console.log(`  Return opens: ${BASE_URL}/bots/${botId}/config\n`);
     console.log('✅ Import return with valid bot ID test PASSED\n');
     return { pass: true, botId };
   } else {
@@ -297,7 +297,7 @@ async function testImportReturnWithInvalidBotId() {
 
   if (!foundBot) {
     console.log('✓ Invalid bot ID correctly not found in list');
-    console.log(`  Return URL would be: ${BASE_URL}/?imported=${invalidBotId}`);
+    console.log(`  Return on Config: ?imported=${invalidBotId}`);
     console.log('  Expected: error message shown, state not corrupted\n');
     console.log('✅ Import return with invalid bot ID test PASSED\n');
     return true;
