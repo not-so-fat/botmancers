@@ -264,7 +264,7 @@ export function SettingsStatus({ state, onRetry }: { state: DeckListState; onRet
         </button>
       ) : null}
       {state.status === 'connected' ? (
-        <p className="mt-1 text-xs cfg-faint break-all">
+        <p className="mt-1 text-xs cfg-faint break-words">
           {state.decks.map(deck => deck.name).join(' · ')}
         </p>
       ) : null}

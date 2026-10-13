@@ -107,6 +107,8 @@ function latestLine(content?: string) {
   if (!content) return '';
   const run = parseRun(content);
   if (run) return runLine(run);
+  const event = deckEventDisplay(content);
+  if (event) return `${event.label} ${event.detail}`.replace(/\s+/g, ' ').trim();
   return content.replace(/\s+/g, ' ').trim();
 }
 
