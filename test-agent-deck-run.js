@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// NOT-395: agent-deck run adapter boundary test (deterministic, no network).
+// NOT-395 adapter boundary plus NOT-442 direct dispatch (deterministic, no
+// network). Ordinary messages to an agent-deck bot launch the stored
+// agent/deck/workdir directly with no DECK directive parsed.
 //
-// Self-contained: isolated SQLite file (unused by the adapter but kept for
-// parity with the other suites), injected process seam at the agent-deck
-// process boundary. No dev server, no API key, no real runs.
+// Self-contained: isolated SQLite file, injected process seam at the
+// agent-deck process boundary. No dev server, no API key, no real runs.
 'use strict';
 
 const fs = require('fs');
@@ -229,30 +230,88 @@ async function main() {
   const claudeArgv = deck.buildDeckRunStartCommand({ deck: 'planner', client: 'claude', cwd: '/repo/checkout', prompt: 'x' });
   assert(hasFlag(claudeArgv, '--client', 'claude'), 'unverified client still builds a valid adapter command');
 
-  // Directive anchoring regressions: only a line-start uppercase DECK with a
-  // known runtime routes through the adapter; prose and WAKE text fall
-  // through to the normal reply path.
-  log('\nDirective anchoring');
-  const directive = deck.parseDeckDirective('DECK codex: Implement the widget.');
-  assert(!!directive && directive.client === 'codex' && directive.task === 'Implement the widget.', 'line-start DECK codex parses with its task');
-  const multiline = deck.parseDeckDirective('One line of context.\nDECK muse: Do the thing.');
-  assert(!!multiline && multiline.client === 'muse' && multiline.task === 'Do the thing.', 'directive on a later line still parses');
-  assert(deck.parseDeckDirective('WAKE A: update the deck notes: finish it.') === null, 'WAKE text mentioning deck notes is not a directive');
-  assert(deck.parseDeckDirective('use the deck below: do the thing.') === null, 'deck-mentioning prose is not a directive');
-  assert(deck.parseDeckDirective('DECK gpt: do the thing.') === null, 'unknown runtime is not a directive');
-  assert(deck.parseDeckDirective('please deck codex: do the thing.') === null, 'lowercase deck is not a directive');
-  assert(deck.parseDeckDirective('DECK codex:') === null, 'empty task is not a directive');
+  // NOT-442: no DECK directive is parsed anywhere. The adapter exposes no
+  // directive parser and advertises no directive how-to: ordinary turns
+  // dispatch through the bot's own stored runtime in the conversation loop.
+  log('\nNo directive path');
+  assert(deck.parseDeckDirective === undefined, 'no DECK directive parser remains on the adapter');
+  assert(deck.DECK_DIRECTIVE_PATTERN === undefined, 'no DECK directive pattern remains on the adapter');
+  assert(deck.resolveDeckForCwd === undefined, 'no working-directory deck resolution remains on the adapter');
+  assert(deck.formatDeckHowTo === undefined, 'no directive how-to remains on the adapter');
 
-  // How-to text advertised to the model in the conversation loop.
-  log('\nDeck how-to');
-  const howToFallback = deck.formatDeckHowTo(null);
-  assert(howToFallback.includes('DECK <runtime>') && howToFallback.includes('none verified yet'), 'how-to names the directive and reports none verified before any probe');
-  const howToEmpty = deck.formatDeckHowTo([]);
-  assert(howToEmpty.includes('none verified yet'), 'how-to reports none verified on an empty probe');
-  const howToVerified = deck.formatDeckHowTo(['codex']);
-  assert(howToVerified.includes('Verified launch paths right now: codex'), 'how-to advertises the probed launch path');
-  const howToUnknown = deck.formatDeckHowTo(['gpt']);
-  assert(howToUnknown.includes('none verified yet'), 'how-to ignores unprobed runtime names and reports none verified');
+  // NOT-442 direct dispatch through the real queue loop: an ordinary
+  // message to an Agent Deck bot launches the stored agent/deck/workdir
+  // directly, while an ordinary message to a Hermes bot uses the Hermes
+  // session. Each case proves the opposite adapter was not invoked.
+  log('\nDirect dispatch (conversation loop)');
+  const { createJiti } = require('jiti');
+  const jitiLoop = createJiti(__filename);
+  const loopDb = jitiLoop('./lib/db.ts');
+  const loopAgent = jitiLoop('./lib/agent.ts');
+  const workdir = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'botmancers-deck-direct-'));
+  let launchedArgv = null;
+  deck.setDeckRunProcess(async argv => {
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
+      const runId = argv[3];
+      return {
+        stdout: JSON.stringify({ runId, deck: 'stored-deck-id', client: 'codex', state: 'ended', sessionId: `ses-for-${runId}`, logPath: `/tmp/fake/${runId}.jsonl` }),
+        stderr: '', exitCode: 0,
+      };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
+      const runId = argv[3];
+      const lines = [
+        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, result: `output of ${runId}` }),
+        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
+      if (!launchedArgv) launchedArgv = argv.slice();
+      return { stdout: 'run run-direct-1 detached: pid 4242 log /tmp/fake/run-direct-1/run.jsonl\n', stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: `unexpected: ${argv.join(' ')}`, exitCode: 1 };
+  });
+  let hermesStubCalls = 0;
+  loopAgent.setDelegationChatStub(() => {
+    hermesStubCalls += 1;
+    return 'Hermes stub must not run for an agent-deck turn (direct dispatch proves it).';
+  });
+  const relay = loopDb.bots.create({
+    name: 'RelayDirect', title: 'Relay', description: 'Launches directly.',
+    runtime: 'agent-deck', agent_client: 'codex', deck_id: 'stored-deck-id', working_directory: workdir,
+  });
+  const relayConv = loopDb.conversations.getByBotId(relay.id);
+  loopDb.messages.create(relayConv.id, 'user', 'Build the widget.');
+  loopDb.queue.enqueue(relayConv.id, relay.id);
+  let processed = 0;
+  while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+  assert(!!launchedArgv, 'Agent Deck direct-dispatch assertion: ordinary Agent Deck message launches the stored deck run');
+  assert(
+    launchedArgv && hasFlag(launchedArgv, '--client', 'codex') && launchedArgv[2] === 'stored-deck-id' && hasFlag(launchedArgv, '--cwd', workdir),
+    'Agent Deck direct-dispatch assertion: launch uses the stored agent/deck/workdir without parsing a DECK directive'
+  );
+  assert(hermesStubCalls === 0, 'Agent Deck direct-dispatch assertion: opposite adapter (Hermes) was not invoked');
+  // Hermes direct dispatch: the stub session answers and no deck run starts.
+  launchedArgv = null;
+  let hermesAnswered = 0;
+  loopAgent.setDelegationChatStub(() => {
+    hermesAnswered += 1;
+    return 'Hello from the Hermes session.';
+  });
+  const herald = loopDb.bots.create({
+    name: 'HeraldDirect', title: 'Herald', description: 'Answers directly.', runtime: 'hermes',
+  });
+  const heraldConv = loopDb.conversations.getByBotId(herald.id);
+  loopDb.messages.create(heraldConv.id, 'user', 'Hello Herald.');
+  loopDb.queue.enqueue(heraldConv.id, herald.id);
+  processed = 0;
+  while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+  assert(hermesAnswered === 1, 'Hermes direct-dispatch assertion: ordinary Hermes message uses the existing Hermes session');
+  assert(launchedArgv === null, 'Hermes direct-dispatch assertion: opposite adapter (agent-deck) was not invoked');
+  loopAgent.setDelegationChatStub(null);
+  loopAgent.resetDelegationForTests();
+  try { require('fs').rmSync(workdir, { recursive: true, force: true }); } catch { /* best effort */ }
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

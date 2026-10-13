@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// NOT-413 Hermes gateway wake path plus NOT-434 Hermes default persistent
-// runtime (one gateway, specialists wait inside it; ordinary turns run on
-// the bot's Hermes session by default).
+// NOT-413 Hermes gateway wake path plus NOT-442 single runtime
+// (one gateway for Hermes bots; ordinary turns dispatch directly through
+// the bot's own stored runtime with no DECK directive).
 //
 // Self-contained: isolated SQLite file, stub gateway HTTP server on an
 // ephemeral port, deterministic caller stub at the model-call boundary.
@@ -507,10 +507,10 @@ async function main() {
   agent.setDelegationChatStub(null);
   process.env.HERMES_API_SERVER_KEY = 'test-key';
   process.env.HERMES_BASE_URL = gateway.baseUrl;
-  const solo = bots.create({ name: 'Solo', title: 'Soloist', description: 'Answers directly.' });
+  const solo = bots.create({ name: 'Solo', title: 'Soloist', description: 'Answers directly.', runtime: 'hermes' });
   const soloReadBack = bots.getById(solo.id);
   assert(
-    soloReadBack.persistent_runtime === 'hermes' && agent.persistentRuntimeForBot(soloReadBack) === 'hermes',
+    soloReadBack.runtime === 'hermes' && agent.runtimeForBot(soloReadBack) === 'hermes',
     'default-runtime assertion: newly created bot without an opt-in switch reads back as hermes'
   );
   const soloConv = conversations.getByBotId(solo.id);
@@ -599,36 +599,56 @@ async function main() {
     'zero new messages after the aborted ordinary turn settles'
   );
 
-  // Scenario 10 (NOT-434): a delegated coding run stays a separate Agent
-  // Deck session from the persistent Hermes session. The Hermes turn
-  // (stubbed gateway reply carrying a DECK directive) dispatches the
-  // coding work through the configured Agent Deck path; the deck run
-  // reports its own opaque session id, distinct from the Hermes one.
-  log('\nScenario 10: delegated coding run is a separate Agent Deck session');
-  const coder = bots.create({
-    name: 'Coder', title: 'Coder', description: 'Delegates implementation work.',
-    persistent_runtime: 'hermes', coding_runtime: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/relay-work',
+  // Scenario 10 (NOT-442): direct dispatch. An ordinary message to a
+  // Hermes bot uses the existing Hermes session, while an ordinary
+  // message to an Agent Deck bot launches the stored agent/deck/workdir
+  // directly without waiting for or parsing a DECK directive. Each case
+  // proves the opposite adapter was not invoked.
+  log('\nScenario 10: ordinary Hermes message uses the Hermes session directly');
+  gateway.state.requests.length = 0;
+  let deckCallsDuringHermes = 0;
+  deckRun.setDeckRunProcess(async argv => {
+    deckCallsDuringHermes += 1;
+    return { stdout: '', stderr: 'must not launch deck for Hermes turn', exitCode: 1 };
   });
-  const coderConv = conversations.getByBotId(coder.id);
-  assert(!!coderConv, 'coder thread exists');
-  const coderHermesSession = hermes.hermesSessionIdForBot(coder.id, hermes.loadHermesConfig());
-  const deckCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-hermes-deck-cwd-'));
-  fs.mkdirSync(path.join(deckCwd, '.agent-deck'), { recursive: true });
-  fs.writeFileSync(
-    path.join(deckCwd, '.agent-deck', 'use.json'),
-    JSON.stringify({ version: 3, deckId: 'actual-deck-id', deckName: 'actual-deck' })
+  agent.setDelegationChatStub(null);
+  process.env.HERMES_API_SERVER_KEY = 'test-key';
+  process.env.HERMES_BASE_URL = gateway.baseUrl;
+  const hermesDirect = bots.create({
+    name: 'HermesDirect', title: 'HermesDirect', description: 'Answers directly.',
+    runtime: 'hermes',
+  });
+  const hermesDirectConv = conversations.getByBotId(hermesDirect.id);
+  assert(!!hermesDirectConv, 'hermes-direct thread exists');
+  const hermesDirectSession = hermes.hermesSessionIdForBot(hermesDirect.id, hermes.loadHermesConfig());
+  const user10a = messages.create(hermesDirectConv.id, 'user', 'Hello Hermes bot.');
+  queue.enqueue(hermesDirectConv.id, hermesDirect.id);
+  await drain();
+  const hermesDirectRequests = gateway.state.requests.slice();
+  assert(
+    hermesDirectRequests.length === 1 && hermesDirectRequests[0].sessionId === hermesDirectSession,
+    'Hermes direct-dispatch assertion: ordinary Hermes message uses the existing Hermes session'
   );
-  process.env.BOTMANCERS_DECK_CWD = deckCwd;
+  assert(
+    deckCallsDuringHermes === 0,
+    'Hermes direct-dispatch assertion: opposite adapter (agent-deck) was not invoked'
+  );
+  deckRun.setDeckRunProcess(null);
+
+  log('\nScenario 11: ordinary Agent Deck message launches the stored deck directly');
+  agent.setDelegationChatStub(() => {
+    throw new Error('Hermes adapter must not run for an agent-deck turn');
+  });
+  const deckWorkdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-hermes-deck-cwd-'));
+  let launchedArgv = null;
   let deckRuns = 0;
   deckRun.setDeckRunProcess(async argv => {
     if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
       const runId = argv[3];
-      // The resume run reports the impl session (no fork); the review run
-      // reports its own. Mirrors the test-snapshot deck mock.
       const sessionId = String(runId).endsWith('-2') ? `ses-for-${runId}` : 'ses-deck-impl';
       return {
         stdout: JSON.stringify({
-          runId, deck: 'actual-deck-id', client: 'codex', state: 'ended', sessionId,
+          runId, deck: 'stored-deck-id', client: 'codex', state: 'ended', sessionId,
           startedAt: '2026-10-12T00:00:00.000Z', lastLogTs: '2026-10-12T00:01:00.000Z',
           logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
         }),
@@ -646,32 +666,44 @@ async function main() {
     }
     if (argv[0] === 'agent-deck' && argv[1] === 'run') {
       deckRuns += 1;
+      if (!launchedArgv) launchedArgv = argv.slice();
       const runId = `run-hermes-${deckRuns}`;
       return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
     }
     return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
   });
-  agent.setDelegationChatStub(() => 'DECK codex: Implement the widget.');
-  const user10 = messages.create(coderConv.id, 'user', 'Build the widget through the coding agent.');
+  const coder = bots.create({
+    name: 'Coder', title: 'Coder', description: 'Launches directly.',
+    runtime: 'agent-deck', agent_client: 'codex', deck_id: 'stored-deck-id', working_directory: deckWorkdir,
+  });
+  const coderConv = conversations.getByBotId(coder.id);
+  assert(!!coderConv, 'coder thread exists');
+  gateway.state.requests.length = 0;
+  const gatewayBeforeDeck = gateway.state.requests.length;
+  const user10 = messages.create(coderConv.id, 'user', 'Build the widget.');
   queue.enqueue(coderConv.id, coder.id);
   await drain();
-  delete process.env.BOTMANCERS_DECK_CWD;
   deckRun.setDeckRunProcess(null);
   agent.setDelegationChatStub(null);
   const thread10 = messages.getByConversation(coderConv.id);
-  const deckRunLine = thread10.find(m => m.sender_type === 'bot' && m.content.startsWith('[Deck run]'));
-  const deckSessionMatch = deckRunLine ? deckRunLine.content.match(/sessionId=(\S+)/) : null;
-  const deckSession = deckSessionMatch ? deckSessionMatch[1] : null;
-  assert(!!deckSession, `coding delegation reports its own Agent Deck session id (got ${deckSession || 'none'})`);
+  assert(!!launchedArgv, 'Agent Deck direct-dispatch assertion: ordinary Agent Deck message launches the stored deck run');
+  const flag = (argv, name) => {
+    const i = argv.indexOf(name);
+    return i >= 0 ? argv[i + 1] : null;
+  };
   assert(
-    !!deckSession && deckSession !== coderHermesSession,
-    `session-separation assertion: Agent Deck session (${deckSession || 'none'}) differs from the persistent Hermes session (${coderHermesSession})`
+    launchedArgv && flag(launchedArgv, '--client') === 'codex' && launchedArgv[2] === 'stored-deck-id' && flag(launchedArgv, '--cwd') === deckWorkdir,
+    'Agent Deck direct-dispatch assertion: launch uses the stored agent/deck/workdir without parsing a DECK directive'
+  );
+  assert(
+    gateway.state.requests.length === gatewayBeforeDeck,
+    'Agent Deck direct-dispatch assertion: opposite adapter (Hermes) was not invoked'
   );
   assert(
     thread10.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck handoff]')),
-    'session-separation assertion: ordinary Hermes turn delegates coding through the Agent Deck path, not the gateway'
+    'Agent Deck direct-dispatch assertion: deck handoff posted from the stored configuration'
   );
-  try { fs.rmSync(deckCwd, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(deckWorkdir, { recursive: true, force: true }); } catch { /* best effort */ }
   try { gateway.restore(); } catch { /* best effort */ }
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);

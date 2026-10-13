@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// NOT-433: bot-definition contract test (deterministic, no network).
+// NOT-442: single bot runtime contract test (deterministic, no network).
 //
-// Proves: a bot round-trips Hermes plus a validated Agent Deck coding path;
-// unknown coding runtimes and launchable bots missing deck/working-directory
-// are rejected with the API errors the routes return; pre-migration rows
-// read back without invented values and report unconfigured; the
-// availability payload lists only probe-ready runtimes.
-//
-// Self-contained: isolated SQLite file, injected process seam at the
-// agent-deck process boundary. No dev server (loopback listen() is
-// unavailable in this sandbox), no API key, no real runs.
+// Proves: the bot-definition schema and create/read/update API accept only
+// runtime=hermes or runtime=agent-deck (Agent Deck requires one of
+// codex|claude|cursor|muse plus a deck ID; Hermes rejects Agent Deck-only
+// fields); the deterministic migration converts every complete legacy
+// coding path to agent-deck (legacy deck_name preserved only as an
+// unresolved reference, null deck ID, needs-reselection) with zero
+// deck-discovery calls, while every incomplete/absent path becomes hermes.
+
 'use strict';
 
 const fs = require('fs');
@@ -45,100 +44,173 @@ function check(label, condition, detail) {
   else fail(label, detail);
 }
 
-// --- Criterion 1: create and read a bot with Hermes + a full coding path.
-const created = db.bots.create({
+// --- Criterion 1: valid Hermes round trip (default for newly created bots).
+const hermesCreated = db.bots.create({
+  name: 'Herald',
+  title: 'Herald',
+  description: 'Converses persistently.',
+  runtime: 'hermes',
+  agent_client: null,
+  deck_id: null,
+  deck_name: null,
+  working_directory: null,
+  needs_deck_reselection: 0,
+});
+console.log(`valid Hermes round trip: runtime=${hermesCreated.runtime} agent_client=${hermesCreated.agent_client} deck_id=${hermesCreated.deck_id}`);
+check('valid Hermes bot stores runtime=hermes', hermesCreated.runtime === 'hermes', JSON.stringify(hermesCreated.runtime));
+const hermesReadBack = db.bots.getById(hermesCreated.id);
+const hermesView = def.serializeBot(hermesReadBack);
+console.log(`Hermes read-back: runtime=${hermesView.runtime} agent_client=${hermesView.agent_client} deck_id=${hermesView.deck_id} launchable=${hermesView.launchable}`);
+check(
+  'Hermes read-back resolves to hermes with cleared Agent Deck fields',
+  hermesView.runtime === 'hermes' && hermesView.agent_client === null && hermesView.deck_id === null &&
+    hermesView.deck_name === null && hermesView.working_directory === null && hermesView.launchable === true,
+  JSON.stringify({ runtime: hermesView.runtime, agent_client: hermesView.agent_client, deck_id: hermesView.deck_id })
+);
+
+// --- Criterion 1: valid Agent Deck round trip.
+const deckCreated = db.bots.create({
   name: 'Relay',
   title: 'Coding Relay',
-  description: 'Relays implementation work to a local coding agent.',
-  persistent_runtime: 'hermes',
-  coding_runtime: 'codex',
-  deck_name: 'relay-deck',
+  description: 'Launches a local coding agent directly.',
+  runtime: 'agent-deck',
+  agent_client: 'codex',
+  deck_id: 'deck-123',
+  deck_name: null,
   working_directory: '/tmp/relay-work',
+  needs_deck_reselection: 0,
 });
-console.log(`saved bot fields: persistent_runtime=${created.persistent_runtime} coding_runtime=${created.coding_runtime} deck_name=${created.deck_name} working_directory=${created.working_directory}`);
-check('create persists the Hermes persistent runtime', created.persistent_runtime === 'hermes', JSON.stringify(created.persistent_runtime));
-
-const readBack = db.bots.getById(created.id);
-console.log(`read-back bot fields: persistent_runtime=${readBack.persistent_runtime} coding_runtime=${readBack.coding_runtime} deck_name=${readBack.deck_name} working_directory=${readBack.working_directory}`);
+console.log(`valid Agent Deck round trip: runtime=${deckCreated.runtime} agent_client=${deckCreated.agent_client} deck_id=${deckCreated.deck_id} working_directory=${deckCreated.working_directory}`);
+check('valid Agent Deck bot stores its client and deck ID', deckCreated.runtime === 'agent-deck' && deckCreated.agent_client === 'codex' && deckCreated.deck_id === 'deck-123', JSON.stringify(deckCreated));
+const deckReadBack = db.bots.getById(deckCreated.id);
+const deckView = def.serializeBot(deckReadBack);
 check(
-  'read-back bot carries the codex|claude|cursor|muse coding path',
-  readBack.coding_runtime === 'codex' && readBack.deck_name === 'relay-deck' && readBack.working_directory === '/tmp/relay-work',
-  JSON.stringify({ coding_runtime: readBack.coding_runtime, deck_name: readBack.deck_name, working_directory: readBack.working_directory })
+  'Agent Deck read-back resolves with its stored configuration',
+  deckView.runtime === 'agent-deck' && deckView.agent_client === 'codex' && deckView.deck_id === 'deck-123' &&
+    deckView.working_directory === '/tmp/relay-work' && deckView.launchable === true,
+  JSON.stringify(deckView)
 );
-const serialized = def.serializeBot(readBack);
-check('serialized bot reports its coding path as configured', serialized.coding_configured === true && serialized.coding_path.configured === true);
-check('coding enum matches the NOT-395 adapter runtimes', JSON.stringify(def.CODING_RUNTIMES) === JSON.stringify(deck.DECK_RUNTIMES));
+check('agent-client enum matches the run-adapter runtimes', JSON.stringify(def.AGENT_CLIENTS) === JSON.stringify(deck.DECK_RUNTIMES));
 
-// --- Criterion 2: validation rejects bad input with the API errors.
-const unknownRuntime = def.validateCreateRuntimePath({
-  name: 'Bad', launchable: true, coding_runtime: 'watson', deck_name: 'd', working_directory: '/tmp/w',
-});
-console.log(`validation case unknown-coding-runtime: expected API error: ${unknownRuntime.errors[0]}`);
+// --- Criterion 1: invalid fixtures (mixed/partial) are rejected.
+const unknownRuntime = def.validateCreateRuntimePath({ runtime: 'watson' });
+console.log(`invalid mixed fixture unknown-runtime: ${unknownRuntime.errors[0] || '(no error)'}`);
+check('unknown runtime is rejected', unknownRuntime.errors.length > 0 && /Invalid runtime/.test(unknownRuntime.errors[0]), JSON.stringify(unknownRuntime.errors));
+
+const unknownClient = def.validateCreateRuntimePath({ runtime: 'agent-deck', agent_client: 'watson', deck_id: 'd1' });
+console.log(`invalid mixed fixture unknown-client: ${unknownClient.errors[0] || '(no error)'}`);
+check('unknown agent client is rejected', unknownClient.errors.length > 0 && /Invalid agent client/.test(unknownClient.errors[0]), JSON.stringify(unknownClient.errors));
+
+const missingClient = def.validateCreateRuntimePath({ runtime: 'agent-deck', deck_id: 'd1' });
+console.log(`invalid partial fixture missing-client: ${missingClient.errors[0] || '(no error)'}`);
+check('agent-deck without a client is rejected', missingClient.errors.some(e => /agent client/i.test(e)), JSON.stringify(missingClient.errors));
+
+const missingDeckId = def.validateCreateRuntimePath({ runtime: 'agent-deck', agent_client: 'claude' });
+console.log(`invalid partial fixture missing-deck-id: ${missingDeckId.errors[0] || '(no error)'}`);
+check('agent-deck without a deck ID is rejected', missingDeckId.errors.some(e => /Deck ID is required/.test(e)), JSON.stringify(missingDeckId.errors));
+
+const hermesWithDeckFields = def.validateCreateRuntimePath({ runtime: 'hermes', agent_client: 'codex', deck_id: 'd1' });
+console.log(`invalid mixed fixture hermes-with-deck-fields: ${hermesWithDeckFields.errors[0] || '(no error)'}`);
+check('Hermes with Agent Deck fields is rejected', hermesWithDeckFields.errors.some(e => /not accepted for a Hermes bot/.test(e)), JSON.stringify(hermesWithDeckFields.errors));
+
+// PATCH contract: unknown runtime/client rejected, blank values clear.
+const badUpdate = def.validateUpdateRuntimePath({ runtime: 'watson' });
+check('update with an unknown runtime is rejected', badUpdate.errors.length > 0 && /Invalid runtime/.test(badUpdate.errors[0]), JSON.stringify(badUpdate.errors));
+const badClientUpdate = def.validateUpdateRuntimePath({ agent_client: 'watson' });
+check('update with an unknown agent client is rejected', badClientUpdate.errors.length > 0 && /Invalid agent client/.test(badClientUpdate.errors[0]), JSON.stringify(badClientUpdate.errors));
+
+// Switching to hermes clears Agent Deck fields.
+db.bots.updateRuntimePath(deckCreated.id, { runtime: 'hermes' });
+const clearedToHermes = def.serializeBot(db.bots.getById(deckCreated.id));
 check(
-  'unknown coding runtime is rejected',
-  unknownRuntime.errors.length > 0 && /Invalid coding runtime/.test(unknownRuntime.errors[0]) && /codex\|claude\|cursor\|muse/.test(unknownRuntime.errors[0]),
-  JSON.stringify(unknownRuntime.errors)
+  'switching to hermes clears Agent Deck fields',
+  clearedToHermes.runtime === 'hermes' && clearedToHermes.agent_client === null && clearedToHermes.deck_id === null &&
+    clearedToHermes.working_directory === null && clearedToHermes.needs_deck_reselection === false,
+  JSON.stringify(clearedToHermes)
 );
+// Restore the deck bot for later suites (independent DB files, but keep tidy).
+db.bots.updateRuntimePath(deckCreated.id, { runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-123', working_directory: '/tmp/relay-work' });
 
-const missingDeck = def.validateCreateRuntimePath({
-  name: 'NoDeck', launchable: true, coding_runtime: 'claude', working_directory: '/tmp/w',
-});
-console.log(`validation case launchable-missing-deck: expected API error: ${missingDeck.errors[0]}`);
+// --- Criterion 2: deterministic migration fixtures (pure, no network).
+// Count deck-discovery calls: the migration must never fetch.
+let deckDiscoveryCalls = 0;
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (...args) => {
+  deckDiscoveryCalls += 1;
+  if (originalFetch) return originalFetch(...args);
+  throw new Error('fetch not available in test sandbox');
+};
+
+function showMigration(label, before, after) {
+  console.log(
+    `migration fixture ${label}: before=${JSON.stringify(before)} after=${JSON.stringify(after)}`
+  );
+}
+
+const completeBefore = { runtime: null, coding_runtime: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/relay-work' };
+const completeAfter = def.migrateLegacyRuntimeFields({ ...completeBefore });
+showMigration('complete', completeBefore, completeAfter);
+console.log(`complete legacy path: legacy deck_name="${completeAfter.deck_name}" deck_id=${completeAfter.deck_id} needs_deck_reselection=${completeAfter.needs_deck_reselection}`);
 check(
-  'launchable bot with a missing deck name is rejected',
-  missingDeck.errors.some(e => e === 'Deck name is required for a launchable bot.'),
-  JSON.stringify(missingDeck.errors)
+  'complete legacy coding path becomes agent-deck with the legacy name as an unresolved reference',
+  completeAfter.runtime === 'agent-deck' && completeAfter.agent_client === 'codex' &&
+    completeAfter.deck_name === 'relay-deck' && completeAfter.deck_id === null &&
+    completeAfter.needs_deck_reselection === true && completeAfter.working_directory === '/tmp/relay-work',
+  JSON.stringify(completeAfter)
 );
 
-const missingCwd = def.validateCreateRuntimePath({
-  name: 'NoCwd', launchable: true, coding_runtime: 'cursor', deck_name: 'd',
-});
-console.log(`validation case launchable-missing-working-directory: expected API error: ${missingCwd.errors[0]}`);
+const partialBefore = { runtime: null, coding_runtime: 'claude', deck_name: null, working_directory: '/tmp/w' };
+const partialAfter = def.migrateLegacyRuntimeFields({ ...partialBefore });
+showMigration('partial-missing-deck', partialBefore, partialAfter);
 check(
-  'launchable bot with a missing working directory is rejected',
-  missingCwd.errors.some(e => e === 'Working directory is required for a launchable bot.'),
-  JSON.stringify(missingCwd.errors)
+  'partial path (missing deck name) becomes hermes with cleared fields',
+  partialAfter.runtime === 'hermes' && partialAfter.agent_client === null && partialAfter.deck_id === null &&
+    partialAfter.deck_name === null && partialAfter.working_directory === null && partialAfter.needs_deck_reselection === false,
+  JSON.stringify(partialAfter)
 );
 
-// A non-launchable manual create without a coding path stays acceptable.
-const draft = def.validateCreateRuntimePath({ name: 'Draft' });
-check('non-launchable create without a coding path has no errors', draft.errors.length === 0, JSON.stringify(draft.errors));
-
-// PATCH contract: unknown runtime rejected, blanks clear to unconfigured.
-const badUpdate = def.validateUpdateRuntimePath({ coding_runtime: 'watson' });
-check('update with an unknown coding runtime is rejected', badUpdate.errors.length > 0 && /Invalid coding runtime/.test(badUpdate.errors[0]));
-db.bots.updateRuntimePath(created.id, { deck_name: '', working_directory: '' });
-const cleared = def.serializeBot(db.bots.getById(created.id));
-check('blank deck/working-directory clears the coding path to unconfigured', cleared.coding_configured === false && cleared.coding_path.deck_name === null);
-db.bots.updateRuntimePath(created.id, { coding_runtime: 'muse', deck_name: 'relay-deck', working_directory: '/tmp/relay-work' });
-const restored = def.serializeBot(db.bots.getById(created.id));
-check('owner-supplied path restores the coding path to configured', restored.coding_configured === true && restored.coding_runtime === 'muse');
-
-// --- Criterion 3: pre-migration rows invent nothing and read unconfigured.
-const Database = require('better-sqlite3');
-const raw = new Database(DB_PATH);
-raw.prepare(
-  'INSERT INTO bots (id, name, title, description, created_at) VALUES (?, ?, ?, ?, ?)'
-).run('legacy-bot-1', 'Legacy', 'Old Bot', 'Created before NOT-433.', Date.now());
-raw.close();
-const legacy = db.bots.getById('legacy-bot-1');
-const legacyView = def.serializeBot(legacy);
-console.log(`legacy-bot compatibility: persistent_runtime=${legacyView.persistent_runtime} coding_runtime=${legacyView.coding_runtime} deck_name=${legacyView.deck_name} working_directory=${legacyView.working_directory} coding_configured=${legacyView.coding_configured}`);
+const partialCwdBefore = { runtime: null, coding_runtime: 'cursor', deck_name: 'some-deck', working_directory: null };
+const partialCwdAfter = def.migrateLegacyRuntimeFields({ ...partialCwdBefore });
+showMigration('partial-missing-cwd', partialCwdBefore, partialCwdAfter);
 check(
-  'legacy-bot compatibility assertion: pre-migration row invents no coding runtime, deck, or working directory and reports unconfigured',
-  legacyView.persistent_runtime === 'hermes' &&
-    legacyView.coding_runtime === null &&
-    legacyView.deck_name === null &&
-    legacyView.working_directory === null &&
-    legacyView.coding_configured === false &&
-    legacyView.coding_path.configured === false,
-  JSON.stringify(legacyView.coding_path)
+  'partial path (missing working directory) becomes hermes',
+  partialCwdAfter.runtime === 'hermes' && partialCwdAfter.deck_name === null,
+  JSON.stringify(partialCwdAfter)
 );
 
-// --- Criterion 5: availability follows the capability probe, never the enum.
+const invalidClientBefore = { runtime: null, coding_runtime: 'watson', deck_name: 'd', working_directory: '/tmp/w' };
+const invalidClientAfter = def.migrateLegacyRuntimeFields({ ...invalidClientBefore });
+showMigration('partial-invalid-client', invalidClientBefore, invalidClientAfter);
+check('invalid client becomes hermes', invalidClientAfter.runtime === 'hermes', JSON.stringify(invalidClientAfter));
+
+const importedBefore = { runtime: null };
+const importedAfter = def.migrateLegacyRuntimeFields({ ...importedBefore });
+showMigration('imported', importedBefore, importedAfter);
+check('imported row without a coding path becomes hermes', importedAfter.runtime === 'hermes' && importedAfter.migrated === true, JSON.stringify(importedAfter));
+
+const unconfiguredBefore = { runtime: null, coding_runtime: null, deck_name: null, working_directory: null };
+const unconfiguredAfter = def.migrateLegacyRuntimeFields({ ...unconfiguredBefore });
+showMigration('unconfigured', unconfiguredBefore, unconfiguredAfter);
+check('unconfigured row becomes hermes', unconfiguredAfter.runtime === 'hermes' && unconfiguredAfter.deck_name === null, JSON.stringify(unconfiguredAfter));
+
+const alreadyHermes = def.migrateLegacyRuntimeFields({ runtime: 'hermes', agent_client: 'codex', deck_id: 'd1' });
+check('row that already stores a runtime is untouched (hermes)', alreadyHermes.runtime === 'hermes' && alreadyHermes.migrated === false, JSON.stringify(alreadyHermes));
+
+// Imported bots are Hermes with no Agent Deck path at the DB layer.
+const imported = db.bots.createFromImport(
+  { name: 'Imported', title: 'Imported', description: 'Imported bot.' },
+  { source_provider: 'test', template_id: 't1', template_url: 'https://example.test/t1', import_schema_version: '1', import_operation_id: `op-${process.pid}`, import_timestamp: Date.now() }
+);
+const importedView = def.serializeBot(db.bots.getById(imported.id));
+console.log(`imported row: runtime=${importedView.runtime} agent_client=${importedView.agent_client} deck_id=${importedView.deck_id}`);
+check('imported bot reads back as hermes', importedView.runtime === 'hermes' && importedView.agent_client === null, JSON.stringify(importedView));
+
+globalThis.fetch = originalFetch;
+console.log(`deck-discovery calls during migration: ${deckDiscoveryCalls}`);
+check('migration performs zero deck-discovery calls (no network)', deckDiscoveryCalls === 0, `got ${deckDiscoveryCalls}`);
+
 async function main() {
-  // Fixture: only the codex launch path is installed; claude/cursor/muse
-  // binaries are missing, so only codex may be advertised.
+  // Availability still follows the capability probe, never the enum.
   deck.setDeckRunProcess(async argv => {
     if (argv[0] === 'codex' && argv[1] === '--version') return { stdout: 'codex-cli 0.157.1\n', stderr: '', exitCode: 0 };
     if ((argv[0] === 'claude' || argv[0] === 'cursor' || argv[0] === 'muse') && argv[1] === '--version') {
@@ -154,18 +226,6 @@ async function main() {
     'availability includes only probe-ready clients',
     payload.runtimes.length === 1 && payload.runtimes[0].runtime === 'codex' && payload.runtimes[0].launchable === true,
     JSON.stringify(payload)
-  );
-
-  // Fixture: agent-deck CLI itself missing, so no runtime is launchable even
-  // though every value is a valid enum member.
-  deck.setDeckRunProcess(async () => ({ stdout: '', stderr: 'command not found', exitCode: 127 }));
-  const noneReady = await deck.listAvailableDeckRuntimes();
-  const emptyPayload = def.buildAvailabilityPayload(noneReady);
-  console.log(`availability payload (launcher unavailable): ${JSON.stringify(emptyPayload)}`);
-  check(
-    'enum membership alone never marks a runtime launchable',
-    emptyPayload.runtimes.length === 0,
-    JSON.stringify(emptyPayload)
   );
   deck.resetDeckRunProcessForTests();
 
