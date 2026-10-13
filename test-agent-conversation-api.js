@@ -288,6 +288,8 @@ async function main() {
   }
   assert(hermesCalls.length === 3 && deckStarts.length === 3, `runtime-neutral dispatch: 3 Hermes turns and 3 Agent Deck runs (got ${hermesCalls.length}/${deckStarts.length})`);
   assert(hermesCalls.every(call => !call.url.includes(HERMES_KEY)), 'Hermes adapter used its own configured credentials');
+  const dispatchedAgents = raw.prepare("SELECT DISTINCT runtime FROM agent_requests WHERE runtime IS NOT NULL ORDER BY runtime").all().map(row => row.runtime);
+  assert(JSON.stringify(dispatchedAgents) === JSON.stringify(['codex', 'hermes']), `requests record the dispatched agent identity, never Agent Deck (got ${dispatchedAgents.join(',')})`);
 
   // AC2: idempotency.
   log('\nAC2 idempotency');
