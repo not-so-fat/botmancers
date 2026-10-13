@@ -2,7 +2,6 @@ import {
   AGENT_OPTIONS,
   DECK_PLACEHOLDER,
   NON_LOCAL_NOTE,
-  RUNTIME_OPTIONS,
   SAVED_DECK_MISSING_NOTE,
   SETTINGS_LINK_COPY,
   SETTINGS_NON_LOCAL_NOTE,
@@ -10,11 +9,9 @@ import {
   deckSlotCopy,
   deckStateShowsRetry,
   rosterRuntimeParts,
-  runtimeFormView,
   settingsStatusLine,
   type BotRuntimeLike,
   type DeckListState,
-  type RuntimeChoice,
   type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
 
@@ -52,16 +49,18 @@ const CLASSES: Record<Variant, {
   },
 };
 
-export function RuntimePicker({ value, onChange, name, variant }: {
-  value: RuntimeChoice;
-  onChange: (value: RuntimeChoice) => void;
+// NOT-456: one agent choice (Hermes, Cursor, Claude, Codex, Muse Code).
+export function AgentPicker({ value, onChange, name, variant, labelledBy }: {
+  value: string;
+  onChange: (value: RuntimeFormInput['agent']) => void;
   name: string;
   variant: Variant;
+  labelledBy: string;
 }) {
   const css = CLASSES[variant];
   return (
-    <div className={css.picks} role="radiogroup" aria-label="Runtime" data-field="runtime">
-      {RUNTIME_OPTIONS.map(option => (
+    <div className={css.picks} role="radiogroup" aria-labelledby={labelledBy} data-field="agent">
+      {AGENT_OPTIONS.map(option => (
         <label key={option.value} className={css.pick}>
           <input
             type="radio"
@@ -129,8 +128,6 @@ export function DeckSlot({ id, state, value, onChange, onRetry, savedDeckId, var
 export function AgentDeckFields({
   idPrefix,
   variant,
-  agentClient,
-  onAgentClient,
   deckId,
   onDeckId,
   deckState,
@@ -143,8 +140,6 @@ export function AgentDeckFields({
 }: {
   idPrefix: string;
   variant: Variant;
-  agentClient: string;
-  onAgentClient: (value: string) => void;
   deckId: string;
   onDeckId: (value: string) => void;
   deckState: DeckListState;
@@ -158,22 +153,7 @@ export function AgentDeckFields({
   const css = CLASSES[variant];
   return (
     <div className="agent-deck-fields">
-      <label className={css.label} id={`${idPrefix}-agent-label`}>Agent</label>
-      <div className={css.picks} role="radiogroup" aria-labelledby={`${idPrefix}-agent-label`} data-field="agent">
-        {AGENT_OPTIONS.map(agent => (
-          <label key={agent} className={css.pick}>
-            <input
-              type="radio"
-              name={`${idPrefix}-agent`}
-              value={agent}
-              checked={agentClient === agent}
-              onChange={() => onAgentClient(agent)}
-            />
-            {' ' + agent}
-          </label>
-        ))}
-      </div>
-      <label className={css.label} htmlFor={`${idPrefix}-deck`}>Deck</label>
+      <label className={css.label} htmlFor={`${idPrefix}-deck`}>Agent Deck</label>
       <DeckSlot
         id={`${idPrefix}-deck`}
         state={deckState}
@@ -200,8 +180,7 @@ export function AgentDeckFields({
   );
 }
 
-// Runtime picker plus the Agent Deck group, which renders only while
-// Agent Deck is selected (Hermes shows the picker alone).
+// Agent picker plus the Agent Deck selection every agent needs.
 export function RuntimeSection({
   idPrefix,
   variant,
@@ -223,33 +202,29 @@ export function RuntimeSection({
   workdirPlaceholder: string;
   workdirHint: string;
 }) {
-  const view = runtimeFormView(form, deckState);
   return (
     <>
-      <label className={CLASSES[variant].label} id={`${idPrefix}-runtime-label`}>Runtime</label>
-      <RuntimePicker
-        value={form.runtime}
-        onChange={value => onChange({ runtime: value })}
-        name={`${idPrefix}-runtime`}
+      <label className={CLASSES[variant].label} id={`${idPrefix}-agent-label`}>Agent</label>
+      <AgentPicker
+        value={form.agent}
+        onChange={value => onChange({ agent: value })}
+        name={`${idPrefix}-agent`}
         variant={variant}
+        labelledBy={`${idPrefix}-agent-label`}
       />
-      {view.fields.includes('agent') ? (
-        <AgentDeckFields
-          idPrefix={idPrefix}
-          variant={variant}
-          agentClient={form.agentClient}
-          onAgentClient={value => onChange({ agentClient: value })}
-          deckId={form.deckId}
-          onDeckId={value => onChange({ deckId: value })}
-          deckState={deckState}
-          onRetry={onRetry}
-          savedDeckId={savedDeckId}
-          workingDirectory={form.workingDirectory}
-          onWorkingDirectory={value => onChange({ workingDirectory: value })}
-          workdirPlaceholder={workdirPlaceholder}
-          workdirHint={workdirHint}
-        />
-      ) : null}
+      <AgentDeckFields
+        idPrefix={idPrefix}
+        variant={variant}
+        deckId={form.deckId}
+        onDeckId={value => onChange({ deckId: value })}
+        deckState={deckState}
+        onRetry={onRetry}
+        savedDeckId={savedDeckId}
+        workingDirectory={form.workingDirectory}
+        onWorkingDirectory={value => onChange({ workingDirectory: value })}
+        workdirPlaceholder={workdirPlaceholder}
+        workdirHint={workdirHint}
+      />
     </>
   );
 }

@@ -18,7 +18,7 @@
 // writable only through the UI routes, whose agent loop owns their turns.
 import { createHash, randomUUID } from 'crypto';
 import db, { bots, type Bot, type Principal, type PrincipalKind } from './db';
-import { DispatchFailure, dispatchToAgent, runtimeForDispatch, type DispatchHistoryEntry } from './agent-dispatch';
+import { DispatchFailure, agentForDispatch, dispatchToAgent, type DispatchHistoryEntry } from './agent-dispatch';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -325,13 +325,15 @@ async function runDispatch(requestId: string): Promise<void> {
     failRequest(requestId, 'agent_unavailable', 'The agent is no longer registered.');
     return;
   }
-  const runtime = runtimeForDispatch(bot);
+  // NOT-456: the agent_requests.runtime column records the dispatched
+  // agent identity (hermes|cursor|claude|codex|muse), never Agent Deck.
+  const agent = agentForDispatch(bot);
   const claimed = db.transaction(() => {
     const result = db.prepare(
       "UPDATE agent_requests SET state = 'dispatched', runtime = ?, updated_at = ? WHERE id = ? AND state = 'accepted'"
-    ).run(runtime, Date.now(), requestId);
+    ).run(agent, Date.now(), requestId);
     if (result.changes !== 1) return false;
-    recordEvent(requestId, 'dispatched', { runtime });
+    recordEvent(requestId, 'dispatched', { agent });
     return true;
   })();
   if (!claimed) return;

@@ -1,10 +1,12 @@
 // NOT-446: runtime-neutral dispatch for the agent conversation API.
 //
 // Callers name an agent; this module routes the turn through that bot's
-// single stored runtime (NOT-442) and returns only the reply text or a
-// typed failure. Completion is typed by the adapter contract, never read
+// stored agent on its selected Agent Deck (NOT-456) and returns only the
+// reply text or a typed failure. Every agent follows one contract: it
+// launches only when an Agent Deck is selected, and its adapter
+// (AGENT_TRANSPORTS) serves the turn. Completion is typed by the adapter contract, never read
 // from reply prose: a Hermes turn completes when the gateway answers the
-// chat request with HTTP 200, and an Agent Deck turn completes only when
+// chat request with HTTP 200, and a coding-agent turn completes only when
 // `agent-deck run log --follow` reports an end event and run status is not
 // error/died. The detach acknowledgement from `agent-deck run` is a
 // transport acknowledgement, not completion.
@@ -12,7 +14,7 @@
 // Failure messages are fixed per category so adapter output (which can
 // carry URLs, stderr, or gateway error bodies) never reaches the caller.
 import type { Bot } from './db';
-import { resolveRuntime, RUNTIME_AGENT_DECK, type BotRuntime } from './bot-definition';
+import { agentTransport, resolveAgent, type BotAgent } from './bot-definition';
 import {
   HermesError,
   hermesChat,
@@ -38,6 +40,8 @@ export class DispatchFailure extends Error {
     this.code = code;
   }
 }
+
+export const AGENT_DECK_NOT_SELECTED = 'The agent has no Agent Deck selected.';
 
 export interface DispatchHistoryEntry {
   speakerLabel: string;
@@ -65,8 +69,8 @@ export function setAgentDispatchHermesFetch(fetchImpl: FetchImpl | null): void {
   hermesFetch = fetchImpl;
 }
 
-export function runtimeForDispatch(bot: Bot): BotRuntime {
-  return resolveRuntime(bot).runtime;
+export function agentForDispatch(bot: Bot): BotAgent {
+  return resolveAgent(bot).agent;
 }
 
 function systemPromptFor(bot: Bot): string {
@@ -110,10 +114,10 @@ async function dispatchHermes(turn: DispatchTurn, hooks: DispatchHooks): Promise
   }
 }
 
-async function dispatchAgentDeck(turn: DispatchTurn, hooks: DispatchHooks): Promise<string> {
-  const resolved = resolveRuntime(turn.bot);
-  if (!resolved.launchable || !resolved.agent_client || !resolved.deck_id) {
-    throw new DispatchFailure('agent_unavailable', 'The agent has no launchable runtime selection.');
+async function dispatchDeckRun(turn: DispatchTurn, hooks: DispatchHooks): Promise<string> {
+  const resolved = resolveAgent(turn.bot);
+  if (!resolved.deck_id) {
+    throw new DispatchFailure('agent_unavailable', AGENT_DECK_NOT_SELECTED);
   }
   if (!isLocalAgentDeckUrl(getAgentDeckServerUrl())) {
     throw new DispatchFailure('agent_unavailable', 'The agent runtime is not reachable from this engine.');
@@ -128,7 +132,7 @@ async function dispatchAgentDeck(turn: DispatchTurn, hooks: DispatchHooks): Prom
   try {
     const started = await startDeckRun({
       deck: resolved.deck_id,
-      client: parseDeckRuntime(resolved.agent_client),
+      client: parseDeckRuntime(resolved.agent),
       cwd,
       prompt: deckPromptFor(turn),
       tools: 'readonly',
@@ -148,7 +152,11 @@ async function dispatchAgentDeck(turn: DispatchTurn, hooks: DispatchHooks): Prom
 }
 
 export async function dispatchToAgent(turn: DispatchTurn, hooks: DispatchHooks = {}): Promise<string> {
-  return runtimeForDispatch(turn.bot) === RUNTIME_AGENT_DECK
-    ? dispatchAgentDeck(turn, hooks)
-    : dispatchHermes(turn, hooks);
+  const resolved = resolveAgent(turn.bot);
+  if (!resolved.launchable) {
+    throw new DispatchFailure('agent_unavailable', AGENT_DECK_NOT_SELECTED);
+  }
+  return agentTransport(resolved.agent) === 'hermes-gateway'
+    ? dispatchHermes(turn, hooks)
+    : dispatchDeckRun(turn, hooks);
 }

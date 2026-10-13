@@ -1,5 +1,5 @@
-// NOT-445: single bot runtime UI helpers (pure, no I/O except the
-// injected deck-list fetcher).
+// NOT-445/NOT-456: agent + Agent Deck UI helpers (pure, no I/O except
+// the injected deck-list fetcher).
 //
 // Single source for the Atelier-approved copy (docs/design/
 // bot-single-runtime-settings.md) used by the New Bot modal, the
@@ -8,21 +8,19 @@
 // values; the plain-node regression test (`test-bot-runtime-ui.js`)
 // asserts them without a browser.
 //
-// Every bot shows exactly one runtime summary: `Runtime: Hermes` or
-// `Runtime: Agent Deck · <agent> · <deck>`. The Agent Deck server URL is
+// Every bot shows exactly one summary: `Agent: <agent> · Agent Deck:
+// <deck>` (NOT-456). Agent Deck is the selected deck, never a runtime or
+// an agent option. The Agent Deck server URL is
 // a workspace setting; no per-bot URL exists. Deck options come only
 // from the Botmancers proxy (`GET /api/agent-deck/decks`), which issues
 // the verified `GET <server>/api/launch/decks` server-side.
-import { AGENT_CLIENTS } from './bot-definition';
+import { AGENTS, AGENT_LABELS, DEFAULT_AGENT, agentLabel, type BotAgent } from './bot-definition';
 
-export const AGENT_OPTIONS: readonly string[] = AGENT_CLIENTS;
-
-export const RUNTIME_OPTIONS = [
-  { value: 'hermes', label: 'Hermes' },
-  { value: 'agent-deck', label: 'Agent Deck' },
-] as const;
-
-export type RuntimeChoice = 'hermes' | 'agent-deck';
+// Ordered agent choices: Hermes, Cursor, Claude, Codex, Muse Code.
+export const AGENT_OPTIONS: readonly { value: BotAgent; label: string }[] = AGENTS.map(agent => ({
+  value: agent,
+  label: AGENT_LABELS[agent],
+}));
 
 export const DECKS_ENDPOINT = '/api/agent-deck/decks';
 export const SETTINGS_ENDPOINT = '/api/agent-deck/settings';
@@ -30,13 +28,12 @@ export const SETTINGS_PATH = '/settings';
 
 export interface BotRuntimeLike {
   id?: string | null;
-  runtime?: string | null;
-  agent_client?: string | null;
+  agent?: string | null;
   deck_id?: string | null;
   // Unresolved legacy free-text deck reference (migrated rows only).
   deck_name?: string | null;
   working_directory?: string | null;
-  needs_deck_reselection?: boolean | number | null;
+  needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
 }
 
@@ -57,8 +54,6 @@ export interface DeckListState {
   checkedAt: number;
   error: string;
 }
-
-export const RUNTIME_HERMES_LINE = 'Runtime: Hermes';
 
 export const ROSTER_UNAVAILABLE_SUFFIX = ' (deck unavailable — see Config)';
 export const CONFIG_UNAVAILABLE_SUFFIX = ' (deck unavailable)';
@@ -225,8 +220,8 @@ export function deckLabel(deckId: string, state: DeckListState | null | undefine
   return list.find(deck => deck.id === id)?.name ?? id;
 }
 
-function needsReselection(bot: BotRuntimeLike): boolean {
-  const flag: unknown = bot.needs_deck_reselection;
+function needsSelectionFlag(bot: BotRuntimeLike): boolean {
+  const flag: unknown = bot.needs_deck_selection;
   if (flag === true || flag === 1) return true;
   if (typeof flag === 'string') {
     const text = flag.trim().toLowerCase();
@@ -235,34 +230,37 @@ function needsReselection(bot: BotRuntimeLike): boolean {
   return false;
 }
 
-export function isAgentDeckRuntime(bot: BotRuntimeLike): boolean {
-  return (bot.runtime ?? '').trim() === 'agent-deck';
+// Display label for the bot's agent (Hermes when unset).
+export function botAgentLabel(bot: BotRuntimeLike): string {
+  return agentLabel((bot.agent ?? '').trim() || DEFAULT_AGENT);
 }
 
-// Migrated Agent Deck bot that still needs a deck picked from the
-// configured server (legacy free-text deck or no deck ID).
+// Agent that still needs an Agent Deck picked from the configured server
+// (legacy free-text deck, migrated row, or no deck ID).
 export function isMigratedPending(bot: BotRuntimeLike): boolean {
-  return isAgentDeckRuntime(bot) && (needsReselection(bot) || !(bot.deck_id ?? '').trim());
+  return needsSelectionFlag(bot) || !(bot.deck_id ?? '').trim();
 }
 
 export function isDeckUnavailable(bot: BotRuntimeLike, state: DeckListState | null | undefined): boolean {
-  if (!isAgentDeckRuntime(bot) || isMigratedPending(bot)) return false;
+  if (isMigratedPending(bot)) return false;
   const known = knownDeckIds(state);
   if (!known) return false;
   return !known.includes((bot.deck_id ?? '').trim());
 }
 
+function agentPrefix(bot: BotRuntimeLike): string {
+  return `Agent: ${botAgentLabel(bot)} · Agent Deck: `;
+}
+
 export function runtimeSummary(bot: BotRuntimeLike, state?: DeckListState | null): string {
-  if (!isAgentDeckRuntime(bot)) return RUNTIME_HERMES_LINE;
-  const client = (bot.agent_client ?? '').trim() || 'no agent';
-  if (isMigratedPending(bot)) return `Runtime: Agent Deck · ${client} · deck not selected`;
-  return `Runtime: Agent Deck · ${client} · ${deckLabel(bot.deck_id ?? '', state)}`;
+  if (isMigratedPending(bot)) return `${agentPrefix(bot)}not selected`;
+  return agentPrefix(bot) + deckLabel(bot.deck_id ?? '', state);
 }
 
 // Roster: exactly one plain-text line per bot.
 export function rosterRuntimeLine(bot: BotRuntimeLike, state: DeckListState | null | undefined): string {
   const summary = runtimeSummary(bot, state);
-  if (isMigratedPending(bot)) return `${summary} — re-select in Config`;
+  if (isMigratedPending(bot)) return `${summary} — select in Config`;
   if (isDeckUnavailable(bot, state)) return summary + ROSTER_UNAVAILABLE_SUFFIX;
   return summary;
 }
@@ -275,8 +273,8 @@ export function rosterRuntimeParts(
   state: DeckListState | null | undefined
 ): { prefix: string; deck: string; suffix: string } {
   const line = rosterRuntimeLine(bot, state);
-  if (!isAgentDeckRuntime(bot) || isMigratedPending(bot)) return { prefix: line, deck: '', suffix: '' };
-  const prefix = `Runtime: Agent Deck · ${(bot.agent_client ?? '').trim() || 'no agent'} · `;
+  if (isMigratedPending(bot)) return { prefix: line, deck: '', suffix: '' };
+  const prefix = agentPrefix(bot);
   const deck = deckLabel(bot.deck_id ?? '', state);
   return { prefix, deck, suffix: line.slice(prefix.length + deck.length) };
 }
@@ -308,7 +306,7 @@ export interface ConfigRuntimeView {
   summary: string;
   workingDirectory: string | null;
   notices: string[];
-  action: 'Change to Agent Deck' | 'Edit';
+  action: 'Edit';
 }
 
 export function isLocalServerUrl(value: unknown): boolean {
@@ -323,17 +321,14 @@ export function isLocalServerUrl(value: unknown): boolean {
   return /^127\.\d+\.\d+\.\d+$/.test(host);
 }
 
-// Config Runtime card read view.
+// Config Agent card read view.
 export function configRuntimeView(bot: BotRuntimeLike, state: DeckListState | null | undefined): ConfigRuntimeView {
-  if (!isAgentDeckRuntime(bot)) {
-    return { summary: RUNTIME_HERMES_LINE, workingDirectory: null, notices: [], action: 'Change to Agent Deck' };
-  }
   const notices: string[] = [];
   let summary = runtimeSummary(bot, state);
   if (isMigratedPending(bot)) {
     const legacy = (bot.deck_name ?? '').trim();
     notices.push(
-      `Migrated from the old coding path${legacy ? ` (was "${legacy}")` : ''}. Pick a deck from the configured server before this bot can run.`
+      `No Agent Deck selected${legacy ? ` (was "${legacy}")` : ''}. Pick a deck from the configured server before this agent can run.`
     );
   } else if (isDeckUnavailable(bot, state)) {
     summary += CONFIG_UNAVAILABLE_SUFFIX;
@@ -350,13 +345,12 @@ export function configRuntimeView(bot: BotRuntimeLike, state: DeckListState | nu
 }
 
 export interface RuntimeFormInput {
-  runtime: RuntimeChoice;
-  agentClient: string;
+  agent: BotAgent;
   deckId: string;
   workingDirectory: string;
 }
 
-export type RuntimeField = 'name' | 'runtime' | 'agent' | 'deck' | 'workdir';
+export type RuntimeField = 'name' | 'agent' | 'deck' | 'workdir';
 
 export interface RuntimeFormView {
   fields: RuntimeField[];
@@ -365,33 +359,29 @@ export interface RuntimeFormView {
 }
 
 // Field visibility + submit gating shared by New Bot and the config edit
-// view. Hermes never touches the deck list and never disables. Agent
-// Deck disables while loading and in every blocking state; a stored deck
-// absent from the list still saves (it is kept).
+// view. Every agent needs an Agent Deck, so Create/Save disables while the
+// deck list loads and in every blocking state; a stored deck absent from
+// the list still saves (it is kept).
 export function runtimeFormView(
-  input: { runtime: RuntimeChoice; deckId: string },
+  input: { agent: string; deckId: string },
   state: DeckListState,
   options?: { includeName?: boolean; savedDeckId?: string | null },
 ): RuntimeFormView {
-  const head: RuntimeField[] = options?.includeName === false ? ['runtime'] : ['name', 'runtime'];
-  if (input.runtime !== 'agent-deck') return { fields: head, submitDisabled: false, blocker: '' };
-  const fields: RuntimeField[] = [...head, 'agent', 'deck', 'workdir'];
+  const fields: RuntimeField[] = options?.includeName === false
+    ? ['agent', 'deck', 'workdir']
+    : ['name', 'agent', 'deck', 'workdir'];
   if (state.status === 'loading') return { fields, submitDisabled: true, blocker: '' };
   if (state.status === 'connected') return { fields, submitDisabled: false, blocker: '' };
   return { fields, submitDisabled: true, blocker: DECK_SLOT_COPY[state.status] };
 }
 
-// New Bot submit body. Hermes submits the name only (server default).
-// Agent Deck submits the picked agent and deck; the working directory is
-// sent only when the user typed an override, so the default stays
+// New Bot submit body: the picked agent and deck. The working directory
+// is sent only when the user typed an override, so the default stays
 // implicit (~/.botmancers/{agentID}, resolved at launch).
 export function newBotSubmitBody(input: { name: string } & RuntimeFormInput): Record<string, unknown> {
-  const name = String(input.name ?? '').trim();
-  if (input.runtime !== 'agent-deck') return { name };
   const body: Record<string, unknown> = {
-    name,
-    runtime: 'agent-deck',
-    agent_client: input.agentClient,
+    name: String(input.name ?? '').trim(),
+    agent: input.agent,
     deck_id: input.deckId.trim(),
   };
   const workdir = input.workingDirectory.trim();
@@ -399,31 +389,27 @@ export function newBotSubmitBody(input: { name: string } & RuntimeFormInput): Re
   return body;
 }
 
-// Config save body. Switching to Hermes sends only the runtime (the
-// server clears Agent Deck fields). Agent Deck sends the visible values;
-// a blank or default-equal workdir is sent as '' which clears the
-// override back to the implicit default.
+// Config save body: the visible agent, deck, and workdir. A blank or
+// default-equal workdir is sent as '' which clears the override back to
+// the implicit default.
 export function configRuntimePatchBody(botId: string, input: RuntimeFormInput): Record<string, unknown> {
-  if (input.runtime !== 'agent-deck') return { id: botId, runtime: 'hermes' };
   const typed = input.workingDirectory.trim();
   return {
     id: botId,
-    runtime: 'agent-deck',
-    agent_client: input.agentClient,
+    agent: input.agent,
     deck_id: input.deckId.trim(),
     working_directory: typed && typed !== defaultWorkdirFor(botId) ? typed : '',
   };
 }
 
+export const DEFAULT_RUNTIME_FORM: RuntimeFormInput = { agent: DEFAULT_AGENT, deckId: '', workingDirectory: '' };
+
 // Edit form seed from the stored bot. The workdir input stays blank
-// when the bot uses its default.
+// when the bot uses its default; a pending deck selection seeds blank.
 export function runtimeFormFromBot(bot: BotRuntimeLike): RuntimeFormInput {
-  if (!isAgentDeckRuntime(bot)) {
-    return { runtime: 'hermes', agentClient: AGENT_OPTIONS[0], deckId: '', workingDirectory: '' };
-  }
+  const stored = (bot.agent ?? '').trim();
   return {
-    runtime: 'agent-deck',
-    agentClient: (bot.agent_client ?? '').trim() || AGENT_OPTIONS[0],
+    agent: (AGENTS as readonly string[]).includes(stored) ? (stored as BotAgent) : DEFAULT_AGENT,
     deckId: isMigratedPending(bot) ? '' : (bot.deck_id ?? '').trim(),
     workingDirectory: workdirOverride(bot) ?? '',
   };
@@ -431,8 +417,9 @@ export function runtimeFormFromBot(bot: BotRuntimeLike): RuntimeFormInput {
 
 // Same-thread Agent Deck trace. The run adapter and the direct-dispatch
 // loop post these verbatim prefixes into the originating conversation;
-// the UI labels each line as an observation of the bot's Agent Deck
-// runtime and keeps the remainder (ids, agent, deck) verbatim.
+// the UI labels each line as an Agent Deck observation and keeps the
+// remainder (ids, agent, deck) verbatim. '[Deck needs reselection]' is
+// the pre-NOT-456 notice, kept so existing threads still render.
 export const DECK_EVENT_PREFIXES = [
   '[Deck handoff]',
   '[Deck run]',
@@ -440,6 +427,7 @@ export const DECK_EVENT_PREFIXES = [
   '[Deck resume]',
   '[Deck result]',
   '[Deck failed]',
+  '[Deck needs selection]',
   '[Deck needs reselection]',
 ] as const;
 
@@ -452,6 +440,7 @@ const DECK_EVENT_TABLE: Array<{ prefix: string; kind: Exclude<DeckEventKind, nul
   { prefix: '[Deck resume]', kind: 'resume', label: 'Agent Deck resume' },
   { prefix: '[Deck result]', kind: 'result', label: 'Agent Deck result' },
   { prefix: '[Deck failed]', kind: 'failed', label: 'Agent Deck failed' },
+  { prefix: '[Deck needs selection]', kind: 'reselection', label: 'Agent Deck needs a deck' },
   { prefix: '[Deck needs reselection]', kind: 'reselection', label: 'Agent Deck needs a deck' },
 ];
 
