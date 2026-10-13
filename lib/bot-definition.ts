@@ -406,7 +406,16 @@ export function validateCreateRuntimePath(body: Record<string, unknown>): {
 // Shared update contract for PATCH /api/bots: validates only the
 // supplied fields. Unknown runtimes/clients are rejected; blank values
 // clear a field.
-export function validateUpdateRuntimePath(body: Record<string, unknown>): {
+//
+// When the stored row is supplied, the merged agent-deck state is also
+// checked: an agent-deck bot requires a valid agent client (clearing it
+// or leaving it absent is rejected, never stored as an unlaunchable
+// row). A merged agent-deck row without a deck ID stays representable
+// as needs-deck-reselection (the migration produces such rows and deck
+// re-selection resolves them), but a missing client has no such state
+// and is always an error. Without the stored row only a self-contained
+// switch to agent-deck can be checked.
+export function validateUpdateRuntimePath(body: Record<string, unknown>, current?: BotLike): {
   errors: string[];
   fields: { runtime?: BotRuntime; agent_client?: AgentClient | null; deck_id?: string | null; deck_name?: string | null; working_directory?: string | null };
 } {
@@ -434,6 +443,28 @@ export function validateUpdateRuntimePath(body: Record<string, unknown>): {
   }
   if (body.working_directory !== undefined) {
     fields.working_directory = normalizeWorkingDirectory(body.working_directory);
+  }
+  // Merged agent-deck invariant: the resulting row must carry a valid
+  // agent client. Deck-ID absence is representable (needs reselection);
+  // client absence is not, so it is rejected here instead of stored.
+  const stored = current !== undefined ? resolveRuntime(current) : null;
+  const mergedRuntime = fields.runtime ?? stored?.runtime;
+  if (mergedRuntime === RUNTIME_AGENT_DECK) {
+    const mergedClient = fields.agent_client !== undefined ? fields.agent_client : stored?.agent_client;
+    if (mergedClient === undefined) {
+      // No stored row to merge with (fields.agent_client is absent
+      // here): a self-contained switch to agent-deck must carry its
+      // client in the same body.
+      if (fields.runtime === RUNTIME_AGENT_DECK) {
+        errors.push(
+          `Invalid agent client: ${JSON.stringify(String(((body as Record<string, unknown>).agent_client ?? '')))}. Expected one of ${AGENT_CLIENTS.join('|')}.`
+        );
+      }
+    } else if (mergedClient === null) {
+      errors.push(
+        `Invalid agent client: ${JSON.stringify(String(((body as Record<string, unknown>).agent_client ?? stored?.agent_client ?? '')))}. Expected one of ${AGENT_CLIENTS.join('|')}.`
+      );
+    }
   }
   return { errors, fields };
 }
@@ -473,7 +504,8 @@ export function applyRuntimeUpdate(
   const agent_client = update.agent_client !== undefined ? update.agent_client : stored.agent_client;
   const deck_id = update.deck_id !== undefined ? update.deck_id : stored.deck_id;
   // A freshly selected deck ID resolves any pending re-selection and
-  // drops the legacy unresolved name it replaces.
+  // drops the legacy unresolved name it replaces, but only alongside a
+  // valid agent client: a deck ID with no client is still unlaunchable.
   if (update.deck_id !== undefined && update.deck_id !== null) {
     return {
       runtime,
@@ -481,14 +513,16 @@ export function applyRuntimeUpdate(
       deck_id,
       deck_name: null,
       working_directory: update.working_directory !== undefined ? update.working_directory : stored.working_directory,
-      needs_deck_reselection: false,
+      needs_deck_reselection: agent_client === null,
     };
   }
   const deck_name = update.deck_name !== undefined ? update.deck_name : stored.deck_name;
   const working_directory = update.working_directory !== undefined ? update.working_directory : stored.working_directory;
-  // Without a selected deck ID the bot cannot launch: selecting one is
-  // the only transition that clears the marker (handled above).
-  const needs_deck_reselection = deck_id === null;
+  // Without a selected deck ID or a valid agent client the bot cannot
+  // launch: selecting a deck ID is the only transition that clears the
+  // marker (handled above). The API validator rejects client-less
+  // merges, so this marker is defense in depth for direct callers.
+  const needs_deck_reselection = deck_id === null || agent_client === null;
   return { runtime, agent_client, deck_id, deck_name, working_directory, needs_deck_reselection };
 }
 

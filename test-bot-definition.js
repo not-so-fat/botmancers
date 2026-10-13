@@ -119,6 +119,43 @@ check('update with an unknown runtime is rejected', badUpdate.errors.length > 0 
 const badClientUpdate = def.validateUpdateRuntimePath({ agent_client: 'watson' });
 check('update with an unknown agent client is rejected', badClientUpdate.errors.length > 0 && /Invalid agent client/.test(badClientUpdate.errors[0]), JSON.stringify(badClientUpdate.errors));
 
+// PATCH contract against the stored row: agent-deck requires a client.
+const hermesRow = { runtime: 'hermes', agent_client: null, deck_id: null, deck_name: null, working_directory: null, needs_deck_reselection: 0 };
+const switchNoClient = def.validateUpdateRuntimePath({ runtime: 'agent-deck' }, hermesRow);
+console.log(`invalid update fixture switch-without-client: ${switchNoClient.errors[0] || '(no error)'}`);
+check('switching to agent-deck without a client is rejected', switchNoClient.errors.some(e => /agent client/i.test(e)), JSON.stringify(switchNoClient.errors));
+
+const deckRow = { runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-123', deck_name: null, working_directory: '/tmp/w', needs_deck_reselection: 0 };
+const clearClient = def.validateUpdateRuntimePath({ agent_client: '' }, deckRow);
+console.log(`invalid update fixture clear-client: ${clearClient.errors[0] || '(no error)'}`);
+check('clearing the client on an agent-deck bot is rejected', clearClient.errors.some(e => /agent client/i.test(e)), JSON.stringify(clearClient.errors));
+
+const nullClientDeck = def.validateUpdateRuntimePath({ agent_client: '', deck_id: 'deck-999' }, deckRow);
+console.log(`invalid update fixture null-client-with-deck: ${nullClientDeck.errors[0] || '(no error)'}`);
+check('deck ID with a null client is rejected', nullClientDeck.errors.some(e => /agent client/i.test(e)), JSON.stringify(nullClientDeck.errors));
+
+// Defense in depth: a direct client-less merge is flagged, never launchable.
+const clientLessMerge = def.applyRuntimeUpdate(deckRow, { agent_client: null, deck_id: 'deck-999' });
+console.log(`client-less merge: needs_deck_reselection=${clientLessMerge.needs_deck_reselection} launchable=${def.resolveRuntime({ ...deckRow, agent_client: null }).launchable}`);
+check(
+  'client-less merge is flagged as needing re-selection and not launchable',
+  clientLessMerge.needs_deck_reselection === true &&
+    def.resolveRuntime({ runtime: 'agent-deck', agent_client: null, deck_id: 'deck-999' }).launchable === false,
+  JSON.stringify(clientLessMerge)
+);
+
+// Valid update: selecting a deck ID on a needs-reselection row resolves it.
+const unresolvedRow = { runtime: 'agent-deck', agent_client: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/w', needs_deck_reselection: 1 };
+const reselect = def.validateUpdateRuntimePath({ deck_id: 'deck-123' }, unresolvedRow);
+const reselected = def.applyRuntimeUpdate(unresolvedRow, reselect.fields);
+console.log(`valid update fixture reselect: errors=${reselect.errors.length} deck_id=${reselected.deck_id} needs_deck_reselection=${reselected.needs_deck_reselection}`);
+check(
+  'selecting a deck ID resolves the re-selection marker',
+  reselect.errors.length === 0 && reselected.deck_id === 'deck-123' &&
+    reselected.deck_name === null && reselected.needs_deck_reselection === false,
+  JSON.stringify({ errors: reselect.errors, reselected })
+);
+
 // Switching to hermes clears Agent Deck fields.
 db.bots.updateRuntimePath(deckCreated.id, { runtime: 'hermes' });
 const clearedToHermes = def.serializeBot(db.bots.getById(deckCreated.id));

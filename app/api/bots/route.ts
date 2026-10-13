@@ -140,7 +140,8 @@ export async function PATCH(request: Request) {
     // NOT-442: owner-supplied single runtime. Unknown runtimes/clients
     // are rejected; blank values clear a field. Switching to hermes
     // clears Agent Deck fields; selecting a deck ID resolves the
-    // re-selection marker.
+    // re-selection marker. A merged agent-deck result without a valid
+    // agent client is rejected rather than stored unlaunchable.
     if (
       body.runtime !== undefined ||
       body.agent_client !== undefined ||
@@ -148,7 +149,7 @@ export async function PATCH(request: Request) {
       body.deck_name !== undefined ||
       body.working_directory !== undefined
     ) {
-      const update = validateUpdateRuntimePath(body);
+      const update = validateUpdateRuntimePath(body, bot);
       if (update.errors.length > 0) {
         return NextResponse.json(
           { error: update.errors[0], errors: update.errors },
