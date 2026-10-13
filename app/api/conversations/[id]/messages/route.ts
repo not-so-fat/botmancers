@@ -12,6 +12,10 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
+    const conversation = conversations.getUiById(id);
+    if (!conversation) {
+      return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
+    }
     const conversationMessages = messages.getByConversation(id);
 
     const enrichedMessages = conversationMessages.map(msg => {
@@ -38,8 +42,7 @@ export async function GET(
       return { ...msg, ...cardStatus };
     });
 
-    const conversation = conversations.getById(id);
-    if (conversation?.type === 'bot' && conversation.bot_id) {
+    if (conversation.type === 'bot' && conversation.bot_id) {
       bots.markRead(conversation.bot_id);
     }
 
@@ -63,7 +66,7 @@ export async function POST(
       return NextResponse.json({ error: 'Content is required' }, { status: 400 });
     }
 
-    const conversation = conversations.getById(id);
+    const conversation = conversations.getUiById(id);
     if (!conversation) {
       return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
     }

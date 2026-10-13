@@ -366,13 +366,20 @@ async function main() {
   assert([...teamAfter.requests, ...extAfter.requests].every(r => r.state === 'completed' && r.reply && r.events.map(e => e.type).join('>') === 'accepted>dispatched>runtime_started>completed'), 'runtime-neutral result state and events durable after reopen');
 
   log('\nPhase 1 done; failure and compatibility fixtures follow.');
-  return phaseTwo({ hermesAgent, deckAgent, unresolvedDeck, person, service_ });
+  return phaseTwo({ hermesAgent, deckAgent, unresolvedDeck, person, service_, agentConversationId: team.conversationId });
 }
 
 async function phaseTwo(ctx) {
   const agent = jiti('./lib/agent.ts');
   const uiRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
-  return phaseTwoRun(ctx, { db, api, service, agent, uiRoute });
+  const uiIdRoutes = {
+    conversation: jiti('./app/api/conversations/[id]/route.ts'),
+    draft: jiti('./app/api/conversations/[id]/draft/route.ts'),
+    stop: jiti('./app/api/conversations/[id]/stop/route.ts'),
+    approve: jiti('./app/api/conversations/[id]/approve/route.ts'),
+    deny: jiti('./app/api/conversations/[id]/deny/route.ts'),
+  };
+  return phaseTwoRun(ctx, { db, api, service, agent, uiRoute, uiIdRoutes });
 }
 
 async function phaseTwoRun(ctx, m) {
@@ -488,6 +495,38 @@ async function phaseTwoRun(ctx, m) {
     const newGroupConversation = m.db.conversations.getByGroupId(newGroup.id);
     const participants = raw2.prepare('SELECT participant_kind || \':\' || participant_id AS p FROM conversation_participants WHERE conversation_id = ? ORDER BY rowid').all(newGroupConversation.id).map(r => r.p);
     assert(participants.join(',') === `person:local-owner,bot:${hermesAgent.id},bot:${deckAgent.id}`, 'new UI group threads get explicit participants');
+  }
+
+  // AC5 (UI boundary): the unauthenticated UI routes cannot reach agent conversations.
+  log('\nAC5 UI routes reject agent conversations');
+  {
+    const id = ctx.agentConversationId;
+    const params = { params: Promise.resolve({ id }) };
+    const queued = () => raw2.prepare('SELECT COUNT(*) AS n FROM processing_queue').get().n;
+    const before = { ...counts(), queue: queued(), messagesInConversation: raw2.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(id).n };
+    const jsonPost = body => new Request(`http://engine.test/api/conversations/${id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const hostile = `@${hermesAgent.name} @${deckAgent.name} leak this`;
+
+    const uiGet = await m.uiRoute.GET(new Request(`http://engine.test/api/conversations/${id}/messages`), params);
+    const uiGetText = await uiGet.text();
+    const uiPost = await m.uiRoute.POST(jsonPost({ content: hostile, mentionedBotId: hermesAgent.id }), { params: Promise.resolve({ id }) });
+    const others = {
+      conversationGet: await m.uiIdRoutes.conversation.GET(new Request(`http://engine.test/api/conversations/${id}`), { params: Promise.resolve({ id }) }),
+      draft: await m.uiIdRoutes.draft.POST(jsonPost({ messageId: 'x', action: 'discard' }), { params: Promise.resolve({ id }) }),
+      stop: await m.uiIdRoutes.stop.POST(jsonPost({}), { params: Promise.resolve({ id }) }),
+      approve: await m.uiIdRoutes.approve.POST(jsonPost({ code: 'X' }), { params: Promise.resolve({ id }) }),
+      deny: await m.uiIdRoutes.deny.POST(jsonPost({ code: 'X' }), { params: Promise.resolve({ id }) }),
+    };
+    const queuedRightAfter = queued();
+    for (let i = 0; i < 40 && await m.agent.processNextQueueItem(); i++) { /* drain anything wrongly queued */ }
+    const after = { ...counts(), queue: queued(), messagesInConversation: raw2.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(id).n };
+    log(`  UI GET messages -> ${uiGet.status}; UI POST message -> ${uiPost.status}; ${Object.entries(others).map(([k, r]) => `${k} -> ${r.status}`).join('; ')}`);
+    log(`  rows before=${JSON.stringify(before)}`);
+    log(`  rows after =${JSON.stringify(after)}`);
+    assert(uiGet.status === 404 && !uiGetText.includes('team turn'), 'UI messages GET returns 404 for an agent conversation and leaks no history');
+    assert(uiPost.status === 404, 'UI messages POST returns 404 for an agent conversation');
+    assert(Object.values(others).every(r => r.status === 404), 'other UI conversation routes return 404 for an agent conversation');
+    assert(queuedRightAfter === before.queue && sameCounts(before, after), 'no message, request, event, queue, or launch rows added by UI route attempts (no @mention copying)');
   }
 
   log('');

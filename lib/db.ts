@@ -821,6 +821,12 @@ export const conversations = {
   getById: (id: string): Conversation | undefined => {
     return db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as Conversation | undefined;
   },
+
+  // Unauthenticated UI routes must not reach 'agent' conversations; those are
+  // only readable and writable through the authenticated agent API.
+  getUiById: (id: string): Conversation | undefined => {
+    return db.prepare("SELECT * FROM conversations WHERE id = ? AND type != 'agent'").get(id) as Conversation | undefined;
+  },
 };
 
 export const messages = {
