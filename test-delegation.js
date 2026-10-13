@@ -284,6 +284,33 @@ async function main() {
     'resume receives the original session ID (session-reuse)'
   );
   assert(!!delegation, 'delegation completes with a result');
+  // NOT-462: phase authority is fixed at the composite boundary:
+  // implementation edits, review is read-only, revision edits again.
+  const toolsOf = argv => argv[argv.indexOf('--tools') + 1];
+  const launches5 = deckRecorded.filter(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'planner');
+  log(`  launch tools: ${launches5.map(toolsOf).join(' -> ')}`);
+  assert(launches5.length === 3, 'three Agent Deck launches: implement, review, resume');
+  assert(
+    !!launches5[0] && toolsOf(launches5[0]) === 'edit' && !launches5[0].includes('--resume') &&
+    launches5[0].includes('Implement the widget.'),
+    'implementation launch uses --tools edit'
+  );
+  assert(
+    !!launches5[1] && toolsOf(launches5[1]) === 'readonly' && !launches5[1].includes('--resume'),
+    'review launch uses --tools readonly'
+  );
+  assert(
+    !!launches5[2] && toolsOf(launches5[2]) === 'edit' &&
+    launches5[2][launches5[2].indexOf('--resume') + 1] === 'ses-deck-impl',
+    'revision resumes the original builder session with --tools edit'
+  );
+  assert(
+    deckRun.DECK_DELEGATION_PHASE_TOOLS.implement === 'edit' &&
+    deckRun.DECK_DELEGATION_PHASE_TOOLS.review === 'readonly' &&
+    deckRun.DECK_DELEGATION_PHASE_TOOLS.revise === 'edit' &&
+    Object.isFrozen(deckRun.DECK_DELEGATION_PHASE_TOOLS),
+    'delegation phase profiles are frozen constants (edit -> readonly -> edit)'
+  );
   const followArgv = deckRecorded.find(a => a[1] === 'run' && a[2] === 'log' && a.includes('--follow'));
   assert(!!followArgv, 'completion comes from run log --follow, not adapter polling');
   assert(
@@ -299,6 +326,45 @@ async function main() {
     'bound run/session observation correlates run ID and session ID'
   );
   assert(queue.countPending(conv.id) === 0, 'no queue residue from the deck delegation');
+
+  // NOT-462 negative: a stale caller still passing the removed delegation
+  // `tools` option cannot downgrade implementation/revision or broaden review.
+  const deckRecorded5b = [];
+  let deckRuns5b = 0;
+  deckRun.setDeckRunProcess(async argv => {
+    deckRecorded5b.push(argv);
+    if (argv[2] === 'status') {
+      return { stdout: JSON.stringify({ runId: argv[3], deck: 'planner', client: 'codex', state: 'ended', sessionId: 'ses-5b' }), stderr: '', exitCode: 0 };
+    }
+    if (argv[2] === 'log') {
+      const lines = [
+        JSON.stringify({ t: 'result', sessionId: 'ses-5b', subtype: 'success', result: `output of ${argv[3]}` }),
+        JSON.stringify({ t: 'end', sessionId: 'ses-5b' }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    deckRuns5b++;
+    return { stdout: `run run-5b-${deckRuns5b} detached: pid 1 log /tmp/fake-deck/5b/run.jsonl\n`, stderr: '', exitCode: 0 };
+  });
+  for (const staleTools of ['readonly', 'edit']) {
+    deckRecorded5b.length = 0;
+    await deckRun.delegateCodingViaDeck({
+      conversationId: conv.id,
+      botId: origin.id,
+      deck: 'planner',
+      client: 'codex',
+      cwd: '/repo/checkout',
+      task: 'Implement the widget again.',
+      reviewFocus: 'Check the edge cases.',
+      tools: staleTools,
+    });
+    const tools5b = deckRecorded5b.filter(a => a[2] === 'planner').map(toolsOf);
+    assert(
+      JSON.stringify(tools5b) === JSON.stringify(['edit', 'readonly', 'edit']),
+      `stale delegation tools=${staleTools} is ignored (got ${tools5b.join(' -> ')})`
+    );
+  }
+  deckRun.setDeckRunProcess(null);
 
   // Scenario 6: single-runtime direct dispatch. An ordinary message to
   // an agent-deck bot launches the stored agent/deck/workdir directly
@@ -368,6 +434,11 @@ async function main() {
     !!implStart6 && implStart6.includes('--client') && implStart6.includes('codex') &&
     implStart6.includes('--cwd') && implStart6.includes(coderWorkdir),
     'direct dispatch launches the stored agent/deck/workdir without parsing a directive'
+  );
+  const launches6 = deckRecorded6.filter(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'deck-id-9');
+  assert(
+    JSON.stringify(launches6.map(a => a[a.indexOf('--tools') + 1])) === JSON.stringify(['edit', 'readonly', 'edit']),
+    'queue-driven composite workflow launches edit -> readonly -> edit'
   );
   const resumeStart6 = deckRecorded6.find(a => a[1] === 'run' && a.includes('--resume'));
   assert(!!resumeStart6 && resumeStart6.includes('ses-deck-impl'), 'direct dispatch resume reuses the original session ID');

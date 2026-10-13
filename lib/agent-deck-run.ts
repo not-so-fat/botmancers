@@ -383,7 +383,6 @@ export interface DeckDelegationRequest {
   cwd: string;
   task: string;
   reviewFocus: string;
-  tools?: DeckToolProfile;
   // Cooperative Stop: checked before every phase and after every wait. When
   // it flips mid-sequence the delegation returns null silently (Stop
   // already posted its own notice and promises no late messages) instead
@@ -407,6 +406,18 @@ function observe(request: DeckDelegationRequest, text: string): void {
   messages.create(request.conversationId, 'bot', text, request.botId);
 }
 
+// NOT-462: phase authority for the composite implementation workflow is
+// fixed here, at the orchestration boundary, per docs/core-engine.md:
+// implementation and revision edit, review stays read-only. There is no
+// caller-supplied profile, so an omitted option can neither downgrade the
+// builder nor broaden the reviewer. The low-level command builder keeps its
+// readonly default for every other caller.
+export const DECK_DELEGATION_PHASE_TOOLS = Object.freeze({
+  implement: 'edit',
+  review: 'readonly',
+  revise: 'edit',
+} as const satisfies Record<'implement' | 'review' | 'revise', DeckToolProfile>);
+
 // The conversation integration: from the same Botmancers conversation the
 // caller hands implementation to a local coding agent through agent-deck,
 // hands the result to a reviewer run, and resumes the original coding
@@ -417,7 +428,6 @@ function observe(request: DeckDelegationRequest, text: string): void {
 // observation) on any run failure, including a resumed session that forks.
 export async function delegateCodingViaDeck(request: DeckDelegationRequest): Promise<DeckDelegationResult | null> {
   const client = parseDeckRuntime(request.client);
-  const tools = request.tools ?? 'readonly';
   const stopped = request.isStopped ?? (() => false);
   try {
     if (stopped()) return null;
@@ -427,7 +437,7 @@ export async function delegateCodingViaDeck(request: DeckDelegationRequest): Pro
       client,
       cwd: request.cwd,
       prompt: request.task,
-      tools,
+      tools: DECK_DELEGATION_PHASE_TOOLS.implement,
       detach: true,
     });
     const implAwaited = await awaitDeckRunEnd(impl.runId);
@@ -442,7 +452,7 @@ export async function delegateCodingViaDeck(request: DeckDelegationRequest): Pro
       client,
       cwd: request.cwd,
       prompt: `Review this implementation result against the goal.\n\nGoal: ${request.task}\n\nReview focus: ${request.reviewFocus}\n\nImplementation result:\n${implResult}`,
-      tools: 'readonly',
+      tools: DECK_DELEGATION_PHASE_TOOLS.review,
       detach: true,
     });
     const reviewAwaited = await awaitDeckRunEnd(review.runId);
@@ -461,7 +471,7 @@ export async function delegateCodingViaDeck(request: DeckDelegationRequest): Pro
       client,
       cwd: request.cwd,
       prompt: reviewResult,
-      tools,
+      tools: DECK_DELEGATION_PHASE_TOOLS.revise,
       resume: implSessionId,
     });
     const resumeAwaited = await awaitDeckRunEnd(resume.runId);
