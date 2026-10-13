@@ -500,6 +500,15 @@ function flushSnapshot(item: QueueItem): void {
   }
 }
 
+// Drops the held snapshot without recording it, for turns where nothing
+// launches and nothing posts (unaddressed group turns, stopped chains,
+// turns with no task): a launch snapshot must describe what actually
+// ran, never a turn that stayed silent. Paths that post a refusal or a
+// failure keep their snapshot and flush normally.
+function dropSnapshot(item: QueueItem): void {
+  pendingSnapshots.delete(item.id);
+}
+
 // Latest `[Handing off to <bot>]` task addressed to this bot after the
 // latest user message, if any. A WAKE- or handoff-delegated Agent Deck
 // turn runs this task; a direct turn runs the latest user message.
@@ -543,6 +552,7 @@ async function processAgentDeckTurn(args: {
   // Unaddressed group turns stay silent: a deck launch is never spent
   // on a message nobody directed at this bot.
   if (openGroupTurn) {
+    dropSnapshot(item);
     chainProcessQueue();
     return;
   }
@@ -591,10 +601,12 @@ async function processAgentDeckTurn(args: {
     // Nothing to run (for example the auto-enqueued greeting turn of a
     // freshly created bot): stay silent rather than launching an empty
     // run or posting a failure for a turn with no request.
+    dropSnapshot(item);
     chainProcessQueue();
     return;
   }
   if (chain?.stopped) {
+    dropSnapshot(item);
     chainProcessQueue();
     return;
   }
