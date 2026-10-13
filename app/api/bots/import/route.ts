@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { bots } from '@/lib/db';
 import { IMPORT_SCHEMA_VERSION } from '@/app/api/import-capabilities/route';
 import { createHash } from 'crypto';
+import { AgentNameConflictError, agentNameConflictBody } from '@/lib/agent-names';
 
 export interface BotImportRequest {
   schema_version: string;
@@ -252,6 +253,7 @@ export async function POST(request: Request) {
       verification: verifyImport(importRequest, bot),
     });
   } catch (error) {
+    if (error instanceof AgentNameConflictError) return NextResponse.json(agentNameConflictBody(error, 'bot.name'), { status: 409 });
     console.error('Error importing bot:', error);
     return NextResponse.json({ error: 'Failed to import bot' }, { status: 500 });
   }
