@@ -5,27 +5,34 @@ import {
   fetchDeckList,
   initialDeckListState,
   type DeckListState,
+  type DeckOption,
   type FetchLike,
 } from '@/lib/bot-runtime-ui';
 
-const CACHE_KEY = 'botmancers.agentDeck.lastDeckIds';
+const CACHE_KEY = 'botmancers.agentDeck.lastDecks';
 const TIMEOUT_MS = 10000;
 
-function readCache(): string[] | null {
+function isDeckOption(item: unknown): item is DeckOption {
+  if (typeof item !== 'object' || item === null) return false;
+  const record = item as Record<string, unknown>;
+  return typeof record.id === 'string' && typeof record.name === 'string';
+}
+
+function readCache(): DeckOption[] | null {
   try {
     const raw = window.localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.every(item => typeof item === 'string') ? parsed : null;
+    return Array.isArray(parsed) && parsed.every(isDeckOption) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function writeCache(ids: string[] | null): void {
-  if (!ids) return;
+function writeCache(decks: DeckOption[] | null): void {
+  if (!decks) return;
   try {
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(ids));
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify(decks));
   } catch {
     // storage unavailable; the in-memory state still carries the list
   }
@@ -42,15 +49,15 @@ const fetchWithTimeout: FetchLike = (url, init) => {
 export function useDeckList(): { state: DeckListState; retry: () => void } {
   const [state, setState] = useState<DeckListState>(() => initialDeckListState());
   const [token, setToken] = useState(0);
-  const cacheRef = useRef<string[] | null>(null);
+  const cacheRef = useRef<DeckOption[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const previous = initialDeckListState(cacheRef.current ?? readCache());
     fetchDeckList(fetchWithTimeout, previous).then(next => {
       if (cancelled) return;
-      cacheRef.current = next.cachedIds;
-      writeCache(next.cachedIds);
+      cacheRef.current = next.cachedDecks;
+      writeCache(next.cachedDecks);
       setState(next);
     });
     return () => {

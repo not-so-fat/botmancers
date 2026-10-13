@@ -50,9 +50,9 @@ export type DeckListStatus = 'loading' | 'connected' | 'empty' | 'malformed' | '
 export interface DeckListState {
   status: DeckListStatus;
   decks: DeckOption[];
-  // Last successful list (deck ids), used for availability during an
-  // outage. Null when no list has ever loaded.
-  cachedIds: string[] | null;
+  // Last successful list, used for availability and deck names during
+  // an outage. Null when no list has ever loaded.
+  cachedDecks: DeckOption[] | null;
   serverUrl: string;
   checkedAt: number;
   error: string;
@@ -93,8 +93,8 @@ export const DECK_SLOT_COPY: Record<Exclude<DeckListStatus, 'connected'>, string
   unconfigured: 'No Agent Deck server set — add it in Settings.',
 };
 
-export function initialDeckListState(cachedIds: string[] | null = null): DeckListState {
-  return { status: 'loading', decks: [], cachedIds, serverUrl: '', checkedAt: 0, error: '' };
+export function initialDeckListState(cachedDecks: DeckOption[] | null = null): DeckListState {
+  return { status: 'loading', decks: [], cachedDecks, serverUrl: '', checkedAt: 0, error: '' };
 }
 
 function pad(n: number): string {
@@ -162,15 +162,14 @@ export function deckListStateFromResponse(
     ? (response.body as Record<string, unknown>)
     : {};
   const serverUrl = typeof record.server_url === 'string' ? record.server_url : previous.serverUrl;
-  const base = { cachedIds: previous.cachedIds, serverUrl, checkedAt: now };
+  const base = { cachedDecks: previous.cachedDecks, serverUrl, checkedAt: now };
   if (typeof record.server_url === 'string' && !record.server_url.trim()) {
     return { ...base, status: 'unconfigured', decks: [], error: '' };
   }
   if (response.ok) {
     const decks = parseDeckOptions(response.body);
     if (!decks) return { ...base, status: 'malformed', decks: [], error: 'Unexpected deck list shape.' };
-    const ids = decks.map(deck => deck.id);
-    return { ...base, cachedIds: ids, status: decks.length > 0 ? 'connected' : 'empty', decks, error: '' };
+    return { ...base, cachedDecks: decks, status: decks.length > 0 ? 'connected' : 'empty', decks, error: '' };
   }
   const error = typeof record.error === 'string' ? record.error : `HTTP ${response.status}`;
   const malformed = record.code === 'invalid-payload' || /unexpected deck payload/i.test(error);
@@ -193,7 +192,7 @@ export async function fetchDeckList(fetchImpl: FetchLike, previous: DeckListStat
     return {
       status: 'unreachable',
       decks: [],
-      cachedIds: previous.cachedIds,
+      cachedDecks: previous.cachedDecks,
       serverUrl: previous.serverUrl,
       checkedAt: now(),
       error: error instanceof Error ? error.message : String(error),
@@ -215,7 +214,15 @@ export function knownDeckIds(state: DeckListState | null | undefined): string[] 
   if (!state) return null;
   if (state.status === 'connected' || state.status === 'empty') return state.decks.map(deck => deck.id);
   if (state.status === 'unconfigured') return null;
-  return state.cachedIds;
+  return state.cachedDecks ? state.cachedDecks.map(deck => deck.id) : null;
+}
+
+// Human label for a stored deck id: the server-returned name from the
+// fresh or cached list, else the id verbatim.
+export function deckLabel(deckId: string, state: DeckListState | null | undefined): string {
+  const id = String(deckId ?? '').trim();
+  const list = state ? (state.decks.length > 0 ? state.decks : state.cachedDecks ?? []) : [];
+  return list.find(deck => deck.id === id)?.name ?? id;
 }
 
 function needsReselection(bot: BotRuntimeLike): boolean {
@@ -245,16 +252,16 @@ export function isDeckUnavailable(bot: BotRuntimeLike, state: DeckListState | nu
   return !known.includes((bot.deck_id ?? '').trim());
 }
 
-export function runtimeSummary(bot: BotRuntimeLike): string {
+export function runtimeSummary(bot: BotRuntimeLike, state?: DeckListState | null): string {
   if (!isAgentDeckRuntime(bot)) return RUNTIME_HERMES_LINE;
   const client = (bot.agent_client ?? '').trim() || 'no agent';
   if (isMigratedPending(bot)) return `Runtime: Agent Deck · ${client} · deck not selected`;
-  return `Runtime: Agent Deck · ${client} · ${(bot.deck_id ?? '').trim()}`;
+  return `Runtime: Agent Deck · ${client} · ${deckLabel(bot.deck_id ?? '', state)}`;
 }
 
 // Roster: exactly one plain-text line per bot.
 export function rosterRuntimeLine(bot: BotRuntimeLike, state: DeckListState | null | undefined): string {
-  const summary = runtimeSummary(bot);
+  const summary = runtimeSummary(bot, state);
   if (isMigratedPending(bot)) return `${summary} — re-select in Config`;
   if (isDeckUnavailable(bot, state)) return summary + ROSTER_UNAVAILABLE_SUFFIX;
   return summary;
@@ -308,7 +315,7 @@ export function configRuntimeView(bot: BotRuntimeLike, state: DeckListState | nu
     return { summary: RUNTIME_HERMES_LINE, workingDirectory: null, notices: [], action: 'Change to Agent Deck' };
   }
   const notices: string[] = [];
-  let summary = runtimeSummary(bot);
+  let summary = runtimeSummary(bot, state);
   if (isMigratedPending(bot)) {
     const legacy = (bot.deck_name ?? '').trim();
     notices.push(

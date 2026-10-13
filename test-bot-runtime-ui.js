@@ -98,7 +98,7 @@ async function listedBot(id) {
 const upstreamUrls = [];
 let upstreamMode = 'connected';
 const UPSTREAM_BODIES = {
-  connected: { success: true, data: { decks: [{ id: 'planner', name: 'Planner' }, { id: 'research', name: 'Research' }] } },
+  connected: { success: true, data: { decks: [{ id: 'planner', name: 'planner' }, { id: 'research', name: 'research' }] } },
   empty: { success: true, data: { decks: [] } },
   malformed: { success: true, data: { decks: [{ id: 42 }] } },
 };
@@ -131,8 +131,8 @@ function deckState(status, extra) {
 }
 
 const CONNECTED = deckState('connected', {
-  decks: [{ id: 'planner', name: 'Planner' }, { id: 'research', name: 'Research' }],
-  cachedIds: ['planner', 'research'],
+  decks: [{ id: 'planner', name: 'planner' }, { id: 'research', name: 'research' }],
+  cachedDecks: [{ id: 'planner', name: 'planner' }, { id: 'research', name: 'research' }],
 });
 
 function sectionHtml(form, state, extra) {
@@ -251,7 +251,7 @@ async function settingsSection() {
       assert(ui.runtimeFormView({ runtime: 'hermes', deckId: '' }, state).submitDisabled === false, `${expected.mode}: Hermes create is unaffected`);
     }
   }
-  assert(previous.cachedIds && previous.cachedIds.join(',') === 'planner,research', 'unreachable: the last successful list stays cached for availability checks');
+  assert(previous.cachedDecks && previous.cachedDecks.map(d => d.id).join(',') === 'planner,research', 'unreachable: the last successful list stays cached for availability checks');
 
   upstreamMode = 'connected';
   clock += 60000;
@@ -260,7 +260,7 @@ async function settingsSection() {
   assert(retried.status === 'connected' && ui.settingsStatusLine(retried) === 'Status: ● Connected · 2 decks · checked 14:03:11', 'retry: Retry re-issues the request and recovers to connected');
 
   const thrown = await ui.fetchDeckList(async () => { throw new Error('network down'); }, retried, now);
-  assert(thrown.status === 'unreachable' && thrown.cachedIds.join(',') === 'planner,research', 'unreachable: a failed browser request (network/timeout) is unreachable and keeps the cache');
+  assert(thrown.status === 'unreachable' && thrown.cachedDecks.map(d => d.id).join(',') === 'planner,research', 'unreachable: a failed browser request (network/timeout) is unreachable and keeps the cache');
 
   const unconfigured = ui.deckListStateFromResponse({ ok: true, status: 200, body: { server_url: '', decks: [] } }, ui.initialDeckListState(), clock);
   const unconfiguredStatus = render(view.SettingsStatus, { state: unconfigured, onRetry() {} });
@@ -402,8 +402,8 @@ async function rosterConfigSection(created) {
   });
   const migrated = await listedBot(migratedRow.id);
 
-  const unreachableCached = deckState('unreachable', { cachedIds: ['planner', 'research'] });
-  const unreachableBare = deckState('unreachable', { cachedIds: null });
+  const unreachableCached = deckState('unreachable', { cachedDecks: [{ id: 'planner', name: 'planner' }, { id: 'research', name: 'research' }] });
+  const unreachableBare = deckState('unreachable', { cachedDecks: null });
   const unconfigured = deckState('unconfigured', { serverUrl: '' });
   const remote = { ...CONNECTED, serverUrl: 'http://10.0.0.5:1111' };
 
@@ -428,6 +428,13 @@ async function rosterConfigSection(created) {
     assert(config.action === fixture.action, `${fixture.label}: config action "${fixture.action}"`);
     assert(!/Chat:|Code:/.test(roster + config.summary) && !roster.includes('\n'), `${fixture.label}: exactly one line, no Chat:/Code:`);
   }
+  const uuidState = deckState('connected', { decks: [{ id: '078fde81-3422-4630-8dce-c22070c4d09a', name: 'planner' }] });
+  const uuidBot = { id: 'b1', runtime: 'agent-deck', agent_client: 'codex', deck_id: '078fde81-3422-4630-8dce-c22070c4d09a', launchable: true };
+  const uuidHtml = sectionHtml({ runtime: 'agent-deck', agentClient: 'codex', deckId: '', workingDirectory: '' }, uuidState);
+  log(`  [uuid deck ids] roster="${ui.rosterRuntimeLine(uuidBot, uuidState)}" no-list="${ui.rosterRuntimeLine(uuidBot, null)}"`);
+  assert(has(uuidHtml, '<option value="078fde81-3422-4630-8dce-c22070c4d09a" title="078fde81-3422-4630-8dce-c22070c4d09a">planner</option>'), 'deck names: dropdown labels each option with the server name and submits the id');
+  assert(ui.rosterRuntimeLine(uuidBot, uuidState) === 'Runtime: Agent Deck · codex · planner', 'deck names: summary shows the deck name when the list is known');
+  assert(ui.rosterRuntimeLine(uuidBot, null) === 'Runtime: Agent Deck · codex · 078fde81-3422-4630-8dce-c22070c4d09a', 'deck names: summary falls back to the stored id when no list is known');
   assert(ui.configRuntimeView(migrated, CONNECTED).workingDirectory === 'Working directory: /Users/you/legacy (custom)', 'migrated: the carried-over workdir shows as (custom)');
   const migratedSeed = ui.runtimeFormFromBot(migrated);
   assert(migratedSeed.deckId === '' && migratedSeed.agentClient === 'codex', 'migrated: edit opens with no deck so the owner must pick one from the server');

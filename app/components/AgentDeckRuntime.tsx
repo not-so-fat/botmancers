@@ -101,7 +101,7 @@ export function DeckSlot({ id, state, value, onChange, onRetry, savedDeckId, var
           <option value="" disabled>{DECK_PLACEHOLDER}</option>
           {savedMissing ? <option value={saved} title={saved}>{saved} (saved)</option> : null}
           {state.decks.map(deck => (
-            <option key={deck.id} value={deck.id} title={deck.id}>{deck.id}</option>
+            <option key={deck.id} value={deck.id} title={deck.id}>{deck.name}</option>
           ))}
         </select>
         {savedMissing && value === saved ? <p className={css.note}>{SAVED_DECK_MISSING_NOTE}</p> : null}
@@ -265,7 +265,7 @@ export function SettingsStatus({ state, onRetry }: { state: DeckListState; onRet
       ) : null}
       {state.status === 'connected' ? (
         <p className="mt-1 text-xs cfg-faint break-all">
-          {state.decks.map(deck => deck.id).join(' · ')}
+          {state.decks.map(deck => deck.name).join(' · ')}
         </p>
       ) : null}
       <p className="mt-2 text-xs cfg-faint">{SETTINGS_NON_LOCAL_NOTE}</p>
