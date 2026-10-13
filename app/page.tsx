@@ -4,6 +4,8 @@ import { useState, useEffect, useLayoutEffect, useRef, type ReactNode } from 're
 import Link from 'next/link';
 import Image from 'next/image';
 import { parseRun, runLine } from '@/lib/run';
+import BotAvatar from '@/app/components/BotAvatar';
+import type { AvatarConfig } from '@/lib/avatar';
 import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 import {
   AVAILABILITY_ERROR_COPY,
@@ -22,6 +24,11 @@ interface Bot {
   title: string;
   description: string;
   avatar?: string;
+  avatar_color?: string | null;
+  avatar_eyes?: string | null;
+  avatar_hands?: string | null;
+  avatar_accessory?: string | null;
+  avatar_config?: AvatarConfig | null;
   color: string;
   pinned?: number;
   hidden?: number;
@@ -809,8 +816,8 @@ export default function Home() {
                 }}
               >
                 <div className="row-head">
-                  <span className="mark" style={{ color: bot.color }}>
-                    <span className="mark-tri" />
+                  <span className="mark-avatar">
+                    <BotAvatar bot={bot} size={44} title={`${bot.name} avatar`} />
                     {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
                   </span>
                   {editingId === bot.id ? (
@@ -878,8 +885,8 @@ export default function Home() {
                   setRowMenu({ bot, x: e.clientX, y: e.clientY });
                 }}
               >
-                <span className="mark" style={{ color: bot.color }}>
-                  <span className="mark-tri" />
+                <span className="mark-avatar mark-avatar-sm">
+                  <BotAvatar bot={bot} size={36} title={`${bot.name} avatar`} />
                   {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
                 </span>
                 <div className="bot-copy">
@@ -1022,7 +1029,11 @@ export default function Home() {
                 ) : null}
                 {pictureOpen && activeConversation.type === 'bot' ? (
                   <button type="button" className="avatar-pic" onClick={() => setAvatarStep(true)} aria-label="Picture">
-                    {(activeConversation.details as Bot).avatar ? <img src={(activeConversation.details as Bot).avatar} alt="" /> : null}
+                    {(activeConversation.details as Bot).avatar ? (
+                      <img src={(activeConversation.details as Bot).avatar} alt="" />
+                    ) : (
+                      <BotAvatar bot={activeConversation.details as Bot} size={46} />
+                    )}
                   </button>
                 ) : null}
               </div>
@@ -1083,10 +1094,10 @@ export default function Home() {
                 const picture = shown.images.map(src => (
                   <img key={src.slice(0, 48)} src={src} alt="" style={{ display: 'block', width: 64, height: 64 }} />
                 ));
-                const mark = (bot: Bot) => bot.avatar ? (
-                  <img key={bot.id} className="agent-mark" src={bot.avatar} alt="" />
-                ) : (
-                  <span key={bot.id} className="agent-mark" style={{ background: bot.color || 'currentColor' }} />
+                const mark = (bot: Bot) => (
+                  <span key={bot.id} className="agent-mark">
+                    <BotAvatar bot={bot} size={16} title={`${bot.name} avatar`} />
+                  </span>
                 );
                 if (!mine && activeConversation.type === 'group') {
                   const sender = bots.find(bot => bot.id === msg.sender_id);

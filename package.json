@@ -10,6 +10,7 @@
     "test:acceptance": "node test-acceptance-steps-1-7.js",
     "test:marketplace-import": "node test-import-marketplace-ui.js",
     "test:snapshot": "node test-snapshot.js",
+    "test:avatar-system": "node test-avatar-system.js",
     "test:bot-definition": "node test-bot-definition.js",
     "test:delegation": "node test-delegation.js",
     "test:agent-deck-run": "node test-agent-deck-run.js",

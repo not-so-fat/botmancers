@@ -6,6 +6,7 @@ import {
   validateCreateRuntimePath,
   validateUpdateRuntimePath,
 } from '@/lib/bot-definition';
+import { validateAvatarInput } from '@/lib/avatar';
 
 export async function GET() {
   try {
@@ -40,15 +41,35 @@ export async function POST(request: Request) {
       );
     }
 
+    // NOT-431: optional nested avatar config object. A string avatar stays
+    // the legacy uploaded image; an object configures the composable avatar.
+    const avatarIsConfigObject =
+      body.avatar !== null && body.avatar !== undefined &&
+      typeof body.avatar === 'object' && !Array.isArray(body.avatar);
+    if (body.avatar !== undefined && body.avatar !== null && typeof body.avatar !== 'string' && !avatarIsConfigObject) {
+      return NextResponse.json({ error: 'Invalid avatar: expected an image string or an avatar config object' }, { status: 400 });
+    }
+    const avatarConfig = validateAvatarInput(avatarIsConfigObject ? body.avatar : undefined);
+    if (avatarConfig.errors.length > 0) {
+      return NextResponse.json(
+        { error: avatarConfig.errors[0], errors: avatarConfig.errors },
+        { status: 400 }
+      );
+    }
+
     const bot = bots.create({
       name: String(name).trim(),
       title: title ? String(title) : '',
       description: description ? String(description) : '',
-      avatar,
+      avatar: typeof avatar === 'string' ? avatar : undefined,
       persistent_runtime: runtimePath.normalized.persistent_runtime,
       coding_runtime: runtimePath.normalized.coding_runtime,
       deck_name: runtimePath.normalized.deck_name,
       working_directory: runtimePath.normalized.working_directory,
+      avatar_color: avatarConfig.fields.avatar_color ?? null,
+      avatar_eyes: avatarConfig.fields.avatar_eyes ?? null,
+      avatar_hands: avatarConfig.fields.avatar_hands ?? null,
+      avatar_accessory: avatarConfig.fields.avatar_accessory ?? null,
     });
     const conversation = conversations.getByBotId(bot.id);
     if (conversation) {
@@ -76,6 +97,16 @@ export async function PATCH(request: Request) {
     if (body.avatar !== undefined) {
       if (body.avatar === null || body.avatar === '') {
         bots.setAvatar(id, null);
+      } else if (typeof body.avatar === 'object' && !Array.isArray(body.avatar)) {
+        // NOT-431: nested avatar config object (color/eyes/hands/accessory).
+        const avatarConfig = validateAvatarInput(body.avatar);
+        if (avatarConfig.errors.length > 0) {
+          return NextResponse.json(
+            { error: avatarConfig.errors[0], errors: avatarConfig.errors },
+            { status: 400 }
+          );
+        }
+        bots.updateAvatarConfig(id, avatarConfig.fields);
       } else {
         const avatar = String(body.avatar);
         if (!avatar.startsWith('data:image/')) {

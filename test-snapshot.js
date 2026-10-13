@@ -42,6 +42,10 @@ assert.strictEqual(hashSnapshot(reordered), hashSnapshot(first), 'key order must
 const keys = Object.keys(JSON.parse(canonicalJson(first)));
 assert.deepStrictEqual(keys, [...keys].sort(), 'canonical JSON keys must be sorted');
 assert.deepStrictEqual(keys, [
+  'avatar_accessory',
+  'avatar_color',
+  'avatar_eyes',
+  'avatar_hands',
   'coding_runtime',
   'deck_name',
   'description',
@@ -143,6 +147,29 @@ assert.strictEqual(effectiveInput.persistent_runtime, 'hermes', 'persistent runt
 assert.strictEqual(effectiveInput.name, 'Alice', 'identity fields must pass through the deck-launch overlay');
 assert.notStrictEqual(hashSnapshot(storedInput), hashSnapshot(effectiveInput), 'effective values must change the launch hash');
 console.log('PASS: snapshot-field assertion: persistent runtime and identity pass through while the launch hash changes');
+passed += 1;
+
+// 6b. NOT-431: the composable avatar fields are part of the hashed input.
+// Unconfigured bots record nulls (never invented); changing any avatar
+// field changes the launch hash.
+const avatarBase = buildSnapshotInput(bot(), skill());
+assert.strictEqual(avatarBase.avatar_color, null, 'unconfigured snapshot must not invent an avatar color');
+assert.strictEqual(avatarBase.avatar_eyes, null, 'unconfigured snapshot must not invent avatar eyes');
+assert.strictEqual(avatarBase.avatar_hands, null, 'unconfigured snapshot must not invent avatar hands');
+assert.strictEqual(avatarBase.avatar_accessory, null, 'unconfigured snapshot must not invent an avatar accessory');
+const avatarConfigured = buildSnapshotInput(
+  bot({ avatar_color: 'teal', avatar_eyes: 'happy', avatar_hands: 'waving', avatar_accessory: 'hat' }),
+  skill()
+);
+assert.strictEqual(avatarConfigured.avatar_color, 'teal', 'snapshot must record the avatar color');
+assert.strictEqual(avatarConfigured.avatar_accessory, 'hat', 'snapshot must record the avatar accessory');
+assert.notStrictEqual(hashSnapshot(avatarBase), hashSnapshot(avatarConfigured), 'avatar configuration must be part of the hashed input');
+const avatarRecolored = buildSnapshotInput(
+  bot({ avatar_color: 'pink', avatar_eyes: 'happy', avatar_hands: 'waving', avatar_accessory: 'hat' }),
+  skill()
+);
+assert.notStrictEqual(hashSnapshot(avatarConfigured), hashSnapshot(avatarRecolored), 'a changed avatar color must change the hash');
+console.log('PASS: snapshot-field assertion: avatar fields round-trip and changing one changes the launch hash');
 passed += 1;
 
 // 7. Loop integration: a bot STORED as codex/relay-deck//tmp/relay-work
@@ -259,7 +286,7 @@ async function main() {
   for (const suffix of ['', '-shm', '-wal']) {
     try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* cleanup */ }
   }
-  console.log(`\ntest:snapshot: ${passed}/13 assertions passing`);
+  console.log(`\ntest:snapshot: ${passed}/14 assertions passing`);
 }
 
 main().catch(error => {

@@ -1328,3 +1328,76 @@ button.cfg-link:hover {
 .cfg-chevron:hover {
   opacity: 1;
 }
+
+/* NOT-431: composable outline bot avatars (transparent, stroke-only SVG). */
+.bot-avatar svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mark-avatar {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+}
+
+.mark-avatar-sm {
+  width: 36px;
+  height: 36px;
+  flex-basis: 36px;
+}
+
+.mark-avatar .mark-dot {
+  right: -2px;
+  top: -2px;
+}
+
+span.agent-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: -3px;
+  overflow: hidden;
+  background: transparent;
+}
+
+button.avatar-pic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar-group-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+
+.avatar-opt-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 8px;
+}
+
+.avatar-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.avatar-opt[aria-pressed="true"] {
+  border-color: currentColor;
+  box-shadow: 0 0 0 1px currentColor;
+}
