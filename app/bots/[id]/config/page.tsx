@@ -4,13 +4,19 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
-  AVAILABILITY_ERROR_COPY,
-  CONFIG_AVAILABILITY_EMPTY_COPY,
-  STORED_UNVERIFIED_NOTE,
-  configCodingPathLines,
-  runtimeOptions,
-  type AvailabilityState,
+  SELECT_DECK_ERROR,
+  configRuntimePatchBody,
+  configRuntimeView,
+  configWorkdirHint,
+  defaultWorkdirFor,
+  isAgentDeckRuntime,
+  isMigratedPending,
+  runtimeFormFromBot,
+  runtimeFormView,
+  type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
+import { RuntimeSection } from '@/app/components/AgentDeckRuntime';
+import { useDeckList } from '@/app/components/useDeckList';
 import BotAvatar from '@/app/components/BotAvatar';
 import {
   AVATAR_ACCESSORIES,
@@ -142,15 +148,12 @@ export default function BotConfigPage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [copiedKey, setCopiedKey] = useState('');
 
-  const [availability, setAvailability] = useState<AvailabilityState>({ status: 'loading', runtimes: [] });
-  const [availabilityToken, setAvailabilityToken] = useState(0);
-  const [codingEditing, setCodingEditing] = useState(false);
-  const [codingRuntime, setCodingRuntime] = useState('');
-  const [codingDeck, setCodingDeck] = useState('');
-  const [codingDir, setCodingDir] = useState('');
-  const [codingPhase, setCodingPhase] = useState<Phase>('clean');
-  const [codingError, setCodingError] = useState('');
-  const [codingConfirmedAt, setCodingConfirmedAt] = useState(0);
+  const { state: deckState, retry: retryDecks } = useDeckList();
+  const [runtimeEditing, setRuntimeEditing] = useState(false);
+  const [runtimeForm, setRuntimeForm] = useState<RuntimeFormInput | null>(null);
+  const [runtimePhase, setRuntimePhase] = useState<Phase>('clean');
+  const [runtimeError, setRuntimeError] = useState('');
+  const [runtimeConfirmedAt, setRuntimeConfirmedAt] = useState(0);
 
   const [avatarDraft, setAvatarDraft] = useState<AvatarConfig | null>(null);
   const [avatarPhase, setAvatarPhase] = useState<Phase>('clean');
@@ -193,49 +196,18 @@ export default function BotConfigPage() {
     };
   }, [id, reloadToken]);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/bots/availability', { cache: 'no-store' })
-      .then(async res => {
-        if (cancelled) return;
-        if (!res.ok) throw new Error('request failed');
-        const payload = await res.json().catch(() => null);
-        if (cancelled) return;
-        const options = runtimeOptions(payload);
-        setAvailability(options.length > 0
-          ? { status: 'ready', runtimes: options }
-          : { status: 'empty', runtimes: [] });
-      })
-      .catch(() => {
-        if (!cancelled) setAvailability({ status: 'error', runtimes: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [availabilityToken]);
-
-  function retryAvailability(): void {
-    setAvailability({ status: 'loading', runtimes: [] });
-    setAvailabilityToken(token => token + 1);
-  }
-
   const storedRules = data?.bot.description ?? '';
   const rulesDirty = rulesText !== null && rulesText !== storedRules;
   const storedSkill = data?.skill.content ?? '';
   const skillDirty = skillEditing && skillText !== storedSkill;
-  const storedCodingRuntime = data?.bot.agent_client ?? '';
-  const storedCodingDeck = data?.bot.deck_id ?? '';
-  const storedCodingDir = data?.bot.working_directory ?? '';
-  const codingDirty = codingEditing && (
-    codingRuntime !== storedCodingRuntime ||
-    codingDeck !== storedCodingDeck ||
-    codingDir !== storedCodingDir
-  );
+  const storedRuntimeForm = data ? runtimeFormFromBot(data.bot) : null;
+  const runtimeDirty = runtimeEditing && runtimeForm !== null &&
+    JSON.stringify(runtimeForm) !== JSON.stringify(storedRuntimeForm);
   const storedAvatar: AvatarConfig = data?.bot.avatar_config ?? resolveAvatar(data?.bot ?? {});
   const avatarShown: AvatarConfig = avatarDraft ?? storedAvatar;
   const avatarDirty =
     avatarDraft !== null && JSON.stringify(avatarDraft) !== JSON.stringify(storedAvatar);
-  const anyDirty = rulesDirty || skillDirty || codingDirty || avatarDirty;
+  const anyDirty = rulesDirty || skillDirty || runtimeDirty || avatarDirty;
 
   useEffect(() => {
     if (!anyDirty) return;
@@ -300,19 +272,27 @@ export default function BotConfigPage() {
     setRulesError('');
   }
 
-  function startCodingEdit(): void {
-    setCodingRuntime(data?.bot.agent_client ?? '');
-    setCodingDeck(data?.bot.deck_id ?? '');
-    setCodingDir(data?.bot.working_directory ?? '');
-    setCodingEditing(true);
-    setCodingPhase('clean');
-    setCodingError('');
+  function startRuntimeEdit(): void {
+    if (!data) return;
+    const seed = runtimeFormFromBot(data.bot);
+    setRuntimeForm(isAgentDeckRuntime(data.bot) ? seed : { ...seed, runtime: 'agent-deck' });
+    setRuntimeEditing(true);
+    setRuntimePhase('clean');
+    setRuntimeError('');
+    retryDecks();
   }
 
-  function discardCoding(): void {
-    setCodingEditing(false);
-    setCodingPhase('clean');
-    setCodingError('');
+  function patchRuntimeForm(patch: Partial<RuntimeFormInput>): void {
+    setRuntimeForm(current => (current ? { ...current, ...patch } : current));
+    setRuntimeError('');
+    setRuntimePhase(current => (current === 'error' ? 'clean' : current));
+  }
+
+  function discardRuntime(): void {
+    setRuntimeEditing(false);
+    setRuntimeForm(null);
+    setRuntimePhase('clean');
+    setRuntimeError('');
   }
 
   function pickAvatar(patch: Partial<AvatarConfig>): void {
@@ -362,21 +342,20 @@ export default function BotConfigPage() {
     }
   }
 
-  async function saveCoding(): Promise<void> {
-    if (!data) return;
-    setCodingPhase('saving');
-    setCodingError('');
+  async function saveRuntime(): Promise<void> {
+    if (!data || !runtimeForm) return;
+    if (runtimeForm.runtime === 'agent-deck' && !runtimeForm.deckId.trim()) {
+      setRuntimePhase('error');
+      setRuntimeError(SELECT_DECK_ERROR);
+      return;
+    }
+    setRuntimePhase('saving');
+    setRuntimeError('');
     try {
       const res = await fetch('/api/bots', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: data.bot.id,
-          runtime: codingRuntime ? 'agent-deck' : 'hermes',
-          agent_client: codingRuntime,
-          deck_id: codingDeck,
-          working_directory: codingDir,
-        }),
+        body: JSON.stringify(configRuntimePatchBody(data.bot.id, runtimeForm)),
       });
       if (!res.ok) {
         let reason = 'request failed';
@@ -391,15 +370,16 @@ export default function BotConfigPage() {
       const refreshed = await fetch(`/api/bots/${encodeURIComponent(id)}/config`);
       if (!refreshed.ok) throw new Error('request failed');
       setData((await refreshed.json()) as ConfigData);
-      setCodingEditing(false);
-      setCodingPhase('confirmed');
-      setCodingConfirmedAt(Date.now());
+      setRuntimeEditing(false);
+      setRuntimeForm(null);
+      setRuntimePhase('confirmed');
+      setRuntimeConfirmedAt(Date.now());
       setTimeout(() => {
-        setCodingPhase(current => (current === 'confirmed' ? 'clean' : current));
+        setRuntimePhase(current => (current === 'confirmed' ? 'clean' : current));
       }, 5000);
     } catch (error) {
-      setCodingPhase('error');
-      setCodingError(error instanceof Error ? error.message : 'request failed');
+      setRuntimePhase('error');
+      setRuntimeError(error instanceof Error ? error.message : 'request failed');
     }
   }
 
@@ -486,7 +466,7 @@ export default function BotConfigPage() {
   }
 
   if (loadFailed && !data) {
-    const errorSections = ['Skills', 'Rules', 'Coding path', 'Avatar', 'Template source'];
+    const errorSections = ['Skills', 'Rules', 'Runtime', 'Avatar', 'Template source'];
     return (
       <div className="cfg-page">
         <div className="max-w-6xl mx-auto">
@@ -573,16 +553,16 @@ export default function BotConfigPage() {
       <span className="text-sm cfg-faint">Saved</span>
     );
 
-  const codingStateLine =
-    codingPhase === 'saving' ? (
+  const runtimeStateLine =
+    runtimePhase === 'saving' ? (
       <span className="text-sm cfg-faint">Saving…</span>
-    ) : codingDirty || codingPhase === 'error' ? (
+    ) : runtimeDirty || runtimePhase === 'error' ? (
       <span className="text-sm cfg-dirty">
         <span className="inline-block w-2 h-2 rounded-full cfg-dot-amber mr-1" />
         Unsaved changes
       </span>
-    ) : codingPhase === 'confirmed' ? (
-      <span className="text-sm cfg-faint">Saved {formatClock(codingConfirmedAt)}</span>
+    ) : runtimePhase === 'confirmed' ? (
+      <span className="text-sm cfg-faint">Saved {formatClock(runtimeConfirmedAt)}</span>
     ) : (
       <span className="text-sm cfg-faint">Saved</span>
     );
@@ -767,135 +747,74 @@ export default function BotConfigPage() {
 
             <section className="cfg-card">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="cfg-title">Coding path</h2>
-                {codingStateLine}
+                <h2 className="cfg-title">Runtime</h2>
+                {runtimeStateLine}
               </div>
               {(() => {
-                const lines = configCodingPathLines(bot);
-                const storedUnverified =
-                  Boolean(storedCodingRuntime) &&
-                  (availability.status === 'ready' || availability.status === 'empty') &&
-                  !availability.runtimes.includes(storedCodingRuntime);
-                if (!codingEditing) {
+                if (!runtimeEditing || !runtimeForm) {
+                  const view = configRuntimeView(bot, deckState);
                   return (
-                    <>
-                      <p className="text-sm cfg-muted">{lines.chat}</p>
-                      <p className="text-sm cfg-muted mt-1">{lines.code}</p>
-                      {lines.workingDirectory ? (
-                        <p className="text-sm cfg-muted mt-1 break-all">
-                          Working directory: {lines.workingDirectory}
-                        </p>
+                    <div data-field="runtime-read">
+                      <p className="text-sm cfg-muted break-words">{view.summary}</p>
+                      {view.workingDirectory ? (
+                        <p className="text-sm cfg-muted mt-1 break-all">{view.workingDirectory}</p>
                       ) : null}
-                      {lines.configured ? (
-                        <button
-                          onClick={startCodingEdit}
-                          className="mt-3 cfg-btn-ghost text-sm w-full sm:w-auto"
-                        >
-                          Edit
-                        </button>
-                      ) : (
-                        <p className="text-sm cfg-muted mt-1">
-                          No coding path has been set — this bot runs on Hermes.{' '}
-                          <button onClick={startCodingEdit} className="cfg-link">
-                            Add a coding path
-                          </button>
+                      {view.notices.map(notice => (
+                        <p key={notice} className="text-sm cfg-dirty mt-2">
+                          {notice}{' '}
+                          {/Settings/.test(notice) ? (
+                            <Link href="/settings" className="cfg-link">Open Settings</Link>
+                          ) : null}
                         </p>
-                      )}
-                    </>
+                      ))}
+                      <button
+                        onClick={startRuntimeEdit}
+                        className="mt-3 cfg-btn-ghost text-sm w-full sm:w-auto"
+                      >
+                        {view.action}
+                      </button>
+                    </div>
                   );
                 }
+                const formView = runtimeFormView(runtimeForm, deckState, { includeName: false });
+                const savedDeckId = isAgentDeckRuntime(bot) && !isMigratedPending(bot) ? bot.deck_id : null;
                 return (
                   <>
-                    <p className="text-sm cfg-muted mb-2">Single runtime — None chats via Hermes, a coding runtime launches Agent Deck.</p>
-                    <p className="text-sm cfg-muted mb-2">Coding runtime</p>
-                    {availability.status === 'loading' ? (
-                      <p className="text-sm cfg-muted">Checking available runtimes…</p>
-                    ) : (
-                      <div role="radiogroup" aria-label="Coding runtime">
-                        {availability.runtimes.map(runtime => (
-                          <label key={runtime} className="block text-sm cfg-muted">
-                            <input
-                              type="radio"
-                              name="coding-runtime"
-                              value={runtime}
-                              checked={codingRuntime === runtime}
-                              onChange={() => setCodingRuntime(runtime)}
-                            />
-                            {' ' + runtime}
-                          </label>
-                        ))}
-                        {storedUnverified ? (
-                          <p className="text-sm cfg-muted mt-1">
-                            {storedCodingRuntime} (stored) — {STORED_UNVERIFIED_NOTE}
-                          </p>
-                        ) : null}
-                        <label className="block text-sm cfg-muted">
-                          <input
-                            type="radio"
-                            name="coding-runtime"
-                            value=""
-                            checked={codingRuntime === ''}
-                            onChange={() => setCodingRuntime('')}
-                          />
-                          {' None — chat only'}
-                        </label>
-                      </div>
-                    )}
-                    {availability.status === 'empty' ? (
-                      <p className="text-sm cfg-muted mt-2">{CONFIG_AVAILABILITY_EMPTY_COPY}</p>
-                    ) : null}
-                    {availability.status === 'error' ? (
-                      <p className="text-sm cfg-muted mt-2">
-                        {AVAILABILITY_ERROR_COPY}{' '}
-                        <button onClick={retryAvailability} className="cfg-link">
-                          Retry
-                        </button>
-                      </p>
-                    ) : null}
-                    <label className="block text-sm cfg-muted mt-3 mb-1" htmlFor="cfg-deck">
-                      Deck ID
-                    </label>
-                    <input
-                      id="cfg-deck"
-                      type="text"
-                      value={codingDeck}
-                      onChange={e => setCodingDeck(e.target.value)}
-                      placeholder="planner"
-                      className="cfg-input text-sm"
+                    <RuntimeSection
+                      idPrefix="cfg"
+                      variant="config"
+                      form={runtimeForm}
+                      onChange={patchRuntimeForm}
+                      deckState={deckState}
+                      onRetry={retryDecks}
+                      savedDeckId={savedDeckId}
+                      workdirPlaceholder={defaultWorkdirFor(bot.id)}
+                      workdirHint={configWorkdirHint(bot.id)}
                     />
-                    <label className="block text-sm cfg-muted mt-3 mb-1" htmlFor="cfg-workdir">
-                      Working directory
-                    </label>
-                    <input
-                      id="cfg-workdir"
-                      type="text"
-                      value={codingDir}
-                      onChange={e => setCodingDir(e.target.value)}
-                      placeholder="/Users/you/workspace/codes/botmancers"
-                      className="cfg-input text-sm"
-                    />
-                    {codingPhase === 'error' && (
+                    {runtimePhase === 'error' && (
                       <p className="mt-2 text-sm cfg-error">
-                        Couldn&apos;t save: {codingError}.{' '}
-                        <button onClick={saveCoding} className="underline hover:no-underline">
-                          Retry
-                        </button>
+                        {runtimeError === SELECT_DECK_ERROR ? runtimeError : `Couldn't save: ${runtimeError}.`}{' '}
+                        {runtimeError === SELECT_DECK_ERROR ? null : (
+                          <button onClick={saveRuntime} className="underline hover:no-underline">
+                            Retry
+                          </button>
+                        )}
                       </p>
                     )}
                     <div className="mt-3 flex gap-2">
                       <button
-                        onClick={saveCoding}
-                        disabled={!codingDirty || codingPhase === 'saving'}
+                        onClick={saveRuntime}
+                        disabled={!runtimeDirty || runtimePhase === 'saving' || formView.submitDisabled}
                         className="flex-1 sm:flex-none cfg-btn-primary text-sm"
                       >
-                        {codingPhase === 'saving' ? 'Saving…' : 'Save'}
+                        {runtimePhase === 'saving' ? 'Saving…' : 'Save'}
                       </button>
                       <button
-                        onClick={discardCoding}
-                        disabled={!codingDirty || codingPhase === 'saving'}
+                        onClick={discardRuntime}
+                        disabled={runtimePhase === 'saving'}
                         className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
                       >
-                        Discard
+                        {runtimeDirty ? 'Discard' : 'Cancel'}
                       </button>
                     </div>
                   </>
