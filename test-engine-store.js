@@ -116,7 +116,7 @@ function runFresh() {
     'parent_request_id->work_requests.id', 'root_request_id->work_requests.id',
   ]);
   expectFks('work_attempts', ['request_id->work_requests.id', 'resumed_session_binding_id->session_bindings.id']);
-  expectFks('session_bindings', ['conversation_id->conversations.id', 'request_id->work_requests.id', 'source_attempt_id->work_attempts.id']);
+  expectFks('session_bindings', ['agent_id->bots.id', 'conversation_id->conversations.id', 'request_id->work_requests.id', 'source_attempt_id->work_attempts.id']);
   expectFks('engine_events', ['request_id->work_requests.id', 'attempt_id->work_attempts.id']);
 
   const uniqueIndexColumns = table => sqlite.prepare(`PRAGMA index_list(${table})`).all()
@@ -129,7 +129,7 @@ function runFresh() {
   assert(hasUnique('work_attempts', 'request_id', true), 'work_attempts: at most one open attempt per request (partial unique)');
   assert(hasUnique('session_bindings', 'agent_id,adapter,expr,expr', true), 'session_bindings: one active binding per scope (partial unique)');
   const migrations = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
-  assert(migrations.length === 1 && migrations[0].version === store.ENGINE_SCHEMA_VERSION, `schema_migrations records version ${store.ENGINE_SCHEMA_VERSION}`);
+  assert(migrations.map(m => m.version).join(',') === '1,2' && store.ENGINE_SCHEMA_VERSION === 2, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
   const edges = sqlite.prepare('SELECT from_state || \'>\' || to_state AS e FROM work_request_transitions').all().map(row => row.e);
   assert(edges.includes('queued>running') && !edges.includes('completed>running'), 'transition table seeded from WORK_REQUEST_TRANSITIONS');
 
@@ -164,7 +164,7 @@ function runFresh() {
   throwsMatching(() => rawRequest('r-x3', conv.id, builder.id, 'no-such-parent'), /parent_request_id/, 'raw work_request with unknown parent is rejected');
   throwsMatching(() => sqlite.prepare("INSERT INTO engine_events (id, request_id, sequence, type, created_at) VALUES ('ev', 'nope', 1, 't', 1)").run(), /engine_events.request_id/, 'raw engine_event for unknown request is rejected');
   throwsMatching(() => sqlite.prepare("INSERT INTO work_attempts (id, request_id, attempt_number, kind, adapter, tool_profile, launch_snapshot, launch_snapshot_hash, started_at) VALUES ('a', 'nope', 1, 'launch', 'x', 'readonly', '{}', 'h', 1)").run(), /work_attempts.request_id/, 'raw attempt for unknown request is rejected');
-  throwsMatching(() => sqlite.prepare("INSERT INTO session_bindings (id, agent_id, adapter, conversation_id, external_session_id, created_at) VALUES ('b', 'x', 'y', 'nope', 's', 1)").run(), /session_bindings.conversation_id/, 'raw binding for unknown conversation is rejected');
+  throwsMatching(() => sqlite.prepare("INSERT INTO session_bindings (id, agent_id, adapter, conversation_id, external_session_id, created_at) VALUES ('b', ?, 'y', 'nope', 's', 1)").run(builder.id), /session_bindings.conversation_id/, 'raw binding for unknown conversation is rejected');
   assert(count('SELECT COUNT(*) AS n FROM work_requests') === 0, 'no rows were written by rejected inserts');
   throwsCode(() => engine.createOrGetWorkRequest(baseInput({ parentRequestId: 'missing' })), 'not_found', 'repository rejects an unknown parent request');
   throwsMatching(() => engine.createOrGetWorkRequest(baseInput({ targetAgentId: 'missing-agent' })), /target_agent_id/, 'repository rejects an unknown target agent');
@@ -339,6 +339,45 @@ function runFresh() {
   throwsMatching(() => sqlite.prepare("INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, created_at) VALUES ('cross', ?, 99, ?, 't', 1)").run(a.id, attempt1.id), /engine_events.attempt_id/, 'an event cannot reference another request\'s attempt');
   engine.transitionWorkRequest(work.id, { from: 'running', to: 'completed', result: { artifacts } });
 
+  console.log('\nSession bindings cannot cross unrelated scopes');
+  const reviewerConv = conversations.getByBotId(reviewer.id);
+  const other = engine.createOrGetWorkRequest(baseInput({ executionKind: 'implementation', toolProfile: 'edit', intent: 'Unrelated work' })).request;
+  engine.transitionWorkRequest(other.id, { from: 'queued', to: 'running' });
+  const otherAttempt = engine.createAttempt(other.id, { kind: 'launch', adapter: 'agent-deck', toolProfile: 'edit', launchSnapshot: '{}' });
+  engine.finishAttempt(otherAttempt.id, { outcome: 'interrupted' });
+  const bindingsBefore = count('SELECT COUNT(*) AS n FROM session_bindings');
+  const otherEventsBefore = engine.listEvents(other.id).length;
+  const bind = overrides => engine.bindSession({ agentId: builder.id, adapter: 'agent-deck', externalSessionId: 'x', ...overrides });
+  throwsCode(() => bind({ requestId: other.id, sourceAttemptId: attempt1.id }), 'session_mismatch', 'a binding for request B cannot source an attempt of request A');
+  throwsCode(() => bind({ agentId: reviewer.id, requestId: other.id }), 'session_mismatch', 'a binding cannot claim a request that targets another Agent');
+  throwsCode(() => bind({ adapter: 'hermes-gateway', requestId: other.id, sourceAttemptId: otherAttempt.id }), 'session_mismatch', 'a binding cannot source an attempt from another adapter');
+  throwsCode(() => bind({ conversationId: reviewerConv.id, requestId: other.id }), 'session_mismatch', 'a binding cannot pair a request with another conversation');
+  throwsCode(() => bind({ conversationId: reviewerConv.id, sourceAttemptId: otherAttempt.id }), 'session_mismatch', 'a conversation binding cannot source an attempt from another conversation');
+  throwsCode(() => bind({ agentId: 'no-such-agent', conversationId: conv.id }), 'not_found', 'a binding needs a registered Agent');
+  assert(engine.getActiveSessionBinding({ agentId: builder.id, adapter: 'agent-deck', conversationId: conv.id, requestId: work.id }).id === rebound.id, 'rejected binds release nothing');
+  assert(count('SELECT COUNT(*) AS n FROM session_bindings') === bindingsBefore && engine.listEvents(other.id).length === otherEventsBefore, 'rejected binds write no rows or events');
+  throwsMatching(() => sqlite.prepare("INSERT INTO session_bindings (id, agent_id, adapter, request_id, external_session_id, source_attempt_id, created_at) VALUES ('raw-b', ?, 'agent-deck', ?, 's', ?, 1)").run(builder.id, other.id, attempt1.id), /source attempt/, 'raw SQL cannot bind a session across requests');
+  throwsMatching(() => sqlite.prepare("INSERT INTO session_bindings (id, agent_id, adapter, conversation_id, external_session_id, created_at) VALUES ('raw-b2', 'no-such-agent', 'agent-deck', ?, 's', 1)").run(conv.id), /session_bindings.agent_id/, 'raw binding for an unknown Agent is rejected');
+
+  const convBinding1 = bind({ conversationId: conv.id, externalSessionId: 'c-1' });
+  const convBinding2 = bind({ conversationId: conv.id, externalSessionId: 'c-2' });
+  const foreignConvBinding = bind({ conversationId: reviewerConv.id, externalSessionId: 'c-3' });
+  const resume = (requestId, bindingId, adapter = 'agent-deck') => engine.createAttempt(requestId, { kind: 'resume', adapter, toolProfile: 'edit', launchSnapshot: '{}', resumedSessionBindingId: bindingId });
+  const attemptsBefore = count('SELECT COUNT(*) AS n FROM work_attempts');
+  throwsCode(() => resume(other.id, rebound.id), 'session_mismatch', 'an unrelated request cannot resume another request\'s session');
+  throwsCode(() => resume(other.id, convBinding1.id), 'session_mismatch', 'a released (superseded) binding cannot be resumed');
+  throwsCode(() => resume(other.id, convBinding2.id, 'hermes-gateway'), 'session_mismatch', 'a binding cannot be resumed by another adapter');
+  throwsCode(() => resume(other.id, convOnly.id), 'session_mismatch', 'a binding of another Agent cannot be resumed');
+  throwsCode(() => resume(other.id, foreignConvBinding.id), 'session_mismatch', 'a conversation binding cannot be resumed from another conversation');
+  throwsMatching(() => sqlite.prepare("INSERT INTO work_attempts (id, request_id, attempt_number, kind, adapter, tool_profile, launch_snapshot, launch_snapshot_hash, resumed_session_binding_id, started_at) VALUES ('raw-a', ?, 9, 'resume', 'agent-deck', 'edit', '{}', 'h', ?, 1)").run(other.id, rebound.id), /resumed session binding/, 'raw SQL cannot resume an unrelated session');
+  assert(count('SELECT COUNT(*) AS n FROM work_attempts') === attemptsBefore, 'rejected resumes write no attempts');
+  const revision = engine.createOrGetWorkRequest(baseInput({ parentRequestId: work.id, executionKind: 'revision', toolProfile: 'edit' })).request;
+  engine.transitionWorkRequest(revision.id, { from: 'queued', to: 'running' });
+  const revisionAttempt = resume(revision.id, rebound.id);
+  assert(revisionAttempt.resumed_session_binding_id === rebound.id, 'a revision in the same lineage resumes the original request session');
+  const otherResume = resume(other.id, convBinding2.id);
+  assert(otherResume.attempt_number === 2, 'a request resumes the active conversation binding of its Agent and adapter');
+
   console.log('\nAgent deletion removes engine rows for owned conversations');
   const temp = bots.create({ deck_id: 'deck-1', name: 'Temp', title: '', description: '' });
   const tempConv = conversations.getByBotId(temp.id);
@@ -353,10 +392,46 @@ function runFresh() {
     && count('SELECT COUNT(*) AS n FROM session_bindings WHERE conversation_id = ?', tempConv.id) === 0, 'conversation deletion clears its engine rows');
   assert(engine.getWorkRequest(work.id) !== undefined, 'other conversations keep their requests');
 
+  console.log('\nDelete-side foreign keys: RESTRICT plus lineage cascade');
+  const engineTables = new Set(['work_requests', 'work_attempts', 'session_bindings', 'engine_events']);
+  const orphans = () => sqlite.prepare('PRAGMA foreign_key_check').all().filter(row => engineTables.has(row.table));
+  assert(orphans().length === 0, 'no dangling engine references (PRAGMA foreign_key_check)');
+  const source = bots.create({ deck_id: 'deck-1', name: 'Source', title: '', description: '' });
+  const sourceConv = conversations.getByBotId(source.id);
+  const rootX = engine.createOrGetWorkRequest(baseInput({ sourceConversationId: sourceConv.id, targetAgentId: source.id })).request;
+  // A child sourced from another conversation, targeting a surviving Agent.
+  const childY = engine.createOrGetWorkRequest(baseInput({ parentRequestId: rootX.id, executionKind: 'implementation', toolProfile: 'edit' })).request;
+  engine.transitionWorkRequest(childY.id, { from: 'queued', to: 'running' });
+  const childAttempt = engine.createAttempt(childY.id, { kind: 'launch', adapter: 'agent-deck', toolProfile: 'edit', launchSnapshot: '{}' });
+  engine.finishAttempt(childAttempt.id, { outcome: 'succeeded', externalSessionId: 'y-1' });
+  const childBinding = engine.bindSession({ agentId: builder.id, adapter: 'agent-deck', externalSessionId: 'y-1', requestId: childY.id, sourceAttemptId: childAttempt.id });
+  const childResume = resume(childY.id, childBinding.id);
+  const sourceBinding = engine.bindSession({ agentId: source.id, adapter: 'hermes-gateway', externalSessionId: 's-1', conversationId: sourceConv.id });
+  throwsMatching(() => sqlite.prepare('DELETE FROM work_requests WHERE id = ?').run(rootX.id), /parent_request_id/, 'a parent request cannot be deleted while a child references it');
+  throwsMatching(() => sqlite.prepare('DELETE FROM conversations WHERE id = ?').run(sourceConv.id), /source_conversation_id/, 'a conversation cannot be deleted while a request references it');
+  throwsMatching(() => sqlite.prepare('DELETE FROM bots WHERE id = ?').run(source.id), /target_agent_id/, 'an Agent cannot be deleted while a request targets it');
+  throwsMatching(() => sqlite.prepare('DELETE FROM work_attempts WHERE id = ?').run(childAttempt.id), /engine_events.attempt_id|source_attempt_id/, 'an attempt cannot be deleted while events or bindings reference it');
+  throwsMatching(() => sqlite.prepare('DELETE FROM session_bindings WHERE id = ?').run(childBinding.id), /resumed_session_binding_id/, 'a binding cannot be deleted while an attempt resumes it');
+  throwsMatching(() => sqlite.prepare('DELETE FROM work_requests WHERE id = ?').run(childY.id), /work_attempts.request_id/, 'a request cannot be deleted while attempts reference it');
+  assert(engine.getWorkRequest(rootX.id) && engine.getAttempt(childResume.id) && orphans().length === 0, 'rejected deletes leave every row in place');
+  bots.remove(source.id);
+  assert(!engine.getWorkRequest(rootX.id) && !engine.getWorkRequest(childY.id), 'deleting the source conversation removes the root and its cross-conversation child');
+  assert(!engine.getAttempt(childAttempt.id) && !engine.getAttempt(childResume.id)
+    && count('SELECT COUNT(*) AS n FROM session_bindings WHERE id IN (?, ?)', childBinding.id, sourceBinding.id) === 0
+    && count('SELECT COUNT(*) AS n FROM engine_events WHERE request_id IN (?, ?)', rootX.id, childY.id) === 0, 'descendant attempts, bindings, and events are removed with them');
+  assert(orphans().length === 0, 'no orphans after conversation and Agent deletion');
+
+  const target = bots.create({ deck_id: 'deck-1', name: 'Target', title: '', description: '' });
+  const targeted = engine.createOrGetWorkRequest(baseInput({ targetAgentId: target.id })).request;
+  const targetBinding = engine.bindSession({ agentId: target.id, adapter: 'hermes-gateway', externalSessionId: 't-1', conversationId: conv.id });
+  bots.remove(target.id);
+  assert(!engine.getWorkRequest(targeted.id) && count('SELECT COUNT(*) AS n FROM session_bindings WHERE id = ?', targetBinding.id) === 0, 'deleting an Agent removes requests and bindings in other conversations that reference it');
+  assert(engine.getWorkRequest(work.id) && engine.getWorkRequest(other.id) && orphans().length === 0, 'unrelated requests survive and nothing dangles');
+
   console.log('\nRe-running migrations is a no-op');
   const before = count('SELECT COUNT(*) AS n FROM work_requests');
   store.migrateEngineSchema(new Database(DB_PATH));
-  assert(count('SELECT COUNT(*) AS n FROM schema_migrations') === 1 && count('SELECT COUNT(*) AS n FROM work_requests') === before, 'second open applies nothing new');
+  assert(count('SELECT COUNT(*) AS n FROM schema_migrations') === store.ENGINE_SCHEMA_VERSION && count('SELECT COUNT(*) AS n FROM work_requests') === before, 'second open applies nothing new');
   assert(EngineStoreError && typeof EngineStoreError === 'function', 'EngineStoreError exported');
 
   console.log('\nLegacy database scenario (child process)');
@@ -417,6 +492,13 @@ function runLegacy() {
   req.run('req-no-bot', 'k-5', 'hash-5', 'conv-api', 'bot-deleted', 'm-5', 'codex', 'completed', null, null, null, t + 16, t + 17);
   req.run('req-no-conv', 'k-6', 'hash-6', 'conv-deleted', 'bot-codex', 'm-x', 'codex', 'completed', null, null, null, t + 18, t + 19);
   req.run('req-no-msg', 'k-7', 'hash-7', 'conv-api', 'bot-codex', 'm-missing', 'codex', 'completed', null, null, null, t + 20, t + 21);
+  // Same principal and key under two legacy operations: legal there,
+  // one identity canonically. The older row wins; the newer stays legacy-only.
+  msg.run('m-8a', 'conv-api', 'user', 'svc-1', 'Op A', t + 22, 'service', 'req-op-a');
+  msg.run('m-8b', 'conv-api', 'user', 'svc-1', 'Op B', t + 23, 'service', 'req-op-b');
+  const reqOp = legacy.prepare(`INSERT INTO agent_requests VALUES (?, 'service', 'svc-1', ?, 'k-8', ?, 'conv-api', 'bot-codex', ?, 'codex', 'completed', NULL, NULL, NULL, ?, ?)`);
+  reqOp.run('req-op-b', 'other_operation', 'hash-8b', 'm-8b', t + 23, t + 24);
+  reqOp.run('req-op-a', 'send_message', 'hash-8a', 'm-8a', t + 22, t + 23);
   const ev = legacy.prepare('INSERT INTO agent_request_events VALUES (?, ?, ?, ?, ?)');
   ev.run('e-1', 'req-completed', 'accepted', null, t + 11);
   ev.run('e-2', 'req-completed', 'dispatched', '{"agent":"codex"}', t + 11);
@@ -462,12 +544,17 @@ function runLegacy() {
 
   console.log('\nBackfill of terminal agent_requests');
   const rows = sqlite.prepare('SELECT * FROM work_requests ORDER BY created_at').all();
-  assert(rows.map(row => row.legacy_agent_request_id).join(',') === 'req-completed,req-failed', 'only mappable terminal requests are backfilled');
+  assert(rows.map(row => row.legacy_agent_request_id).join(',') === 'req-completed,req-failed,req-op-a', 'only mappable terminal requests are backfilled');
+  assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE legacy_agent_request_id = 'req-op-b'") === 0, 'a key collision across legacy operations keeps the oldest row and skips the newer one');
   const done = rows[0];
   assert(done.state === 'completed' && JSON.parse(done.result).reply_message_id === 'm-1r' && done.terminal_at === t + 12, 'completed request maps state, result, and terminal time');
   assert(done.source_conversation_id === 'conv-api' && done.source_event_id === 'm-1' && done.intent === 'Explain the queue', 'source conversation, event, and intent map from the accepted message');
   assert(done.requester_kind === 'service' && done.requester_id === 'svc-1' && done.target_agent_id === 'bot-codex', 'requester and target map verbatim');
-  assert(done.idempotency_key === 'k-1' && done.request_hash === 'hash-1', 'idempotency key and payload hash carried over');
+  const canonicalHash = store.workRequestHash({
+    sourceConversationId: 'conv-api', sourceEventId: 'm-1', targetAgentId: 'bot-codex', intent: 'Explain the queue',
+    executionKind: 'conversation', toolProfile: 'readonly',
+  });
+  assert(done.idempotency_key === 'k-1' && done.request_hash === canonicalHash, 'idempotency key carried over; request hash is the canonical intake hash');
   assert(done.execution_kind === 'conversation' && done.tool_profile === 'readonly' && done.root_request_id === done.id && done.depth === 0, 'legacy turns map to read-only conversation roots');
   const policy = JSON.parse(done.policy_snapshot);
   assert(policy.source === 'legacy_agent_requests' && policy.legacy_runtime === 'codex' && policy.legacy_operation === 'send_message', 'policy snapshot records legacy provenance');
@@ -480,19 +567,35 @@ function runLegacy() {
 
   console.log('\nBackfill is idempotent and picks up rows that finish later');
   store.migrateEngineSchema(new Database(DB_PATH));
-  assert(count('SELECT COUNT(*) AS n FROM work_requests') === 2, 'reopening does not duplicate backfilled rows');
+  assert(count('SELECT COUNT(*) AS n FROM work_requests') === 3, 'reopening does not duplicate backfilled rows');
   sqlite.prepare("UPDATE agent_requests SET state = 'completed', reply_message_id = 'm-x', updated_at = ? WHERE id = 'req-dispatched'").run(t + 30);
   store.migrateEngineSchema(new Database(DB_PATH));
   assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE legacy_agent_request_id = 'req-dispatched'") === 1, 'a legacy row that later completes is backfilled on the next open');
-  assert(count('SELECT COUNT(*) AS n FROM schema_migrations') === 1, 'schema migration applied once');
+  assert(count('SELECT COUNT(*) AS n FROM schema_migrations') === store.ENGINE_SCHEMA_VERSION, 'schema migrations applied once');
 
   console.log('\nBackfilled rows share the canonical idempotency scope');
-  throwsCode(() => engine.createOrGetWorkRequest({
-    sourceConversationId: 'conv-api', sourceEventId: 'm-new', requester: { kind: 'service', id: 'svc-1' },
+  const replayInput = {
+    sourceConversationId: 'conv-api', sourceEventId: 'm-1', requester: { kind: 'service', id: 'svc-1' },
     targetAgentId: 'bot-codex', intent: 'Explain the queue', executionKind: 'conversation', toolProfile: 'readonly',
     idempotencyKey: 'k-1',
-  }), 'idempotency_conflict', 'a reused legacy key cannot create a second request');
+  };
+  const eventsBeforeReplay = engine.listEvents(done.id).length;
+  const replay = engine.createOrGetWorkRequest(replayInput);
+  assert(replay.created === false && replay.request.id === done.id, 'an exact replay of a backfilled request returns the backfilled row');
+  assert(engine.listEvents(done.id).length === eventsBeforeReplay, 'replay appends no events');
+  throwsCode(() => engine.createOrGetWorkRequest({ ...replayInput, sourceEventId: 'm-new' }), 'idempotency_conflict', 'a reused legacy key with a different payload is a conflict');
   assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE idempotency_key = 'k-1'") === 1, 'still one request for the legacy key');
+
+  console.log('\nA canonical request that already holds a legacy key wins');
+  const native = engine.createOrGetWorkRequest({ ...replayInput, sourceEventId: 'm-3', intent: 'Pending', idempotencyKey: 'k-3' }).request;
+  sqlite.prepare("UPDATE agent_requests SET state = 'completed', reply_message_id = 'm-y', updated_at = ? WHERE id = 'req-accepted'").run(t + 40);
+  let reopened = true;
+  try { store.migrateEngineSchema(new Database(DB_PATH)); } catch { reopened = false; }
+  assert(reopened, 'reopening with a colliding legacy row succeeds');
+  assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE legacy_agent_request_id = 'req-accepted'") === 0
+    && count("SELECT COUNT(*) AS n FROM work_requests WHERE idempotency_key = 'k-3'") === 1
+    && engine.getWorkRequest(native.id).legacy_agent_request_id === null, 'the colliding legacy row stays legacy-only');
+  assert(count("SELECT COUNT(*) AS n FROM agent_requests WHERE id IN ('req-op-b', 'req-accepted')") === 2, 'skipped legacy rows are kept');
 
   finish();
 }

@@ -121,7 +121,8 @@ export type EngineStoreErrorCode =
   | 'idempotency_conflict'
   | 'invalid_transition'
   | 'stale_state'
-  | 'attempt_conflict';
+  | 'attempt_conflict'
+  | 'session_mismatch';
 
 export class EngineStoreError extends Error {
   code: EngineStoreErrorCode;
@@ -208,6 +209,7 @@ const MIGRATIONS: Migration[] = [
           created_at INTEGER NOT NULL,
           released_at INTEGER,
           CHECK (conversation_id IS NOT NULL OR request_id IS NOT NULL),
+          FOREIGN KEY (agent_id) REFERENCES bots(id),
           FOREIGN KEY (conversation_id) REFERENCES conversations(id),
           FOREIGN KEY (request_id) REFERENCES work_requests(id),
           FOREIGN KEY (source_attempt_id) REFERENCES work_attempts(id)
@@ -373,6 +375,99 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 2,
+    name: 'core_engine_referential_integrity',
+    up: db => {
+      db.exec(`
+        -- Foreign keys (delete side): RESTRICT. A referenced row cannot be
+        -- deleted while anything still points at it; deleteEngineRecords
+        -- removes dependants first, in one transaction.
+        CREATE TRIGGER trg_conversations_engine_restrict BEFORE DELETE ON conversations
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: work_requests.source_conversation_id')
+            WHERE EXISTS (SELECT 1 FROM work_requests WHERE source_conversation_id = OLD.id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_bindings.conversation_id')
+            WHERE EXISTS (SELECT 1 FROM session_bindings WHERE conversation_id = OLD.id);
+        END;
+
+        CREATE TRIGGER trg_bots_engine_restrict BEFORE DELETE ON bots
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: work_requests.target_agent_id')
+            WHERE EXISTS (SELECT 1 FROM work_requests WHERE target_agent_id = OLD.id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_bindings.agent_id')
+            WHERE EXISTS (SELECT 1 FROM session_bindings WHERE agent_id = OLD.id);
+        END;
+
+        CREATE TRIGGER trg_work_requests_restrict BEFORE DELETE ON work_requests
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: work_requests.parent_request_id')
+            WHERE EXISTS (
+              SELECT 1 FROM work_requests
+              WHERE id <> OLD.id AND (parent_request_id = OLD.id OR root_request_id = OLD.id)
+            );
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: work_attempts.request_id')
+            WHERE EXISTS (SELECT 1 FROM work_attempts WHERE request_id = OLD.id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: engine_events.request_id')
+            WHERE EXISTS (SELECT 1 FROM engine_events WHERE request_id = OLD.id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_bindings.request_id')
+            WHERE EXISTS (SELECT 1 FROM session_bindings WHERE request_id = OLD.id);
+        END;
+
+        CREATE TRIGGER trg_work_attempts_restrict BEFORE DELETE ON work_attempts
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: engine_events.attempt_id')
+            WHERE EXISTS (SELECT 1 FROM engine_events WHERE attempt_id = OLD.id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_bindings.source_attempt_id')
+            WHERE EXISTS (SELECT 1 FROM session_bindings WHERE source_attempt_id = OLD.id);
+        END;
+
+        CREATE TRIGGER trg_session_bindings_restrict BEFORE DELETE ON session_bindings
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: work_attempts.resumed_session_binding_id')
+            WHERE EXISTS (SELECT 1 FROM work_attempts WHERE resumed_session_binding_id = OLD.id);
+        END;
+
+        -- Session continuity: a binding belongs to one Agent and adapter in
+        -- one scope, and its source attempt must come from that scope.
+        CREATE TRIGGER trg_session_bindings_scope BEFORE INSERT ON session_bindings
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_bindings.agent_id')
+            WHERE NOT EXISTS (SELECT 1 FROM bots WHERE id = NEW.agent_id);
+          SELECT RAISE(ABORT, 'session binding does not match its work request')
+            WHERE NEW.request_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM work_requests r
+              WHERE r.id = NEW.request_id AND r.target_agent_id = NEW.agent_id
+                AND (NEW.conversation_id IS NULL OR r.source_conversation_id = NEW.conversation_id)
+            );
+          SELECT RAISE(ABORT, 'session binding does not match its source attempt')
+            WHERE NEW.source_attempt_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM work_attempts a JOIN work_requests r ON r.id = a.request_id
+              WHERE a.id = NEW.source_attempt_id AND a.adapter = NEW.adapter AND r.target_agent_id = NEW.agent_id
+                AND (NEW.request_id IS NULL OR a.request_id = NEW.request_id)
+                AND (NEW.conversation_id IS NULL OR r.source_conversation_id = NEW.conversation_id)
+            );
+        END;
+
+        -- A resume continues an active binding of the same Agent and
+        -- adapter, from the same conversation and request lineage.
+        CREATE TRIGGER trg_work_attempts_resume_scope BEFORE INSERT ON work_attempts
+        WHEN NEW.resumed_session_binding_id IS NOT NULL
+        BEGIN
+          SELECT RAISE(ABORT, 'resumed session binding does not match the work request')
+            WHERE NOT EXISTS (
+              SELECT 1 FROM session_bindings b
+              JOIN work_requests r ON r.id = NEW.request_id
+              LEFT JOIN work_requests br ON br.id = b.request_id
+              WHERE b.id = NEW.resumed_session_binding_id AND b.released_at IS NULL
+                AND b.agent_id = r.target_agent_id AND b.adapter = NEW.adapter
+                AND (b.conversation_id IS NULL OR b.conversation_id = r.source_conversation_id)
+                AND (b.request_id IS NULL OR br.root_request_id = r.root_request_id)
+            );
+        END;
+      `);
+    },
+  },
 ];
 
 export const ENGINE_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -420,6 +515,34 @@ interface LegacyAgentRequestRow {
   content: string;
 }
 
+// Intake identity of a Work Request: the fields a caller supplies. A
+// repeat of the same (requester, idempotency key) must carry the same
+// hash to replay. Backfilled rows use the same function, so replaying a
+// legacy request through create-or-get returns the backfilled row.
+export function workRequestHash(fields: {
+  sourceConversationId: string;
+  sourceEventId: string;
+  targetAgentId: string;
+  intent: string;
+  executionKind: ExecutionKind;
+  toolProfile: ToolProfile;
+  parentRequestId?: string | null;
+  wakeEventId?: string | null;
+  policy?: Record<string, unknown> | null;
+}): string {
+  return sha256(JSON.stringify([
+    fields.sourceConversationId,
+    fields.sourceEventId,
+    fields.targetAgentId,
+    fields.intent,
+    fields.executionKind,
+    fields.toolProfile,
+    fields.parentRequestId ?? null,
+    fields.wakeEventId ?? null,
+    fields.policy ?? null,
+  ]));
+}
+
 // Copies terminal agent_requests history into work_requests. Only rows
 // that map without guessing are copied: a terminal state (completed or
 // failed; accepted/dispatched rows still belong to the legacy dispatcher),
@@ -428,6 +551,15 @@ interface LegacyAgentRequestRow {
 // in their original order, followed by a 'backfilled' event. No Attempt is
 // synthesized: legacy rows recorded no launch snapshot. Idempotent via
 // legacy_agent_request_id; legacy rows are never modified or deleted.
+//
+// Collision policy: legacy keys are unique per operation, canonical keys
+// per requester only. Rows are visited oldest first (created_at, rowid);
+// the first row to claim a (requester, idempotency key) is copied and any
+// later row with the same identity, from another operation or already
+// held by a canonical request, stays legacy-only. The request hash is the
+// canonical intake hash of the mapped fields (conversation execution,
+// readonly profile, no caller policy), not the legacy payload hash; the
+// legacy operation and runtime are kept in the policy snapshot only.
 export function backfillLegacyAgentRequests(db: Db): number {
   const hasLegacy = db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_requests'"
@@ -442,13 +574,11 @@ export function backfillLegacyAgentRequests(db: Db): number {
       WHERE r.state IN ('completed', 'failed')
         AND r.principal_kind IN ('person', 'bot', 'service')
         AND NOT EXISTS (SELECT 1 FROM work_requests w WHERE w.legacy_agent_request_id = r.id)
-        AND NOT EXISTS (
-          SELECT 1 FROM work_requests w
-          WHERE w.requester_kind = r.principal_kind AND w.requester_id = r.principal_id
-            AND w.idempotency_key = r.idempotency_key
-        )
       ORDER BY r.created_at ASC, r.rowid ASC
     `).all() as LegacyAgentRequestRow[];
+    const claimed = db.prepare(
+      'SELECT 1 FROM work_requests WHERE requester_kind = ? AND requester_id = ? AND idempotency_key = ?'
+    );
     const legacyEvents = db.prepare(
       'SELECT type, data, created_at FROM agent_request_events WHERE request_id = ? ORDER BY created_at ASC, rowid ASC'
     );
@@ -463,8 +593,18 @@ export function backfillLegacyAgentRequests(db: Db): number {
     const insertEvent = db.prepare(
       'INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, data, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?)'
     );
+    let copied = 0;
     for (const row of rows) {
+      if (claimed.get(row.principal_kind, row.principal_id, row.idempotency_key)) continue;
       const id = randomUUID();
+      const hash = workRequestHash({
+        sourceConversationId: row.conversation_id,
+        sourceEventId: row.accepted_message_id,
+        targetAgentId: row.target_bot_id,
+        intent: row.content,
+        executionKind: 'conversation',
+        toolProfile: 'readonly',
+      });
       // Legacy agent API turns ran as conversation turns with the
       // read-only tool profile (docs/core-engine.md, Current code).
       const policy = JSON.stringify({
@@ -476,7 +616,7 @@ export function backfillLegacyAgentRequests(db: Db): number {
       insert.run(
         id, row.conversation_id, row.accepted_message_id, row.principal_kind, row.principal_id, row.target_bot_id,
         row.content, id,
-        row.idempotency_key, row.payload_hash, policy, row.state,
+        row.idempotency_key, hash, policy, row.state,
         row.state === 'completed' ? JSON.stringify({ reply_message_id: row.reply_message_id }) : null,
         row.state === 'failed' ? row.failure_code : null,
         row.state === 'failed' ? row.failure_message : null,
@@ -490,8 +630,9 @@ export function backfillLegacyAgentRequests(db: Db): number {
         randomUUID(), id, ++sequence, 'backfilled',
         JSON.stringify({ legacy_agent_request_id: row.id }), row.updated_at
       );
+      copied++;
     }
-    return rows.length;
+    return copied;
   }).immediate();
 }
 
@@ -581,6 +722,7 @@ export function createEngineStore(db: Db) {
     SELECT ?, ?, COALESCE(MAX(sequence), 0) + 1, ?, ?, ?, ? FROM engine_events WHERE request_id = ?
   `);
   const getEvent = db.prepare('SELECT * FROM engine_events WHERE id = ?');
+  const getBinding = db.prepare('SELECT * FROM session_bindings WHERE id = ?');
 
   function requireRequest(id: string): WorkRequest {
     const row = getRequest.get(id) as WorkRequest | undefined;
@@ -598,20 +740,6 @@ export function createEngineStore(db: Db) {
     const id = randomUUID();
     insertEventRow.run(id, requestId, attemptId, type, json(data), at, requestId);
     return getEvent.get(id) as EngineEvent;
-  }
-
-  function requestHash(input: CreateWorkRequestInput): string {
-    return sha256(JSON.stringify([
-      input.sourceConversationId,
-      input.sourceEventId,
-      input.targetAgentId,
-      input.intent,
-      input.executionKind,
-      input.toolProfile,
-      input.parentRequestId ?? null,
-      input.wakeEventId ?? null,
-      input.policy ?? null,
-    ]));
   }
 
   function validateCreate(input: CreateWorkRequestInput): void {
@@ -644,7 +772,7 @@ export function createEngineStore(db: Db) {
     // nothing; a different payload is an idempotency conflict.
     createOrGetWorkRequest(input: CreateWorkRequestInput): { request: WorkRequest; created: boolean } {
       validateCreate(input);
-      const hash = requestHash(input);
+      const hash = workRequestHash(input);
       return db.transaction(() => {
         const existing = getByIdempotency.get(input.requester.kind, input.requester.id, input.idempotencyKey) as WorkRequest | undefined;
         if (existing) {
@@ -767,8 +895,18 @@ export function createEngineStore(db: Db) {
         const open = db.prepare('SELECT id FROM work_attempts WHERE request_id = ? AND finished_at IS NULL').get(requestId);
         if (open) throw new EngineStoreError('attempt_conflict', 'The request already has an open attempt.');
         if (input.resumedSessionBindingId) {
-          const binding = db.prepare('SELECT id FROM session_bindings WHERE id = ?').get(input.resumedSessionBindingId);
+          const binding = getBinding.get(input.resumedSessionBindingId) as SessionBinding | undefined;
           if (!binding) throw new EngineStoreError('not_found', 'Session binding not found.');
+          if (binding.released_at !== null) throw new EngineStoreError('session_mismatch', 'The session binding was released.');
+          if (binding.agent_id !== request.target_agent_id || binding.adapter !== input.adapter) {
+            throw new EngineStoreError('session_mismatch', 'The session binding belongs to another Agent or adapter.');
+          }
+          if (binding.conversation_id !== null && binding.conversation_id !== request.source_conversation_id) {
+            throw new EngineStoreError('session_mismatch', 'The session binding belongs to another conversation.');
+          }
+          if (binding.request_id !== null && requireRequest(binding.request_id).root_request_id !== request.root_request_id) {
+            throw new EngineStoreError('session_mismatch', 'The session binding belongs to an unrelated work request.');
+          }
         }
         const now = input.now ?? Date.now();
         const id = randomUUID();
@@ -851,7 +989,31 @@ export function createEngineStore(db: Db) {
       }
       return db.transaction(() => {
         const now = input.now ?? Date.now();
-        if (input.sourceAttemptId) requireAttempt(input.sourceAttemptId);
+        if (!db.prepare('SELECT 1 FROM bots WHERE id = ?').get(input.agentId)) {
+          throw new EngineStoreError('not_found', `No agent ${input.agentId}.`);
+        }
+        if (input.requestId) {
+          const request = requireRequest(input.requestId);
+          if (request.target_agent_id !== input.agentId) {
+            throw new EngineStoreError('session_mismatch', 'The work request targets another Agent.');
+          }
+          if (input.conversationId && request.source_conversation_id !== input.conversationId) {
+            throw new EngineStoreError('session_mismatch', 'The work request belongs to another conversation.');
+          }
+        }
+        if (input.sourceAttemptId) {
+          const attempt = requireAttempt(input.sourceAttemptId);
+          const source = requireRequest(attempt.request_id);
+          if (attempt.adapter !== input.adapter || source.target_agent_id !== input.agentId) {
+            throw new EngineStoreError('session_mismatch', 'The source attempt ran another Agent or adapter.');
+          }
+          if (input.requestId && attempt.request_id !== input.requestId) {
+            throw new EngineStoreError('session_mismatch', 'The source attempt belongs to another work request.');
+          }
+          if (input.conversationId && source.source_conversation_id !== input.conversationId) {
+            throw new EngineStoreError('session_mismatch', 'The source attempt belongs to another conversation.');
+          }
+        }
         db.prepare(`
           UPDATE session_bindings SET released_at = ?
           WHERE agent_id = ? AND adapter = ? AND IFNULL(conversation_id, '') = ? AND IFNULL(request_id, '') = ?
@@ -866,11 +1028,9 @@ export function createEngineStore(db: Db) {
           input.externalSessionId, input.sourceAttemptId ?? null, now
         );
         if (input.requestId) {
-          const attemptId = input.sourceAttemptId ?? null;
-          const ownAttempt = attemptId ? requireAttempt(attemptId).request_id === input.requestId : false;
-          insertEvent(input.requestId, 'session_bound', { binding_id: id, adapter: input.adapter }, ownAttempt ? attemptId : null, now);
+          insertEvent(input.requestId, 'session_bound', { binding_id: id, adapter: input.adapter }, input.sourceAttemptId ?? null, now);
         }
-        return db.prepare('SELECT * FROM session_bindings WHERE id = ?').get(id) as SessionBinding;
+        return getBinding.get(id) as SessionBinding;
       }).immediate();
     },
 
@@ -887,16 +1047,78 @@ export function createEngineStore(db: Db) {
 
 export type EngineStore = ReturnType<typeof createEngineStore>;
 
-// Removes every engine row tied to a conversation being deleted
-// (requests it sourced plus their attempts, events, and bindings, and
-// bindings scoped to it). Children are deleted before parents.
+// Delete-side cascade, run by the conversation and Agent delete paths
+// before the referenced row goes (the RESTRICT triggers reject anything
+// left behind). Starting from the requests and bindings that reference
+// the conversation or Agent, it closes over everything that depends on
+// them: descendant requests (parent or root lineage, even when sourced
+// from another conversation), their attempts, attempts resuming a removed
+// binding, and bindings scoped to or sourced from removed rows. Rows are
+// then deleted dependants first. Callers run it inside their transaction.
+function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string; arg: string }): void {
+  const ids = (sql: string, ...args: unknown[]) => (db.prepare(sql).all(...args) as { id: string }[]).map(row => row.id);
+  const requests = new Set(ids(seed.requests, seed.arg));
+  const bindings = new Set(ids(seed.bindings, seed.arg));
+  const attempts = new Set<string>();
+  const add = (set: Set<string>, found: string[]) => {
+    let grew = false;
+    for (const id of found) if (!set.has(id)) { set.add(id); grew = true; }
+    return grew;
+  };
+  const list = (set: Set<string>) => JSON.stringify([...set]);
+  const inSet = '(SELECT value FROM json_each(?))';
+  for (;;) {
+    const grewRequests = add(requests, ids(
+      `SELECT id FROM work_requests WHERE parent_request_id IN ${inSet} OR root_request_id IN ${inSet}`,
+      list(requests), list(requests)
+    ));
+    const grewAttempts = add(attempts, ids(
+      `SELECT id FROM work_attempts WHERE request_id IN ${inSet} OR resumed_session_binding_id IN ${inSet}`,
+      list(requests), list(bindings)
+    ));
+    const grewBindings = add(bindings, ids(
+      `SELECT id FROM session_bindings WHERE request_id IN ${inSet} OR source_attempt_id IN ${inSet}`,
+      list(requests), list(attempts)
+    ));
+    if (!grewRequests && !grewAttempts && !grewBindings) break;
+  }
+  db.prepare(`DELETE FROM engine_events WHERE request_id IN ${inSet} OR attempt_id IN ${inSet}`).run(list(requests), list(attempts));
+  // Attempts and bindings reference each other (resume / source), but
+  // never in a cycle: each reference was to a row that already existed.
+  // Peel unreferenced rows until both sets are empty.
+  while (attempts.size > 0 || bindings.size > 0) {
+    const freeBindings = ids(
+      `SELECT id FROM session_bindings WHERE id IN ${inSet}
+         AND NOT EXISTS (SELECT 1 FROM work_attempts a WHERE a.resumed_session_binding_id = session_bindings.id)`,
+      list(bindings)
+    );
+    for (const id of freeBindings) { db.prepare('DELETE FROM session_bindings WHERE id = ?').run(id); bindings.delete(id); }
+    const freeAttempts = ids(
+      `SELECT id FROM work_attempts WHERE id IN ${inSet}
+         AND NOT EXISTS (SELECT 1 FROM session_bindings b WHERE b.source_attempt_id = work_attempts.id)`,
+      list(attempts)
+    );
+    for (const id of freeAttempts) { db.prepare('DELETE FROM work_attempts WHERE id = ?').run(id); attempts.delete(id); }
+    if (freeBindings.length === 0 && freeAttempts.length === 0) {
+      throw new Error('Engine records could not be removed: unexpected attempt/binding reference cycle.');
+    }
+  }
+  const ordered = ids(`SELECT id FROM work_requests WHERE id IN ${inSet} ORDER BY depth DESC`, list(requests));
+  for (const id of ordered) db.prepare('DELETE FROM work_requests WHERE id = ?').run(id);
+}
+
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
-  const requests = "SELECT id FROM work_requests WHERE source_conversation_id = ?";
-  db.prepare(`DELETE FROM engine_events WHERE request_id IN (${requests})`).run(conversationId);
-  db.prepare(
-    `DELETE FROM session_bindings WHERE conversation_id = ? OR request_id IN (${requests})
-       OR source_attempt_id IN (SELECT id FROM work_attempts WHERE request_id IN (${requests}))`
-  ).run(conversationId, conversationId, conversationId);
-  db.prepare(`DELETE FROM work_attempts WHERE request_id IN (${requests})`).run(conversationId);
-  db.prepare('DELETE FROM work_requests WHERE source_conversation_id = ?').run(conversationId);
+  deleteEngineRecords(db, {
+    requests: 'SELECT id FROM work_requests WHERE source_conversation_id = ?',
+    bindings: 'SELECT id FROM session_bindings WHERE conversation_id = ?',
+    arg: conversationId,
+  });
+}
+
+export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
+  deleteEngineRecords(db, {
+    requests: 'SELECT id FROM work_requests WHERE target_agent_id = ?',
+    bindings: 'SELECT id FROM session_bindings WHERE agent_id = ?',
+    arg: agentId,
+  });
 }

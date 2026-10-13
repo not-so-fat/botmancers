@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { applyAgentUpdate, DEFAULT_AGENT, migrateLegacyAgentFields, type AgentUpdateFields } from './bot-definition';
 import { isChiefOfStaffName } from './avatar';
 import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } from './bot-deletion';
-import { createEngineStore, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
+import { createEngineStore, deleteEngineRecordsForAgent, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
 
 // Overridable so the stub-model delegation test uses an isolated file.
 const DB_PATH = process.env.BOTMANCERS_DB_PATH || 'botmancers.db';
@@ -794,6 +794,7 @@ export const bots = {
       for (const id of ids) {
         const owned = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').all(id) as { id: string }[];
         for (const conversation of owned) deleteConversationRecords(conversation.id);
+        deleteEngineRecordsForAgent(db, id);
         db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
         db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
         db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
