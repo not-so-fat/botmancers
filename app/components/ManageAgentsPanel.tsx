@@ -43,6 +43,7 @@ export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
   const [confirming, setConfirming] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,9 +88,24 @@ export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
     return () => document.removeEventListener('keydown', onKey);
   }, [confirming, onClose]);
 
+  const onCardKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab' || !cardRef.current) return;
+    const focusable = Array.from(cardRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)'));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div className="modal-scrim manage-scrim">
-      <div className="manage-card" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div ref={cardRef} className="manage-card" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onCardKeyDown}>
         <div className="manage-head">
           <h2 id={titleId} className="delete-title">Manage agents</h2>
           <button type="button" className="cancel-btn" onClick={onClose}>Close</button>
