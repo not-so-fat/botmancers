@@ -287,7 +287,7 @@ check('reaching: both arms are stacked near mouth level with the longer reach', 
   assert.strictEqual(top.x, bottom.x, 'arms are stacked on the same start');
   assert.strictEqual(top.w, bottom.w, 'both arms share the longer reach');
   assert.ok(top.y + top.h < bottom.y, 'arms are stacked without overlapping');
-  assert.ok(top.y <= 76, 'top arm sits near mouth level');
+  assert.ok(top.y <= 78, 'top arm sits near mouth level');
   assert.ok(top.x + top.w > 105, 'arms reach well past the body outline');
 });
 

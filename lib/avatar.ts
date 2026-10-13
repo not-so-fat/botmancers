@@ -311,8 +311,8 @@ function handsGroup(hands: AvatarHandsId, stroke: string): string {
       // well past the outline.
       return (
         `<g data-avatar-layer="hands" data-avatar-hands="reaching">` +
-        `<rect x="64" y="75.5" width="44" height="7" rx="3.5" ${common}/>` +
-        `<rect x="64" y="89" width="44" height="7" rx="3.5" ${common}/>` +
+        `<rect x="60" y="77.75" width="48" height="6.5" rx="3.25" ${common}/>` +
+        `<rect x="60" y="90.25" width="48" height="6.5" rx="3.25" ${common}/>` +
         `</g>`
       );
     case 'waving':
