@@ -235,7 +235,7 @@ function knockoutsFor(hands: AvatarHandsId, accessory: AvatarAccessoryId): Knock
   const out: Knockout[] = [];
   if (hands === 'reaching') {
     // Right-side outline under both stacked arms and the gap between them.
-    out.push({ x1: 88.5, y1: 75, x2: 91.5, y2: 96, w: 8 });
+    out.push({ x1: 87.6, y1: 69, x2: 90.4, y2: 86.5, w: 8 });
   }
   if (hands === 'waving') {
     // Left-side raised arm root.
@@ -303,16 +303,26 @@ function eyesGroup(eyes: AvatarEyesId, stroke: string): string {
   }
 }
 
+// Reaching right: both arms high and stacked, the top one level with the
+// mouth, starting just right of the smile and reaching well past the outline.
+const REACHING_ARMS = [
+  { x: 70, y: 70.5, w: 38, h: 6 },
+  { x: 70, y: 82, w: 38, h: 6 },
+];
+
+function reachingArmRects(attrs: string): string {
+  return REACHING_ARMS
+    .map(arm => `<rect x="${arm.x}" y="${arm.y}" width="${arm.w}" height="${arm.h}" rx="${arm.h / 2}" ${attrs}/>`)
+    .join('');
+}
+
 function handsGroup(hands: AvatarHandsId, stroke: string): string {
   const common = `fill="none" stroke="${stroke}" stroke-width="${STROKE_WIDTH}" stroke-linecap="round" stroke-linejoin="round"`;
   switch (hands) {
     case 'reaching':
-      // Both arms high and stacked just below the mouth, reaching right
-      // well past the outline.
       return (
         `<g data-avatar-layer="hands" data-avatar-hands="reaching">` +
-        `<rect x="60" y="77.75" width="48" height="6.5" rx="3.25" ${common}/>` +
-        `<rect x="60" y="90.25" width="48" height="6.5" rx="3.25" ${common}/>` +
+        reachingArmRects(common) +
         `</g>`
       );
     case 'waving':
@@ -397,17 +407,27 @@ export function renderAvatarSvg(config: AvatarConfig, uid = 'static'): string {
       `<line x1="${knockout.x1}" y1="${knockout.y1}" x2="${knockout.x2}" y2="${knockout.y2}" stroke="#000000" stroke-width="${knockout.w}" stroke-linecap="round"/>`
     )
     .join('');
+  // The high reaching arms cross the headset, glasses, and wide eyes; this
+  // second mask hides those lines inside the arms so the arms read in front.
+  const armsMaskId = `avatar-arms-${safeUid}`;
+  const reaching = config.hands === 'reaching';
+  const armsMask = reaching
+    ? `<mask id="${armsMaskId}"><rect x="0" y="0" width="120" height="120" fill="#ffffff"/>${reachingArmRects(`fill="#000000" stroke="#000000" stroke-width="${STROKE_WIDTH * 2}"`)}</mask>`
+    : '';
+  const face = eyesGroup(config.eyes, stroke);
+  const accessory = accessoryGroup(config.accessory, stroke);
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" data-avatar-color="${config.color}" data-avatar-eyes="${config.eyes}" data-avatar-hands="${config.hands}" data-avatar-accessory="${config.accessory}">` +
     `<mask id="${maskId}"><rect x="0" y="0" width="120" height="120" fill="#ffffff"/>${maskShapes}</mask>` +
+    armsMask +
     `<g data-avatar-layer="body" mask="url(#${maskId})">` +
     `<path d="${BODY_PATH}" ${common}/>` +
     `<path d="${SMILE_PATH}" ${common}/>` +
     `<path data-avatar-brows="straight" d="${browsPath(config.eyes)}" fill="none" stroke="${stroke}" stroke-width="${BROW_STROKE_WIDTH}" stroke-linecap="round"/>` +
     `</g>` +
-    eyesGroup(config.eyes, stroke) +
+    (reaching ? `<g mask="url(#${armsMaskId})">${face}</g>` : face) +
     handsGroup(config.hands, stroke) +
-    accessoryGroup(config.accessory, stroke) +
+    (reaching ? `<g mask="url(#${armsMaskId})">${accessory}</g>` : accessory) +
     `</svg>`
   );
 }

@@ -50,7 +50,7 @@ function splitMask(svg) {
   const match = svg.match(/<mask id="[^"]*">([\s\S]*?)<\/mask>/);
   assert.ok(match, 'rendered avatar must contain a knockout mask');
   const maskBody = match[1];
-  const visible = svg.replace(match[0], '');
+  const visible = svg.replace(/<mask id="[^"]*">[\s\S]*?<\/mask>/g, '');
   return { maskBody, visible };
 }
 
@@ -212,7 +212,7 @@ check('mask: knockouts cover the body outline inside each attachment', () => {
   assertKnockoutCovers(
     'reaching covers the outline under both arms',
     renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching' }),
-    [[89.2, 79], [90.35, 86], [91.4, 92.5]]
+    [[88.25, 73], [89.06, 78], [89.71, 82], [90.35, 86]]
   );
   assertKnockoutCovers(
     'waving',
@@ -248,7 +248,7 @@ check('mask: knockouts cover the body outline inside each attachment', () => {
   assertKnockoutCovers(
     'reaching+bow',
     renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching', accessory: 'bow' }),
-    [[89.2, 79], [64.3, 28.3]]
+    [[88.25, 73], [64.3, 28.3]]
   );
 });
 
@@ -287,8 +287,23 @@ check('reaching: both arms are stacked near mouth level with the longer reach', 
   assert.strictEqual(top.x, bottom.x, 'arms are stacked on the same start');
   assert.strictEqual(top.w, bottom.w, 'both arms share the longer reach');
   assert.ok(top.y + top.h < bottom.y, 'arms are stacked without overlapping');
-  assert.ok(top.y <= 78, 'top arm sits near mouth level');
+  // Mouth spans y 71-75.5 (SMILE_PATH); folded bars start at y 79.
+  assert.ok(top.y <= 72 && top.y + top.h >= 75, 'top arm sits level with the mouth');
+  assert.ok(bottom.y + bottom.h <= 89, 'the stacked pair stays high, clear of the lower body');
+  assert.ok(bottom.y - (top.y + top.h) <= top.h, 'arms stack closely, gap no wider than an arm');
+  assert.ok(top.x > 67.75, 'arms start right of the smile so they do not cross it');
   assert.ok(top.x + top.w > 105, 'arms reach well past the body outline');
+});
+
+check('reaching: arms mask hides eye and accessory lines inside the arms', () => {
+  for (const accessory of AVATAR_ACCESSORIES) {
+    const svg = renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching', accessory: accessory.id }, 'r1');
+    assert.ok(svg.includes('<mask id="avatar-arms-r1">'), `${accessory.id}: reaching must define an arms mask`);
+    assert.match(svg, /<g mask="url\(#avatar-arms-r1\)"><g data-avatar-layer="eyes"/, `${accessory.id}: eyes sit behind the arms`);
+    assert.match(svg, /<g mask="url\(#avatar-arms-r1\)"><g data-avatar-layer="accessory"/, `${accessory.id}: accessory sits behind the arms`);
+  }
+  const folded = renderAvatarSvg(DEFAULT_AVATAR, 'f1');
+  assert.ok(!folded.includes('avatar-arms-'), 'other poses keep a single mask');
 });
 
 // 5. Determinism: repeated renders are byte-identical; uid only re-scopes
