@@ -103,13 +103,22 @@ check('lockup groups mark and wordmark in one row', /flex-direction:\s*row/.test
 const welcomeAt = page.indexOf('<div className="welcome">');
 const welcomeBlock = page.slice(welcomeAt, page.indexOf('</div>', welcomeAt));
 const outlineSrc = (welcomeBlock.match(/src="(\/brand\/botmancers-logo-outline-(\d+)\.png)"/) || []);
-check('zero-bot state is gated on bots.length === 0', /bots\.length === 0 \? \(\s*<div className="welcome">/.test(page));
+check('zero-bot state is gated on noBots', /: noBots \? \(\s*<div className="welcome">/.test(page));
+check('noBots requires a completed bots load', /const noBots = botsLoaded && bots\.length === 0;/.test(page));
+check('botsLoaded is set only after loadBots stores the list', /setBots\(list\);\s*setBotsLoaded\(true\);/.test(page) && /useState\(false\)/.test(page.slice(page.indexOf('botsLoaded'), page.indexOf('botsLoaded') + 80)));
+check('rail roster is gated on noBots, not raw bots.length', /\{noBots \? null : \(/.test(page) && !/\{bots\.length === 0 \? null/.test(page));
 check('zero-bot state uses an outline brand asset', Boolean(outlineSrc[1]), outlineSrc[1]);
 const welcomeW = Number((welcomeBlock.match(/width=\{(\d+)\}/) || [])[1]);
 check('zero-bot mark renders at >= 128 px', welcomeW >= 128 && px(rule('.welcome-mark'), 'width') >= 128, `${welcomeW} px`);
 check('zero-bot copy is the existing invitation', welcomeBlock.includes('Pick someone to talk to.'));
-const narrow = css.match(/\.welcome-mark\s*\{[^}]*width:\s*(\d+)px/g) || [];
-check('narrow welcome mark stays >= 128 px', narrow.every(r => Number(r.match(/(\d+)px/)[1]) >= 128), narrow.join(' | '));
+// The narrow override must live inside a (max-width: 799px) block and be the
+// last .welcome-mark width in the file so it actually wins at 390 px.
+const narrowBlocks = [...css.matchAll(/@media \(max-width: 799px\)\s*\{((?:[^{}]*\{[^{}]*\})*[^{}]*)\}/g)].map(m => m[1]);
+const narrowWelcome = narrowBlocks.map(b => px((b.match(/\.welcome-mark\s*\{([^}]*)\}/) || [])[1] || '', 'width')).filter(v => v !== null);
+const narrowWelcomeAt = css.lastIndexOf('@media (max-width: 799px)', css.lastIndexOf('.welcome-mark'));
+check('narrow welcome mark override exists in (max-width: 799px)', narrowWelcome.length === 1, JSON.stringify(narrowWelcome));
+check('narrow welcome mark stays >= 128 px', narrowWelcome.length > 0 && narrowWelcome.every(v => v >= 128), `${narrowWelcome[0]} px`);
+check('narrow override follows the desktop .welcome-mark rule', narrowWelcomeAt > css.indexOf('.welcome-mark {'));
 check('populated no-selection pane keeps the plain line', /\) : \(\s*<p className="empty-line">Pick someone to talk to\.<\/p>\s*\)\}\s*<\/section>/.test(page));
 
 // Assets exist, keep RGBA, and have transparent corners (no box/backdrop).

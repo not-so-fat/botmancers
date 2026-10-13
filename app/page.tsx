@@ -190,6 +190,7 @@ function messagePicture(content: string) {
 
 export default function Home() {
   const [bots, setBots] = useState<Bot[]>([]);
+  const [botsLoaded, setBotsLoaded] = useState(false);
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
@@ -340,6 +341,7 @@ export default function Home() {
     if (!Array.isArray(data)) return;
     const list: Bot[] = data;
     setBots(list);
+    setBotsLoaded(true);
   }
 
   async function loadGroups() {
@@ -499,6 +501,9 @@ export default function Home() {
     });
   };
 
+  // True zero-bot roster only once /api/bots has answered, so a populated
+  // workspace never flashes the welcome state on cold load.
+  const noBots = botsLoaded && bots.length === 0;
   const rosterBots = [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b));
   const hiddenBots = bots.filter(bot => bot.hidden);
 
@@ -734,7 +739,7 @@ export default function Home() {
             Settings
           </Link>
         </div>
-        {bots.length === 0 ? null : (
+        {noBots ? null : (
           <div className={rowMenu ? 'roster menu-open' : 'roster'}>
             {rosterBots.map(bot => isChiefOfStaff(bot) ? (
               <div
@@ -1260,7 +1265,7 @@ export default function Home() {
               </button>
             </div>
           </div>
-        ) : bots.length === 0 ? (
+        ) : noBots ? (
           <div className="welcome">
             <Image
               className="welcome-mark"
