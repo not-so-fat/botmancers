@@ -4,6 +4,7 @@ import { applyAgentUpdate, DEFAULT_AGENT, migrateLegacyAgentFields, type AgentUp
 import { isChiefOfStaffName } from './avatar';
 import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } from './bot-deletion';
 import { createEngineStore, deleteEngineRecordsForAgent, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
+import { AgentNameConflictError, agentDisplayName, agentNameKey, planNameMigration, type NameMigrationRow } from './agent-names';
 
 // Overridable so the stub-model delegation test uses an isolated file.
 const DB_PATH = process.env.BOTMANCERS_DB_PATH || 'botmancers.db';
@@ -317,8 +318,50 @@ if (!botColumns.some(column => column.name === 'avatar_accessory')) {
   db.exec('ALTER TABLE bots ADD COLUMN avatar_accessory TEXT');
 }
 
+// NOT-478: instance-unique Agent names. name_key is the canonical
+// trimmed, case-insensitive key from ./agent-names, enforced by a unique
+// index. Every load reconciles stored keys (backfilling rows written
+// without one) and resolves legacy duplicates deterministically: the
+// oldest Agent keeps its name, later ones get "-2", "-3", ... Agent IDs,
+// conversations, messages, and Wake records are never touched. Each
+// automatic rename is recorded in agent_name_migrations for the owner.
+if (!botColumns.some(column => column.name === 'name_key')) {
+  db.exec('ALTER TABLE bots ADD COLUMN name_key TEXT');
+}
 db.exec(`
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_import_operation 
+  CREATE TABLE IF NOT EXISTS agent_name_migrations (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    previous_name TEXT NOT NULL,
+    new_name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    kept_bot_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+`);
+db.transaction(() => {
+  const rows = db.prepare('SELECT id, name, created_at, name_key FROM bots').all() as NameMigrationRow[];
+  const plan = planNameMigration(rows);
+  if (plan.updates.length === 0) return;
+  // Clear first so reassigning keys never trips the unique index mid-way.
+  const clear = db.prepare('UPDATE bots SET name_key = NULL WHERE id = ?');
+  for (const update of plan.updates) clear.run(update.id);
+  const apply = db.prepare('UPDATE bots SET name = ?, name_key = ? WHERE id = ?');
+  for (const update of plan.updates) apply.run(update.name, update.name_key, update.id);
+  const report = db.prepare(
+    "INSERT INTO agent_name_migrations (id, bot_id, previous_name, new_name, name_key, kept_bot_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, 'duplicate_name', ?)"
+  );
+  const at = Date.now();
+  for (const rename of plan.renames) {
+    report.run(randomUUID(), rename.bot_id, rename.previous_name, rename.new_name, rename.name_key, rename.kept_bot_id, at);
+    console.warn(`[botmancers] Agent ${rename.bot_id} renamed "${rename.previous_name}" -> "${rename.new_name}": name already used by Agent ${rename.kept_bot_id}.`);
+  }
+})();
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_name_key ON bots(name_key)');
+
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_import_operation
   ON bots(import_operation_id) WHERE import_operation_id IS NOT NULL
 `);
 
@@ -333,6 +376,31 @@ otherBots.forEach((bot, index) => {
   setColor.run(BOT_COLORS[(index + 2) % BOT_COLORS.length], bot.id);
 });
 
+// NOT-478: the shared name rule for every Agent write. Returns the
+// trimmed display name plus its key, or throws AgentNameConflictError
+// when another Agent (not exceptId) already holds the key.
+function claimAgentName(name: string, exceptId?: string): { name: string; name_key: string } {
+  const display = agentDisplayName(name);
+  const key = agentNameKey(display);
+  const holder = db.prepare('SELECT id FROM bots WHERE name_key = ?').get(key) as { id: string } | undefined;
+  if (holder && holder.id !== exceptId) throw new AgentNameConflictError(display, holder.id);
+  return { name: display, name_key: key };
+}
+
+// The unique index is the final arbiter: a racing writer that slips past
+// claimAgentName still surfaces as the same conflict, never a raw error.
+function withNameConstraint<T>(name: string, write: () => T): T {
+  try {
+    return write();
+  } catch (error) {
+    if (error instanceof Error && /UNIQUE constraint failed: bots\.name_key/.test(error.message)) {
+      const holder = db.prepare('SELECT id FROM bots WHERE name_key = ?').get(agentNameKey(name)) as { id: string } | undefined;
+      throw new AgentNameConflictError(name, holder?.id ?? null);
+    }
+    throw error;
+  }
+}
+
 function nextBotColor(): string {
   const row = db.prepare('SELECT COUNT(*) AS n FROM bots').get() as { n: number };
   return BOT_COLORS[row.n % BOT_COLORS.length];
@@ -341,6 +409,9 @@ function nextBotColor(): string {
 export interface Bot {
   id: string;
   name: string;
+  // NOT-478: canonical unique key (see ./agent-names); written by the
+  // repository, never by callers.
+  name_key?: string | null;
   title: string;
   description: string;
   avatar?: string;
@@ -566,10 +637,12 @@ export interface QueueItem {
 }
 
 export const bots = {
-  create: (data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned'>, overrides?: { id?: string; created_at?: number }): Bot => {
+  create: (data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'name_key'>, overrides?: { id?: string; created_at?: number }): Bot => {
+    const claimed = claimAgentName(data.name);
     const bot: Bot = {
       id: overrides?.id || randomUUID(),
       ...data,
+      ...claimed,
       color: nextBotColor(),
       created_at: overrides?.created_at ?? Date.now(),
     };
@@ -579,10 +652,10 @@ export const bots = {
     bot.agent = bot.agent || DEFAULT_AGENT;
     bot.deck_id = bot.deck_id || null;
     bot.needs_deck_selection = !bot.deck_id || bot.needs_deck_selection ? 1 : 0;
-    db.prepare(
-      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, agent, deck_id, deck_name, working_directory, needs_deck_selection, avatar_color, avatar_eyes, avatar_hands, avatar_accessory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    withNameConstraint(bot.name, () => db.prepare(
+      'INSERT INTO bots (id, name, name_key, title, description, avatar, color, hermes_profile, agent, deck_id, deck_name, working_directory, needs_deck_selection, avatar_color, avatar_eyes, avatar_hands, avatar_accessory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color,
+      bot.id, bot.name, bot.name_key, bot.title, bot.description, bot.avatar || null, bot.color,
       bot.hermes_profile || null,
       bot.agent,
       bot.deck_id,
@@ -594,8 +667,8 @@ export const bots = {
       bot.avatar_hands || null,
       bot.avatar_accessory || null,
       bot.created_at
-    );
-    
+    ));
+
     const conversationId = randomUUID();
     db.prepare(
       'INSERT INTO conversations (id, type, bot_id, created_at) VALUES (?, ?, ?, ?)'
@@ -606,12 +679,14 @@ export const bots = {
   },
 
   createFromImport: (
-    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile' | 'persistent_runtime' | 'coding_runtime' | 'runtime' | 'agent_client' | 'needs_deck_reselection' | 'agent' | 'deck_id' | 'deck_name' | 'working_directory' | 'needs_deck_selection'>,
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile' | 'persistent_runtime' | 'coding_runtime' | 'runtime' | 'agent_client' | 'needs_deck_reselection' | 'agent' | 'deck_id' | 'deck_name' | 'working_directory' | 'needs_deck_selection' | 'name_key'>,
     provenance: ImportProvenance
   ): Bot => {
+    const claimed = claimAgentName(data.name);
     const bot: Bot = {
       id: randomUUID(),
       ...data,
+      ...claimed,
       color: nextBotColor(),
       created_at: Date.now(),
       // NOT-456: imported bots get the default agent and no deck. They
@@ -628,21 +703,21 @@ export const bots = {
       import_operation_id: provenance.import_operation_id,
       import_timestamp: provenance.import_timestamp,
     };
-    db.prepare(
+    withNameConstraint(bot.name, () => db.prepare(
       `INSERT INTO bots (
-        id, name, title, description, avatar, color, created_at,
+        id, name, name_key, title, description, avatar, color, created_at,
         source_provider, template_id, template_url, import_schema_version,
         import_operation_id, import_timestamp,
         agent, deck_id, deck_name, working_directory,
         needs_deck_selection
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color, bot.created_at,
+      bot.id, bot.name, bot.name_key, bot.title, bot.description, bot.avatar || null, bot.color, bot.created_at,
       bot.source_provider, bot.template_id, bot.template_url, bot.import_schema_version,
       bot.import_operation_id, bot.import_timestamp,
       bot.agent, bot.deck_id, bot.deck_name, bot.working_directory,
       bot.needs_deck_selection
-    );
+    ));
     
     const conversationId = randomUUID();
     db.prepare(
@@ -669,8 +744,22 @@ export const bots = {
     db.prepare('UPDATE bots SET avatar = ? WHERE id = ?').run(avatar, id);
   },
 
+  // NOT-478: Agents are addressed by name; this resolves a name to its
+  // one Agent through the unique key (never "first case-insensitive match").
+  getByName: (name: string): Bot | undefined => {
+    const key = agentNameKey(name);
+    if (!key) return undefined;
+    return db.prepare('SELECT * FROM bots WHERE name_key = ?').get(key) as Bot | undefined;
+  },
+
+  // Rename keeps the Agent ID, so history and Wake records stay attached;
+  // historical message text is never rewritten. Throws
+  // AgentNameConflictError when another Agent holds the name.
   updateIdentity: (id: string, name: string, title: string, description: string): void => {
-    db.prepare('UPDATE bots SET name = ?, title = ?, description = ? WHERE id = ?').run(name, title, description, id);
+    const claimed = claimAgentName(name, id);
+    withNameConstraint(claimed.name, () => db.prepare(
+      'UPDATE bots SET name = ?, name_key = ?, title = ?, description = ? WHERE id = ?'
+    ).run(claimed.name, claimed.name_key, title, description, id));
   },
 
   setPinned: (id: string, pinned: boolean): void => {
@@ -806,6 +895,7 @@ export const bots = {
         db.prepare('DELETE FROM routines WHERE bot_id = ?').run(id);
         db.prepare('DELETE FROM pending_questions WHERE bot_id = ?').run(id);
         db.prepare('DELETE FROM approval_requests WHERE bot_id = ?').run(id);
+        db.prepare('DELETE FROM wake_targets WHERE target_bot_id = ?').run(id);
         db.prepare('DELETE FROM bots WHERE id = ?').run(id);
         options?.onAgentDeleted?.(id);
       }
@@ -897,6 +987,7 @@ function deleteConversationRecords(conversationId: string): void {
   db.prepare('DELETE FROM approval_requests WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM one_shots WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM routines WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM wake_targets WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM conversation_participants WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
 }
@@ -1465,6 +1556,109 @@ export const routines = {
       return true;
     });
     return run();
+  },
+};
+
+// NOT-478: accepted Wake targets. A Wake names its target by display
+// name; acceptance resolves that name through the unique key to exactly
+// one stable Agent ID and stores the ID plus the display-name snapshot
+// used at acceptance. Later renames never touch these rows.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS wake_targets (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    source_bot_id TEXT,
+    source_message_id TEXT,
+    requested_target TEXT NOT NULL,
+    target_bot_id TEXT NOT NULL,
+    target_name_snapshot TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+    FOREIGN KEY (target_bot_id) REFERENCES bots(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_wake_targets_conversation
+    ON wake_targets(conversation_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_wake_targets_target
+    ON wake_targets(target_bot_id, created_at);
+`);
+
+export type WakeTargetResolution =
+  | { ok: true; agentId: string; displayName: string }
+  | { ok: false; reason: 'not_found' | 'ambiguous'; requested: string };
+
+// Exactly one Agent or a failure. 'ambiguous' cannot happen while the
+// unique index holds; it is reported as a data-integrity error rather
+// than silently picking a first match.
+export function resolveWakeTarget(name: string): WakeTargetResolution {
+  const key = agentNameKey(name);
+  if (!key) return { ok: false, reason: 'not_found', requested: String(name ?? '') };
+  const rows = db.prepare('SELECT id, name FROM bots WHERE name_key = ? LIMIT 2').all(key) as { id: string; name: string }[];
+  if (rows.length === 0) return { ok: false, reason: 'not_found', requested: name };
+  if (rows.length > 1) return { ok: false, reason: 'ambiguous', requested: name };
+  return { ok: true, agentId: rows[0].id, displayName: rows[0].name };
+}
+
+export interface WakeTarget {
+  id: string;
+  conversation_id: string;
+  source_bot_id: string | null;
+  source_message_id: string | null;
+  requested_target: string;
+  target_bot_id: string;
+  target_name_snapshot: string;
+  created_at: number;
+}
+
+export const wakeTargets = {
+  // Resolve and persist in one step. Returns the stored row, or the
+  // resolution failure when the name does not identify exactly one Agent.
+  accept: (args: {
+    conversationId: string;
+    requestedTarget: string;
+    sourceBotId?: string | null;
+    sourceMessageId?: string | null;
+  }): { ok: true; wake: WakeTarget } | Extract<WakeTargetResolution, { ok: false }> => {
+    const resolved = resolveWakeTarget(args.requestedTarget);
+    if (!resolved.ok) return resolved;
+    const wake: WakeTarget = {
+      id: randomUUID(),
+      conversation_id: args.conversationId,
+      source_bot_id: args.sourceBotId ?? null,
+      source_message_id: args.sourceMessageId ?? null,
+      requested_target: args.requestedTarget,
+      target_bot_id: resolved.agentId,
+      target_name_snapshot: resolved.displayName,
+      created_at: Date.now(),
+    };
+    db.prepare(
+      'INSERT INTO wake_targets (id, conversation_id, source_bot_id, source_message_id, requested_target, target_bot_id, target_name_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(wake.id, wake.conversation_id, wake.source_bot_id, wake.source_message_id, wake.requested_target, wake.target_bot_id, wake.target_name_snapshot, wake.created_at);
+    return { ok: true, wake };
+  },
+
+  listByConversation: (conversationId: string): WakeTarget[] => {
+    return db.prepare(
+      'SELECT * FROM wake_targets WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC'
+    ).all(conversationId) as WakeTarget[];
+  },
+};
+
+export interface AgentNameMigration {
+  id: string;
+  bot_id: string;
+  previous_name: string;
+  new_name: string;
+  name_key: string;
+  kept_bot_id: string;
+  reason: string;
+  created_at: number;
+}
+
+// Durable owner-visible report of automatic duplicate-name renames.
+export const agentNameMigrations = {
+  list: (): AgentNameMigration[] => {
+    return db.prepare('SELECT * FROM agent_name_migrations ORDER BY created_at ASC, rowid ASC').all() as AgentNameMigration[];
   },
 };
 

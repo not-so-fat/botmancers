@@ -9,6 +9,7 @@ import {
   validateUpdateAgent,
 } from '@/lib/bot-definition';
 import { validateAvatarInput } from '@/lib/avatar';
+import { AgentNameConflictError, agentNameConflictBody } from '@/lib/agent-names';
 
 export async function GET() {
   try {
@@ -82,6 +83,7 @@ export async function POST(request: Request) {
     }
     return NextResponse.json(serializeBot(bot));
   } catch (error) {
+    if (error instanceof AgentNameConflictError) return NextResponse.json(agentNameConflictBody(error), { status: 409 });
     console.error('Error creating bot:', error);
     return NextResponse.json({ error: 'Failed to create bot' }, { status: 500 });
   }
@@ -150,6 +152,7 @@ export async function PATCH(request: Request) {
     const updated = bots.getById(id);
     return NextResponse.json(updated ? serializeBot(updated) : updated);
   } catch (error) {
+    if (error instanceof AgentNameConflictError) return NextResponse.json(agentNameConflictBody(error), { status: 409 });
     console.error('Error setting avatar:', error);
     return NextResponse.json({ error: 'Failed to set avatar' }, { status: 500 });
   }

@@ -27,6 +27,11 @@ An Agent is the persistent identity the person talks to or wakes. It has a name,
 instructions, capabilities, an Agent type (`Hermes`, `Cursor`, `Claude`, `Codex`,
 or `Muse Code`), a selected Agent Deck, and an optional working directory.
 
+Agent names are unique within one Botmancers instance under case-insensitive,
+trimmed comparison. The display name is preserved, while Botmancers resolves every
+wake to exactly one stable Agent ID. Renaming an Agent does not rewrite historical
+wake targets.
+
 Agent Deck is launch configuration. It is not an Agent and it is not presented as
 a runtime. An Agent without a usable launch configuration remains readable, but a
 wake that requires execution must fail closed with a clear explanation.
@@ -44,10 +49,27 @@ A Conversation is the durable primary object. It owns an ordered event history:
 The UI and API are two views over the same conversation model. They must not create
 different execution semantics.
 
+### Coordinator Agent
+
+A Conversation may have a coordinator Agent such as Tank. The coordinator holds
+the ongoing product context, talks with the person, chooses which specialist to
+wake, evaluates returned work, and decides whether the outcome is satisfactory.
+
+Botmancers delivers specialist results back to the coordinator and schedules a
+read-only continuation turn. Botmancers does not decide that implementation must
+automatically lead to review or that review findings must automatically lead to a
+revision. Those are coordinator decisions expressed as new Wakes.
+
 ### Wake
 
 A Wake is an Agent-directed request originating from a conversation event. It says
 who should act and what outcome is wanted. It is not a workflow definition.
+
+Agents emit the versioned, validated envelope defined in
+[Wake contract v1](wake-contract-v1.md). One envelope addresses one target Agent.
+The engine derives caller identity, stable target ID, lineage, idempotency, grants,
+tool authority, and session binding; Agents cannot put runtime/session IDs or a
+broader tool profile into the envelope.
 
 Accepting a wake creates exactly one durable Work Request with an idempotency key.
 If the target is unavailable, the request remains queued or becomes explicitly
@@ -94,6 +116,7 @@ UI or API message
     -> runtime adapter
     -> persist attempt events
     -> project result into the same conversation
+    -> continue the coordinator Agent
 ```
 
 There is one Work Request store, one state machine, and one dispatcher. Separate
@@ -132,17 +155,25 @@ the target is a coding Agent.
 A normal message produces one Agent turn. Automatic implementation, review, and
 resume are not the default behavior of every coding-Agent message.
 
-When the requested outcome explicitly includes implementation and review, the
-orchestrator may create child Work Requests:
+When a person asks a coordinator such as Tank to implement something, Tank emits an
+implementation Wake to a selected developer. Botmancers returns the result to the
+same conversation and continues Tank. Tank then decides whether to ask questions,
+wake a reviewer, request a revision, try another specialist, or report completion.
 
-1. an implementation request for the selected builder;
-2. a read-only review request for a configured reviewer;
-3. an edit-authorized revision attempt that resumes the original builder session.
+A review is a separate read-only Wake to a real reviewer Agent. When the person
+names the reviewer, Tank uses that Agent. Otherwise Tank may choose a distinct,
+launchable reviewer; if no choice is clearly suitable, Tank asks the person. The
+engine never silently treats the developer as an independent reviewer.
 
-Each child is visible in the parent conversation. A reviewer is a real target
-Agent selection, not the builder silently reviewing its own output. If no reviewer
-is configured, Botmancers asks for a choice or completes implementation without
-claiming that independent review happened.
+A revision is a new edit-authorized Wake that references the canonical Work
+Request to resume. Botmancers resolves that reference to the original developer's
+opaque Session Binding. The coordinator may repeat developer and reviewer Wakes
+until satisfied, subject to depth, attempt, concurrency, and budget limits.
+
+If a person talks directly to a coding Agent and asks it to implement, its initial
+turn remains read-only and may emit a visible implementation Wake to itself. This
+adds a turn but prevents ordinary explanation requests from receiving edit
+authority through text classification or Agent type alone.
 
 ## Concrete flows
 
@@ -155,18 +186,22 @@ claiming that independent review happened.
 
 No review loop or edit authority is added.
 
-### Flow B: implement and review
+### Flow B: Tank coordinates implementation and review
 
-1. A developer asks Hermes to have Codex implement a change and have Claude review
-   it.
-2. Hermes emits a wake addressed to Codex; Botmancers persists the wake and an
-   edit-authorized implementation request.
-3. On completion, Botmancers creates a read-only child review request addressed to
-   Claude.
-4. Findings create a revision attempt that resumes Codex's original session with
-   edit authority.
-5. The final outcome, provenance, and artifacts return to the original
-   conversation.
+1. A developer asks Tank to implement a change and have Claude review it.
+2. Tank emits an implementation Wake addressed to Dev; Botmancers persists the
+   Wake and an edit-authorized Work Request.
+3. Dev's result returns to the same conversation. Botmancers continues Tank with
+   the result and its canonical Work Request reference.
+4. Tank evaluates the result and emits a separate read-only review Wake addressed
+   to Claude.
+5. Claude's review returns to Tank. Tank may accept the work, ask either specialist
+   a question, or emit an edit-authorized revision Wake to Dev referencing the
+   original implementation Work Request.
+6. Botmancers resumes Dev's opaque Session Binding. Results keep returning to Tank,
+   which may repeat the loop until satisfied or a safety limit stops it.
+7. Tank reports the final outcome, provenance, and artifacts to the developer in
+   the original conversation.
 
 The developer never moves text or session IDs between tools.
 
@@ -201,6 +236,8 @@ requirements:
 - delegation-chain continuity is held in process memory;
 - the current review path reuses the same configured coding Agent;
 - coding-Agent messages automatically enter an implementation/review/resume loop;
+- the engine, rather than a coordinator Agent, currently owns parts of the review
+  sequence;
 - cancellation, timeout, recovery, grants, and complete provenance are incomplete.
 
 Convergence should preserve existing working adapters while moving orchestration
@@ -225,7 +262,8 @@ Build the smallest reliable local slice that proves:
 - restart, failure, and retry preserve understandable state.
 
 Implementation/review/resume is an important composed flow, but it uses these same
-primitives rather than defining a separate engine.
+primitives and coordinator Wakes rather than defining a separate engine-owned
+workflow.
 
 ## Non-goals for the core slice
 
@@ -233,6 +271,7 @@ primitives rather than defining a separate engine.
 - cloud runners or a general provider abstraction;
 - separate Chat and Code identities on one Agent;
 - automatic three-stage review for every coding-Agent message;
+- an engine-owned fixed developer/reviewer loop that bypasses the coordinator;
 - treating Groups as an execution primitive;
 - silently falling back to an example model or another runtime;
 - presenting unavailable launch paths as usable.

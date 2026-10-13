@@ -17,6 +17,7 @@
 import { randomUUID, createHash } from 'crypto';
 import { bots, conversations, messages, queue } from './db';
 import type { Bot, Message } from './db';
+import { AgentNameConflictError, agentNameConflictMessage } from './agent-names';
 import { applySkillEndToken, localSkillForBot, isSupportedSkillName, writeSkillForBot } from './skills';
 import { IMPORT_SCHEMA_VERSION } from '../app/api/import-capabilities/route';
 
@@ -268,10 +269,20 @@ function pickTemplate(payload: unknown): MarketTemplate | null {
   return null;
 }
 
+// NOT-478: one Agent per trimmed, case-insensitive name key.
 export function findBotByName(name: string): Bot | undefined {
-  const needle = name.trim().toLowerCase();
-  if (!needle) return undefined;
-  return bots.getAll().find(bot => bot.name.toLowerCase() === needle);
+  return bots.getByName(name);
+}
+
+// The repository re-checks the name under the unique index; a conflict
+// that slips past the pre-check still reports as a collision.
+function claimingName<T>(create: () => T): T | { ok: false; reason: 'collision' } {
+  try {
+    return create();
+  } catch (error) {
+    if (error instanceof AgentNameConflictError) return { ok: false, reason: 'collision' };
+    throw error;
+  }
 }
 
 // Mirrors app/api/bots/import/route.ts computeBodyHash so the birth import
@@ -317,12 +328,13 @@ export async function createPlainSpecialist(
   const trimmed = name.trim();
   if (!trimmed) return { ok: false, reason: 'invalid' };
   if (findBotByName(trimmed)) return { ok: false, reason: 'collision' };
-  const bot = bots.create({
+  const bot = claimingName(() => bots.create({
     name: trimmed,
     title: '',
     description: job,
     avatar: undefined,
-  });
+  }));
+  if ('ok' in bot) return bot;
   noGreetingStorm(bot.id);
   return { ok: true, bot };
 }
@@ -372,7 +384,7 @@ export async function importSpecialistFromTemplate(
     return { ok: true, bot: existing, created: false };
   }
   if (findBotByName(trimmed)) return { ok: false, reason: 'collision' };
-  const bot = bots.createFromImport(
+  const bot = claimingName(() => bots.createFromImport(
     {
       name: trimmed,
       title: normalized.title,
@@ -387,7 +399,8 @@ export async function importSpecialistFromTemplate(
       import_operation_id: operationId,
       import_timestamp: Date.now(),
     }
-  );
+  ));
+  if ('ok' in bot) return bot;
   noGreetingStorm(bot.id);
   return { ok: true, bot, created: true };
 }
@@ -404,12 +417,13 @@ export async function duplicateSpecialist(
   const trimmed = newName.trim();
   if (!trimmed) return { ok: false, reason: 'invalid' };
   if (findBotByName(trimmed)) return { ok: false, reason: 'collision' };
-  const bot = bots.create({
+  const bot = claimingName(() => bots.create({
     name: trimmed,
     title: source.title,
     description: source.description,
     avatar: undefined,
-  });
+  }));
+  if ('ok' in bot) return bot;
   const skillText = localSkillForBot(source.name);
   // A new name outside /^[A-Za-z0-9_-]+$/ cannot map to a skill path, so the
   // copy is skipped there; the bot itself is still created.
@@ -470,7 +484,7 @@ export async function handleCosBirthRequest(
       messages.create(
         conversationId,
         'bot',
-        applySkillEndToken(cosName, `A bot named ${intent.newName} already exists (case-insensitive match). No bot created.`),
+        applySkillEndToken(cosName, `${agentNameConflictMessage(intent.newName)} No bot created.`),
         cosBotId
       );
       return true;
@@ -497,7 +511,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      applySkillEndToken(cosName, `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`),
+      applySkillEndToken(cosName, `${agentNameConflictMessage(intent.name)} No bot created.`),
       cosBotId
     );
     return true;
@@ -510,7 +524,7 @@ export async function handleCosBirthRequest(
       messages.create(
         conversationId,
         'bot',
-        applySkillEndToken(cosName, `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`),
+        applySkillEndToken(cosName, `${agentNameConflictMessage(intent.name)} No bot created.`),
         cosBotId
       );
       return true;
@@ -538,7 +552,7 @@ export async function handleCosBirthRequest(
     messages.create(
       conversationId,
       'bot',
-      applySkillEndToken(cosName, `A bot named ${intent.name} already exists (case-insensitive match). No bot created.`),
+      applySkillEndToken(cosName, `${agentNameConflictMessage(intent.name)} No bot created.`),
       cosBotId
     );
     return true;
