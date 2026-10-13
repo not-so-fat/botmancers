@@ -383,6 +383,68 @@ async function main() {
   assert(afterWakeGroup.some(m => m.sender_type === 'bot' && m.sender_id === passB.id), 'WAKE GROUP wakes another member');
   if (failures === caseFailures) log('PASS: Case 6: existing PASS and exact-word behavior unchanged');
 
+  // Case 7 (NOT-459): agent deletion reconciles groups in one transaction.
+  log('\nCase 7: deletion keeps groups at two or more members with a deterministic owner');
+  caseFailures = failures;
+  const t0 = 1_800_000_000_000;
+  const mk = (name, at, id) => bots.create({ deck_id: 'deck-test', name, title: '', description: '' }, { id, created_at: at });
+  const dOwner = mk('DelOwner', t0);
+  const dLate = mk('DelLate', t0 + 30);
+  const dTieB = mk('DelTieB', t0 + 20, 'tie-bbbb');
+  const dTieA = mk('DelTieA', t0 + 20, 'tie-aaaa');
+  const quadGroup = groups.create('OwnerQuad', [dOwner.id, dLate.id, dTieB.id, dTieA.id], dOwner.id);
+  const ownerPreview = bots.deletionPreview([dOwner.id]);
+  const ownerImpact = ownerPreview.groups.find(g => g.id === quadGroup.id);
+  assert(ownerImpact && ownerImpact.outcome === 'reassigned' && ownerImpact.newOwner.id === 'tie-aaaa', 'preview reassigns to earliest created_at, id tie-break');
+  bots.removeMany([dOwner.id]);
+  const afterOwner = groups.getById(quadGroup.id);
+  assert(afterOwner && afterOwner.owner_bot_id === 'tie-aaaa', 'deleted owner passes to the earliest-created member (tie broken by id)');
+  assert(groups.getMembers(quadGroup.id).length === 3, 'three members remain');
+  const ownerConv = conversations.getByGroupId(quadGroup.id);
+  const ownerParticipants = db.default.prepare(
+    "SELECT participant_id FROM conversation_participants WHERE conversation_id = ? AND participant_kind = 'bot'"
+  ).all(ownerConv.id).map(row => row.participant_id);
+  assert(!ownerParticipants.includes(dOwner.id) && ownerParticipants.length === 3, 'deleted agent leaves the group conversation participants');
+
+  const pairA = mk('PairA', t0 + 40);
+  const pairB = mk('PairB', t0 + 41);
+  const delPairGroup = groups.create('Pair', [pairA.id, pairB.id], pairA.id);
+  const pairConv = conversations.getByGroupId(delPairGroup.id);
+  messages.create(pairConv.id, 'user', 'pair hello');
+  messages.create(pairConv.id, 'bot', 'pair reply', pairB.id);
+  queue.markCompleted(queue.enqueue(pairConv.id, pairB.id).id, 'completed');
+  const pairPreview = bots.deletionPreview([pairA.id]);
+  assert(pairPreview.groups.find(g => g.id === delPairGroup.id).outcome === 'removed', 'preview removes a two-member group losing one');
+  bots.removeMany([pairA.id]);
+  assert(!groups.getById(delPairGroup.id), 'two-member group is deleted when one member goes');
+  assert(!conversations.getById(pairConv.id), 'its conversation is deleted');
+  assert(messages.getByConversation(pairConv.id).length === 0, 'its messages are deleted');
+  assert(queue.listByConversation(pairConv.id).length === 0, 'its queue rows are deleted');
+  assert(bots.getById(pairB.id) && conversations.getByBotId(pairB.id), 'surviving member and its direct conversation stay');
+
+  const m1 = mk('Multi1', t0 + 50);
+  const m2 = mk('Multi2', t0 + 51);
+  const m3 = mk('Multi3', t0 + 52);
+  const m4 = mk('Multi4', t0 + 53);
+  const m5 = mk('Multi5', t0 + 54);
+  const keepGroup = groups.create('MultiKeep', [m1.id, m2.id, m3.id, m4.id, m5.id], m3.id);
+  const dropGroup = groups.create('MultiDrop', [m1.id, m2.id, m4.id], m4.id);
+  const reassignGroup = groups.create('MultiReassign', [m2.id, m4.id, m5.id, m1.id], m1.id);
+  const multiPreview = bots.deletionPreview([m1.id, m2.id]);
+  const outcome = id => multiPreview.groups.find(g => g.id === id);
+  assert(outcome(keepGroup.id).outcome === 'shrunk' && outcome(keepGroup.id).remaining === 3, 'preview: owner kept, three remain');
+  assert(outcome(dropGroup.id).outcome === 'removed', 'preview: group left with one member is removed');
+  assert(outcome(reassignGroup.id).outcome === 'reassigned' && outcome(reassignGroup.id).newOwner.id === m4.id, 'preview: owner reassigned to the earliest remaining member');
+  bots.removeMany([m1.id, m2.id]);
+  assert(groups.getById(keepGroup.id).owner_bot_id === m3.id && groups.getMembers(keepGroup.id).length === 3, 'multi-delete: surviving owner kept, three members remain');
+  assert(!groups.getById(dropGroup.id), 'multi-delete: group with one member left is removed');
+  assert(groups.getById(reassignGroup.id).owner_bot_id === m4.id && groups.getMembers(reassignGroup.id).length === 2, 'multi-delete: owner reassigned and two members remain');
+  const undersized = db.default.prepare(
+    'SELECT g.id FROM groups g LEFT JOIN group_members gm ON gm.group_id = g.id GROUP BY g.id HAVING COUNT(gm.bot_id) < 2'
+  ).all();
+  assert(undersized.length === 0, 'no surviving group has fewer than two members');
+  if (failures === caseFailures) log('PASS: Case 7: deletion keeps groups at two or more members with a deterministic owner');
+
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }

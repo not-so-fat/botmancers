@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import db, { bots, conversations, messages, queue } from '@/lib/db';
+import db, { BotDeletionError, bots, conversations, messages, queue } from '@/lib/db';
+import { blockedReasonCopy, parseDeleteIds, type DeletePreview } from '@/lib/bot-deletion';
 import { processQueue } from '@/lib/agent';
 import {
   hasAgentUpdate,
@@ -154,20 +155,37 @@ export async function PATCH(request: Request) {
   }
 }
 
+function deletionErrorResponse(preview: DeletePreview) {
+  if (preview.missing.length > 0) {
+    return NextResponse.json({ error: 'Bot not found', missing: preview.missing }, { status: 404 });
+  }
+  const reasons = preview.blocked.map(item => `${item.name} — ${blockedReasonCopy(item.reason)}`).join(' ');
+  return NextResponse.json(
+    {
+      error: `Nothing was deleted. ${reasons}`,
+      blocked: preview.blocked.map(item => ({ ...item, message: blockedReasonCopy(item.reason) })),
+    },
+    { status: 409 }
+  );
+}
+
+// NOT-459: legacy `{ id }` or bulk `{ ids }`. 400 for malformed input,
+// 404 when any target is missing, 409 when any target is the Chief of
+// Staff or has a pending/processing queue row; the batch is atomic.
 export async function DELETE(request: Request) {
+  let body: unknown;
   try {
-    const body = await request.json();
-    const id = body.id ? String(body.id) : '';
-    if (!id) {
-      return NextResponse.json({ error: 'Bot id is required' }, { status: 400 });
-    }
-    const bot = bots.getById(id);
-    if (!bot) {
-      return NextResponse.json({ error: 'Bot not found' }, { status: 404 });
-    }
-    bots.remove(id);
-    return NextResponse.json({ ok: true });
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Expected a JSON object with id or ids.' }, { status: 400 });
+  }
+  const parsed = parseDeleteIds(body);
+  if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+  try {
+    const preview = bots.removeMany(parsed.ids);
+    return NextResponse.json({ ok: true, deleted: preview.agents, groups: preview.groups });
   } catch (error) {
+    if (error instanceof BotDeletionError) return deletionErrorResponse(error.preview);
     console.error('Error deleting bot:', error);
     return NextResponse.json({ error: 'Failed to delete bot' }, { status: 500 });
   }
