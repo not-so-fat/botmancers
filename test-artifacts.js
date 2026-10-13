@@ -112,7 +112,7 @@ async function main() {
   let stubCalls = 0;
   agent.setDelegationChatStub(() => { stubCalls++; return 'should not be used'; });
 
-  const drafter = bots.create({ name: 'Drafter417', title: '', description: 'Drafts and writes files.' });
+  const drafter = bots.create({ deck_id: 'deck-test', name: 'Drafter417', title: '', description: 'Drafts and writes files.' });
   const conv = conversations.getByBotId(drafter.id);
   assert(!!conv, 'thread exists for the bot');
 
@@ -261,7 +261,7 @@ async function main() {
 
   // Case 7: snapshot sentences plus paraphrases accepted.
   log('\nCase 7: snapshot sentences plus paraphrases accepted');
-  const paraBot = bots.create({ name: 'Para417', title: '', description: 'Paraphrases.' });
+  const paraBot = bots.create({ deck_id: 'deck-test', name: 'Para417', title: '', description: 'Paraphrases.' });
   const paraConv = conversations.getByBotId(paraBot.id);
   const draftCases = [
     ['Please email Alice that says hello there', 'email', 'Alice', 'hello there'],
@@ -308,7 +308,7 @@ async function main() {
 
   // Case 8: model-driven typed results through one parser.
   log('\nCase 8: model-driven typed results');
-  const modelBot = bots.create({ name: 'Model417', title: '', description: 'Model producer.' });
+  const modelBot = bots.create({ deck_id: 'deck-test', name: 'Model417', title: '', description: 'Model producer.' });
   const modelConv = conversations.getByBotId(modelBot.id);
   agent.setDelegationChatStub(() => {
     stubCalls++;
@@ -363,7 +363,7 @@ async function main() {
 
   // Case 9: gated overwrite raises approval, approve writes once.
   log('\nCase 9: gated overwrite approves once');
-  const gateBot = bots.create({ name: 'Gate417', title: '', description: 'Gated writes.' });
+  const gateBot = bots.create({ deck_id: 'deck-test', name: 'Gate417', title: '', description: 'Gated writes.' });
   const gateConv = conversations.getByBotId(gateBot.id);
   const gatedName = `gated-${process.pid}.txt`;
   await ask(gateBot, gateConv, `write a file named ${gatedName} containing the word v1`);

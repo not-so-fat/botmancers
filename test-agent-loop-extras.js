@@ -64,7 +64,7 @@ async function main() {
   // in the launch snapshot; questions are not remembered; deleting the bot
   // deletes its memory rows.
   log('\nScenario 1: fact injected');
-  const memBot = bots.create({ name: 'MemBot', title: 'Keeper', description: 'Keeps facts.' });
+  const memBot = bots.create({ deck_id: 'deck-test', name: 'MemBot', title: 'Keeper', description: 'Keeps facts.' });
   const memConv = conversations.getByBotId(memBot.id);
   assert(!!memConv, 'memory thread exists');
   memories.rememberStatement(memBot.id, 'I like green tea.');
@@ -96,7 +96,7 @@ async function main() {
   // Scenario 2: a due one-shot fires exactly once.
   log('\nScenario 2: one-shot fires once');
   agent.setDelegationChatStub(() => 'noted.');
-  const onceBot = bots.create({ name: 'OnceBot', title: 'Waker', description: 'Wakes once.' });
+  const onceBot = bots.create({ deck_id: 'deck-test', name: 'OnceBot', title: 'Waker', description: 'Wakes once.' });
   const onceConv = conversations.getByBotId(onceBot.id);
   messages.create(onceConv.id, 'user', 'Hello.');
   queue.enqueue(onceConv.id, onceBot.id);
@@ -123,7 +123,7 @@ async function main() {
     stubCalls++;
     return 'routine armed.';
   });
-  const routineBot = bots.create({ name: 'RoutineBot', title: 'Ticker', description: 'Ticks.' });
+  const routineBot = bots.create({ deck_id: 'deck-test', name: 'RoutineBot', title: 'Ticker', description: 'Ticks.' });
   const routineConv = conversations.getByBotId(routineBot.id);
   messages.create(routineConv.id, 'user', 'Teach me a routine.');
   queue.enqueue(routineConv.id, routineBot.id);
@@ -161,7 +161,7 @@ async function main() {
   log('\nScenario 4: budget binds ticks');
   const MAX_TURNS = agent.DELEGATION_MAX_DELEGATED_TURNS;
   agent.setDelegationChatStub(() => 'ok');
-  const budgetBot = bots.create({ name: 'BudgetBot', title: 'Spender', description: 'Spends turns.' });
+  const budgetBot = bots.create({ deck_id: 'deck-test', name: 'BudgetBot', title: 'Spender', description: 'Spends turns.' });
   const budgetConv = conversations.getByBotId(budgetBot.id);
   messages.create(budgetConv.id, 'user', 'Spend the budget.');
   for (let i = 0; i < MAX_TURNS + 2; i++) {
@@ -216,7 +216,7 @@ async function main() {
     return 'should never send';
   });
   process.env.BOTMANCERS_ROUTINE_FIRST_DUE_MS = '80';
-  const teachBot = bots.create({ name: 'TeachBot', title: 'Student', description: 'Learns timers.' });
+  const teachBot = bots.create({ deck_id: 'deck-test', name: 'TeachBot', title: 'Student', description: 'Learns timers.' });
   const teachConv = conversations.getByBotId(teachBot.id);
   messages.create(teachConv.id, 'user', 'Reply with the word teacup.');
   queue.enqueue(teachConv.id, teachBot.id);
@@ -248,7 +248,7 @@ async function main() {
     'reteaching re-arms instead of duplicating the row'
   );
   delete process.env.BOTMANCERS_ROUTINE_FIRST_DUE_MS;
-  const shotBot = bots.create({ name: 'ShotBot', title: 'Student', description: 'Learns one-shots.' });
+  const shotBot = bots.create({ deck_id: 'deck-test', name: 'ShotBot', title: 'Student', description: 'Learns one-shots.' });
   const shotConv = conversations.getByBotId(shotBot.id);
   const teachAt = Date.now();
   messages.create(shotConv.id, 'user', 'Set a one-shot in 1 second.');
@@ -281,7 +281,7 @@ async function main() {
   // routine posts even when the latest user message is a draft ask
   // (previously the draft hook returned first and the tick never fired).
   log('\nScenario 6: tick runs before content hooks');
-  const draftTickBot = bots.create({ name: 'DraftTickBot', title: 'Ticker', description: 'Ticks past drafts.' });
+  const draftTickBot = bots.create({ deck_id: 'deck-test', name: 'DraftTickBot', title: 'Ticker', description: 'Ticks past drafts.' });
   const draftTickConv = conversations.getByBotId(draftTickBot.id);
   messages.create(draftTickConv.id, 'user', 'Email Alice the summary.');
   queue.enqueue(draftTickConv.id, draftTickBot.id);

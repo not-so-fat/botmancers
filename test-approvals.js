@@ -119,7 +119,7 @@ async function main() {
   log('NOT-416 approvals test (real handlers, isolated DB, stub model)');
   log(`DB: ${DB_PATH}`);
 
-  const gatekeeper = bots.create({ name: 'Gatekeeper', title: '', description: 'Guards actions.' });
+  const gatekeeper = bots.create({ deck_id: 'deck-test', name: 'Gatekeeper', title: '', description: 'Guards actions.' });
   const conv = conversations.getByBotId(gatekeeper.id);
   assert(!!conv, 'thread exists for the bot');
 
@@ -291,7 +291,7 @@ async function main() {
 
   // Case 8: snapshot code sentence and a paraphrase raise; negatives do not.
   log('\nCase 8: snapshot sentence and paraphrase raise a request');
-  const plainBot = bots.create({ name: 'Plainasker', title: '', description: 'Asks plainly.' });
+  const plainBot = bots.create({ deck_id: 'deck-test', name: 'Plainasker', title: '', description: 'Asks plainly.' });
   const plainConv = conversations.getByBotId(plainBot.id);
   agent.setDelegationChatStub(() => 'noted.');
   await ask(plainBot, plainConv, 'ask me to approve using the code gatekeep7 then wait');
@@ -386,7 +386,7 @@ async function main() {
   // Case 11: the model raises a gated request; unknown marker actions drop.
   log('\nCase 11: model-raised approval');
   writeFixture(`approvals-model-${process.pid}.txt`, 'model-bytes');
-  const modelBot = bots.create({ name: 'Modelasker', title: '', description: 'Asks from the model.' });
+  const modelBot = bots.create({ deck_id: 'deck-test', name: 'Modelasker', title: '', description: 'Asks from the model.' });
   const modelConv = conversations.getByBotId(modelBot.id);
   agent.setDelegationChatStub(() =>
     `Approve using the code modelgate1.\n[approval-action] {"type": "read_file", "name": "approvals-model-${process.pid}.txt"}`

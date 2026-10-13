@@ -34,8 +34,8 @@ function assert(condition, label) {
   }
 }
 
-const avery = bots.create({ name: 'Avery', title: '', description: '' });
-const blake = bots.create({ name: 'Blake', title: '', description: '' });
+const avery = bots.create({ deck_id: 'deck-test', name: 'Avery', title: '', description: '' });
+const blake = bots.create({ deck_id: 'deck-test', name: 'Blake', title: '', description: '' });
 const convA = conversations.getByBotId(avery.id).id;
 
 // 1. Fresh bots start read.

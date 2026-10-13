@@ -279,7 +279,7 @@ async function main() {
   });
   const relay = loopDb.bots.create({
     name: 'RelayDirect', title: 'Relay', description: 'Launches directly.',
-    runtime: 'agent-deck', agent_client: 'codex', deck_id: 'stored-deck-id', working_directory: workdir,
+    agent: 'codex', deck_id: 'stored-deck-id', working_directory: workdir,
   });
   const relayConv = loopDb.conversations.getByBotId(relay.id);
   loopDb.messages.create(relayConv.id, 'user', 'Build the widget.');
@@ -299,8 +299,8 @@ async function main() {
     hermesAnswered += 1;
     return 'Hello from the Hermes session.';
   });
-  const herald = loopDb.bots.create({
-    name: 'HeraldDirect', title: 'Herald', description: 'Answers directly.', runtime: 'hermes',
+  const herald = loopDb.bots.create({ deck_id: 'deck-test',
+    name: 'HeraldDirect', title: 'Herald', description: 'Answers directly.', agent: 'hermes',
   });
   const heraldConv = loopDb.conversations.getByBotId(herald.id);
   loopDb.messages.create(heraldConv.id, 'user', 'Hello Herald.');
@@ -367,7 +367,7 @@ async function main() {
     });
     const defaultBot = loopDb.bots.create({
       name: 'DefaultWorkdir', title: 'Default', description: 'Uses the default workdir.',
-      runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-default',
+      agent: 'codex', deck_id: 'deck-default',
     });
     const expectedDefault = widSettings.defaultBotWorkdir(defaultBot.id, isolatedHome);
     const defaultConv = loopDb.conversations.getByBotId(defaultBot.id);
@@ -405,7 +405,7 @@ async function main() {
     });
     const overrideBot = loopDb.bots.create({
       name: 'OverrideWorkdir', title: 'Override', description: 'Uses an override.',
-      runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-default', working_directory: overrideDir,
+      agent: 'codex', deck_id: 'deck-default', working_directory: overrideDir,
     });
     const overrideConv = loopDb.conversations.getByBotId(overrideBot.id);
     loopDb.messages.create(overrideConv.id, 'user', 'Build the widget in the override dir.');
@@ -433,7 +433,7 @@ async function main() {
     });
     const remoteBot = loopDb.bots.create({
       name: 'RemoteGuard', title: 'Remote', description: 'Must not launch remotely.',
-      runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-default',
+      agent: 'codex', deck_id: 'deck-default',
     });
     const remoteConv = loopDb.conversations.getByBotId(remoteBot.id);
     loopDb.messages.create(remoteConv.id, 'user', 'Build the widget against the remote server.');

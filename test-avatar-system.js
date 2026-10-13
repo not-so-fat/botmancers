@@ -342,7 +342,7 @@ check('validateAvatarInput rejects unknown option ids', () => {
   const db = jiti('./lib/db.ts');
   const def = jiti('./lib/bot-definition.ts');
 
-  const created = db.bots.create({
+  const created = db.bots.create({ deck_id: 'deck-test',
     name: 'Relay',
     title: 'Coding Relay',
     description: 'Relays work.',
@@ -380,13 +380,13 @@ check('validateAvatarInput rejects unknown option ids', () => {
   });
 
   check('persistence: unconfigured bot serializes to the required defaults', () => {
-    const plain = db.bots.create({ name: 'Plain', title: '', description: '' });
+    const plain = db.bots.create({ deck_id: 'deck-test', name: 'Plain', title: '', description: '' });
     const serialized = def.serializeBot(db.bots.getById(plain.id));
     assert.deepStrictEqual(serialized.avatar_config, DEFAULT_AVATAR);
   });
 
   check('persistence: unconfigured Chief of Staff serializes to purple with a crown', () => {
-    const chief = db.bots.create({ name: 'chief-of-staff', title: '', description: '' });
+    const chief = db.bots.create({ deck_id: 'deck-test', name: 'chief-of-staff', title: '', description: '' });
     const serialized = def.serializeBot(db.bots.getById(chief.id));
     assert.deepStrictEqual(serialized.avatar_config, CHIEF_OF_STAFF_AVATAR);
   });

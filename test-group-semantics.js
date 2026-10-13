@@ -104,9 +104,9 @@ async function main() {
   // Case 1: snapshot handoff sentence posts once; rerun posts nothing more.
   log('\nCase 1: handoff once, no double reply on queue rerun');
   let caseFailures = failures;
-  const ana = bots.create({ name: 'Ana', title: 'Planner', description: 'Plans.' });
-  const ben = bots.create({ name: 'Ben', title: 'Writer', description: 'Writes.' });
-  const cara = bots.create({ name: 'Cara', title: 'Watcher', description: 'Watches.' });
+  const ana = bots.create({ deck_id: 'deck-test', name: 'Ana', title: 'Planner', description: 'Plans.' });
+  const ben = bots.create({ deck_id: 'deck-test', name: 'Ben', title: 'Writer', description: 'Writes.' });
+  const cara = bots.create({ deck_id: 'deck-test', name: 'Cara', title: 'Watcher', description: 'Watches.' });
   const trio = groups.create('Trio', [ana.id, ben.id, cara.id]);
   const convTrio = conversations.getByGroupId(trio.id);
   assert(!!convTrio, 'three-bot group conversation exists');
@@ -241,7 +241,7 @@ async function main() {
   caseFailures = failures;
   const sizeBots = [];
   for (let i = 0; i < 7; i++) {
-    sizeBots.push(bots.create({ name: `Size${i}`, title: '', description: `Size probe ${i}.` }));
+    sizeBots.push(bots.create({ deck_id: 'deck-test', name: `Size${i}`, title: '', description: `Size probe ${i}.` }));
   }
   const oneRes = await postGroups({ name: 'Solo', botIds: [sizeBots[0].id] });
   assert(oneRes.status === 400, `1-member group rejected with 400 (got ${oneRes.status})`);
@@ -277,8 +277,8 @@ async function main() {
   caseFailures = failures;
   const MAX_DEPTH = agent.DELEGATION_MAX_DEPTH;
   assert(typeof MAX_DEPTH === 'number' && MAX_DEPTH > 0, `depth constant imported (DELEGATION_MAX_DEPTH=${MAX_DEPTH})`);
-  const loopA = bots.create({ name: 'LoopA', title: '', description: 'Loops.' });
-  const loopB = bots.create({ name: 'LoopB', title: '', description: 'Loops.' });
+  const loopA = bots.create({ deck_id: 'deck-test', name: 'LoopA', title: '', description: 'Loops.' });
+  const loopB = bots.create({ deck_id: 'deck-test', name: 'LoopB', title: '', description: 'Loops.' });
   const loopGroup = groups.create('Loop', [loopA.id, loopB.id]);
   const convLoop = conversations.getByGroupId(loopGroup.id);
   agent.setDelegationChatStub(ctx => {
@@ -323,8 +323,8 @@ async function main() {
   // Case 6: existing PASS, canned-handoff, exact-word and WAKE GROUP behavior unchanged.
   log('\nCase 6: existing PASS and exact-word behavior unchanged');
   caseFailures = failures;
-  const passA = bots.create({ name: 'PassA', title: 'Helper', description: 'Helps.' });
-  const passB = bots.create({ name: 'PassB', title: 'Helper', description: 'Helps.' });
+  const passA = bots.create({ deck_id: 'deck-test', name: 'PassA', title: 'Helper', description: 'Helps.' });
+  const passB = bots.create({ deck_id: 'deck-test', name: 'PassB', title: 'Helper', description: 'Helps.' });
   const passGroup = groups.create('PassGroup', [passA.id, passB.id]);
   const convPass = conversations.getByGroupId(passGroup.id);
   agent.setDelegationChatStub(() => 'PASS');
@@ -344,8 +344,8 @@ async function main() {
   await drain();
   assert(chainAfter(convPass.id, userCanned.id).filter(m => m.sender_type === 'bot').length === 0, 'open-group canned handoffs are discarded');
 
-  const plainA = bots.create({ name: 'PlainA', title: '', description: 'Answers plainly.' });
-  const hookB = bots.create({ name: 'HookB', title: '', description: 'When asked, use WAKE PlainA: Please review my research.' });
+  const plainA = bots.create({ deck_id: 'deck-test', name: 'PlainA', title: '', description: 'Answers plainly.' });
+  const hookB = bots.create({ deck_id: 'deck-test', name: 'HookB', title: '', description: 'When asked, use WAKE PlainA: Please review my research.' });
   const exactGroup = groups.create('ExactGroup', [plainA.id, hookB.id]);
   const convExact = conversations.getByGroupId(exactGroup.id);
   let exactCalls = 0;

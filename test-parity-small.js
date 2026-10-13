@@ -219,7 +219,7 @@ async function main() {
   // End-token integration: model replies and ask questions carry the token
   // exactly once; draft JSON cards stay verbatim and parseable.
   log('\nEnd-token integration');
-  const minter = bots.create({ name: 'Paritymint', title: '', description: 'Replies briefly.' });
+  const minter = bots.create({ deck_id: 'deck-test', name: 'Paritymint', title: '', description: 'Replies briefly.' });
   const mintConv = conversations.getByBotId(minter.id);
   agent.setDelegationChatStub(async () => 'hello there');
   await ask(minter, mintConv, 'Draft an email to Sam saying the demo moved to Friday');
@@ -232,7 +232,7 @@ async function main() {
   assert(countOccurrences(modelReply.content, 'paritymint1') === 1, 'model reply never doubles the token');
 
   writeSkill('Parityask', 'Every reply ends with the exact token parityask1');
-  const asker = bots.create({ name: 'Parityask', title: '', description: 'Asks first.' });
+  const asker = bots.create({ deck_id: 'deck-test', name: 'Parityask', title: '', description: 'Asks first.' });
   const askConv = conversations.getByBotId(asker.id);
   await ask(asker, askConv, 'ask me one question: which city? then wait');
   const question = lastBotMessage(askConv.id);
@@ -243,8 +243,8 @@ async function main() {
   // both threads, and a retried mirror of the same round stays silent.
   log('\nEnd-token mirror');
   writeSkill('Parityspec', 'Every reply ends with the exact token parityspec1');
-  const caller = bots.create({ name: 'Paritycaller', title: '', description: 'Delegates.' });
-  const specialist = bots.create({ name: 'Parityspec', title: '', description: 'Replies briefly.' });
+  const caller = bots.create({ deck_id: 'deck-test', name: 'Paritycaller', title: '', description: 'Delegates.' });
+  const specialist = bots.create({ deck_id: 'deck-test', name: 'Parityspec', title: '', description: 'Replies briefly.' });
   const callerConv = conversations.getByBotId(caller.id);
   const specConv = conversations.getByBotId(specialist.id);
   const mirrorArgs = {

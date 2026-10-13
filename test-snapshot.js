@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// NOT-442: single-runtime launch-snapshot test (deterministic, no network).
-// Proves: identical config yields an identical hash; the snapshot carries
-// the single selected runtime plus the resolved Agent Deck client, deck ID,
-// and effective working directory only when applicable; a migrated row
-// records its unresolved legacy reference with a null deck ID and the
-// needs-reselection marker; loop integration flushes Hermes and Agent Deck
-// snapshots with the transport that actually ran.
+// NOT-442/NOT-456: agent + Agent Deck launch-snapshot test
+// (deterministic, no network). Proves: identical config yields an
+// identical hash; the snapshot carries one agent identity plus its Agent
+// Deck selection (deck ID, effective working directory) for every agent,
+// Hermes included, and no runtime field; a migrated row records its
+// unresolved legacy reference with a null deck ID and the
+// needs-deck-selection marker; loop integration flushes Hermes and
+// coding-agent snapshots with the transport that actually ran.
 
 const assert = require('node:assert');
 const { buildSnapshotInput, canonicalJson, hashSnapshot } = require('./lib/snapshot');
@@ -46,7 +47,7 @@ assert.strictEqual(hashSnapshot(reordered), hashSnapshot(first), 'key order must
 const keys = Object.keys(JSON.parse(canonicalJson(first)));
 assert.deepStrictEqual(keys, [...keys].sort(), 'canonical JSON keys must be sorted');
 assert.deepStrictEqual(keys, [
-  'agent_client',
+  'agent',
   'avatar_accessory',
   'avatar_color',
   'avatar_eyes',
@@ -58,8 +59,7 @@ assert.deepStrictEqual(keys, [
   'import_schema_version',
   'memories',
   'name',
-  'needs_deck_reselection',
-  'runtime',
+  'needs_deck_selection',
   'skill_content',
   'skill_path',
   'skill_present',
@@ -69,7 +69,8 @@ assert.deepStrictEqual(keys, [
   'title',
   'working_directory',
 ]);
-console.log('PASS: hash is stable under key reordering with sorted canonical keys');
+assert.ok(!keys.includes('runtime') && !keys.includes('agent_client'), 'snapshot has no runtime/agent_client field');
+console.log('PASS: hash is stable under key reordering with sorted canonical keys (agent, no runtime)');
 passed += 1;
 
 // 3. One changed rule yields a different hash.
@@ -90,50 +91,48 @@ assert.notStrictEqual(hashSnapshot(first), hashSnapshot(readEmpty), 'null facts 
 console.log('PASS: same facts give the same hash, a changed fact gives a different hash');
 passed += 1;
 
-// 5. NOT-442 Hermes snapshot: the single selected runtime is hermes and
-// every Agent Deck field is null (only applicable for agent-deck bots).
-const hermesInput = buildSnapshotInput(bot({ runtime: 'hermes' }), skill());
-assert.strictEqual(hermesInput.runtime, 'hermes', 'Hermes snapshot must record runtime=hermes');
-console.log('PASS: Hermes snapshot assertion: runtime is hermes');
-passed += 1;
-assert.strictEqual(hermesInput.agent_client, null, 'Hermes snapshot must not carry an agent client');
-assert.strictEqual(hermesInput.deck_id, null, 'Hermes snapshot must not carry a deck ID');
-assert.strictEqual(hermesInput.working_directory, null, 'Hermes snapshot must not carry a working directory');
-assert.strictEqual(hermesInput.needs_deck_reselection, false, 'Hermes snapshot never needs re-selection');
-console.log('PASS: Hermes snapshot assertion: agent client, deck ID, and working directory are null');
+// 5. NOT-456 Hermes snapshot: Hermes is an agent with the same Agent
+// Deck selection as every other agent.
+const hermesInput = buildSnapshotInput(bot({ agent: 'hermes', deck_id: 'deck-123', working_directory: '/tmp/hermes-work' }), skill());
+assert.strictEqual(hermesInput.agent, 'hermes', 'Hermes snapshot must record agent=hermes');
+assert.strictEqual(hermesInput.deck_id, 'deck-123', 'Hermes snapshot records its selected deck ID');
+assert.strictEqual(hermesInput.working_directory, '/tmp/hermes-work', 'Hermes snapshot records its working directory');
+assert.strictEqual(hermesInput.needs_deck_selection, false, 'Hermes with a deck does not need selection');
+assert.strictEqual(buildSnapshotInput(bot(), skill()).agent, 'hermes', 'missing agent reads as hermes');
+console.log('PASS: Hermes snapshot assertion: agent=hermes with its deck ID and working directory');
 passed += 1;
 
-// 6. NOT-442 Agent Deck snapshot: the resolved client, deck ID, and
-// effective working directory round-trip and change the launch hash.
+// 6. Coding-agent snapshot: agent, deck ID, and effective working
+// directory round-trip and change the launch hash.
 const deckInput = buildSnapshotInput(
-  bot({ runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-123', working_directory: '/tmp/relay-work' }),
+  bot({ agent: 'codex', deck_id: 'deck-123', working_directory: '/tmp/hermes-work' }),
   skill()
 );
-assert.strictEqual(deckInput.runtime, 'agent-deck', 'snapshot must record runtime=agent-deck');
-assert.strictEqual(deckInput.agent_client, 'codex', 'snapshot must record the resolved agent client');
+assert.strictEqual(deckInput.agent, 'codex', 'snapshot must record agent=codex');
 assert.strictEqual(deckInput.deck_id, 'deck-123', 'snapshot must record the resolved deck ID');
-assert.strictEqual(deckInput.working_directory, '/tmp/relay-work', 'snapshot must record the effective working directory');
-assert.notStrictEqual(hashSnapshot(hermesInput), hashSnapshot(deckInput), 'runtime must be part of the hashed input');
+assert.notStrictEqual(hashSnapshot(hermesInput), hashSnapshot(deckInput), 'agent must be part of the hashed input');
 const redecked = buildSnapshotInput(
-  bot({ runtime: 'agent-deck', agent_client: 'codex', deck_id: 'deck-999', working_directory: '/tmp/relay-work' }),
+  bot({ agent: 'codex', deck_id: 'deck-999', working_directory: '/tmp/hermes-work' }),
   skill()
 );
 assert.notStrictEqual(hashSnapshot(deckInput), hashSnapshot(redecked), 'a changed deck ID must change the hash');
-console.log('PASS: Agent Deck snapshot assertion: resolved client, deck ID, and working directory round-trip and change the launch hash');
+console.log('PASS: coding-agent snapshot assertion: agent, deck ID, and working directory round-trip and change the launch hash');
 passed += 1;
 
-// 7. NOT-442 migrated-row assertion: the legacy free-text deck name is
-// preserved only as an unresolved reference with a null deck ID and the
-// needs-reselection marker.
+// 7. Migrated-row assertion: the legacy free-text deck name is preserved
+// only as an unresolved reference with a null deck ID and the
+// needs-deck-selection marker.
 const migratedInput = buildSnapshotInput(
-  bot({ runtime: 'agent-deck', agent_client: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/relay-work', needs_deck_reselection: 1 }),
+  bot({ agent: 'codex', deck_id: null, deck_name: 'relay-deck', working_directory: '/tmp/relay-work', needs_deck_selection: 1 }),
   skill()
 );
-assert.strictEqual(migratedInput.runtime, 'agent-deck', 'migrated snapshot keeps runtime=agent-deck');
+assert.strictEqual(migratedInput.agent, 'codex', 'migrated snapshot keeps agent=codex');
 assert.strictEqual(migratedInput.deck_name, 'relay-deck', 'migrated snapshot preserves the legacy deck name as an unresolved reference');
 assert.strictEqual(migratedInput.deck_id, null, 'migrated snapshot stores no deck ID');
-assert.strictEqual(migratedInput.needs_deck_reselection, true, 'migrated snapshot is marked as needing deck re-selection');
-console.log('PASS: migrated-row assertion: legacy deck name preserved as unresolved reference with null deck ID and needs-reselection');
+assert.strictEqual(migratedInput.needs_deck_selection, true, 'migrated snapshot is marked as needing deck selection');
+const noDeck = buildSnapshotInput(bot({ agent: 'hermes' }), skill());
+assert.strictEqual(noDeck.needs_deck_selection, true, 'a row without a deck ID always needs selection');
+console.log('PASS: migrated-row assertion: legacy deck name preserved as unresolved reference with null deck ID and needs-deck-selection');
 passed += 1;
 
 // 8. NOT-431 avatar fields remain part of the hashed input.
@@ -186,12 +185,10 @@ async function main() {
     name: 'Herald',
     title: 'Herald',
     description: 'Answers directly.',
-    runtime: 'hermes',
-    agent_client: null,
-    deck_id: null,
+    agent: 'hermes',
+    deck_id: 'deck-herald',
     deck_name: null,
     working_directory: null,
-    needs_deck_reselection: 0,
   });
   const heraldConv = db.conversations.getByBotId(herald.id);
   assert.ok(heraldConv, 'herald thread exists');
@@ -207,10 +204,11 @@ async function main() {
   assert.ok(heraldSnaps.length >= 1, 'a launch snapshot was flushed for the Hermes turn');
   assert.strictEqual(heraldSnaps[heraldSnaps.length - 1].transport, 'hermes-gateway', 'Hermes turn records the hermes-gateway transport');
   const heraldFlushed = JSON.parse(heraldSnaps[heraldSnaps.length - 1].snapshot);
-  console.log(`flushed Hermes snapshot: runtime=${heraldFlushed.runtime} agent_client=${heraldFlushed.agent_client} deck_id=${heraldFlushed.deck_id} working_directory=${heraldFlushed.working_directory}`);
-  assert.strictEqual(heraldFlushed.runtime, 'hermes', 'flushed Hermes snapshot carries runtime=hermes');
-  assert.strictEqual(heraldFlushed.agent_client, null, 'flushed Hermes snapshot carries no agent client');
-  console.log('PASS: Hermes snapshot assertion: flushed snapshot carries the single selected runtime with no deck fields');
+  console.log(`flushed Hermes snapshot: agent=${heraldFlushed.agent} deck_id=${heraldFlushed.deck_id} working_directory=${heraldFlushed.working_directory}`);
+  assert.strictEqual(heraldFlushed.agent, 'hermes', 'flushed Hermes snapshot carries agent=hermes');
+  assert.strictEqual(heraldFlushed.deck_id, 'deck-herald', 'flushed Hermes snapshot carries its selected deck');
+  assert.ok(!('runtime' in heraldFlushed), 'flushed Hermes snapshot has no runtime field');
+  console.log('PASS: Hermes snapshot assertion: flushed snapshot carries agent=hermes plus its Agent Deck selection');
   passed += 1;
 
   // Agent Deck direct dispatch: ordinary message launches the stored
@@ -249,12 +247,10 @@ async function main() {
     name: 'Relay',
     title: 'Coding Relay',
     description: 'Launches directly.',
-    runtime: 'agent-deck',
-    agent_client: 'codex',
+    agent: 'codex',
     deck_id: 'deck-123',
     deck_name: null,
     working_directory: workdir,
-    needs_deck_reselection: 0,
   });
   const relayConv = db.conversations.getByBotId(relay.id);
   assert.ok(relayConv, 'relay thread exists');
@@ -277,9 +273,8 @@ async function main() {
   assert.ok(relaySnaps.length >= 1, 'a launch snapshot was flushed for the deck turn');
   assert.strictEqual(relaySnaps[relaySnaps.length - 1].transport, 'agent-deck', 'deck turn records the agent-deck transport');
   const relayFlushed = JSON.parse(relaySnaps[relaySnaps.length - 1].snapshot);
-  console.log(`flushed Agent Deck snapshot: runtime=${relayFlushed.runtime} agent_client=${relayFlushed.agent_client} deck_id=${relayFlushed.deck_id} working_directory=${relayFlushed.working_directory}`);
-  assert.strictEqual(relayFlushed.runtime, 'agent-deck', 'flushed deck snapshot carries runtime=agent-deck');
-  assert.strictEqual(relayFlushed.agent_client, 'codex', 'flushed deck snapshot carries the resolved client');
+  console.log(`flushed coding-agent snapshot: agent=${relayFlushed.agent} deck_id=${relayFlushed.deck_id} working_directory=${relayFlushed.working_directory}`);
+  assert.strictEqual(relayFlushed.agent, 'codex', 'flushed deck snapshot carries agent=codex');
   assert.strictEqual(relayFlushed.deck_id, 'deck-123', 'flushed deck snapshot carries the resolved deck ID');
   assert.strictEqual(relayFlushed.working_directory, workdir, 'flushed deck snapshot carries the effective working directory');
   console.log('PASS: Agent Deck snapshot assertion: flushed snapshot carries the resolved client, deck ID, and working directory');
@@ -291,12 +286,10 @@ async function main() {
     name: 'Migrated',
     title: 'Migrated',
     description: 'Migrated legacy row.',
-    runtime: 'agent-deck',
-    agent_client: 'codex',
+    agent: 'codex',
     deck_id: null,
     deck_name: 'relay-deck',
     working_directory: workdir,
-    needs_deck_reselection: 1,
   });
   const migratedConv = db.conversations.getByBotId(migrated.id);
   db.messages.create(migratedConv.id, 'user', 'Build the widget.');
@@ -306,11 +299,34 @@ async function main() {
   const migratedSnaps = db.launchSnapshots.listByBot(migrated.id);
   assert.ok(migratedSnaps.length >= 1, 'a launch snapshot was flushed for the migrated row');
   const migratedFlushed = JSON.parse(migratedSnaps[migratedSnaps.length - 1].snapshot);
-  console.log(`flushed migrated snapshot: runtime=${migratedFlushed.runtime} deck_name=${migratedFlushed.deck_name} deck_id=${migratedFlushed.deck_id} needs_deck_reselection=${migratedFlushed.needs_deck_reselection}`);
+  console.log(`flushed migrated snapshot: agent=${migratedFlushed.agent} deck_name=${migratedFlushed.deck_name} deck_id=${migratedFlushed.deck_id} needs_deck_selection=${migratedFlushed.needs_deck_selection}`);
   assert.strictEqual(migratedFlushed.deck_name, 'relay-deck', 'migrated snapshot preserves the legacy name');
   assert.strictEqual(migratedFlushed.deck_id, null, 'migrated snapshot stores no deck ID');
-  assert.strictEqual(migratedFlushed.needs_deck_reselection, true, 'migrated snapshot keeps the needs-reselection marker');
-  console.log('PASS: migrated-row assertion: flushed snapshot preserves the unresolved reference with null deck ID and needs-reselection');
+  assert.strictEqual(migratedFlushed.needs_deck_selection, true, 'migrated snapshot keeps the needs-deck-selection marker');
+  console.log('PASS: migrated-row assertion: flushed snapshot preserves the unresolved reference with null deck ID and needs-deck-selection');
+  passed += 1;
+
+  // NOT-456: a Hermes agent without a selected deck cannot launch either:
+  // the Hermes adapter is never called and the thread names the gap.
+  let unresolvedHermesCalls = 0;
+  agent.setDelegationChatStub(() => {
+    unresolvedHermesCalls += 1;
+    return 'must not run';
+  });
+  const pendingHermes = db.bots.create({ name: 'PendingHermes', title: '', description: 'No deck yet.', agent: 'hermes' });
+  const pendingConv = db.conversations.getByBotId(pendingHermes.id);
+  db.messages.create(pendingConv.id, 'user', 'Hello?');
+  db.queue.enqueue(pendingConv.id, pendingHermes.id);
+  processed = 0;
+  while (processed < 20 && await agent.processNextQueueItem()) processed += 1;
+  assert.strictEqual(unresolvedHermesCalls, 0, 'Hermes without a deck never reaches the Hermes adapter');
+  const pendingThread = db.messages.getByConversation(pendingConv.id);
+  assert.ok(pendingThread.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck needs selection] PendingHermes')), 'Hermes without a deck posts the needs-selection notice');
+  const pendingSnaps = db.launchSnapshots.listByBot(pendingHermes.id);
+  const pendingFlushed = JSON.parse(pendingSnaps[pendingSnaps.length - 1].snapshot);
+  assert.strictEqual(pendingFlushed.agent, 'hermes', 'unlaunched Hermes snapshot records agent=hermes');
+  assert.strictEqual(pendingFlushed.needs_deck_selection, true, 'unlaunched Hermes snapshot records needs_deck_selection');
+  console.log('PASS: unresolved Hermes assertion: no deck selected -> no launch, visible notice, snapshot marks needs_deck_selection');
   passed += 1;
 
   deckRun.setDeckRunProcess(null);
