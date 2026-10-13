@@ -20,6 +20,9 @@ import {
 import { AgentSection, RosterRuntimeLine } from '@/app/components/AgentDeckRuntime';
 import { useDeckList } from '@/app/components/useDeckList';
 import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
+import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
+import ManageAgentsPanel from '@/app/components/ManageAgentsPanel';
+import { deletedStatusLine, type DeleteAgentRef } from '@/lib/bot-deletion';
 
 interface Bot {
   id: string;
@@ -213,6 +216,9 @@ export default function Home() {
   const [deleteAsk, setDeleteAsk] = useState<Bot | null>(null);
   const [rowMenu, setRowMenu] = useState<{ bot: Bot; x: number; y: number } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
+  const [manageOpen, setManageOpen] = useState(false);
+  const manageRef = useRef<HTMLButtonElement>(null);
+  const [rosterStatus, setRosterStatus] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const avatarFileRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -242,7 +248,11 @@ export default function Home() {
       window.location.replace(importedConfigPath(imported));
       return;
     }
-    loadBots();
+    const deleted = Number(new URLSearchParams(window.location.search).get('deleted'));
+    if (deleted > 0) window.history.replaceState(null, '', '/');
+    void loadBots().then(() => {
+      if (deleted > 0) setRosterStatus(deletedStatusLine(deleted));
+    });
     loadGroups();
     const botsTimer = setInterval(loadBots, 2000);
     const clockTimer = setInterval(() => setNow(Date.now()), 1000);
@@ -343,10 +353,11 @@ export default function Home() {
     setBotsLoaded(true);
   }
 
-  async function loadGroups() {
+  async function loadGroups(): Promise<GroupRow[]> {
     const res = await fetch('/api/groups');
     const data = await res.json();
     setGroups(data);
+    return Array.isArray(data) ? data : [];
   }
 
   async function loadMessages() {
@@ -572,20 +583,26 @@ export default function Home() {
     }
   };
 
-  const confirmDelete = async () => {
-    if (!deleteAsk) return;
-    const id = deleteAsk.id;
-    const res = await fetch('/api/bots', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
+  const afterDelete = async (deleted: DeleteAgentRef[]) => {
+    const ids = deleted.map(item => item.id);
     setDeleteAsk(null);
-    if (!res.ok) return;
-    setBots(current => current.filter(bot => bot.id !== id));
-    if (activeConversation?.type === 'bot' && activeConversation.details.id === id) {
+    setManageOpen(false);
+    setRosterStatus(deletedStatusLine(ids.length));
+    setBots(current => current.filter(bot => !ids.includes(bot.id)));
+    if (activeConversation?.type === 'bot' && ids.includes(activeConversation.details.id)) {
       setActiveConversation(null);
+      setMessages([]);
     }
+    const [, nextGroups] = await Promise.all([loadBots(), loadGroups()]);
+    if (activeConversation?.type === 'group' && !nextGroups.some(group => group.id === activeConversation.details.id)) {
+      setActiveConversation(null);
+      setMessages([]);
+    }
+  };
+
+  const openRowMenu = (bot: Bot, anchor: HTMLElement) => {
+    const rect = anchor.getBoundingClientRect();
+    setRowMenu({ bot, x: rect.left, y: rect.bottom + 4 });
   };
 
   const openGroup = async (id: string) => {
@@ -734,10 +751,22 @@ export default function Home() {
           <button type="button" className="add-btn" onClick={() => setShowBotModal(true)}>
             New
           </button>
+          {noBots ? null : (
+            <button
+              ref={manageRef}
+              type="button"
+              className="add-btn"
+              aria-haspopup="dialog"
+              onClick={() => { setRosterStatus(''); setManageOpen(true); }}
+            >
+              Manage agents
+            </button>
+          )}
           <Link href="/settings" className="add-btn settings-link">
             Settings
           </Link>
         </div>
+        <p className="roster-status" role="status">{rosterStatus}</p>
         {noBots ? null : (
           <div className={rowMenu ? 'roster menu-open' : 'roster'}>
             {rosterBots.map(bot => isChiefOfStaff(bot) ? (
@@ -807,6 +836,18 @@ export default function Home() {
                   >
                     Hide
                   </button>
+                  <button
+                    type="button"
+                    className="pin-word"
+                    aria-haspopup="menu"
+                    aria-label={`Actions for ${bot.name}`}
+                    onClick={e => {
+                      e.stopPropagation();
+                      openRowMenu(bot, e.currentTarget);
+                    }}
+                  >
+                    Actions
+                  </button>
                 </div>
               </div>
             ) : (
@@ -874,6 +915,18 @@ export default function Home() {
                     }}
                   >
                     Hide
+                  </button>
+                  <button
+                    type="button"
+                    className="pin-word"
+                    aria-haspopup="menu"
+                    aria-label={`Actions for ${bot.name}`}
+                    onClick={e => {
+                      e.stopPropagation();
+                      openRowMenu(bot, e.currentTarget);
+                    }}
+                  >
+                    Actions
                   </button>
                 </div>
               </div>
@@ -1282,31 +1335,40 @@ export default function Home() {
       </section>
 
       {deleteAsk ? (
-        <div className="modal-scrim">
-          <div className="confirm-card">
-            <p>Delete {deleteAsk.name}?</p>
-            <div className="form-actions">
-              <button type="button" className="cancel-btn" onClick={() => setDeleteAsk(null)}>Cancel</button>
-              <button type="button" className="create-btn" onClick={confirmDelete}>Confirm</button>
-            </div>
-          </div>
-        </div>
+        <DeleteAgentsDialog
+          ids={[deleteAsk.id]}
+          onCancel={() => setDeleteAsk(null)}
+          onDeleted={deleted => { void afterDelete(deleted); }}
+        />
+      ) : null}
+
+      {manageOpen ? (
+        <ManageAgentsPanel
+          deckState={deckState}
+          onClose={() => {
+            setManageOpen(false);
+            requestAnimationFrame(() => manageRef.current?.focus());
+          }}
+          onDeleted={deleted => { void afterDelete(deleted); }}
+        />
       ) : null}
 
       {rowMenu ? (
         <div
           ref={rowMenuRef}
           className="row-menu"
+          role="menu"
+          aria-label={`Actions for ${rowMenu.bot.name}`}
           style={{ left: rowMenu.x, top: rowMenu.y }}
           onPointerDown={e => e.stopPropagation()}
           onClick={e => e.stopPropagation()}
           onContextMenu={e => e.preventDefault()}
         >
-          <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); pinBot(rowMenu.bot); }}>Pin</button>
-          <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
-          <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
-          <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); hideBot(rowMenu.bot, true); }}>Hide from sidebar</button>
-          <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); setDeleteAsk(rowMenu.bot); }}>Delete</button>
+          <button type="button" role="menuitem" autoFocus onClick={e => { e.stopPropagation(); setRowMenu(null); pinBot(rowMenu.bot); }}>Pin</button>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); hideBot(rowMenu.bot, true); }}>Hide from sidebar</button>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); setDeleteAsk(rowMenu.bot); }}>Delete agent…</button>
         </div>
       ) : null}
 

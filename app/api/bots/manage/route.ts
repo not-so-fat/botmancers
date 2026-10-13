@@ -6,10 +6,15 @@ import { serializeBot } from '@/lib/bot-definition';
 export async function GET() {
   try {
     const rows = bots.managementRows().map(row => {
-      const bot = serializeBot(row.bot);
+      const bot = serializeBot(row.bot) as unknown as {
+        agent: string;
+        deck_id: string | null;
+        deck_name: string | null;
+        needs_deck_selection: boolean;
+      };
       return {
-        id: bot.id,
-        name: bot.name,
+        id: row.bot.id,
+        name: row.bot.name,
         hidden: row.bot.hidden ? 1 : 0,
         agent: bot.agent,
         deck_id: bot.deck_id,
