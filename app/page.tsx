@@ -19,6 +19,7 @@ import {
 } from '@/lib/bot-runtime-ui';
 import { RosterRuntimeLine, RuntimeSection } from '@/app/components/AgentDeckRuntime';
 import { useDeckList } from '@/app/components/useDeckList';
+import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 
 interface Bot {
   id: string;
@@ -226,9 +227,6 @@ export default function Home() {
   const pendingAfter = useRef<Record<string, number>>({});
   const logoSettled = useRef(false);
   const [logoDrop, setLogoDrop] = useState(false);
-  const returnId = useRef<string | null>(null);
-  const returnHandled = useRef(false);
-  const [importMiss, setImportMiss] = useState('');
   const { state: deckState, retry: retryDecks } = useDeckList();
 
   useEffect(() => {
@@ -238,10 +236,11 @@ export default function Home() {
   }, [bots.length]);
 
   useEffect(() => {
-    const imported = new URLSearchParams(window.location.search).get('imported');
+    // Handoffs started before the entry moved to Config return here; forward to the imported bot's Config.
+    const imported = importedBotId(window.location.search);
     if (imported) {
-      returnId.current = imported;
-      defaulted.current = true;
+      window.location.replace(importedConfigPath(imported));
+      return;
     }
     loadBots();
     loadGroups();
@@ -341,33 +340,6 @@ export default function Home() {
     if (!Array.isArray(data)) return;
     const list: Bot[] = data;
     setBots(list);
-    const imported = returnId.current;
-    if (!imported || returnHandled.current) return;
-    returnHandled.current = true;
-    const url = new URL(window.location.href);
-    url.searchParams.delete('imported');
-    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
-    const found = list.find(bot => bot.id === imported);
-    if (!found) {
-      setImportMiss('Imported bot not found. The bot may not have been created successfully.');
-      defaulted.current = false;
-      return;
-    }
-    const convRes = await fetch('/api/conversations?botId=' + encodeURIComponent(found.id));
-    const conv = await convRes.json().catch(() => null);
-    if (!convRes.ok || !conv || !conv.id) {
-      setImportMiss('Imported bot not found. The bot may not have been created successfully.');
-      defaulted.current = false;
-      return;
-    }
-    setImportMiss('');
-    setPictureOpen(false);
-    setAvatarStep(false);
-    setActiveConversation({
-      id: conv.id,
-      type: 'bot',
-      details: found,
-    });
   }
 
   async function loadGroups() {
@@ -740,23 +712,6 @@ export default function Home() {
     ? (activeConversation.details as Bot).color
     : undefined;
 
-  const importFromMarketplace = async () => {
-    setImportMiss('');
-    try {
-      const res = await fetch('/api/marketplace-handoff/status', { cache: 'no-store' });
-      const data = await res.json().catch(() => null);
-      const configured = data?.configured === true;
-      if (!configured) {
-        setImportMiss('CLONE_MARKET_URL is not configured. Please contact your administrator.');
-        return;
-      }
-      const returnTo = window.location.origin + window.location.pathname;
-      window.location.href = '/api/marketplace-handoff?return=' + encodeURIComponent(returnTo);
-    } catch {
-      setImportMiss('Failed to initiate import. Please try again.');
-    }
-  };
-
   return (
     <div className="field">
       <aside className="rail">
@@ -772,15 +727,9 @@ export default function Home() {
           <div className="logo-word">botmancers</div>
         </div>
         <div className="bar">
-          <div className="create-stack">
-            <button type="button" className="add-btn" onClick={() => setShowBotModal(true)}>
-              New
-            </button>
-            <button type="button" className="import-btn" onClick={() => { void importFromMarketplace(); }}>
-              Import from Grok Marketplace
-            </button>
-            {importMiss ? <p className="import-note">{importMiss}</p> : null}
-          </div>
+          <button type="button" className="add-btn" onClick={() => setShowBotModal(true)}>
+            New
+          </button>
           <Link href="/settings" className="add-btn settings-link">
             Settings
           </Link>

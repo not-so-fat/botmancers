@@ -177,34 +177,6 @@ textarea {
   cursor: pointer;
 }
 
-.create-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.import-btn {
-  font-family: var(--chrome);
-  font-size: 14px;
-  line-height: 1.2;
-  color: var(--accent);
-  background: none;
-  border: 1px solid var(--hairline);
-  padding: 4px 8px;
-  cursor: pointer;
-  text-align: left;
-  text-decoration: none;
-}
-
-.import-note {
-  margin: 0;
-  max-width: 220px;
-  font-family: var(--chrome);
-  font-size: 14px;
-  color: var(--ink);
-}
-
 .create-btn {
   font-family: var(--chrome);
   font-size: 14px;

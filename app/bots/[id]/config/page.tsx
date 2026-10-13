@@ -18,6 +18,7 @@ import {
 import { RuntimeSection } from '@/app/components/AgentDeckRuntime';
 import { useDeckList } from '@/app/components/useDeckList';
 import BotAvatar from '@/app/components/BotAvatar';
+import { MarketplaceImportControl, useMarketplaceImport } from '@/app/components/MarketplaceImport';
 import {
   AVATAR_ACCESSORIES,
   AVATAR_COLORS,
@@ -159,6 +160,8 @@ export default function BotConfigPage() {
   const [avatarPhase, setAvatarPhase] = useState<Phase>('clean');
   const [avatarError, setAvatarError] = useState('');
   const [avatarConfirmedAt, setAvatarConfirmedAt] = useState(0);
+
+  const { phase: importPhase, startImport } = useMarketplaceImport(id);
 
   function retryLoad(): void {
     setLoading(true);
@@ -969,6 +972,7 @@ export default function BotConfigPage() {
                   </dd>
                 </div>
               </dl>
+              <MarketplaceImportControl phase={importPhase} onImport={() => { void startImport(); }} />
             </section>
           </div>
 
