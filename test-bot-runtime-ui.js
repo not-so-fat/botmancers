@@ -2,7 +2,7 @@
 // NOT-445/NOT-456: agent + Agent Deck bot UI regression coverage.
 //
 // Proves, without a browser:
-// (1) New Bot offers exactly one Agent (Hermes, Cursor, Claude, Codex,
+// (1) New Agent offers exactly one Agent (Hermes, Cursor, Claude, Codex,
 //     Muse Code; Hermes pre-selected) plus the Agent Deck and working
 //     directory every agent needs; no Runtime picker exists and Agent
 //     Deck is never an agent option. The submit payload for every agent
@@ -19,6 +19,11 @@
 //     summary for every fixture, including migrated, unavailable-deck,
 //     and non-local states; never "Runtime: Agent Deck".
 // (5) Same-thread Agent Deck observations render in order.
+// (6) NOT-457: New Agent and Config render Agent (fieldset/legend, five
+//     options in order), then a required, label-associated Agent Deck
+//     control, then the optional working directory, in every deck state;
+//     Config saves agent / deck / workdir independently for Hermes and
+//     Cursor; no user-facing source calls Agent Deck a runtime.
 // Components render through react-dom/server. Self-contained: isolated
 // SQLite file, mocked upstream fetch, injected process seam. No dev
 // server, no API key, no network.
@@ -138,7 +143,7 @@ const CONNECTED = deckState('connected', {
 });
 
 function sectionHtml(form, state, extra) {
-  return render(view.RuntimeSection, {
+  return render(view.AgentSection, {
     idPrefix: 'bot',
     variant: 'modal',
     form,
@@ -241,7 +246,7 @@ async function settingsSection() {
         has(slotHtml, '<select') && has(slotHtml, `>${escapeHtml(ui.DECK_PLACEHOLDER)}</option>`) &&
         has(slotHtml, '<option value="planner" title="planner">planner</option>') &&
         has(slotHtml, '<option value="research" title="research">research</option>'),
-        'connected: dropdown lists exactly the returned deck ids with the "Select a deck…" placeholder'
+        'connected: dropdown lists exactly the returned deck ids with the "Select an Agent Deck…" placeholder'
       );
       assert(ui.runtimeFormView({ agent: 'codex', deckId: '' }, state).submitDisabled === false, 'connected: Agent Deck Create is enabled');
     } else {
@@ -282,7 +287,7 @@ async function settingsSection() {
 }
 
 async function newBotSection() {
-  log('\n[1] New Bot: one Agent choice plus the Agent Deck every agent needs');
+  log('\n[1] New Agent: one Agent choice plus the Agent Deck every agent needs');
   const defaultForm = ui.DEFAULT_RUNTIME_FORM;
   const defaultHtml = sectionHtml(defaultForm, CONNECTED);
   log(`  [default] visible fields: name, ${visibleFields(defaultHtml).join(', ')}`);
@@ -327,7 +332,7 @@ async function newBotSection() {
   const missingRes = await postBot(missingDeck);
   const missingErr = await missingRes.json();
   log(`  [no deck chosen] client copy="${ui.SELECT_DECK_ERROR}" server 400="${missingErr.error}"`);
-  assert(missingRes.status === 400 && typeof missingErr.error === 'string', 'a deck-less submit is rejected for Hermes too (the modal blocks it first with "Select a deck for this bot.")');
+  assert(missingRes.status === 400 && typeof missingErr.error === 'string', 'a deck-less submit is rejected for Hermes too (the modal blocks it first with "Select an Agent Deck for this agent.")');
   return created;
 }
 
@@ -335,7 +340,7 @@ async function workdirSection(created) {
   log('\n[3] Working directory: implicit default, override create/read/edit/reset');
   const html = sectionHtml({ agent: 'codex', deckId: 'planner', workingDirectory: '' }, CONNECTED);
   log(`  [default] hint: "${ui.NEW_BOT_WORKDIR_HINT}"`);
-  assert(has(html, escapeHtml('Default: ~/.botmancers/{agentID}')) && has(html, 'data-field="workdir" placeholder="" value=""'), 'default: New Bot shows a blank workdir input with the ~/.botmancers/{agentID} hint');
+  assert(has(html, escapeHtml('Default: ~/.botmancers/{agentID}')) && has(html, 'data-field="workdir" aria-describedby="bot-workdir-hint bot-workdir-note" placeholder="" value=""'), 'default: New Agent shows a blank workdir input with the ~/.botmancers/{agentID} hint');
   assert(!/~\/\.botmancers\/(hermes|codex|claude|cursor|muse)\b/.test(html), 'default: the hint never substitutes an agent name for {agentID}');
 
   const implicit = await listedBot(created.codex.id);
@@ -445,7 +450,7 @@ async function rosterConfigSection(created) {
   log(`  [migrated -> re-selected] roster="${ui.rosterRuntimeLine(resolved, CONNECTED)}" launchable=${resolved.launchable}`);
   assert(reselect.status === 200 && resolved.launchable === true && resolved.deck_name === null && ui.rosterRuntimeLine(resolved, CONNECTED) === 'Agent: Codex · Agent Deck: planner', 'migrated: picking a deck resolves the agent to launchable');
 
-  const editHtml = render(view.RuntimeSection, {
+  const editHtml = render(view.AgentSection, {
     idPrefix: 'cfg', variant: 'config', form: ui.runtimeFormFromBot(gone), onChange() {}, deckState: CONNECTED, onRetry() {},
     savedDeckId: gone.deck_id, workdirPlaceholder: ui.defaultWorkdirFor(gone.id), workdirHint: ui.configWorkdirHint(gone.id),
   });
@@ -509,14 +514,101 @@ async function traceSection() {
   agent.setDelegationChatStub(null);
 }
 
+function fieldOrder(html, prefix) {
+  return [
+    html.indexOf(`<legend id="${prefix}-agent-label"`),
+    html.search(new RegExp(`<label[^>]*id="${prefix}-deck-label"[^>]*>Agent Deck</label>`)),
+    html.indexOf(`for="${prefix}-workdir">Working directory (optional)</label>`),
+  ];
+}
+
+function radioValues(html, name) {
+  return [...html.matchAll(new RegExp(`<input type="radio" name="${name}"[^>]*value="([^"]+)"`, 'g'))].map(m => m[1]);
+}
+
+function sourceFiles(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return entry.name === 'api' ? [] : sourceFiles(full);
+    return /\.tsx?$/.test(entry.name) ? [full] : [];
+  });
+}
+
+async function hierarchySection() {
+  log('\n[6] NOT-457: Agent first, then Agent Deck, then optional working directory');
+  const states = {
+    loading: ui.initialDeckListState(),
+    connected: CONNECTED,
+    empty: deckState('empty'),
+    malformed: deckState('malformed'),
+    unreachable: deckState('unreachable'),
+    unconfigured: deckState('unconfigured', { serverUrl: '' }),
+  };
+  for (const variant of ['modal', 'config']) {
+    const prefix = variant === 'modal' ? 'bot' : 'cfg';
+    for (const [status, state] of Object.entries(states)) {
+      const html = render(view.AgentSection, {
+        idPrefix: prefix, variant, form: { agent: 'cursor', deckId: '', workingDirectory: '' }, onChange() {}, deckState: state, onRetry() {},
+        workdirPlaceholder: '', workdirHint: ui.NEW_BOT_WORKDIR_HINT,
+      });
+      const order = fieldOrder(html, prefix);
+      const tag = `${variant}/${status}`;
+      log(`  [${tag}] order(agent,deck,workdir)=${order.join(',')} agents=${radioValues(html, `${prefix}-agent`).join('|')}`);
+      assert(order.every(i => i >= 0) && order[0] < order[1] && order[1] < order[2], `${tag}: Agent, then Agent Deck, then Working directory`);
+      assert(radioValues(html, `${prefix}-agent`).join('|') === 'hermes|cursor|claude|codex|muse', `${tag}: one Agent group with exactly five options in order`);
+      assert(has(html, `<fieldset class="agent-fieldset" data-field="agent"><legend id="${prefix}-agent-label"`) && has(html, `role="radiogroup" aria-labelledby="${prefix}-agent-label" aria-required="true"`), `${tag}: Agent group is a fieldset named by its legend`);
+      assert(!/Runtime/.test(html) && !has(html, 'value="agent-deck"') && !/<input type="radio"[^>]*>\s*Agent Deck</.test(html), `${tag}: no Runtime copy and Agent Deck is never an Agent option`);
+      assert(has(html, `id="${prefix}-workdir"`) && !/id="[^"]*-workdir"[^>]*required/.test(html) && has(html, `aria-describedby="${prefix}-workdir-hint ${prefix}-workdir-note"`), `${tag}: working directory is optional and described by its hint`);
+      if (status === 'connected') {
+        assert(has(html, `for="${prefix}-deck">Agent Deck</label>`) && /<select id="(bot|cfg)-deck"[^>]*aria-required="true"/.test(html), `${tag}: Agent Deck is a required <select> associated with its label`);
+        assert(!/<select[^>]*\srequired=""/.test(html), `${tag}: no native required, so the "${ui.SELECT_DECK_ERROR}" validation is reachable on submit`);
+      } else {
+        assert(!has(html, '<select') && !has(html, `for="${prefix}-deck"`) && has(html, `role="group" aria-labelledby="${prefix}-deck-label"`) && /<p id="(bot|cfg)-deck" class="[^"]*" role="status">/.test(html) && has(html, escapeHtml(ui.DECK_SLOT_COPY[status])), `${tag}: Agent Deck slot is a group labelled "Agent Deck" whose status keeps its own text`);
+        assert(has(html, '>Retry<') === ui.deckStateShowsRetry(state), `${tag}: Retry ${ui.deckStateShowsRetry(state) ? 'offered' : 'not offered'}`);
+      }
+    }
+  }
+
+  log('  Config saves each field independently (Hermes, Cursor)');
+  for (const agentName of ['hermes', 'cursor']) {
+    const label = agentName === 'hermes' ? 'Hermes' : 'Cursor';
+    const saved = await (await postBot({ name: `Indie ${label}`, agent: agentName, deck_id: 'planner' })).json();
+    const steps = [
+      { field: 'deck', patch: { deckId: 'research' }, expect: { agent: agentName, deck_id: 'research', working_directory: null } },
+      { field: 'workdir', patch: { workingDirectory: '/tmp/indie' }, expect: { agent: agentName, deck_id: 'research', working_directory: '/tmp/indie' } },
+      { field: 'agent', patch: { agent: agentName === 'hermes' ? 'cursor' : 'hermes' }, expect: { agent: agentName === 'hermes' ? 'cursor' : 'hermes', deck_id: 'research', working_directory: '/tmp/indie' } },
+    ];
+    for (const step of steps) {
+      const before = await listedBot(saved.id);
+      const res = await patchBot(ui.configRuntimePatchBody(saved.id, { ...ui.runtimeFormFromBot(before), ...step.patch }));
+      const after = await listedBot(saved.id);
+      const got = { agent: after.agent, deck_id: after.deck_id, working_directory: after.working_directory };
+      log(`  [${label}: edit ${step.field}] PATCH ${res.status} -> reload ${JSON.stringify(got)} roster="${ui.rosterRuntimeLine(after, CONNECTED)}"`);
+      assert(res.status === 200 && JSON.stringify(got) === JSON.stringify(step.expect), `${label}: editing ${step.field} alone saves it and keeps the other fields`);
+    }
+  }
+
+  const rendered = sourceFiles(path.join(ROOT, 'app')).concat([path.join(ROOT, 'lib', 'bot-runtime-ui.ts')]);
+  const offenders = rendered.filter(file => /\bRuntime\s*:|>\s*Runtime\b|['"`]Runtime\b/.test(fs.readFileSync(file, 'utf8')));
+  log(`  copy scan: ${rendered.length} UI source files; offenders=${JSON.stringify(offenders.map(f => path.relative(ROOT, f)))}`);
+  assert(offenders.length === 0, 'copy: no UI source renders "Runtime: <anything>" or a Runtime label/string');
+  const pageSource = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
+  const configSource = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
+  assert(/>\s*New Agent\s*<\/button>/.test(pageSource) && has(pageSource, 'aria-label="New Agent"'), 'copy: the modal labels the agent form "New Agent"');
+  assert(!/>\s*Bot\s*</.test(pageSource) && !has(pageSource, 'Rename Bot') && !has(pageSource, 'Failed to create bot') && !has(pageSource, "|| 'Bot'"), 'copy: no "Bot" label in the roster/modal');
+  assert(has(configSource, 'Agent configuration') && has(configSource, 'Agent not found.') && !/Bot (configuration|not found)/.test(configSource), 'copy: Config page says Agent, not Bot');
+  assert(ui.SELECT_DECK_ERROR === 'Select an Agent Deck for this agent.' && ui.DECK_PLACEHOLDER === 'Select an Agent Deck…', 'copy: validation and placeholder name the Agent Deck');
+}
+
 async function main() {
-  log('NOT-445/NOT-456 agent + Agent Deck UI test (real handlers, isolated DB, mocked Agent Deck server, react-dom/server)');
+  log('NOT-445/NOT-456/NOT-457 agent + Agent Deck UI test (real handlers, isolated DB, mocked Agent Deck server, react-dom/server)');
   log(`DB: ${DB_PATH}`);
   await settingsSection();
   const created = await newBotSection();
   await workdirSection(created);
   await rosterConfigSection(created);
   await traceSection();
+  await hierarchySection();
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }

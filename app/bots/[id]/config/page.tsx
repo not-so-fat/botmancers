@@ -14,7 +14,7 @@ import {
   runtimeFormView,
   type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
-import { RuntimeSection } from '@/app/components/AgentDeckRuntime';
+import { AgentSection } from '@/app/components/AgentDeckRuntime';
 import { useDeckList } from '@/app/components/useDeckList';
 import BotAvatar from '@/app/components/BotAvatar';
 import { MarketplaceImportControl, useMarketplaceImport } from '@/app/components/MarketplaceImport';
@@ -435,7 +435,7 @@ export default function BotConfigPage() {
     return (
       <div className="cfg-page flex items-center justify-center">
         <div className="text-center">
-          <p className="mb-4">Bot not found.</p>
+          <p className="mb-4">Agent not found.</p>
           <Link href="/" className="cfg-link">
             ← Back to chat
           </Link>
@@ -475,8 +475,8 @@ export default function BotConfigPage() {
           </Link>
           <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
             <div className="min-w-0">
-              <h1 className="text-xl font-bold truncate">Bot configuration</h1>
-              <p className="text-sm cfg-faint truncate">Couldn&apos;t load bot details.</p>
+              <h1 className="text-xl font-bold truncate">Agent configuration</h1>
+              <p className="text-sm cfg-faint truncate">Couldn&apos;t load agent details.</p>
             </div>
             <div className="ml-auto text-right">
               <p className="text-sm cfg-muted">
@@ -631,7 +631,7 @@ export default function BotConfigPage() {
                 <>
                   <p className="text-sm cfg-muted mb-3">Unsupported name</p>
                   <p className="text-sm cfg-muted">
-                    Skill files need a bot name matching /^[A-Za-z0-9_-]+$/ — this name cannot map to a skill path.
+                    Skill files need an agent name matching /^[A-Za-z0-9_-]+$/ — this name cannot map to a skill path.
                   </p>
                 </>
               ) : (
@@ -655,7 +655,7 @@ export default function BotConfigPage() {
                     ) : (
                       <>
                         <p className="text-sm cfg-muted">
-                          No skill file yet. Create SKILL.md to give this bot standing instructions.
+                          No skill file yet. Create SKILL.md to give this agent standing instructions.
                         </p>
                         <button
                           onClick={startSkillEdit}
@@ -780,7 +780,7 @@ export default function BotConfigPage() {
                 const savedDeckId = !isMigratedPending(bot) ? bot.deck_id : null;
                 return (
                   <>
-                    <RuntimeSection
+                    <AgentSection
                       idPrefix="cfg"
                       variant="config"
                       form={runtimeForm}

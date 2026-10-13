@@ -361,7 +361,7 @@ textarea {
   text-overflow: ellipsis;
 }
 
-/* NOT-445: one roster runtime line. Same 12px de-emphasised style as
+/* NOT-445/NOT-457: one roster "Agent: … · Agent Deck: …" line. Same 12px de-emphasised style as
    .bot-preview; wraps (so the unavailable-deck marker stays visible),
    then clamps with an ellipsis. Plain text, never interactive. */
 .bot-runtime {
@@ -969,6 +969,35 @@ button.thread-name {
 
 .cfg-page input[type="radio"] {
   accent-color: var(--accent);
+}
+
+/* NOT-457: Agent, then Agent Deck, then working directory. The Agent
+   radio group is a bare fieldset whose legend matches the field labels;
+   every control in the sequence shows a visible keyboard focus ring. */
+.agent-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.form-card .field-legend {
+  display: block;
+  margin: 0 0 6px;
+  padding: 0;
+  font-family: var(--chrome);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.form-card input:focus-visible,
+.form-card textarea:focus-visible,
+.form-card .deck-control:focus-visible,
+.form-card button:focus-visible,
+.form-card a:focus-visible,
+.cfg-page input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .runtime-retry {

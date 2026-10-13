@@ -17,7 +17,7 @@ import {
   type DeckListState,
   type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
-import { RosterRuntimeLine, RuntimeSection } from '@/app/components/AgentDeckRuntime';
+import { AgentSection, RosterRuntimeLine } from '@/app/components/AgentDeckRuntime';
 import { useDeckList } from '@/app/components/useDeckList';
 import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 
@@ -993,7 +993,7 @@ export default function Home() {
             {avatarStep && activeConversation.type === 'bot' ? (
               <>
                 <div className="avatar-step avatar-desk">
-                  <span className="kind-word">Bot</span>
+                  <span className="kind-word">Agent</span>
                   <button type="button" className="kind-word">Generate</button>
                   <label className="kind-word">
                     Upload
@@ -1082,7 +1082,7 @@ export default function Home() {
                       {revealed[msg.id] ? (
                         <div className="agent-bar">
                           {revealed[msg.id].map(item => (
-                            <div key={item.id}>{(item.sender_name || 'Bot') + ': ' + displayBody(item.content)}</div>
+                            <div key={item.id}>{(item.sender_name || 'Agent') + ': ' + displayBody(item.content)}</div>
                           ))}
                         </div>
                       ) : null}
@@ -1164,7 +1164,7 @@ export default function Home() {
                     {revealed[msg.id] ? (
                       <div className="msg-body">
                         {revealed[msg.id].map(item => (
-                          <div key={item.id}>{(item.sender_name || 'Bot') + ': ' + displayBody(item.content)}</div>
+                          <div key={item.id}>{(item.sender_name || 'Agent') + ': ' + displayBody(item.content)}</div>
                         ))}
                       </div>
                     ) : null}
@@ -1304,7 +1304,7 @@ export default function Home() {
         >
           <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); pinBot(rowMenu.bot); }}>Pin</button>
           <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
-          <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Bot</button>
+          <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
           <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); hideBot(rowMenu.bot, true); }}>Hide from sidebar</button>
           <button type="button" onClick={e => { e.stopPropagation(); setRowMenu(null); setDeleteAsk(rowMenu.bot); }}>Delete</button>
         </div>
@@ -1524,7 +1524,7 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
-      setBotError(typeof body?.error === 'string' && body.error ? body.error : 'Failed to create bot');
+      setBotError(typeof body?.error === 'string' && body.error ? body.error : 'Failed to create agent');
       return;
     }
     onCreated();
@@ -1564,17 +1564,17 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
         <div className="form-card">
         <div className="kind-row">
           <button type="button" className="kind-word" aria-pressed={kind === 'bot'} onClick={() => setKind('bot')} style={{ opacity: kind === 'bot' ? 1 : 0.45 }}>
-            Bot
+            New Agent
           </button>
           <button type="button" className="kind-word" aria-pressed={kind === 'group'} onClick={() => setKind('group')} style={{ opacity: kind === 'group' ? 1 : 0.45 }}>
-            Group
+            New Group
           </button>
         </div>
         {kind === 'bot' ? (
-        <form onSubmit={handleBot} className="bot-form">
+        <form onSubmit={handleBot} className="bot-form" aria-label="New Agent">
           <label htmlFor="bot-name">Name</label>
           <input id="bot-name" type="text" value={name} onChange={e => setName(e.target.value)} required />
-          <RuntimeSection
+          <AgentSection
             idPrefix="bot"
             variant="modal"
             form={form}
@@ -1584,7 +1584,7 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
             workdirPlaceholder=""
             workdirHint={NEW_BOT_WORKDIR_HINT}
           />
-          {botError ? <p className="group-error">{botError}</p> : null}
+          {botError ? <p className="group-error" role="alert">{botError}</p> : null}
           <div className="form-actions">
             <button type="button" className="cancel-btn" onClick={onClose}>
               Cancel

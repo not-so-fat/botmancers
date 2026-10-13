@@ -2,8 +2,8 @@
 // the injected deck-list fetcher).
 //
 // Single source for the Atelier-approved copy (docs/design/
-// bot-single-runtime-settings.md) used by the New Bot modal, the
-// workspace settings page, the roster, the per-bot config Runtime card,
+// bot-single-runtime-settings.md) used by the New Agent modal, the
+// workspace settings page, the roster, the per-agent Config Agent card,
 // and the same-thread Agent Deck trace. React components render these
 // values; the plain-node regression test (`test-bot-runtime-ui.js`)
 // asserts them without a browser.
@@ -58,17 +58,17 @@ export interface DeckListState {
 export const ROSTER_UNAVAILABLE_SUFFIX = ' (deck unavailable — see Config)';
 export const CONFIG_UNAVAILABLE_SUFFIX = ' (deck unavailable)';
 
-export const DECK_PLACEHOLDER = 'Select a deck…';
-export const SELECT_DECK_ERROR = 'Select a deck for this bot.';
+export const DECK_PLACEHOLDER = 'Select an Agent Deck…';
+export const SELECT_DECK_ERROR = 'Select an Agent Deck for this agent.';
 
 export const WORKDIR_TEMPLATE = '~/.botmancers/{agentID}';
-export const NEW_BOT_WORKDIR_HINT = `Default: ${WORKDIR_TEMPLATE} — {agentID} is this bot's ID, assigned at creation.`;
+export const NEW_BOT_WORKDIR_HINT = `Default: ${WORKDIR_TEMPLATE} — {agentID} is this agent's ID, assigned at creation.`;
 
 export const NON_LOCAL_NOTE =
   'Runs use the configured Agent Deck server. Remote execution is unconfirmed — see Settings for the configured server.';
 export const SETTINGS_NON_LOCAL_NOTE = 'Runs use the server above. Remote execution is unconfirmed.';
 export const REMOTE_SERVER_LIMITATION =
-  "The workspace Agent Deck server isn't local. Remote runs are unconfirmed, so this bot's runs stop with an error until Settings points at a local server.";
+  "The workspace Agent Deck server isn't local. Remote runs are unconfirmed, so this agent's runs stop with an error until Settings points at a local server.";
 
 export const SETTINGS_LINK_COPY = 'Configure the Agent Deck server in Settings';
 
@@ -77,7 +77,7 @@ export const UNAVAILABLE_DECK_NOTICE =
 export const UNCHECKED_DECK_NOTICE =
   "Can't reach the Agent Deck server, so this deck couldn't be checked — fix it in Settings, then retry.";
 export const UNCONFIGURED_DECK_NOTICE = 'No Agent Deck server set — add it in Settings.';
-export const SAVED_DECK_MISSING_NOTE = 'Saved deck not on this server — saving keeps it unless you pick another.';
+export const SAVED_DECK_MISSING_NOTE = 'Saved Agent Deck not on this server — saving keeps it unless you pick another.';
 
 // §5.2 exact copy, one entry per state.
 export const DECK_SLOT_COPY: Record<Exclude<DeckListStatus, 'connected'>, string> = {
@@ -177,7 +177,7 @@ export type FetchLike = (url: string, init?: { cache?: string; signal?: unknown 
   json: () => Promise<unknown>;
 }>;
 
-// Single fetcher shared by the settings page, New Bot, roster, and the
+// Single fetcher shared by the settings page, New Agent, roster, and the
 // config page. Calls only the Botmancers proxy; never `/api/decks`.
 export async function fetchDeckList(fetchImpl: FetchLike, previous: DeckListState, now: () => number = Date.now): Promise<DeckListState> {
   let response: { ok: boolean; status: number; json: () => Promise<unknown> };
@@ -358,7 +358,7 @@ export interface RuntimeFormView {
   blocker: string;
 }
 
-// Field visibility + submit gating shared by New Bot and the config edit
+// Field visibility + submit gating shared by New Agent and the config edit
 // view. Every agent needs an Agent Deck, so Create/Save disables while the
 // deck list loads and in every blocking state; a stored deck absent from
 // the list still saves (it is kept).
@@ -375,7 +375,7 @@ export function runtimeFormView(
   return { fields, submitDisabled: true, blocker: DECK_SLOT_COPY[state.status] };
 }
 
-// New Bot submit body: the picked agent and deck. The working directory
+// New Agent submit body: the picked agent and deck. The working directory
 // is sent only when the user typed an override, so the default stays
 // implicit (~/.botmancers/{agentID}, resolved at launch).
 export function newBotSubmitBody(input: { name: string } & RuntimeFormInput): Record<string, unknown> {

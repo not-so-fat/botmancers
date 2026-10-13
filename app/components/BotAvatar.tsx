@@ -32,7 +32,7 @@ export default function BotAvatar({
       className={className ?? 'bot-avatar'}
       style={{ display: 'inline-flex', width: size, height: size, flex: 'none' }}
       title={title}
-      aria-label={title ?? 'Bot avatar'}
+      aria-label={title ?? 'Agent avatar'}
       role="img"
       dangerouslySetInnerHTML={{ __html: svg }}
     />
