@@ -33,11 +33,13 @@ interface Bot {
   import_schema_version?: string | null;
   import_operation_id?: string | null;
   import_timestamp?: number | null;
-  persistent_runtime?: string | null;
-  coding_runtime?: string | null;
+  runtime?: string | null;
+  agent_client?: string | null;
+  deck_id?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
-  coding_configured?: boolean;
+  needs_deck_reselection?: boolean | number | null;
+  launchable?: boolean | null;
   avatar_color?: string | null;
   avatar_eyes?: string | null;
   avatar_hands?: string | null;
@@ -221,8 +223,8 @@ export default function BotConfigPage() {
   const rulesDirty = rulesText !== null && rulesText !== storedRules;
   const storedSkill = data?.skill.content ?? '';
   const skillDirty = skillEditing && skillText !== storedSkill;
-  const storedCodingRuntime = data?.bot.coding_runtime ?? '';
-  const storedCodingDeck = data?.bot.deck_name ?? '';
+  const storedCodingRuntime = data?.bot.agent_client ?? '';
+  const storedCodingDeck = data?.bot.deck_id ?? '';
   const storedCodingDir = data?.bot.working_directory ?? '';
   const codingDirty = codingEditing && (
     codingRuntime !== storedCodingRuntime ||
@@ -299,8 +301,8 @@ export default function BotConfigPage() {
   }
 
   function startCodingEdit(): void {
-    setCodingRuntime(data?.bot.coding_runtime ?? '');
-    setCodingDeck(data?.bot.deck_name ?? '');
+    setCodingRuntime(data?.bot.agent_client ?? '');
+    setCodingDeck(data?.bot.deck_id ?? '');
     setCodingDir(data?.bot.working_directory ?? '');
     setCodingEditing(true);
     setCodingPhase('clean');
@@ -370,8 +372,9 @@ export default function BotConfigPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: data.bot.id,
-          coding_runtime: codingRuntime,
-          deck_name: codingDeck,
+          runtime: codingRuntime ? 'agent-deck' : 'hermes',
+          agent_client: codingRuntime,
+          deck_id: codingDeck,
           working_directory: codingDir,
         }),
       });
@@ -782,29 +785,28 @@ export default function BotConfigPage() {
                         <p className="text-sm cfg-muted mt-1 break-all">
                           Working directory: {lines.workingDirectory}
                         </p>
-                      ) : (
-                        <p className="text-sm cfg-muted mt-1">
-                          No coding runtime, deck, or working directory has been set, so nothing
-                          is shown as selectable.{' '}
-                          <button onClick={startCodingEdit} className="cfg-link">
-                            Add a coding path
-                          </button>
-                        </p>
-                      )}
-                      {lines.workingDirectory ? (
+                      ) : null}
+                      {lines.configured ? (
                         <button
                           onClick={startCodingEdit}
                           className="mt-3 cfg-btn-ghost text-sm w-full sm:w-auto"
                         >
                           Edit
                         </button>
-                      ) : null}
+                      ) : (
+                        <p className="text-sm cfg-muted mt-1">
+                          No coding path has been set — this bot runs on Hermes.{' '}
+                          <button onClick={startCodingEdit} className="cfg-link">
+                            Add a coding path
+                          </button>
+                        </p>
+                      )}
                     </>
                   );
                 }
                 return (
                   <>
-                    <p className="text-sm cfg-muted mb-2">Chat: Hermes (fixed)</p>
+                    <p className="text-sm cfg-muted mb-2">Single runtime — None chats via Hermes, a coding runtime launches Agent Deck.</p>
                     <p className="text-sm cfg-muted mb-2">Coding runtime</p>
                     {availability.status === 'loading' ? (
                       <p className="text-sm cfg-muted">Checking available runtimes…</p>
@@ -851,7 +853,7 @@ export default function BotConfigPage() {
                       </p>
                     ) : null}
                     <label className="block text-sm cfg-muted mt-3 mb-1" htmlFor="cfg-deck">
-                      Deck name
+                      Deck ID
                     </label>
                     <input
                       id="cfg-deck"

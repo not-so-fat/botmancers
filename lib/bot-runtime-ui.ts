@@ -1,4 +1,4 @@
-// NOT-437: Botmancers runtime/deck UI helpers (pure, no I/O).
+// NOT-442: single bot runtime UI helpers (pure, no I/O).
 //
 // Single source for the Atelier-approved copy used by the New Bot modal,
 // the roster, the per-bot config card, and the same-thread delegation
@@ -6,6 +6,11 @@
 // `app/bots/[id]/config/page.tsx` render these values; the plain-node
 // regression test (`test-bot-runtime-ui.js`) asserts them without a
 // browser. No adapter, schema, or routing contract lives here.
+//
+// Every bot resolves to exactly one runtime: 'hermes' (the default) or
+// 'agent-deck' (one of codex|claude|cursor|muse plus a selected deck ID,
+// with an optional working-directory override). There is no separate
+// persistent/coding split: these helpers read the single runtime only.
 
 export interface AvailabilityState {
   status: 'loading' | 'ready' | 'empty' | 'error';
@@ -13,19 +18,26 @@ export interface AvailabilityState {
 }
 
 export interface BotRuntimeLike {
-  persistent_runtime?: string | null;
-  coding_runtime?: string | null;
+  runtime?: string | null;
+  agent_client?: string | null;
+  deck_id?: string | null;
+  // Unresolved legacy free-text deck reference (migrated rows only).
   deck_name?: string | null;
   working_directory?: string | null;
-  coding_configured?: boolean | null;
+  needs_deck_reselection?: boolean | number | null;
+  launchable?: boolean | null;
 }
 
-// Chat line is fixed: every manually created bot converses through Hermes.
+// Hermes bots converse through Hermes; nothing else runs for them.
 export const CHAT_RUNTIME_LINE = 'Chat: Hermes';
 
-export const CHAT_RUNTIME_FIXED_LINE = 'Chat runtime: Hermes (fixed)';
+export const RUNTIME_AGENT_DECK_LINE = 'Runtime: Agent Deck';
 
-export const UNCONFIGURED_CODE_LINE = 'Code: not set — add it in Config.';
+export const CHAT_RUNTIME_FIXED_LINE = 'Runtime: Hermes by default — set a coding path for Agent Deck.';
+
+export const HERMES_CODE_LINE = 'Code: none — Hermes only';
+
+export const NEEDS_RESELECTION_CODE_LINE = 'Code: deck not selected — re-select in Config.';
 
 export const UNVERIFIED_SUFFIX = '(not verified — see Config).';
 
@@ -40,7 +52,7 @@ export const CONFIG_AVAILABILITY_EMPTY_COPY =
   'No coding runtimes verified on this machine yet — only already-stored values can be kept.';
 
 export const CONFIG_UNCONFIGURED_COPY =
-  'Code: not configured — this bot chats only.';
+  'Code: none — this bot runs on Hermes.';
 
 export const STORED_UNVERIFIED_NOTE =
   'Stored but not currently verified — saving keeps it.';
@@ -68,8 +80,10 @@ export function availabilityFromPayload(
 }
 
 // New Bot submit body. In the empty / load-error states the request
-// carries no coding keys and omits `launchable`, so nothing partial is
-// stored — the bot is created fully unconfigured.
+// carries only the name, so the server default (Hermes) applies and
+// nothing partial is stored. Otherwise the modal's coding fields map to
+// the single runtime: an agent-deck bot with the picked agent client,
+// the typed deck ID, and the working-directory override.
 export function newBotSubmitBody(input: {
   name: string;
   availability: AvailabilityState;
@@ -83,57 +97,79 @@ export function newBotSubmitBody(input: {
   }
   return {
     name,
-    launchable: true,
-    coding_runtime: input.codingRuntime,
-    deck_name: input.deckName,
+    runtime: 'agent-deck',
+    agent_client: input.codingRuntime,
+    deck_id: input.deckName,
     working_directory: input.workingDirectory,
   };
 }
 
-// Roster two-line runtime block for one bot. The stored `coding_runtime`
-// is checked against the availability payload only for the
-// verified/unverified marker; it never invents a value and never offers
-// an unverified runtime as a choice.
+function needsReselection(bot: BotRuntimeLike): boolean {
+  const flag: unknown = bot.needs_deck_reselection;
+  if (flag === true || flag === 1) return true;
+  if (typeof flag === 'string') {
+    const text = flag.trim().toLowerCase();
+    if (text === '1' || text === 'true') return true;
+  }
+  return false;
+}
+
+function reselectionCodeLine(bot: BotRuntimeLike): string {
+  const legacy = (bot.deck_name ?? '').trim();
+  if (legacy) return `Code: deck not selected (was "${legacy}") — re-select in Config.`;
+  return NEEDS_RESELECTION_CODE_LINE;
+}
+
+// Roster two-line runtime block for one bot, driven by the single
+// runtime. The stored agent client is checked against the availability
+// payload only for the verified/unverified marker; it never invents a
+// value and never offers an unverified client as a choice.
 export function rosterRuntimeLines(
   bot: BotRuntimeLike,
   availability: AvailabilityState | null | undefined,
 ): { chat: string; code: string } {
-  const chat = CHAT_RUNTIME_LINE;
-  const runtime = (bot.coding_runtime ?? '').trim();
-  const deck = (bot.deck_name ?? '').trim();
-  const workdir = (bot.working_directory ?? '').trim();
-  const configured = bot.coding_configured === true || (runtime !== '' && deck !== '' && workdir !== '');
-  if (!configured || !runtime || !deck) {
-    return { chat, code: UNCONFIGURED_CODE_LINE };
+  if ((bot.runtime ?? '').trim() !== 'agent-deck') {
+    return { chat: CHAT_RUNTIME_LINE, code: HERMES_CODE_LINE };
+  }
+  const chat = RUNTIME_AGENT_DECK_LINE;
+  const client = (bot.agent_client ?? '').trim();
+  const deck = (bot.deck_id ?? '').trim();
+  if (needsReselection(bot) || !client || !deck) {
+    return { chat, code: reselectionCodeLine(bot) };
   }
   const verified =
     !availability ||
     availability.status === 'loading' ||
     availability.status === 'error' ||
-    availability.runtimes.includes(runtime);
+    availability.runtimes.includes(client);
   if (verified) {
-    return { chat, code: configuredCodeLine(runtime, deck) };
+    return { chat, code: configuredCodeLine(client, deck) };
   }
-  return { chat, code: `${configuredCodeLine(runtime, deck)} ${UNVERIFIED_SUFFIX}` };
+  return { chat, code: `${configuredCodeLine(client, deck)} ${UNVERIFIED_SUFFIX}` };
 }
 
-// Config card read view.
-export function configCodingPathLines(bot: BotRuntimeLike): { chat: string; code: string; workingDirectory: string | null } {
-  const chat = 'Chat: Hermes (fixed)';
-  const runtime = (bot.coding_runtime ?? '').trim();
-  const deck = (bot.deck_name ?? '').trim();
-  const workdir = (bot.working_directory ?? '').trim();
-  const configured = bot.coding_configured === true || (runtime !== '' && deck !== '' && workdir !== '');
-  if (!configured || !runtime || !deck) {
-    return { chat, code: CONFIG_UNCONFIGURED_COPY, workingDirectory: null };
+// Config card read view. `configured` is true for every agent-deck bot
+// (the working-directory override is optional), so the card offers Edit
+// even when no override is stored; Hermes bots show the fixed runtime.
+export function configCodingPathLines(bot: BotRuntimeLike): { chat: string; code: string; workingDirectory: string | null; configured: boolean } {
+  if ((bot.runtime ?? '').trim() !== 'agent-deck') {
+    return { chat: 'Runtime: Hermes (fixed)', code: CONFIG_UNCONFIGURED_COPY, workingDirectory: null, configured: false };
   }
-  return { chat, code: configuredCodeLine(runtime, deck), workingDirectory: workdir || null };
+  const chat = RUNTIME_AGENT_DECK_LINE;
+  const client = (bot.agent_client ?? '').trim();
+  const deck = (bot.deck_id ?? '').trim();
+  const workdir = (bot.working_directory ?? '').trim();
+  if (needsReselection(bot) || !client || !deck) {
+    return { chat, code: reselectionCodeLine(bot), workingDirectory: workdir || null, configured: true };
+  }
+  return { chat, code: configuredCodeLine(client, deck), workingDirectory: workdir || null, configured: true };
 }
 
 // Same-thread delegation trace: the adapter (`delegateCodingViaDeck` in
-// lib/agent-deck-run.ts) and the conversation loop (DECK directive path in
-// lib/agent.ts) post these verbatim prefixes into the originating
-// conversation. The UI renders them as ordinary bot turns.
+// lib/agent-deck-run.ts) and the direct-dispatch conversation loop
+// (`processAgentDeckTurn` in lib/agent.ts) post these verbatim prefixes
+// into the originating conversation. The UI renders them as ordinary bot
+// turns.
 export const DECK_EVENT_PREFIXES = [
   '[Deck handoff]',
   '[Deck run]',
@@ -141,9 +177,10 @@ export const DECK_EVENT_PREFIXES = [
   '[Deck resume]',
   '[Deck result]',
   '[Deck failed]',
+  '[Deck needs reselection]',
 ] as const;
 
-export type DeckEventKind = 'handoff' | 'run' | 'review' | 'resume' | 'result' | 'failed' | null;
+export type DeckEventKind = 'handoff' | 'run' | 'review' | 'resume' | 'result' | 'failed' | 'reselection' | null;
 
 export function deckEventKindOfLine(line: string): DeckEventKind {
   const text = String(line ?? '').trimStart();
@@ -153,6 +190,7 @@ export function deckEventKindOfLine(line: string): DeckEventKind {
   if (text.startsWith('[Deck resume]')) return 'resume';
   if (text.startsWith('[Deck result]')) return 'result';
   if (text.startsWith('[Deck failed]')) return 'failed';
+  if (text.startsWith('[Deck needs reselection]')) return 'reselection';
   return null;
 }
 

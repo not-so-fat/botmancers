@@ -35,11 +35,13 @@ interface Bot {
   last_seen?: number | null;
   unread?: number;
   latest?: string;
-  persistent_runtime?: string | null;
-  coding_runtime?: string | null;
+  runtime?: string | null;
+  agent_client?: string | null;
+  deck_id?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
-  coding_configured?: boolean;
+  needs_deck_reselection?: boolean | number | null;
+  launchable?: boolean | null;
 }
 
 interface Message {
@@ -1570,7 +1572,7 @@ function BotModal({ bots, availability, onRetryAvailability, onClose, onCreated 
         return;
       }
       if (!deckName.trim()) {
-        setBotError('Deck name is required for a launchable bot.');
+        setBotError('Deck ID is required for an Agent Deck bot.');
         return;
       }
       if (!workingDirectory.trim()) {
@@ -1671,7 +1673,7 @@ function BotModal({ bots, availability, onRetryAvailability, onClose, onCreated 
               </button>
             </p>
           )}
-          <label htmlFor="bot-deck">Deck name</label>
+          <label htmlFor="bot-deck">Deck ID</label>
           <input id="bot-deck" type="text" value={deckName} onChange={e => setDeckName(e.target.value)} placeholder="planner" />
           <label htmlFor="bot-workdir">Working directory</label>
           <input id="bot-workdir" type="text" value={workingDirectory} onChange={e => setWorkingDirectory(e.target.value)} placeholder="/Users/you/workspace/codes/botmancers" />
