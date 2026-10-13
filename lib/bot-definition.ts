@@ -13,6 +13,7 @@
 // This module holds the shared validation/serialization used by the API
 // routes and the deterministic tests. Plain TypeScript with no I/O so the
 // plain-node test suite can load it through jiti.
+import { resolveAvatar, type AvatarConfig } from './avatar';
 
 export const PERSISTENT_RUNTIME_HERMES = 'hermes' as const;
 
@@ -43,10 +44,15 @@ export interface CodingPathInput {
 }
 
 export interface BotLike {
+  name?: unknown;
   persistent_runtime?: string | null;
   coding_runtime?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
+  avatar_color?: string | null;
+  avatar_eyes?: string | null;
+  avatar_hands?: string | null;
+  avatar_accessory?: string | null;
 }
 
 // Persistent runtime: Hermes is the default. Null/undefined/blank reads
@@ -150,10 +156,13 @@ export interface SerializedBot {
   working_directory: string | null;
   coding_configured: boolean;
   coding_path: CodingPath;
+  avatar_config: AvatarConfig;
 }
 
 // API read shape: legacy/imported bots stay readable and report their
-// coding path as unconfigured until the owner supplies it.
+// coding path as unconfigured until the owner supplies it. Avatar fields
+// resolve to the NOT-431 defaults (Chief of Staff gets the crown) until
+// the owner configures them.
 export function serializeBot<T extends BotLike>(bot: T): T & SerializedBot {
   const coding_path = resolveCodingPath(bot);
   return {
@@ -164,6 +173,7 @@ export function serializeBot<T extends BotLike>(bot: T): T & SerializedBot {
     working_directory: coding_path.working_directory,
     coding_configured: coding_path.configured,
     coding_path,
+    avatar_config: resolveAvatar(bot),
   };
 }
 

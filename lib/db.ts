@@ -228,6 +228,21 @@ if (!botColumns.some(column => column.name === 'deck_name')) {
 if (!botColumns.some(column => column.name === 'working_directory')) {
   db.exec('ALTER TABLE bots ADD COLUMN working_directory TEXT');
 }
+// NOT-431: composable avatar configuration. Null means unconfigured and
+// reads back as the defaults (purple/dots/folded/none; crown accessory
+// for the Chief of Staff) via resolveAvatar in lib/avatar.
+if (!botColumns.some(column => column.name === 'avatar_color')) {
+  db.exec('ALTER TABLE bots ADD COLUMN avatar_color TEXT');
+}
+if (!botColumns.some(column => column.name === 'avatar_eyes')) {
+  db.exec('ALTER TABLE bots ADD COLUMN avatar_eyes TEXT');
+}
+if (!botColumns.some(column => column.name === 'avatar_hands')) {
+  db.exec('ALTER TABLE bots ADD COLUMN avatar_hands TEXT');
+}
+if (!botColumns.some(column => column.name === 'avatar_accessory')) {
+  db.exec('ALTER TABLE bots ADD COLUMN avatar_accessory TEXT');
+}
 
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_import_operation 
@@ -273,6 +288,10 @@ export interface Bot {
   coding_runtime?: string | null;
   deck_name?: string | null;
   working_directory?: string | null;
+  avatar_color?: string | null;
+  avatar_eyes?: string | null;
+  avatar_hands?: string | null;
+  avatar_accessory?: string | null;
 }
 
 export interface ImportProvenance {
@@ -347,7 +366,7 @@ export const bots = {
       created_at: overrides?.created_at ?? Date.now(),
     };
     db.prepare(
-      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, persistent_runtime, coding_runtime, deck_name, working_directory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO bots (id, name, title, description, avatar, color, hermes_profile, persistent_runtime, coding_runtime, deck_name, working_directory, avatar_color, avatar_eyes, avatar_hands, avatar_accessory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       bot.id, bot.name, bot.title, bot.description, bot.avatar || null, bot.color,
       bot.hermes_profile || null,
@@ -355,6 +374,10 @@ export const bots = {
       bot.coding_runtime || null,
       bot.deck_name || null,
       bot.working_directory || null,
+      bot.avatar_color || null,
+      bot.avatar_eyes || null,
+      bot.avatar_hands || null,
+      bot.avatar_accessory || null,
       bot.created_at
     );
     
@@ -466,6 +489,30 @@ export const bots = {
     db.prepare(
       'UPDATE bots SET persistent_runtime = ?, coding_runtime = ?, deck_name = ?, working_directory = ? WHERE id = ?'
     ).run(persistent, coding, deck, cwd, id);
+  },
+
+  // NOT-431: owner-supplied avatar configuration. Only supplied fields
+  // are overwritten; everything else keeps its stored value (null when
+  // never configured, which reads back as the defaults).
+  updateAvatarConfig: (
+    id: string,
+    fields: { avatar_color?: string | null; avatar_eyes?: string | null; avatar_hands?: string | null; avatar_accessory?: string | null }
+  ): void => {
+    const current = bots.getById(id);
+    if (!current) return;
+    const pick = (next: string | null | undefined, stored: string | null | undefined): string | null => {
+      if (next === undefined) return stored || null;
+      return next && String(next).trim() ? String(next).trim() : null;
+    };
+    db.prepare(
+      'UPDATE bots SET avatar_color = ?, avatar_eyes = ?, avatar_hands = ?, avatar_accessory = ? WHERE id = ?'
+    ).run(
+      pick(fields.avatar_color, current.avatar_color),
+      pick(fields.avatar_eyes, current.avatar_eyes),
+      pick(fields.avatar_hands, current.avatar_hands),
+      pick(fields.avatar_accessory, current.avatar_accessory),
+      id
+    );
   },
 
   touchSeen: (): void => {
