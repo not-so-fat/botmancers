@@ -718,10 +718,10 @@ export default function Home() {
         <div className="brand">
           <div className={logoDrop ? 'logo-shape is-settling' : 'logo-shape'}>
             <Image
-              src="/brand/botmancers-logo-filled-64.png"
+              src="/brand/botmancers-logo-filled-256.png"
               alt=""
-              width={28}
-              height={28}
+              width={40}
+              height={40}
             />
           </div>
           <div className="logo-word">botmancers</div>
@@ -734,9 +734,7 @@ export default function Home() {
             Settings
           </Link>
         </div>
-        {bots.length === 0 ? (
-          <p className="empty-line">Pick someone to talk to.</p>
-        ) : (
+        {bots.length === 0 ? null : (
           <div className={rowMenu ? 'roster menu-open' : 'roster'}>
             {rosterBots.map(bot => isChiefOfStaff(bot) ? (
               <div
@@ -1261,6 +1259,18 @@ export default function Home() {
                 Send
               </button>
             </div>
+          </div>
+        ) : bots.length === 0 ? (
+          <div className="welcome">
+            <Image
+              className="welcome-mark"
+              src="/brand/botmancers-logo-outline-256.png"
+              alt="Botmancers"
+              width={144}
+              height={144}
+              priority
+            />
+            <p className="empty-line">Pick someone to talk to.</p>
           </div>
         ) : (
           <p className="empty-line">Pick someone to talk to.</p>
