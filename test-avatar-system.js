@@ -210,9 +210,9 @@ function assertKnockoutCovers(label, svg, points) {
 
 check('mask: knockouts cover the body outline inside each attachment', () => {
   assertKnockoutCovers(
-    'reaching',
+    'reaching covers the outline under both arms',
     renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching' }),
-    [[87, 65]]
+    [[89.2, 79], [90.35, 86], [91.4, 92.5]]
   );
   assertKnockoutCovers(
     'waving',
@@ -248,8 +248,47 @@ check('mask: knockouts cover the body outline inside each attachment', () => {
   assertKnockoutCovers(
     'reaching+bow',
     renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching', accessory: 'bow' }),
-    [[87, 65], [64.3, 28.3]]
+    [[89.2, 79], [64.3, 28.3]]
   );
+});
+
+// Brows: every face carries straight, slightly thick brows above both eyes.
+function browsOf(svg) {
+  const match = svg.match(/<path data-avatar-brows="straight" d="M(\d+) (\d+) H(\d+) M(\d+) (\d+) H(\d+)"[^>]*stroke-width="([\d.]+)"/);
+  assert.ok(match, 'every avatar must carry straight brows');
+  const [, lx1, ly, lx2, rx1, ry, rx2, width] = match.map(Number);
+  return { lx1, ly, lx2, rx1, ry, rx2, width };
+}
+check('brows: every combination renders straight, slightly thick brows above the eyes', () => {
+  for (const color of AVATAR_COLORS) {
+    for (const eyes of AVATAR_EYES) {
+      for (const hands of AVATAR_HANDS) {
+        for (const accessory of AVATAR_ACCESSORIES) {
+          const brows = browsOf(renderAvatarSvg({ color: color.id, eyes: eyes.id, hands: hands.id, accessory: accessory.id }));
+          assert.strictEqual(brows.ly, brows.ry, 'both brows sit on one level');
+          assert.ok(brows.ly < 50, 'brows sit above the eyes');
+          assert.ok(brows.lx1 < 48 && brows.lx2 > 48, 'left brow spans the left eye');
+          assert.ok(brows.rx1 < 72 && brows.rx2 > 72, 'right brow spans the right eye');
+          assert.ok(brows.width > 3.5 && brows.width <= 5.5, 'brows are slightly thicker than the outline');
+        }
+      }
+    }
+  }
+});
+
+// Reaching right: both arms high, stacked near mouth level, equal longer reach.
+check('reaching: both arms are stacked near mouth level with the longer reach', () => {
+  const svg = renderAvatarSvg({ ...DEFAULT_AVATAR, hands: 'reaching' });
+  const group = svg.match(/<g data-avatar-layer="hands" data-avatar-hands="reaching">([\s\S]*?)<\/g>/)[1];
+  const arms = [...group.matchAll(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)]
+    .map(match => ({ x: Number(match[1]), y: Number(match[2]), w: Number(match[3]), h: Number(match[4]) }));
+  assert.strictEqual(arms.length, 2, 'reaching renders two arms');
+  const [top, bottom] = arms;
+  assert.strictEqual(top.x, bottom.x, 'arms are stacked on the same start');
+  assert.strictEqual(top.w, bottom.w, 'both arms share the longer reach');
+  assert.ok(top.y + top.h < bottom.y, 'arms are stacked without overlapping');
+  assert.ok(top.y <= 76, 'top arm sits near mouth level');
+  assert.ok(top.x + top.w > 105, 'arms reach well past the body outline');
 });
 
 // 5. Determinism: repeated renders are byte-identical; uid only re-scopes

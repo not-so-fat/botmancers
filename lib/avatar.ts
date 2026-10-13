@@ -212,6 +212,15 @@ const BODY_PATH =
 
 const SMILE_PATH = 'M54 71 Q60 75.5 66 71';
 
+// Straight, slightly thick brows on every face. Wide ovals reach higher,
+// so their brows sit one unit up to keep the same clearance.
+const BROW_STROKE_WIDTH = 4.8;
+
+function browsPath(eyes: AvatarEyesId): string {
+  const y = eyes === 'wide' ? 45 : 46;
+  return `M42 ${y} H54 M66 ${y} H78`;
+}
+
 interface Knockout {
   x1: number;
   y1: number;
@@ -225,8 +234,8 @@ interface Knockout {
 function knockoutsFor(hands: AvatarHandsId, accessory: AvatarAccessoryId): Knockout[] {
   const out: Knockout[] = [];
   if (hands === 'reaching') {
-    // Right-side arm tab root.
-    out.push({ x1: 85, y1: 59, x2: 92, y2: 72, w: 10 });
+    // Right-side outline under both stacked arms and the gap between them.
+    out.push({ x1: 88.5, y1: 75, x2: 91.5, y2: 96, w: 8 });
   }
   if (hands === 'waving') {
     // Left-side raised arm root.
@@ -298,10 +307,12 @@ function handsGroup(hands: AvatarHandsId, stroke: string): string {
   const common = `fill="none" stroke="${stroke}" stroke-width="${STROKE_WIDTH}" stroke-linecap="round" stroke-linejoin="round"`;
   switch (hands) {
     case 'reaching':
-      // Logo-style arm tab reaching right.
+      // Both arms high and stacked just below the mouth, reaching right
+      // well past the outline.
       return (
         `<g data-avatar-layer="hands" data-avatar-hands="reaching">` +
-        `<path d="M88 62 L100 62 Q105 62 105 66.5 Q105 71 100 71 L89 71" ${common}/>` +
+        `<rect x="64" y="75.5" width="44" height="7" rx="3.5" ${common}/>` +
+        `<rect x="64" y="89" width="44" height="7" rx="3.5" ${common}/>` +
         `</g>`
       );
     case 'waving':
@@ -392,6 +403,7 @@ export function renderAvatarSvg(config: AvatarConfig, uid = 'static'): string {
     `<g data-avatar-layer="body" mask="url(#${maskId})">` +
     `<path d="${BODY_PATH}" ${common}/>` +
     `<path d="${SMILE_PATH}" ${common}/>` +
+    `<path data-avatar-brows="straight" d="${browsPath(config.eyes)}" fill="none" stroke="${stroke}" stroke-width="${BROW_STROKE_WIDTH}" stroke-linecap="round"/>` +
     `</g>` +
     eyesGroup(config.eyes, stroke) +
     handsGroup(config.hands, stroke) +
