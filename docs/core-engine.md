@@ -163,7 +163,11 @@ creates one audited commit.
 
 Finalization is run-scoped, separately authorized, idempotent, and fail-closed on a
 base/ref race, changed pre-existing dirty path, unexpected path, digest mismatch, or
-Git lock conflict. It preserves unrelated user changes. Push and PR creation remain
+Git lock conflict. Replay and restart of one explicit acceptance reuse its stored
+request and idempotency key. After a terminal non-commit, a later explicit acceptance
+creates a new auditable request, so a coordinator can retry after an authorization or
+transient operational failure; an open or committed finalization still prevents a
+second request. It preserves unrelated user changes. Push and PR creation remain
 separate authorized steps. The detailed contract and PoC evidence are in
 [the October 13 Git-finalization decision](design/2026-10-13-git-finalization-contract.md).
 

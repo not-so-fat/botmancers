@@ -33,6 +33,15 @@ const { createFakeAgentDeck, sha } = require('./test-support/fake-agent-deck-api
 const raw = db.default;
 const { bots, conversations, engine, messages, projector } = db;
 
+const emittedLogs = [];
+for (const method of ['log', 'warn', 'error']) {
+  const original = console[method].bind(console);
+  console[method] = (...values) => {
+    emittedLogs.push(values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(' '));
+    original(...values);
+  };
+}
+
 let failures = 0;
 function assert(condition, label) {
   console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${label}`);
@@ -268,6 +277,26 @@ async function main() {
   process.env.AGENT_DECK_RUN_TOKEN = fake.token;
   assert(failed.state === 'failed' && failed.reason_code === 'agent_deck_token_missing', 'missing API auth becomes a stable failed finalization');
 
+  const retryFailedReply = source(block(decisionFor(failedChain)));
+  const retriedFailed = finalization.recordFinalizeDecisions(retryFailedReply, failedChain.decisionRequest, clock++);
+  assert(retriedFailed[0].finalizationId && retriedFailed[0].finalizationId !== failedId && retriedFailed[0].reasonCode === null,
+    'a new explicit acceptance retries a terminal failed finalization with a new auditable row');
+  const recoveredFailed = await finalization.runFinalization(retriedFailed[0].finalizationId);
+  assert(recoveredFailed.state === 'committed', 'the retry after restored authentication returns a committed outcome');
+
+  const blockedRetryChain = await makeChain('blocked-retry');
+  const blockedReply = source(block(decisionFor(blockedRetryChain)));
+  const blockedId = finalization.recordFinalizeDecisions(blockedReply, blockedRetryChain.decisionRequest, clock++)[0].finalizationId;
+  fake.onFinalize = (_body, run) => run.runId === blockedRetryChain.run.runId ? { status: 409, code: 'GIT_LOCK_CONFLICT' } : null;
+  const terminalBlocked = await finalization.runFinalization(blockedId);
+  fake.onFinalize = null;
+  const retryBlockedReply = source(block(decisionFor(blockedRetryChain)));
+  const retriedBlockedId = finalization.recordFinalizeDecisions(retryBlockedReply, blockedRetryChain.decisionRequest, clock++)[0].finalizationId;
+  assert(terminalBlocked.state === 'blocked' && retriedBlockedId && retriedBlockedId !== blockedId,
+    'a new explicit acceptance retries a terminal operational block instead of silently reusing it');
+  const recoveredBlocked = await finalization.runFinalization(retriedBlockedId);
+  assert(recoveredBlocked.state === 'committed', 'the retry after a cleared operational block returns a committed outcome');
+
   const canceledChain = await makeChain('canceled');
   const canceledId = finalization.recordFinalizeDecisions(source(block(decisionFor(canceledChain))), canceledChain.decisionRequest)[0].finalizationId;
   fake.onFinalize = (_body, run) => run.runId === canceledChain.run.runId ? { status: 409, code: 'FINALIZATION_CANCELED' } : null;
@@ -347,12 +376,25 @@ async function main() {
   projector.projectConversation(conversation.id);
   assert(raw.prepare('SELECT COUNT(*) AS n FROM conversation_events WHERE conversation_id = ?').get(conversation.id).n === projectionRows, 'conversation projection replay is idempotent');
 
+  const api = jiti('./lib/agent-api.ts');
+  api.setAgentApiAuthenticator(() => db.UI_OWNER_PRINCIPAL);
+  const response = await api.handleGetConversation(
+    new Request(`http://engine.test/api/v0/conversations/${conversation.id}`),
+    conversation.id,
+  );
+  const httpResponseBody = Buffer.from(await response.text());
   const serializedState = [
-    fs.readFileSync(DB_PATH),
-    Buffer.from(JSON.stringify(projector.listConversationEvents(conversation.id))),
-    Buffer.from(JSON.stringify(raw.prepare('SELECT error_message, result FROM work_requests').all())),
+    ...['', '-wal', '-shm'].filter(suffix => fs.existsSync(DB_PATH + suffix)).map(suffix => [`sqlite${suffix || '-main'}`, fs.readFileSync(DB_PATH + suffix)]),
+    ['conversation-events', Buffer.from(JSON.stringify(projector.listConversationEvents(conversation.id)))],
+    ['work-requests', Buffer.from(JSON.stringify(raw.prepare('SELECT error_message, result FROM work_requests').all()))],
+    ['agent-deck-responses', Buffer.from(JSON.stringify(fake.responses))],
+    ['logs', Buffer.from(emittedLogs.join('\n'))],
+    ['botmancers-http-response', httpResponseBody],
   ];
-  assert(serializedState.every(value => !value.includes(Buffer.from(fake.token))), 'fixture bearer is absent from SQLite and conversation/HTTP-facing state');
+  const leakingSurfaces = serializedState.filter(([, value]) => value.includes(Buffer.from(fake.token))).map(([label]) => label);
+  assert(response.status === 200 && leakingSurfaces.length === 0,
+    `fixture bearer is absent from SQLite/WAL, logs, Agent Deck captures, conversation state, and Botmancers HTTP responses${leakingSurfaces.length ? ` (found in ${leakingSurfaces.join(', ')})` : ''}`);
+  api.setAgentApiAuthenticator(null);
 
   deckApi.setAgentDeckApiFetch(null);
   delete process.env.AGENT_DECK_RUN_TOKEN;

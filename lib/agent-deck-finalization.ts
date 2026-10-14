@@ -23,10 +23,13 @@
 // nothing. The manifest submitted is the persisted one, byte for byte;
 // nothing here adds, drops, or recomputes a path or digest.
 //
-// Idempotency and restart: the key is derived from the implementation
-// Attempt, the review, and the manifest digest, and the body is stored
-// before submission, so a replay, a retry, or a restart submits the same
-// request with the same key and Agent Deck returns the original outcome.
+// Idempotency and restart: the key is derived from the explicit acceptance
+// event, implementation Attempt, review, and manifest digest, and the body is
+// stored before submission. A replay, retry, or restart of that acceptance
+// submits the same request with the same key and Agent Deck returns the
+// original outcome. After a terminal non-commit, a later explicit acceptance
+// is a new auditable request; this lets a coordinator retry after fixing an
+// auth or transient operational failure without weakening approval checks.
 // A transport failure after submission leaves the row open for recovery.
 import { createHash, randomUUID } from 'crypto';
 import db, { engine, type Message } from './db';
@@ -335,12 +338,17 @@ export function commitMessageFor(decision: FinalizeDecision, implementation: Wor
   return `${subject.slice(0, COMMIT_MESSAGE_MAX - trailers.length)}${trailers}`;
 }
 
-export function finalizationIdempotencyKey(implementationAttemptId: string, reviewAttemptId: string, manifestDigest: string): string {
-  return `botmancers-finalize-v1-${sha256([implementationAttemptId, reviewAttemptId, manifestDigest].join(':')).slice(0, 48)}`;
+export function finalizationIdempotencyKey(
+  decisionEventId: string,
+  implementationAttemptId: string,
+  reviewAttemptId: string,
+  manifestDigest: string,
+): string {
+  return `botmancers-finalize-v1-${sha256([decisionEventId, implementationAttemptId, reviewAttemptId, manifestDigest].join(':')).slice(0, 48)}`;
 }
 
 function insertFinalization(chain: Chain, decision: FinalizeDecision, decisionRequest: WorkRequest, reply: Message, now: number): { row: FinalizationRow; created: boolean } {
-  const key = finalizationIdempotencyKey(chain.implementationAttempt.id, chain.reviewAttempt.id, chain.manifest.manifest_digest);
+  const key = finalizationIdempotencyKey(reply.id, chain.implementationAttempt.id, chain.reviewAttempt.id, chain.manifest.manifest_digest);
   const existing = db.prepare('SELECT * FROM finalizations WHERE idempotency_key = ?').get(key) as FinalizationRow | undefined;
   if (existing) return { row: existing, created: false };
   const body: FinalizeRequestBody = {
@@ -417,7 +425,7 @@ export function recordFinalizeDecisions(reply: Message, decisionRequest: WorkReq
     if (decision.decision === 'reject') return reject('review_rejected', 'The coordinator rejected the review; nothing was finalized.');
     const checked = validateDecisionChain(decision, decisionRequest, reply.conversation_id);
     if (!checked.ok) return reject(checked.code, checked.reason);
-    const key = finalizationIdempotencyKey(checked.chain.implementationAttempt.id, checked.chain.reviewAttempt.id, checked.chain.manifest.manifest_digest);
+    const key = finalizationIdempotencyKey(reply.id, checked.chain.implementationAttempt.id, checked.chain.reviewAttempt.id, checked.chain.manifest.manifest_digest);
     const sameKey = db.prepare('SELECT id FROM finalizations WHERE idempotency_key = ?').get(key) as { id: string } | undefined;
     if (checked.existing && !sameKey) {
       return reject('already_finalized', `Implementation ${checked.chain.implementation.id} already has a finalization (${checked.existing}).`);

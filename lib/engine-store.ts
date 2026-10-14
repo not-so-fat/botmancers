@@ -810,8 +810,9 @@ const MIGRATIONS: Migration[] = [
 
         -- One accepted finalization decision and its outcome. The request
         -- body is exactly what was (or will be) submitted; the idempotency
-        -- key is derived from the implementation Attempt, review, and
-        -- manifest, so replay and restart submit the same request.
+        -- key is derived from the explicit acceptance event, implementation
+        -- Attempt, review, and manifest. Replay and restart submit the same
+        -- request, while a later acceptance can retry a terminal non-commit.
         CREATE TABLE finalizations (
           id TEXT PRIMARY KEY,
           idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) > 0),

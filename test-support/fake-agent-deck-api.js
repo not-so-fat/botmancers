@@ -37,6 +37,7 @@ function createFakeAgentDeck(options = {}) {
     token: options.token || 'adg_fake_bearer_for_tests',
     finalizationEnabled: options.finalizationEnabled !== false,
     requests: [],
+    responses: [],
     runs: new Map(),
     startKeys: new Map(),
     commits: [],
@@ -205,6 +206,7 @@ function createFakeAgentDeck(options = {}) {
 
   fake.fetch = async (url, init) => {
     const response = fake.handle(init.method, url, init.headers, init.body);
+    fake.responses.push(JSON.parse(JSON.stringify(response.body)));
     return { status: response.status, json: async () => JSON.parse(JSON.stringify(response.body)) };
   };
 
