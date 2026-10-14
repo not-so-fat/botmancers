@@ -1527,6 +1527,7 @@ button.avatar-pic {
 }
 
 .avatar-opt {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1541,9 +1542,32 @@ button.avatar-pic {
   color: var(--ink);
 }
 
-.avatar-opt[aria-pressed="true"] {
+/* NOT-451: each option card is the label of a visually hidden native radio;
+   selection and keyboard focus are drawn on the card. */
+.avatar-opt-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.avatar-opt-art {
+  display: flex;
+}
+
+.avatar-opt:has(.avatar-opt-input:checked) {
   border-color: currentColor;
   box-shadow: 0 0 0 1px currentColor;
+}
+
+.avatar-opt:has(.avatar-opt-input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* NOT-459: permanent agent deletion — one confirmation shared by Config,

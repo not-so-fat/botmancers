@@ -19,6 +19,7 @@ import {
 import { AgentSection } from '@/app/components/AgentDeckRuntime';
 import { useDeckList } from '@/app/components/useDeckList';
 import BotAvatar from '@/app/components/BotAvatar';
+import AvatarChoiceGroup from '@/app/components/AvatarChoiceGroup';
 import { MarketplaceImportControl, useMarketplaceImport } from '@/app/components/MarketplaceImport';
 import {
   AVATAR_ACCESSORIES,
@@ -838,70 +839,37 @@ export default function BotConfigPage() {
                   Pick an option to preview, then Save.
                 </p>
               </div>
-              <p className="avatar-group-label">Color</p>
-              <div className="avatar-opt-grid mb-3" role="group" aria-label="Avatar color">
-                {AVATAR_COLORS.map(option => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => pickAvatar({ color: option.id })}
-                    aria-pressed={avatarShown.color === option.id}
-                    title={option.label}
-                    className="avatar-opt"
-                  >
-                    <BotAvatar config={{ ...avatarShown, color: option.id }} size={44} />
-                    <span>{option.label}</span>
-                  </button>
-                ))}
-              </div>
-              <p className="avatar-group-label">Eyes</p>
-              <div className="avatar-opt-grid mb-3" role="group" aria-label="Avatar eyes">
-                {AVATAR_EYES.map(option => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => pickAvatar({ eyes: option.id })}
-                    aria-pressed={avatarShown.eyes === option.id}
-                    title={option.label}
-                    className="avatar-opt"
-                  >
-                    <BotAvatar config={{ ...avatarShown, eyes: option.id }} size={44} />
-                    <span>{option.label}</span>
-                  </button>
-                ))}
-              </div>
-              <p className="avatar-group-label">Hands</p>
-              <div className="avatar-opt-grid mb-3" role="group" aria-label="Avatar hands">
-                {AVATAR_HANDS.map(option => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => pickAvatar({ hands: option.id })}
-                    aria-pressed={avatarShown.hands === option.id}
-                    title={option.label}
-                    className="avatar-opt"
-                  >
-                    <BotAvatar config={{ ...avatarShown, hands: option.id }} size={44} />
-                    <span>{option.label}</span>
-                  </button>
-                ))}
-              </div>
-              <p className="avatar-group-label">Accessory</p>
-              <div className="avatar-opt-grid" role="group" aria-label="Avatar accessory">
-                {AVATAR_ACCESSORIES.map(option => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => pickAvatar({ accessory: option.id })}
-                    aria-pressed={avatarShown.accessory === option.id}
-                    title={option.label}
-                    className="avatar-opt"
-                  >
-                    <BotAvatar config={{ ...avatarShown, accessory: option.id }} size={44} />
-                    <span>{option.label}</span>
-                  </button>
-                ))}
-              </div>
+              <AvatarChoiceGroup
+                attribute="color"
+                label="Color"
+                options={AVATAR_COLORS}
+                current={avatarShown}
+                onPick={pickAvatar}
+                className="mb-3"
+              />
+              <AvatarChoiceGroup
+                attribute="eyes"
+                label="Eyes"
+                options={AVATAR_EYES}
+                current={avatarShown}
+                onPick={pickAvatar}
+                className="mb-3"
+              />
+              <AvatarChoiceGroup
+                attribute="hands"
+                label="Hands"
+                options={AVATAR_HANDS}
+                current={avatarShown}
+                onPick={pickAvatar}
+                className="mb-3"
+              />
+              <AvatarChoiceGroup
+                attribute="accessory"
+                label="Accessory"
+                options={AVATAR_ACCESSORIES}
+                current={avatarShown}
+                onPick={pickAvatar}
+              />
               {avatarPhase === 'error' && (
                 <p className="mt-2 text-sm cfg-error">
                   Couldn&apos;t save: {avatarError}.{' '}
