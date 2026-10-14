@@ -11,6 +11,8 @@
 // - the Actions trigger opens a menu whose items (Pin/Unpin, Mark as Unread,
 //   Rename Agent, Hide from sidebar, Config, Delete agent…) are each invoked
 //   with the keyboard, with focus always landing on a visible control;
+// - hidden agents keep the same open button and Actions trigger, whose menu
+//   offers Unhide;
 // - pointer selection, right-click, ordering and Manage agents still work.
 // Mutations are undone in-run (unpin, rename back, unhide, delete cancelled).
 // Writes screenshots, AX snapshots and a trace under --out, stamped with HEAD.
@@ -328,7 +330,28 @@ async function run() {
     f = await focus();
     check((await api(TARGET)).hidden === 1 && f.name === 'Hidden', 'Hide hides the agent and focus moves to the Hidden toggle');
     await press('Enter');
-    f = await tabTo(f => f.name === 'Unhide', 'Unhide');
+    const hiddenRows = await evaluate(`[...document.querySelectorAll('.roster:has(> .pin-word) > .bot-row')].map(row => ({
+      opens: [...row.querySelectorAll('[data-open-bot]')].map(b => ({ tag: b.tagName, name: b.textContent.trim() })),
+      triggers: [...row.querySelectorAll('.row-actions')].map(b => ({ label: b.getAttribute('aria-label'), popup: b.getAttribute('aria-haspopup'), visible: b.getBoundingClientRect().width > 0 })),
+    }))`);
+    log(`  hidden list: ${JSON.stringify(hiddenRows.map(row => row.opens[0]?.name))}`);
+    check(hiddenRows.length >= 1 && hiddenRows.every(row => row.opens.length === 1 && row.opens[0].tag === 'BUTTON' && row.triggers.length === 1 && row.triggers[0].label === `Actions for ${row.opens[0].name}` && row.triggers[0].popup === 'menu' && row.triggers[0].visible), 'every hidden agent has one open button and one visible "Actions for <agent>" menu button');
+    const hiddenAx = await axSnapshot(vp, 'hidden-roster', '.roster:has(> .pin-word)', (role, name) => ['button', 'link'].includes(role));
+    check(!hiddenAx.some(n => n.name === 'Unhide'), 'AX tree: no bare, identically named "Unhide" buttons in the hidden list');
+    f = await tabTo(f => f.kind === 'open' && f.row === TARGET, `hidden ${TARGET} row`);
+    check(!!f && f.focusVisible && /^solid 2px/.test(f.ring), `Tab reaches hidden ${TARGET} row with the whole-row outline`);
+    await shot(vp, 'hidden-row-focus');
+    await press('Enter');
+    await waitFor(`document.querySelector('.thread-name')?.textContent.trim() === ${JSON.stringify(TARGET)}`, `hidden ${TARGET} thread`);
+    check(await threadName() === TARGET, `Enter on the hidden ${TARGET} row opens it`);
+    await tabTo(f => f.kind === 'actions' && f.row === TARGET, `Actions for hidden ${TARGET}`);
+    await press('Enter');
+    await waitFor("document.querySelector('.row-menu')", 'hidden row menu');
+    const hiddenItems = await evaluate(`[...document.querySelectorAll('.row-menu [role=menuitem]')].map(n => n.textContent.trim())`);
+    log(`  hidden menu: ${JSON.stringify(hiddenItems)}`);
+    check(JSON.stringify(hiddenItems) === JSON.stringify(['Pin', 'Mark as Unread', 'Rename Agent', 'Unhide', 'Config', 'Delete agent…']), 'hidden row menu offers Unhide alongside the other row actions');
+    await axSnapshot(vp, 'hidden-row-menu', '.row-menu', role => ['menu', 'menuitem'].includes(role));
+    await menuTo('Unhide');
     await shot(vp, 'hidden-unhide');
     await press('Enter');
     await sleep(500);

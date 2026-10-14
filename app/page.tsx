@@ -663,6 +663,28 @@ export default function Home() {
     </div>
   );
 
+  // Agent list row, shared by the roster and the expanded Hidden list so hidden
+  // agents keep the same open control and row-actions trigger (with Unhide).
+  const agentRow = (bot: Bot) => (
+    <div
+      key={bot.id}
+      className={activeConversation?.details.id === bot.id ? 'bot-row is-open' : 'bot-row'}
+      onContextMenu={e => onRowContextMenu(e, bot)}
+    >
+      <span className="mark-avatar mark-avatar-sm">
+        <BotAvatar bot={bot} size={36} title={`${bot.name} avatar`} />
+        {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
+      </span>
+      <div className="bot-copy">
+        {editingId === bot.id ? rowRename(bot) : rowOpen(bot)}
+        {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
+        <RosterRuntimeLine bot={bot} state={deckState} />
+      </div>
+      {rowActions(bot)}
+      {rowTip(bot)}
+    </div>
+  );
+
   const mentionItems = mentionOpen
     ? bots.filter(bot => bot.name.toLowerCase().includes(mentionQuery.toLowerCase()))
     : [];
@@ -819,40 +841,15 @@ export default function Home() {
                 <RosterRuntimeLine bot={bot} state={deckState} />
                 {rowTip(bot)}
               </div>
-            ) : (
-              <div
-                key={bot.id}
-                className={activeConversation?.details.id === bot.id ? 'bot-row is-open' : 'bot-row'}
-                onContextMenu={e => onRowContextMenu(e, bot)}
-              >
-                <span className="mark-avatar mark-avatar-sm">
-                  <BotAvatar bot={bot} size={36} title={`${bot.name} avatar`} />
-                  {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
-                </span>
-                <div className="bot-copy">
-                  {editingId === bot.id ? rowRename(bot) : rowOpen(bot)}
-                  {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-                  <RosterRuntimeLine bot={bot} state={deckState} />
-                </div>
-                {rowActions(bot)}
-                {rowTip(bot)}
-              </div>
-            ))}
+            ) : agentRow(bot))}
           </div>
         )}
         {hiddenBots.length > 0 ? (
-          <div className="roster">
+          <div className={rowMenu ? 'roster menu-open' : 'roster'}>
             <button ref={hiddenToggleRef} type="button" className="pin-word" aria-expanded={showHidden} onClick={() => setShowHidden(open => !open)}>
               Hidden
             </button>
-            {showHidden ? hiddenBots.map(bot => (
-              <div key={bot.id} className="card">
-                <div className="card-name" style={{ color: bot.color }}>{bot.name}</div>
-                <button type="button" className="pin-word" onClick={() => hideBot(bot, false)}>
-                  Unhide
-                </button>
-              </div>
-            )) : null}
+            {showHidden ? hiddenBots.map(agentRow) : null}
           </div>
         ) : null}
       </aside>
@@ -1155,12 +1152,12 @@ export default function Home() {
           onContextMenu={e => e.preventDefault()}
           onKeyDown={onRowMenuKey}
         >
-          <button type="button" role="menuitem" autoFocus onClick={e => { e.stopPropagation(); closeRowMenu(); pinBot(rowMenu.bot); }}>{rowMenu.bot.pinned ? 'Unpin' : 'Pin'}</button>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(false); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(false); hideBot(rowMenu.bot, true); }}>Hide from sidebar</button>
-          <Link role="menuitem" href={`/bots/${rowMenu.bot.id}/config`} onClick={() => setRowMenu(null)}>Config</Link>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(false); setDeleteAsk(rowMenu.bot); }}>Delete agent…</button>
+          <button type="button" role="menuitem" tabIndex={-1} autoFocus onClick={e => { e.stopPropagation(); closeRowMenu(); pinBot(rowMenu.bot); }}>{rowMenu.bot.pinned ? 'Unpin' : 'Pin'}</button>
+          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
+          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(false); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
+          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(false); hideBot(rowMenu.bot, !rowMenu.bot.hidden); }}>{rowMenu.bot.hidden ? 'Unhide' : 'Hide from sidebar'}</button>
+          <Link role="menuitem" tabIndex={-1} href={`/bots/${rowMenu.bot.id}/config`} onClick={() => setRowMenu(null)}>Config</Link>
+          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(false); setDeleteAsk(rowMenu.bot); }}>Delete agent…</button>
         </div>
       ) : null}
 
