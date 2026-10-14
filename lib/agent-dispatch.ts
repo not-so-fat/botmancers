@@ -15,20 +15,16 @@
 // carry URLs, stderr, or gateway error bodies) never reaches the caller.
 import type { Bot } from './db';
 import { agentTransport, resolveAgent, type BotAgent } from './bot-definition';
-import {
-  HermesError,
-  hermesChat,
-  hermesProfilePathForBot,
-  hermesSessionIdForBot,
-  loadHermesConfig,
-  type HermesChatMessage,
-} from './hermes';
-import { awaitDeckRunEnd, parseDeckRuntime, startDeckRun } from './agent-deck-run';
+import { hermesProfilePathForBot } from './hermes';
+import { createHermesAttemptAdapter } from './hermes-attempt';
+import { createAgentDeckAttemptAdapter } from './agent-deck-run';
 import {
   getAgentDeckServerUrl,
   isLocalAgentDeckUrl,
   resolveAndEnsureBotWorkdir,
 } from './agent-deck-settings';
+import { TOOL_PROFILE_FOR_KIND, type ToolProfile } from './engine-store';
+import type { AttemptAdapter, AttemptInput, AttemptResult } from './attempt-adapter';
 
 export type DispatchFailureCode = 'agent_unavailable' | 'runtime_failed';
 
@@ -54,6 +50,10 @@ export interface DispatchTurn {
   // Conversation history up to and including the accepted message, in
   // order. fromAgent marks the target agent's own earlier replies.
   history: DispatchHistoryEntry[];
+  // Explicit tool authority for this turn. Direct conversation turns are
+  // read-only (TOOL_PROFILE_FOR_KIND.conversation) when omitted; it is
+  // never derived from the agent type.
+  toolProfile?: ToolProfile;
 }
 
 export interface DispatchHooks {
@@ -78,48 +78,37 @@ function systemPromptFor(bot: Bot): string {
   return `You are ${who}.\n${bot.description}`;
 }
 
-function hermesMessagesFor(turn: DispatchTurn): HermesChatMessage[] {
-  return [
-    { role: 'system', content: systemPromptFor(turn.bot) },
-    ...turn.history.map(entry => entry.fromAgent
-      ? { role: 'assistant', content: entry.content }
-      : { role: 'user', content: `[From ${entry.speakerLabel}] ${entry.content}` }),
-  ];
+// NOT-467: runtime adapter selection plus launch-input resolution for one
+// direct turn. Workflow policy stays with the caller; the adapter receives
+// the resolved deck, working directory, and explicit tool profile.
+export interface PreparedDispatch {
+  agent: BotAgent;
+  adapter: AttemptAdapter;
+  input: AttemptInput;
 }
 
-function deckPromptFor(turn: DispatchTurn): string {
-  const transcript = turn.history
-    .map(entry => `[${entry.fromAgent ? 'you' : entry.speakerLabel}] ${entry.content}`)
-    .join('\n\n');
-  return `${systemPromptFor(turn.bot)}\n\nConversation so far (reply to the last message):\n\n${transcript}`;
-}
-
-async function dispatchHermes(turn: DispatchTurn, hooks: DispatchHooks): Promise<string> {
-  const config = loadHermesConfig();
-  if (!config) {
-    throw new DispatchFailure('agent_unavailable', 'The agent runtime is not configured.');
-  }
-  hooks.onStarted?.();
-  try {
-    return await hermesChat({
-      config,
-      profilePath: hermesProfilePathForBot(turn.bot),
-      sessionId: hermesSessionIdForBot(turn.bot.id, config),
-      messages: hermesMessagesFor(turn),
-      ...(hermesFetch ? { fetchImpl: hermesFetch } : {}),
-    });
-  } catch (error) {
-    const category = error instanceof HermesError ? error.code : 'unknown';
-    throw new DispatchFailure('runtime_failed', `The agent runtime did not complete the turn (${category}).`);
-  }
-}
-
-// NOT-462: an ordinary direct conversation/API turn, not the composite
-// implementation workflow (delegateCodingViaDeck), so it stays read-only.
-async function dispatchDeckRun(turn: DispatchTurn, hooks: DispatchHooks): Promise<string> {
+export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   const resolved = resolveAgent(turn.bot);
-  if (!resolved.deck_id) {
+  if (!resolved.launchable || !resolved.deck_id) {
     throw new DispatchFailure('agent_unavailable', AGENT_DECK_NOT_SELECTED);
+  }
+  const base = {
+    prompt: { kind: 'conversation' as const, system: systemPromptFor(turn.bot), history: turn.history },
+    deck: resolved.deck_id,
+    toolProfile: turn.toolProfile ?? TOOL_PROFILE_FOR_KIND.conversation,
+    sessionBinding: null,
+    correlation: {},
+  };
+  if (agentTransport(resolved.agent) === 'hermes-gateway') {
+    return {
+      agent: resolved.agent,
+      adapter: createHermesAttemptAdapter({ fetchImpl: hermesFetch }),
+      input: {
+        ...base,
+        target: { agentId: turn.bot.id, agent: resolved.agent, hermesProfilePath: hermesProfilePathForBot(turn.bot) },
+        cwd: null,
+      },
+    };
   }
   if (!isLocalAgentDeckUrl(getAgentDeckServerUrl())) {
     throw new DispatchFailure('agent_unavailable', 'The agent runtime is not reachable from this engine.');
@@ -130,35 +119,43 @@ async function dispatchDeckRun(turn: DispatchTurn, hooks: DispatchHooks): Promis
   } catch {
     throw new DispatchFailure('agent_unavailable', 'The agent working directory is unavailable.');
   }
-  let runId: string;
-  try {
-    const started = await startDeckRun({
-      deck: resolved.deck_id,
-      client: parseDeckRuntime(resolved.agent),
-      cwd,
-      prompt: deckPromptFor(turn),
-      tools: 'readonly',
-      detach: true,
-    });
-    runId = started.runId;
-  } catch {
-    throw new DispatchFailure('runtime_failed', 'The agent runtime did not start the turn.');
-  }
-  hooks.onStarted?.();
-  try {
-    const awaited = await awaitDeckRunEnd(runId);
-    return awaited.result;
-  } catch {
-    throw new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
-  }
+  return {
+    agent: resolved.agent,
+    adapter: createAgentDeckAttemptAdapter(),
+    input: { ...base, target: { agentId: turn.bot.id, agent: resolved.agent }, cwd },
+  };
 }
 
-export async function dispatchToAgent(turn: DispatchTurn, hooks: DispatchHooks = {}): Promise<string> {
-  const resolved = resolveAgent(turn.bot);
-  if (!resolved.launchable) {
-    throw new DispatchFailure('agent_unavailable', AGENT_DECK_NOT_SELECTED);
+// Fixed caller-facing text per failure category, so adapter diagnostics
+// (URLs, stderr, gateway error bodies) never reach the caller.
+export function dispatchFailureFor(result: AttemptResult): DispatchFailure {
+  const category = result.failure?.category ?? 'runtime_failed';
+  if (result.adapter === 'hermes-gateway') {
+    if (category === 'unavailable') {
+      return new DispatchFailure('agent_unavailable', 'The agent runtime is not configured.');
+    }
+    return new DispatchFailure('runtime_failed', `The agent runtime did not complete the turn (${result.failure?.code ?? 'unknown'}).`);
   }
-  return agentTransport(resolved.agent) === 'hermes-gateway'
-    ? dispatchHermes(turn, hooks)
-    : dispatchDeckRun(turn, hooks);
+  if (category === 'unavailable') {
+    return new DispatchFailure('agent_unavailable', 'The agent runtime is not available.');
+  }
+  if (category === 'launch_failed') {
+    return new DispatchFailure('runtime_failed', 'The agent runtime did not start the turn.');
+  }
+  return new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
+}
+
+export function replyFor(result: AttemptResult): string {
+  if (result.status !== 'completed' || result.output === null) throw dispatchFailureFor(result);
+  return result.output;
+}
+
+// Compatibility entry: one direct turn through the shared single-Attempt
+// adapter contract, returning only the reply text or a typed failure.
+export async function dispatchToAgent(turn: DispatchTurn, hooks: DispatchHooks = {}): Promise<string> {
+  const prepared = prepareDispatch(turn);
+  const result = await prepared.adapter.run(prepared.input, event => {
+    if (event.type === 'started') hooks.onStarted?.();
+  });
+  return replyFor(result);
 }
