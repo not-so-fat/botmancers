@@ -1,6 +1,6 @@
 # NOT-468 decision record: Agent Deck run reconciliation across a Botmancers restart
 
-**Status:** proposed. The product owner must approve it before dispatcher implementation starts.
+**Status:** accepted. The product owner approved the fail-closed recovery policy on Linear NOT-468 (comment `248fa4f5-39e0-4aa5-9cf2-f7e7f0fa34a8`). Two amendments from that approval are applied below: a `died` run is always manual attention, and the no-run-TTL result is accepted in place of an expired-run-id transcript.
 **Date:** 2026-10-14
 **Evidence:** [transcripts/](./transcripts/README.md). The real runs used Botmancers `7d0fa92` (with NOT-487) and Agent Deck `92e3293` (with NOT-480, NOT-481, and NOT-486). The edits were real Codex `edit` runs launched through Botmancers' canonical path (`startAgentDispatch` → `runTurn` → `createAgentDeckApiAttemptAdapter`) against a disposable Git workspace. The harness is `scripts/not-468-restart-poc.js`. It is investigation tooling with no production code changes.
 
@@ -31,7 +31,7 @@ Event invariants held in every read, including across Agent Deck restarts. `seq`
 | Case | Observed | Botmancers error mapping today |
 |---|---|---|
 | N1: unknown run id (status, events, cancel) | `404 RUN_NOT_FOUND` | `agent_deck_rejected`, status 404, deckCode `RUN_NOT_FOUND` |
-| "Expired" run id | Agent Deck `92e3293` has no run retention or TTL (code read: nothing in `agent-run/*` prunes runs). Run ids did not expire in the test. A wiped or replaced Agent Deck home would present as N1 (inference). | — |
+| "Expired" run id | Not exercisable: Agent Deck `92e3293f67dbce3f396dad0a2b58f165fab2ac9f` has no run TTL or retention. Runs live under `runsRoot(home)` = `<AGENT_DECK_HOME>/runs` (`packages/backend/src/agent-run/records.ts:100`), and nothing in `packages/backend/src/agent-run/`, `packages/backend/src/agent-run-api/`, or `packages/backend/src/routes/agent-runs.ts` deletes a run (the only `fs.rmSync` calls, in `agent-run-api/git-finalize.ts`, remove Git index and lock temp files). A run id the index does not hold returns `404 RUN_NOT_FOUND` from `readableRun` (`packages/backend/src/routes/agent-runs.ts:268`, the 404 at line 276), which is the N1 response. No expired id was manufactured; the owner accepted this result. A lost or replaced run store therefore presents as N1. | `agent_deck_rejected` 404 `RUN_NOT_FOUND` → **manual attention** (table B) |
 | N2: run read by another grant | `403 RESOURCE_OUT_OF_SCOPE` | `agent_deck_forbidden` |
 | N3: same Attempt key, different body | `409 IDEMPOTENCY_CONFLICT`, nothing launched | `agent_deck_rejected` 409 |
 | N4: resume an unknown session | `422 RESUME_UNVERIFIED`, nothing launched | `agent_deck_rejected` 422 |
@@ -54,13 +54,13 @@ Event invariants held in every read, including across Agent Deck restarts. `seq`
 - **F8: `ended` + `success` does not prove the task was done.** In s0 and s0b Codex refused (see F9), yet the run `ended` with a success `result` and an empty manifest. Reconciliation must stay mechanical; judging the result is the reviewer's job.
 - **F9 (operator environment):** The owner's global Codex `agent-deck` plugin enforces a session-bootstrap gate that cannot pass for a deck that its MCP server does not host, so edits were refused. The PoC isolated `CODEX_HOME` (auth symlinked). Real Botmancers decks on the owner's main Agent Deck should not hit this, but the reason is worth knowing.
 
-## Decision table (proposed dispatcher policy)
+## Decision table (accepted dispatcher policy)
 
 The dispatcher runs this at startup and for every Attempt that is still open, then periodically while `unreachable`. It uses only the persisted Attempt (`external_run_id`, launch snapshot, baseline rows) and the public API. Actions:
 
 - **reconcile**: record the terminal outcome from API evidence.
 - **reattach**: keep the Attempt open and observe until terminal.
-- **retry**: a fresh Attempt. This is allowed only when Agent Deck proves that no model work happened.
+- **retry**: a fresh Attempt. This is automatic only when Agent Deck rejected the launch before any model work (table A pre-launch rejections). Once a run has existed, a fresh Attempt is never automatic (see `died`).
 - **interrupted**: finish with outcome `interrupted`.
 - **fail**: finish `failed` with a category.
 - **manual attention**: keep the Attempt open, flag it, and never auto-launch.
@@ -85,8 +85,8 @@ The dispatcher runs this at startup and for every Attempt that is still open, th
 | `ended` without a valid result | **Fail** (`result_contract`). |
 | `error` | **Fail** (`runtime_failed`). |
 | `canceled` | **Reconcile cancelled.** |
-| `died` | **Interrupted.** Read `/changes`: if it lists no files, a **retry** may be offered once; otherwise go to **manual attention**, because partial edits exist in the workspace. Never auto-resume a `died` session. |
-| `404 RUN_NOT_FOUND` | **Manual attention.** Agent Deck lost the run (wrong server or wiped home). Never relaunch automatically. |
+| `died` | **Manual attention (interrupted).** Classify the runtime outcome as `interrupted`, not `failed` (F6), read `/changes` for the operator, and keep the Attempt flagged. This holds **even when `/changes` lists no files**: an empty Git manifest cannot rule out shell, network, or other external side effects, and N7 shows model work had started (a model event and a live Codex process). Never auto-retry and never auto-resume a `died` run or session. A fresh Attempt requires explicit operator authorization, a review of possible side effects, a **new** idempotency key, and preserved prior evidence (the `died` run id, its events, and its manifest stay linked to the prior Attempt). |
+| `404 RUN_NOT_FOUND` | **Manual attention.** Agent Deck does not hold the run: wrong server, or a lost, wiped, or replaced run store. Runs do not expire in `92e3293` (see the "Expired" row), so this is never treated as a normal expiry. Never relaunch automatically. |
 | `401 GRANT_REQUIRED` | **Manual attention: grant expired or revoked.** Only the original grant can read the run. A new grant cannot (N5b) and must not re-POST (N5c). |
 | `403 RESOURCE_OUT_OF_SCOPE` | **Manual attention: grant or deck mismatch.** |
 | Unreachable / `5xx` | **Defer.** Keep the Attempt open and retry with backoff. After Agent Deck recovers, expect `died` if it crashed (N7). |
@@ -103,7 +103,7 @@ Resume only from an active Session Binding of a **reconciled** `ended` edit run 
 
 1. Run the B-table reconcile at startup for every open Attempt whose transport is `agent-deck-api`, and the A table where the run id is null (F1).
 2. Persist enough to re-POST safely: either the exact start body or its canonical hash plus the inputs, and a **non-secret fingerprint of the launching grant** (F3, F4).
-3. Map `died` to `interrupted` (F6). Treat a transient `unreachable` during observation as **defer**, not fail (F7).
+3. Classify `died` as `interrupted` (F6) and route it to manual attention; never create a fresh Attempt for it without operator authorization, a side-effect review, a new idempotency key, and preserved prior evidence. Treat a transient `unreachable` during observation as **defer**, not fail (F7).
 4. Never re-POST under a grant that differs from the launching grant (N5c).
 
 ## Explicitly not claimed

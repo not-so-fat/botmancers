@@ -33,6 +33,7 @@ Grant bearers, the admin secret, and the dashboard cookie never appear. The owne
 | File | Scenario | What it shows |
 |------|----------|---------------|
 | `01-s0-baseline.txt` | s0 | With the owner's global Codex agent-deck plugin, Codex refused the edit. The run ended `success` with an empty manifest (F8, F9). |
+| `02-s0b-baseline.txt` | s0b | A second baseline with the same global plugin: Codex refused again, and the run ended `success` with an empty manifest (F8, F9) |
 | `03-s0c-baseline.txt` | s0c | Uncrashed baseline: a real Codex edit, a 1-file manifest, and a Session Binding |
 | `10`–`12` | s1 start-response | SIGKILL after the 202 and before the run id is persisted. Restart, then an idempotent re-POST returns the same run. |
 | `20`–`22` | s2 started | Run id persisted, SIGKILL before the first status read. Restart sees `starting` with 0 events. Reattach follows. |

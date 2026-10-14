@@ -1,0 +1,72 @@
+(10 empty starting/running event polls omitted)
+launch s0b-baseline: work request a139d8b7-b4e3-4f1c-9033-bb15be54faf4 (implementation, edit) crash-at=none
+→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-07518cca-71f6-45ac-913b-6e2f7f709965]
+    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:9316141ebcf5 len:845>","tools":"edit","prepareFinalization":true}
+  ← 202 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","state":"starting"}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"starting","sessionId":null,"startedAt":"2026-10-14T15:22:22.988Z","lastEventAt":null,"finalization":{"baselineRef":"bl_853f33b00d466ee60691693d","baselineDigest":"3d8cad9083f691f83e26363b4d222999ed30c603ba8121de370fe179d4ef7533","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc/events?after=0
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","state":"running","events":[{"seq":1,"ts":"2026-10-14T15:22:30.104Z","type":"text","text":"I’m using the Agent Deck session skill to satisfy the workspace’s mandatory connection gate before making the requested file."}],"nextCursor":"1"}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc/events?after=1
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","state":"running","events":[{"seq":2,"ts":"2026-10-14T15:22:31.102Z","type":"tool","name":"command:/bin/zsh -lc \"sed -n '1,240p' /Users/<owner>/.codex/plugins/cache/agent-deck/agent-deck/2.1.1/skills/agent-deck-session/SKILL.md\""}],"nextCursor":"2"}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc/events?after=2
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","state":"running","events":[{"seq":3,"ts":"2026-10-14T15:22:35.855Z","type":"text","text":"Agent Deck is required but unavailable, so I could not create the file. Run `agent-deck status`, verify the Agent Deck plugin is installed and enabled, then reload or start a new task."},{"seq":4,"ts":"2026-10-14T15:22:35.879Z","type":"result","subtype":"success","result":"Agent Deck is required but unavailable, so I could not create the file. Run `agent-deck status`, verify the Agent Deck plugin is installed and enabled, then reload or start a new task.","sessionId":"<S:01a13b01…273195>"}],"nextCursor":"4"}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc/events?after=4
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","state":"ended","events":[{"seq":5,"ts":"2026-10-14T15:22:37.716Z","type":"end","sessionId":"<S:01a13b01…273195>"}],"nextCursor":"5"}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc/events?after=5
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","state":"ended","events":[],"nextCursor":"5"}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"ended","sessionId":"<S:01a13b01…273195>","startedAt":"2026-10-14T15:22:22.988Z","lastEventAt":"2026-10-14T15:22:37.716Z","finalization":{"baselineRef":"bl_853f33b00d466ee60691693d","baselineDigest":"3d8cad9083f691f83e26363b4d222999ed30c603ba8121de370fe179d4ef7533","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152222-8f85dc/changes
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152222-8f85dc","baselineRef":"bl_853f33b00d466ee60691693d","baselineDigest":"3d8cad9083f691f83e26363b4d222999ed30c603ba8121de370fe179d4ef7533","baseCommit":"dba6624c41572c3a55f02f01d80bc2e377e3b923","files":[],"manifestDigest":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"}}
+[after launch] Botmancers durable state:
+{
+  "request": {
+    "id": "a139d8b7-b4e3-4f1c-9033-bb15be54faf4",
+    "kind": "implementation",
+    "state": "completed",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "07518cca-71f6-45ac-913b-6e2f7f709965",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152222-8f85dc",
+      "external_session_id": "<S:01a13b01…273195>",
+      "outcome": "succeeded",
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "a48935ad207a"
+    }
+  ],
+  "bindings": [
+    {
+      "id": "d0ea8288-8ee1-4517-b047-b9463ee52b5e",
+      "agent_id": "48127f5e-b198-4056-80de-2e62846a6d6f",
+      "adapter": "codex",
+      "external_session_id": "<S:01a13b01…273195>",
+      "source_attempt_id": "07518cca-71f6-45ac-913b-6e2f7f709965",
+      "request_id": "a139d8b7-b4e3-4f1c-9033-bb15be54faf4"
+    }
+  ],
+  "baselines": [
+    {
+      "attempt_id": "07518cca-71f6-45ac-913b-6e2f7f709965",
+      "baseline_ref": "bl_853f33b00d466ee60691693d"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress",
+    "attempt_finished",
+    "candidate_manifest_recorded",
+    "session_bound",
+    "state_changed"
+  ]
+}
