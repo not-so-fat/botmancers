@@ -251,7 +251,6 @@ requirements:
 - implementation and revision launches currently inherit read-only tools;
 - delegation-chain continuity is held in process memory;
 - the current review path reuses the same configured coding Agent;
-- coding-Agent messages automatically enter an implementation/review/resume loop;
 - the engine, rather than a coordinator Agent, currently owns parts of the review
   sequence;
 - cancellation, timeout, recovery, grants, and complete provenance are incomplete.

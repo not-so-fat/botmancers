@@ -38,7 +38,8 @@
     "test:conversation-intake": "node test-conversation-intake.js",
     "test:attempt-adapter": "node test-attempt-adapter.js",
     "test:wake-router": "node test-wake-router.js",
-    "test:conversation-projection": "node test-conversation-projection.js"
+    "test:conversation-projection": "node test-conversation-projection.js",
+    "test:execution-policy": "node test-execution-policy.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
