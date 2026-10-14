@@ -347,12 +347,21 @@ export const agentDeckApiReconciler: AttemptReconciler = {
     } catch { /* reported as no baseline below */ }
     return finalizationEvidence(runId, status);
   },
+  async cancel(runId) {
+    try {
+      await cancelAgentDeckRun(runId);
+      return 'requested';
+    } catch {
+      return 'failed';
+    }
+  },
 };
 
 export function createAgentDeckApiAttemptAdapter(): AttemptAdapter {
   return {
     name: NAME,
     reconciler: agentDeckApiReconciler,
+    externalCancel: true,
     launchIntent(input) {
       const start = startBodyFor(input);
       if (!start.ok) return null;

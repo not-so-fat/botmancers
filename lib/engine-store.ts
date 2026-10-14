@@ -8,6 +8,7 @@ import {
   type ExecutionPolicySnapshot,
   type ToolProfile,
 } from './execution-policy';
+import { requestControlDefaultsFromEnv, validateRetryPolicy, type RetryPolicy } from './request-policy';
 
 // NOT-463: canonical core-engine persistence (docs/core-engine.md). One
 // Work Request store, immutable Attempts, opaque Session Bindings, and an
@@ -73,6 +74,14 @@ export interface WorkRequest {
   created_at: number;
   updated_at: number;
   terminal_at: number | null;
+  // NOT-473 request control (null on rows from before it).
+  deadline_at: number | null;
+  retry_policy: string | null;
+  attempt_count: number;
+  next_eligible_at: number | null;
+  cancel_requested_at: number | null;
+  cancel_requested_by: string | null;
+  cancel_reason: string | null;
 }
 
 export interface WorkAttempt {
@@ -1038,6 +1047,92 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 12,
+    name: 'request_control',
+    up: db => {
+      db.exec(`
+        -- NOT-473: cancellation, deadlines, and bounded retries
+        -- (lib/work-request-control, lib/request-policy). The deadline and
+        -- retry policy are fixed at intake; null on older rows means no
+        -- deadline and one Attempt. attempt_count counts claimed Attempts
+        -- and never decreases; a queued retry is not claimable before
+        -- next_eligible_at. The cancellation intent is recorded once.
+        ALTER TABLE work_requests ADD COLUMN deadline_at INTEGER;
+        ALTER TABLE work_requests ADD COLUMN retry_policy TEXT;
+        ALTER TABLE work_requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0);
+        ALTER TABLE work_requests ADD COLUMN next_eligible_at INTEGER;
+        ALTER TABLE work_requests ADD COLUMN cancel_requested_at INTEGER;
+        ALTER TABLE work_requests ADD COLUMN cancel_requested_by TEXT;
+        ALTER TABLE work_requests ADD COLUMN cancel_reason TEXT;
+        CREATE INDEX idx_work_requests_deadline ON work_requests(deadline_at) WHERE deadline_at IS NOT NULL;
+
+        CREATE TRIGGER trg_work_requests_control_immutable BEFORE UPDATE OF deadline_at, retry_policy ON work_requests
+        WHEN NEW.deadline_at IS NOT OLD.deadline_at OR NEW.retry_policy IS NOT OLD.retry_policy
+        BEGIN
+          SELECT RAISE(ABORT, 'work_requests deadline and retry policy are immutable');
+        END;
+        CREATE TRIGGER trg_work_requests_attempt_count BEFORE UPDATE OF attempt_count ON work_requests
+        WHEN NEW.attempt_count < OLD.attempt_count
+        BEGIN
+          SELECT RAISE(ABORT, 'work_requests attempt_count never decreases');
+        END;
+        CREATE TRIGGER trg_work_requests_cancel_once BEFORE UPDATE OF cancel_requested_at, cancel_requested_by, cancel_reason ON work_requests
+        WHEN OLD.cancel_requested_at IS NOT NULL AND (
+          NEW.cancel_requested_at IS NOT OLD.cancel_requested_at
+          OR NEW.cancel_requested_by IS NOT OLD.cancel_requested_by
+          OR NEW.cancel_reason IS NOT OLD.cancel_reason
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'work_requests cancellation intent is recorded once');
+        END;
+
+        -- Conversation projection gains the cancellation, timeout, and
+        -- retry kinds (rebuilt with every row kept, as in version 10).
+        CREATE TABLE conversation_events_v12 (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          engine_event_id TEXT NOT NULL,
+          part INTEGER NOT NULL CHECK (part >= 0),
+          request_id TEXT NOT NULL,
+          request_sequence INTEGER NOT NULL,
+          attempt_id TEXT,
+          wake_id TEXT,
+          kind TEXT NOT NULL CHECK (kind IN (
+            'wake_accepted', 'wake_blocked', 'request_queued', 'request_blocked', 'request_running',
+            'request_waiting', 'request_completed', 'request_failed', 'request_cancelled',
+            'question', 'result', 'artifact',
+            'finalization_preparing', 'finalization_committed', 'finalization_blocked',
+            'finalization_failed', 'finalization_canceled', 'finalization_rejected',
+            'request_cancel_requested', 'request_timed_out', 'request_retry_scheduled', 'request_retries_exhausted'
+          )),
+          state TEXT CHECK (state IN (${stateList})),
+          text TEXT NOT NULL,
+          data TEXT NOT NULL,
+          sort_at INTEGER NOT NULL,
+          request_created_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (engine_event_id, part),
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (engine_event_id) REFERENCES engine_events(id),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        INSERT INTO conversation_events_v12 SELECT
+          id, conversation_id, engine_event_id, part, request_id, request_sequence, attempt_id, wake_id,
+          kind, state, text, data, sort_at, request_created_at, created_at
+        FROM conversation_events;
+        DROP TABLE conversation_events;
+        ALTER TABLE conversation_events_v12 RENAME TO conversation_events;
+        CREATE INDEX idx_conversation_events_order
+          ON conversation_events(conversation_id, sort_at, request_created_at, request_id, request_sequence, part);
+        CREATE INDEX idx_conversation_events_request ON conversation_events(request_id);
+        CREATE TRIGGER trg_conversation_events_immutable BEFORE UPDATE ON conversation_events
+        BEGIN
+          SELECT RAISE(ABORT, 'conversation_events are immutable');
+        END;
+      `);
+    },
+  },
 ];
 
 // Requests whose events the running aggregate cleanup may delete, per
@@ -1245,6 +1340,11 @@ export interface CreateWorkRequestInput {
   // Initial state: a wake whose target is not launchable may start blocked.
   initialState?: 'queued' | 'blocked';
   stateReason?: string | null;
+  // NOT-473: absolute deadline (epoch ms) and bounded retry policy, fixed
+  // at intake. Omitted: the BOTMANCERS_* defaults (no deadline, one
+  // Attempt). Neither is part of the idempotency hash.
+  deadlineAt?: number | null;
+  retryPolicy?: RetryPolicy;
   now?: number;
 }
 
@@ -1364,6 +1464,13 @@ export function createEngineStore(db: Db) {
     if (input.initialState && input.initialState !== 'queued' && input.initialState !== 'blocked') {
       throw new EngineStoreError('invalid_input', 'A work request starts queued or blocked.');
     }
+    if (input.deadlineAt !== undefined && input.deadlineAt !== null && !Number.isSafeInteger(input.deadlineAt)) {
+      throw new EngineStoreError('invalid_input', 'deadlineAt must be an epoch millisecond integer.');
+    }
+    if (input.retryPolicy !== undefined) {
+      const checked = validateRetryPolicy(input.retryPolicy);
+      if (!checked.ok) throw new EngineStoreError('invalid_input', checked.reason);
+    }
   }
 
   const store = {
@@ -1401,18 +1508,26 @@ export function createEngineStore(db: Db) {
         }
         const state = input.initialState ?? 'queued';
         const policy = JSON.stringify({ ...(callerPolicy ?? {}), tool_profile: input.toolProfile });
+        const defaults = requestControlDefaultsFromEnv();
+        const retryPolicy = input.retryPolicy ?? defaults.retryPolicy;
+        const deadlineAt = input.deadlineAt !== undefined ? input.deadlineAt : defaults.deadlineMs === null ? null : now + defaults.deadlineMs;
         db.prepare(`
           INSERT INTO work_requests (
             id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
             intent, execution_kind, tool_profile, parent_request_id, root_request_id, wake_event_id, depth,
-            idempotency_key, request_hash, policy_snapshot, state, state_reason, version, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            idempotency_key, request_hash, policy_snapshot, state, state_reason, version, created_at, updated_at,
+            deadline_at, retry_policy
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
         `).run(
           id, input.sourceConversationId, input.sourceEventId, input.requester.kind, input.requester.id, input.targetAgentId,
           input.intent, input.executionKind, input.toolProfile, input.parentRequestId ?? null, rootId, input.wakeEventId ?? null, depth,
-          input.idempotencyKey, hash, policy, state, input.stateReason ?? null, now, now
+          input.idempotencyKey, hash, policy, state, input.stateReason ?? null, now, now,
+          deadlineAt, JSON.stringify(retryPolicy)
         );
-        insertEvent(id, 'accepted', { state, execution_kind: input.executionKind, tool_profile: input.toolProfile }, null, now);
+        insertEvent(id, 'accepted', {
+          state, execution_kind: input.executionKind, tool_profile: input.toolProfile,
+          deadline_at: deadlineAt, retry_policy: retryPolicy,
+        }, null, now);
         // Audit record of the selection: kinds, profile, entry point, and
         // rule only (no prompt text, sessions, or credentials).
         if (input.executionPolicy) insertEvent(id, 'policy_selected', { ...input.executionPolicy }, null, now);

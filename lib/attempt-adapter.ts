@@ -195,6 +195,11 @@ export interface AttemptReconciler {
   follow(runId: string, input: AttemptFollowInput, onEvent?: AttemptEventSink): Promise<AttemptResult>;
   // Public finalization evidence of a terminal (including died) run.
   evidence(runId: string): Promise<AttemptFinalizationEvidence>;
+  // NOT-473: asks the runtime to stop a run Botmancers abandoned
+  // (cancellation or deadline). 'requested' means the runtime accepted the
+  // cancel; 'failed' that it could not be reached or refused. Absent: the
+  // transport cannot stop a run it does not hold.
+  cancel?(runId: string): Promise<'requested' | 'failed'>;
 }
 
 export interface AttemptAdapter {
@@ -204,6 +209,11 @@ export interface AttemptAdapter {
   // the transport has no external run or run() would fail before launch.
   launchIntent?(input: Readonly<AttemptInput>): AttemptLaunchIntent | null;
   readonly reconciler?: AttemptReconciler;
+  // NOT-473: true when aborting input.signal (or passing the deadline)
+  // stops the external run itself, not only this process's wait. A
+  // transport without it is abandoned locally: its run may continue and
+  // any later result is evidence only.
+  readonly externalCancel?: boolean;
 }
 
 export function freezeAttemptInput(input: AttemptInput): Readonly<AttemptInput> {

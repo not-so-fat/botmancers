@@ -134,6 +134,29 @@ export function recordAttemptResult(store: EngineStore, attemptId: string, resul
   });
 }
 
+// NOT-473: a result that arrives after its Attempt was already finished
+// (abandoned by cancellation, a deadline, or a superseding retry) is kept
+// as evidence on the request's event log and changes nothing else: the
+// Attempt stays as it was finished and the request is never promoted.
+export function recordLateResult(store: EngineStore, attempt: WorkAttempt, result: AttemptResult, now: number = Date.now()): void {
+  const request = store.getWorkRequest(attempt.request_id);
+  store.appendEvent(attempt.request_id, {
+    type: 'late_result_recorded',
+    attemptId: attempt.id,
+    data: {
+      attempt_number: attempt.attempt_number,
+      attempt_outcome: attempt.outcome,
+      result_status: result.status,
+      result_outcome: outcomeForResult(result),
+      error_category: result.failure?.category ?? null,
+      external_run_id: result.externalRunId,
+      output: result.output,
+      request_state: request?.state ?? null,
+    },
+    now,
+  });
+}
+
 export interface RunAttemptOptions<T> {
   // Runs in the transaction that finishes the Attempt.
   project?: (result: AttemptResult, attempt: WorkAttempt) => T;
@@ -150,7 +173,7 @@ export async function runAttempt<T = undefined>(
   prepared: PreparedAttempt,
   adapter: AttemptAdapter,
   options: RunAttemptOptions<T> = {}
-): Promise<{ attempt: WorkAttempt; result: AttemptResult; projected: T | undefined }> {
+): Promise<{ attempt: WorkAttempt; result: AttemptResult; projected: T | undefined; late: boolean }> {
   let result: AttemptResult;
   let fenced = false;
   try {
@@ -178,9 +201,14 @@ export async function runAttempt<T = undefined>(
     };
   }
   return store.transaction(() => {
+    const current = store.getAttempt(prepared.attempt.id);
+    if (current && current.finished_at !== null) {
+      recordLateResult(store, current, result);
+      return { attempt: current, result, projected: undefined, late: true };
+    }
     const attempt = recordAttemptResult(store, prepared.attempt.id, result);
     const projected = options.project ? options.project(result, attempt) : undefined;
-    return { attempt, result, projected };
+    return { attempt, result, projected, late: false };
   });
 }
 
@@ -188,7 +216,7 @@ export async function executeAttempt<T = undefined>(
   store: EngineStore,
   requestId: string,
   options: BeginAttemptOptions & RunAttemptOptions<T>
-): Promise<{ attempt: WorkAttempt; result: AttemptResult; projected: T | undefined }> {
+): Promise<{ attempt: WorkAttempt; result: AttemptResult; projected: T | undefined; late: boolean }> {
   const prepared = beginAttempt(store, requestId, options);
   return runAttempt(store, prepared, options.adapter, options);
 }
