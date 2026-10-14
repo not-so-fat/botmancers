@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-420: small snapshot-parity items (marketplace handoff hardening, skill
-// end-token post-processing).
+// end-token post-processing). NOT-461: agent-only UI surface assertions.
 //
 // Self-contained like test-approvals.js: isolated SQLite file, stub model at
 // the model-call boundary, real route handlers invoked in-process. No dev
@@ -264,6 +264,39 @@ async function main() {
   const retry = agent.mirrorSpecialistReply(mirrorArgs);
   assert(retry.callerMessageId === null && retry.targetMessageId === null, 'retried mirror of the same round posts nothing');
   agent.setDelegationChatStub(null);
+
+  // NOT-461: the UI is agent-only. No client source requests group data or
+  // renders Group copy; stored groups stay a backend-only compatibility
+  // surface (covered by test:group-semantics).
+  log('\nAgent-only UI (NOT-461)');
+  const clientSources = [];
+  const walk = dir => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (full !== path.join(ROOT, 'app', 'api')) walk(full);
+      } else if (/\.tsx?$/.test(entry.name)) {
+        clientSources.push(full);
+      }
+    }
+  };
+  walk(path.join(ROOT, 'app'));
+  const groupCalls = clientSources.filter(file => /\/api\/groups|groupId=/.test(fs.readFileSync(file, 'utf8')));
+  log(`  scanned ${clientSources.length} client sources; group API callers=${JSON.stringify(groupCalls.map(f => path.relative(ROOT, f)))}`);
+  assert(groupCalls.length === 0, 'no client source requests /api/groups or /api/conversations?groupId=');
+  const groupCopy = clientSources.filter(file => />[^<{]*\bgroups?\b[^<]*</i.test(fs.readFileSync(file, 'utf8')) || /'[^']*\b[Gg]roups?\b[^']*'/.test(fs.readFileSync(file, 'utf8').replace(/role="(radio)?group"/g, '')));
+  log(`  Group copy offenders=${JSON.stringify(groupCopy.map(f => path.relative(ROOT, f)))}`);
+  assert(groupCopy.length === 0, 'no client source renders Group copy (ARIA role="group" excepted)');
+  const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
+  assert(!/group/i.test(page), 'app/page.tsx has no group type, state, loader, row, mention, or thread branch');
+  assert((page.match(/>\s*New Agent\s*</g) || []).length === 1 && !/New Group|setKind|member-picks/.test(page), 'New opens one New Agent panel with no kind switch or member picker');
+  assert(/const mentionItems = mentionOpen\s*\?\s*bots\.filter/.test(page), 'composer mentions suggest agents only');
+  const deleteCopy = jiti('./lib/bot-deletion.ts');
+  assert(!/group/i.test(deleteCopy.DELETE_REMOVES_COPY + deleteCopy.DELETE_KEEPS_COPY), 'delete confirmation copy names no groups');
+  const css = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
+  assert(!/\.(group-error|member-picks|delete-groups)\b/.test(css), 'no Group-only styles remain');
+  const seed = fs.readFileSync(path.join(ROOT, 'scripts', 'seed-design-fixture.js'), 'utf8');
+  assert(/hidden by the agent-only UI/.test(seed), 'design fixture keeps legacy groups only as hidden stored data');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
