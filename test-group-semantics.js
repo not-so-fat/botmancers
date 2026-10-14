@@ -392,6 +392,9 @@ async function main() {
   queue.enqueue(convExact.id, plainA.id);
   await sleep(5);
   queue.enqueue(convExact.id, hookB.id);
+  // Let the clock pass the last enqueue so a peer reply drained next can
+  // never share its millisecond (open-group turns compare created_at).
+  await sleep(5);
   await drain();
   const afterExact = chainAfter(convExact.id, userExact.id);
   assert(afterExact.filter(m => m.sender_type === 'bot' && m.sender_id === plainA.id && m.content === 'MINT').length === 1, 'plain member says the exact word');
@@ -402,6 +405,9 @@ async function main() {
   queue.enqueue(convExact.id, plainA.id);
   await sleep(5);
   queue.enqueue(convExact.id, hookB.id);
+  // Let the clock pass the last enqueue so a peer reply drained next can
+  // never share its millisecond (open-group turns compare created_at).
+  await sleep(5);
   await drain();
   const afterNamed = chainAfter(convExact.id, userNamed.id);
   assert(afterNamed.filter(m => m.sender_type === 'bot' && m.sender_id === hookB.id && m.content === 'MINT').length === 1, 'named member says the exact word');

@@ -286,13 +286,30 @@ async function main() {
   assert(groupCalls.length === 0, 'no client source requests /api/groups or /api/conversations?groupId=');
   // Per line, ignore comments, class names, and ARIA roles; flag "group" in
   // JSX text or string literals (user-visible copy).
-  const copyLine = line => line
-    .replace(/^\s*(\/\/|\*|\/\*).*$/, '')
-    .replace(/\s\/\/.*$/, '')
+  // A trailing ` //` comment is stripped only outside string literals, so a
+  // URL inside a string cannot hide copy later on the same line.
+  const stripTrailingComment = line => {
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (ch === '\\') i++;
+        else if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'" || ch === '`') {
+        quote = ch;
+      } else if (ch === '/' && line[i + 1] === '/' && (i === 0 || /\s/.test(line[i - 1]))) {
+        return line.slice(0, i);
+      }
+    }
+    return line;
+  };
+  const copyLine = line => stripTrailingComment(line.replace(/^\s*(\/\/|\*|\/\*).*$/, ''))
     .replace(/className=(["'])[^"']*\1/g, '')
     .replace(/role="(radio)?group"/g, '');
   const groupCopy = clientSources.filter(file => fs.readFileSync(file, 'utf8').split('\n').map(copyLine).some(line =>
     />[^<{]*\bgroups?\b[^<]*</i.test(line) || /(['"`])[^'"`]*\bgroups?\b[^'"`]*\1/i.test(line)));
+  const probe = ["const u = 'https://x.test // y'; const c = 'New group';", 'f(); // a group note'].map(copyLine);
+  assert(/New group/.test(probe[0]) && !/group/.test(probe[1]), 'copy scan keeps strings containing // and strips real trailing comments');
   log(`  Group copy offenders=${JSON.stringify(groupCopy.map(f => path.relative(ROOT, f)))}`);
   assert(groupCopy.length === 0, 'no client source renders Group copy (ARIA role="group" excepted)');
   const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');

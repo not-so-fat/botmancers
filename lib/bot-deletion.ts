@@ -33,8 +33,9 @@ export interface DeleteBlocked extends DeleteAgentRef {
   reason: 'chief' | 'active';
 }
 
-// `groups` stays in the API preview for backend compatibility; the UI does
-// not render it (NOT-461).
+// `groups` stays in the API preview for backend compatibility. The UI has no
+// Group concept (NOT-461), so it discloses the impact on stored legacy data
+// only through sharedConversationImpactCopy.
 export interface DeletePreview {
   agents: DeleteAgentRef[];
   groups: DeleteGroupImpact[];
@@ -75,6 +76,21 @@ export function parseDeleteIds(body: unknown): ParsedDeleteIds {
 
 export function blockedReasonCopy(reason: DeleteBlocked['reason']): string {
   return reason === 'chief' ? CHIEF_BLOCK_REASON : ACTIVE_BLOCK_REASON;
+}
+
+// NOT-461: deletion still runs the backend group cascade on stored legacy
+// data. Disclose it without Group terminology, and only when it applies, so
+// the no-undo confirmation never understates what is destroyed.
+export function sharedConversationImpactCopy(impacts: DeleteGroupImpact[]): string {
+  if (impacts.length === 0) return '';
+  const noun = impacts.length === 1 ? 'shared conversation' : 'shared conversations';
+  const lead = `Also removes membership in ${impacts.length} ${noun} kept from an earlier version`;
+  const removed = impacts.filter(impact => impact.outcome === 'removed').length;
+  if (removed === 0) return `${lead}.`;
+  const tail = removed === 1
+    ? '1 drops below two agents and is permanently removed with its messages'
+    : `${removed} drop below two agents and are permanently removed with their messages`;
+  return `${lead}; ${tail}.`;
 }
 
 export function deleteConfirmLabel(count: number): string {
