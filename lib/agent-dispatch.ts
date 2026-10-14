@@ -118,6 +118,14 @@ function adapterFor(transport: AgentTransport): AttemptAdapter {
   return adapterOverride ? adapterOverride(transport) : ATTEMPT_ADAPTERS[transport]();
 }
 
+// NOT-469: the adapter for a transport name recorded in a launch snapshot
+// (AttemptAdapter.name), used to reconcile an Attempt after a restart.
+export function adapterForTransport(name: string): AttemptAdapter | null {
+  if (name === 'hermes-gateway') return adapterFor('hermes-gateway');
+  if (name === 'agent-deck-api') return adapterFor('agent-deck-run');
+  return null;
+}
+
 // Whether a working directory is inside a Git worktree (a `.git` entry in
 // it or an ancestor). A filesystem read only: no Git command runs here.
 export function isInGitWorktree(dir: string): boolean {
