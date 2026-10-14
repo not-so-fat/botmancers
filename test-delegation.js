@@ -366,6 +366,68 @@ async function main() {
   }
   deckRun.setDeckRunProcess(null);
 
+  // NOT-483: an Agent Deck 2.1.1 run that ends successfully with an object
+  // in the terminal result payload fails closed at that run: one bounded
+  // [Deck failed] naming the run ID, no empty [Deck review], no later phase.
+  for (const [phase, badRunIndex] of [['implementation', 1], ['review', 2]]) {
+    const recorded5c = [];
+    let runs5c = 0;
+    const badRunId = `run-5c-${phase}-${badRunIndex}`;
+    deckRun.setDeckRunProcess(async argv => {
+      recorded5c.push(argv);
+      if (argv[2] === 'status') {
+        return { stdout: JSON.stringify({ runId: argv[3], deck: 'planner', client: 'codex', state: 'ended', sessionId: 'ses-5c' }), stderr: '', exitCode: 0 };
+      }
+      if (argv[2] === 'log') {
+        const result = argv[3] === badRunId ? { type: 'text', text: 'final answer' } : `output of ${argv[3]}`;
+        const lines = [
+          JSON.stringify({ t: 'text', ts: '2026-10-14T00:41:40.000Z', text: 'final answer' }),
+          JSON.stringify({ t: 'result', sessionId: 'ses-5c', subtype: 'success', result }),
+          JSON.stringify({ t: 'end', sessionId: 'ses-5c' }),
+        ].join('\n') + '\n';
+        return { stdout: lines, stderr: '', exitCode: 0 };
+      }
+      runs5c++;
+      return { stdout: `run run-5c-${phase}-${runs5c} detached: pid 1 log /tmp/fake-deck/5c/run.jsonl\n`, stderr: '', exitCode: 0 };
+    });
+    const user5c = messages.create(conv.id, 'user', `Build the widget (${phase} result is malformed).`);
+    let error5c = null;
+    try {
+      await deckRun.delegateCodingViaDeck({
+        conversationId: conv.id,
+        botId: origin.id,
+        deck: 'planner',
+        client: 'codex',
+        cwd: '/repo/checkout',
+        task: 'Implement the widget.',
+        reviewFocus: 'Check the edge cases.',
+      });
+    } catch (error) {
+      error5c = String(error);
+    }
+    deckRun.setDeckRunProcess(null);
+    const thread5c = chainAfter(conv.id, user5c.id);
+    const launches5c = recorded5c.filter(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'planner');
+    const failed5c = thread5c.filter(m => m.content.startsWith('[Deck failed]'));
+    assert(
+      !!error5c && error5c.includes(badRunId) && error5c.includes('result contract mismatch') && !error5c.includes('--prompt'),
+      `${phase} object result fails at its own run boundary (${error5c})`
+    );
+    assert(
+      launches5c.length === badRunIndex && !launches5c.some(a => a.includes('--resume')),
+      `${phase} object result launches no later phase (launches=${launches5c.length})`
+    );
+    assert(
+      failed5c.length === 1 && failed5c[0].content.includes(badRunId) &&
+      failed5c[0].content.includes('got object') && failed5c[0].content.length <= 400,
+      `${phase} object result records one bounded [Deck failed] with the run ID`
+    );
+    assert(
+      !thread5c.some(m => m.content.startsWith('[Deck review]') || m.content.startsWith('[Deck resume]') || m.content.startsWith('[Deck result]')),
+      `${phase} object result records no successful review, resume, or result`
+    );
+  }
+
   // Scenario 6: single-runtime direct dispatch. An ordinary message to
   // an agent-deck bot launches the stored agent/deck/workdir directly
   // from the queue loop (no Hermes turn first, no model-reply directive

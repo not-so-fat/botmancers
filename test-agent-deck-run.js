@@ -95,6 +95,23 @@ deck.setDeckRunProcess(async argv => {
       ].join('\n') + '\n';
       return { stdout: lines, stderr: '', exitCode: 0 };
     }
+    // NOT-483: Agent Deck 2.1.1 shape that ended successfully but carried
+    // an object in the terminal result payload.
+    if (runId === 'run-objresult') {
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
+        JSON.stringify({ t: 'result', sessionId: 'ses-opaque-for-run-objresult', subtype: 'success', result: { type: 'text', text: 'done' } }),
+        JSON.stringify({ t: 'end', sessionId: 'ses-opaque-for-run-objresult' }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
+    if (runId === 'run-noresult') {
+      const lines = [
+        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'final text is not a result' }),
+        JSON.stringify({ t: 'end', sessionId: 'ses-opaque-for-run-noresult' }),
+      ].join('\n') + '\n';
+      return { stdout: lines, stderr: '', exitCode: 0 };
+    }
     const lines = [
       JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
       JSON.stringify({ t: 'result', sessionId: `ses-opaque-for-${runId}`, subtype: 'success', result: `done by ${runId}` }),
@@ -223,6 +240,56 @@ async function main() {
     errLogThrew = true;
   }
   assert(errLogThrew, 'await fails closed on a log error event');
+
+  // NOT-483: only a non-empty string terminal result is usable.
+  log('\nTerminal result contract (fail closed on non-string payloads)');
+  const resultLine = payload => {
+    const event = { t: 'result', sessionId: 'ses-x', subtype: 'success' };
+    if (payload !== undefined) event.result = payload;
+    return `${JSON.stringify(event)}\n${JSON.stringify({ t: 'end' })}\n`;
+  };
+  const okStream = deck.parseDeckLogStream(resultLine('final answer'));
+  assert(
+    okStream.result && okStream.result.result === 'final answer' && okStream.resultMismatch === null,
+    'parser accepts a non-empty string result'
+  );
+  for (const [label, payload, expected] of [
+    ['object', { type: 'text', text: 'final answer' }, 'object'],
+    ['null', null, 'null'],
+    ['missing', undefined, 'missing'],
+    ['empty', '', 'empty string'],
+  ]) {
+    const stream = deck.parseDeckLogStream(resultLine(payload));
+    assert(
+      stream.result === null && stream.resultMismatch === expected && stream.ended === true,
+      `parser rejects a ${label} result payload (mismatch=${stream.resultMismatch})`
+    );
+  }
+  const textOnly = deck.parseDeckLogStream(
+    `${JSON.stringify({ t: 'text', text: 'looks final' })}\n${JSON.stringify({ t: 'end' })}\n`
+  );
+  assert(textOnly.result === null && textOnly.resultMismatch === null, 'parser never reassembles text events into a result');
+  let objError = null;
+  try {
+    await deck.awaitDeckRunEnd('run-objresult');
+  } catch (error) {
+    objError = String(error);
+  }
+  assert(
+    !!objError && objError.includes('run-objresult') && objError.includes('result contract mismatch') &&
+    objError.includes('got object') && !objError.includes('--prompt'),
+    `await fails closed on an object result with the run ID and payload type (${objError})`
+  );
+  let noResultError = null;
+  try {
+    await deck.awaitDeckRunEnd('run-noresult');
+  } catch (error) {
+    noResultError = String(error);
+  }
+  assert(
+    !!noResultError && noResultError.includes('run-noresult') && noResultError.includes('no result event'),
+    'await fails closed when an ended run has no result event'
+  );
 
   const available = await deck.listAvailableDeckRuntimes();
   assert(
