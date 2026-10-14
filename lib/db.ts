@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { applyAgentUpdate, DEFAULT_AGENT, migrateLegacyAgentFields, type AgentUpdateFields } from './bot-definition';
 import { isChiefOfStaffName } from './avatar';
 import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } from './bot-deletion';
+import { createEngineStore, deleteEngineRecordsForAgent, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
 import { AgentNameConflictError, agentDisplayName, agentNameKey, planNameMigration, type NameMigrationRow } from './agent-names';
 
 // Overridable so the stub-model delegation test uses an isolated file.
@@ -547,6 +548,12 @@ db.exec(`
     ON agent_request_events(request_id, created_at);
 `);
 
+// NOT-463: canonical Work Request / Attempt / Session Binding / engine
+// event persistence (lib/engine-store). Versioned migrations run after
+// the legacy tables exist so terminal agent_requests history backfills.
+migrateEngineSchema(db);
+export const engine = createEngineStore(db);
+
 export type PrincipalKind = 'person' | 'bot' | 'service';
 
 export interface Principal {
@@ -876,6 +883,7 @@ export const bots = {
       for (const id of ids) {
         const owned = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').all(id) as { id: string }[];
         for (const conversation of owned) deleteConversationRecords(conversation.id);
+        deleteEngineRecordsForAgent(db, id);
         db.prepare('DELETE FROM processing_queue WHERE bot_id = ?').run(id);
         db.prepare('DELETE FROM launch_snapshots WHERE bot_id = ?').run(id);
         db.prepare('DELETE FROM group_members WHERE bot_id = ?').run(id);
@@ -968,6 +976,7 @@ function groupImpacts(selected: Set<string>): DeleteGroupImpact[] {
 }
 
 function deleteConversationRecords(conversationId: string): void {
+  deleteEngineRecordsForConversation(db, conversationId);
   db.prepare('DELETE FROM draft_actions WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)').run(conversationId);
   db.prepare('DELETE FROM agent_request_events WHERE request_id IN (SELECT id FROM agent_requests WHERE conversation_id = ?)').run(conversationId);
   db.prepare('DELETE FROM agent_requests WHERE conversation_id = ?').run(conversationId);
