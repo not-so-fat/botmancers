@@ -232,6 +232,9 @@ export function attemptFailure(category: AttemptFailureCategory, message: string
   return { category, code, message: message.slice(0, 500) };
 }
 
+// The largest delay setTimeout honors (2^31 - 1 ms, about 24.8 days).
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 // Cancellation and deadline, shared by both adapters. Resolves to the
 // failure that ended the wait, or never resolves while neither fires.
 export function interruption(input: Readonly<Pick<AttemptInput, 'signal' | 'deadlineAt'>>): { promise: Promise<AttemptFailure>; dispose: () => void } {
@@ -244,9 +247,19 @@ export function interruption(input: Readonly<Pick<AttemptInput, 'signal' | 'dead
       else input.signal.addEventListener('abort', onAbort, { once: true });
     }
     if (typeof input.deadlineAt === 'number') {
-      const delay = Math.max(0, input.deadlineAt - Date.now());
-      timer = setTimeout(() => resolve(attemptFailure('timed_out', 'The attempt passed its deadline.')), delay);
-      if (timer.unref) timer.unref();
+      const deadlineAt = input.deadlineAt;
+      // setTimeout fires after 1 ms for delays above MAX_TIMER_DELAY_MS, so
+      // a far deadline is reached in steps.
+      const arm = () => {
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) {
+          resolve(attemptFailure('timed_out', 'The attempt passed its deadline.'));
+          return;
+        }
+        timer = setTimeout(arm, Math.min(remaining, MAX_TIMER_DELAY_MS));
+        if (timer.unref) timer.unref();
+      };
+      arm();
     }
   });
   return {

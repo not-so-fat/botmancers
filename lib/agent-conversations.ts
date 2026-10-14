@@ -545,6 +545,7 @@ async function runTurn(requestId: string): Promise<boolean> {
         },
         project: (result, attempt) => commitTurn(lease, request, attempt, result),
       });
+      if (ran.abandoned) await recordExternalCancel(ran.abandoned, { localSignalled: true, launched: true });
       if (ran.projected?.retryAt != null) scheduleRetry(requestId, ran.projected.retryAt);
     } catch (error) {
       handleUncommitted(lease, attemptId, error);
@@ -594,15 +595,26 @@ async function stopAbandoned(abandoned: AbandonedAttempt): Promise<void> {
       void running.finally(() => { if (inFlight.get(key) === running) inFlight.delete(key); });
     }
   }
+  await recordExternalCancel(abandoned, { localSignalled: !!local && local.attemptId === abandoned.attemptId, launched: false });
+}
+
+// Asks the runtime to stop an abandoned run where its transport can, and
+// records the answer. launched: the Attempt is known to have started a
+// run even without a run id (a transport like Hermes has none), so a
+// missing id means the run cannot be addressed, not that none exists.
+async function recordExternalCancel(
+  abandoned: Pick<AbandonedAttempt, 'requestId' | 'attemptId' | 'externalRunId' | 'transport' | 'reason'>,
+  options: { localSignalled: boolean; launched: boolean },
+): Promise<void> {
   const reconciler = abandoned.transport ? adapterForTransport(abandoned.transport)?.reconciler ?? null : null;
   let status: 'requested' | 'failed' | 'unsupported' | 'not_launched';
-  if (!abandoned.externalRunId) status = 'not_launched';
+  if (!abandoned.externalRunId) status = options.launched ? 'unsupported' : 'not_launched';
   else if (!reconciler?.cancel) status = 'unsupported';
   else status = await reconciler.cancel(abandoned.externalRunId);
   engine.appendEvent(abandoned.requestId, {
     type: 'external_cancel',
     attemptId: abandoned.attemptId,
-    data: { status, reason: abandoned.reason, external_run_id: abandoned.externalRunId, transport: abandoned.transport, local_signalled: !!local && local.attemptId === abandoned.attemptId },
+    data: { status, reason: abandoned.reason, external_run_id: abandoned.externalRunId, transport: abandoned.transport, local_signalled: options.localSignalled },
     now: dispatcher.now(),
   });
 }

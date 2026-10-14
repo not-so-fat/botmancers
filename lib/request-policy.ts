@@ -55,16 +55,22 @@ function positiveInt(raw: string | undefined): number | null {
 // Intake defaults from BOTMANCERS_* (resolved once per request and stored).
 // Invalid values fall back to the deterministic defaults; max attempts is
 // clamped to the cap, so configuration can never make retries unbounded.
+// The composed policy is normalized so it always validates: a max delay
+// below the base delay (set, or the default left in place) is raised to
+// the base, so a stored policy never falls back to one Attempt.
 export function requestControlDefaultsFromEnv(env: Record<string, string | undefined> = process.env): { retryPolicy: RetryPolicy; deadlineMs: number | null } {
   const maxAttempts = positiveInt(env[REQUEST_CONTROL_ENV.maxAttempts]);
+  const baseDelayMs = positiveInt(env[REQUEST_CONTROL_ENV.baseDelayMs]) ?? DEFAULT_RETRY_POLICY.base_delay_ms;
+  const maxDelayMs = positiveInt(env[REQUEST_CONTROL_ENV.maxDelayMs]) ?? DEFAULT_RETRY_POLICY.max_delay_ms;
+  const checked = validateRetryPolicy({
+    max_attempts: maxAttempts === null ? DEFAULT_RETRY_POLICY.max_attempts : Math.min(maxAttempts, MAX_ATTEMPTS_CAP),
+    base_delay_ms: baseDelayMs,
+    max_delay_ms: Math.max(maxDelayMs, baseDelayMs),
+    attempt_timeout_ms: positiveInt(env[REQUEST_CONTROL_ENV.attemptTimeoutMs]),
+  });
   return {
     deadlineMs: positiveInt(env[REQUEST_CONTROL_ENV.deadlineMs]),
-    retryPolicy: {
-      max_attempts: maxAttempts === null ? DEFAULT_RETRY_POLICY.max_attempts : Math.min(maxAttempts, MAX_ATTEMPTS_CAP),
-      base_delay_ms: positiveInt(env[REQUEST_CONTROL_ENV.baseDelayMs]) ?? DEFAULT_RETRY_POLICY.base_delay_ms,
-      max_delay_ms: positiveInt(env[REQUEST_CONTROL_ENV.maxDelayMs]) ?? DEFAULT_RETRY_POLICY.max_delay_ms,
-      attempt_timeout_ms: positiveInt(env[REQUEST_CONTROL_ENV.attemptTimeoutMs]),
-    },
+    retryPolicy: checked.ok ? checked.policy : { ...DEFAULT_RETRY_POLICY },
   };
 }
 

@@ -150,9 +150,10 @@ function result(fields, input) {
     output: failed ? null : (fields.output ?? `ok ${input.correlation.requestId}`), artifacts: [], startedAt: now, finishedAt: now, failure: failed,
   };
 }
-function useControlledAdapter({ honorSignal = false, script = null } = {}) {
+function useControlledAdapter({ honorSignal = false, script = null, externalCancel = false } = {}) {
   dispatch.setAttemptAdapterOverride(() => ({
     name: 'hermes-gateway',
+    ...(externalCancel ? { externalCancel: true } : {}),
     run(input, onEvent) {
       return new Promise(resolve => {
         const entry = {
@@ -218,6 +219,27 @@ async function cancelStateMachine() {
     && runningAttempts[0].outcome === 'cancelled' && !leaseOf(runningId) && repliesOf(runningId).length === 0,
   'running (cooperative): the worker ended the request cancelled, Attempt cancelled, lease released, no reply');
   assert(again.outcome === 'already_terminal' && count(runningId, 'cancel_requested') === 1, 'running: a later cancel is already_terminal');
+  // The adapter returned promptly on the signal, but it cannot stop the
+  // external run (no externalCancel): the Attempt is abandoned, not
+  // finished as if the run had stopped.
+  const promptAbandon = eventData(runningId, 'attempt_abandoned');
+  const promptExternal = eventData(runningId, 'external_cancel');
+  assert(runningAttempts[0].error_category === 'abandoned' && promptAbandon.length === 1 && promptAbandon[0].local_only === true && promptAbandon[0].reason === 'cancelled',
+    'running (signal-only runtime returned on the signal): the Attempt is recorded abandoned, local only');
+  assert(promptExternal.length === 1 && promptExternal[0].status === 'unsupported' && promptExternal[0].local_signalled === true,
+    `running (signal-only runtime): external cancellation recorded honestly as unsupported (${promptExternal.map(e => e.status).join(',')})`);
+
+  // A transport whose signal stops the external run: a normal cancelled Attempt.
+  useControlledAdapter({ honorSignal: true, externalCancel: true });
+  const hard = service.acceptAgentMessage(PERSON, { agentId: hermes.id, content: 'Cancel a hard-cancel run', idempotencyKey: 'cancel-hard' });
+  const hardId = hard.accepted.requestId;
+  await waitFor(() => runsFor(hardId).length === 1, 'hard-cancel adapter entered');
+  await service.cancelWorkRequest(hardId, { actor: PERSON });
+  await hard.dispatched;
+  const hardAttempts = attemptsOf(hardId);
+  assert(req(hardId).state === 'cancelled' && hardAttempts[0].outcome === 'cancelled' && hardAttempts[0].error_category === 'cancelled'
+    && count(hardId, 'attempt_abandoned') === 0 && count(hardId, 'external_cancel') === 0,
+  'running (externalCancel runtime): the signal stopped the run; the Attempt is cancelled, not abandoned');
 
   // running, repeat while still running: same outcome, replayed, no new event.
   useControlledAdapter({ honorSignal: false });
@@ -407,12 +429,37 @@ function policyUnits() {
   const clamped = policy.requestControlDefaultsFromEnv({ BOTMANCERS_RETRY_MAX_ATTEMPTS: '999', BOTMANCERS_RETRY_BASE_DELAY_MS: 'x' });
   assert(clamped.retryPolicy.max_attempts === policy.MAX_ATTEMPTS_CAP && clamped.retryPolicy.base_delay_ms === 1000 && clamped.deadlineMs === null,
     'env: max attempts clamped to the cap, invalid values fall back to defaults');
+  // Cross-field: a base delay above the default max delay must not make the
+  // composed policy invalid (stored, it would fall back to one Attempt).
+  for (const env of [
+    { BOTMANCERS_RETRY_MAX_ATTEMPTS: '3', BOTMANCERS_RETRY_BASE_DELAY_MS: '120000' },
+    { BOTMANCERS_RETRY_MAX_ATTEMPTS: '3', BOTMANCERS_RETRY_BASE_DELAY_MS: '120000', BOTMANCERS_RETRY_MAX_DELAY_MS: '5000' },
+  ]) {
+    const composed = policy.requestControlDefaultsFromEnv(env).retryPolicy;
+    const stored = policy.storedRetryPolicy(JSON.stringify(composed));
+    assert(policy.validateRetryPolicy(composed).ok && composed.max_delay_ms === 120000 && stored.max_attempts === 3 && stored.base_delay_ms === 120000,
+      `env: max delay below base delay is normalized; the stored policy keeps its retry budget (${JSON.stringify(env)})`);
+  }
   const defaults = policy.requestControlDefaultsFromEnv({});
   assert(defaults.retryPolicy.max_attempts === 1 && defaults.deadlineMs === null && defaults.retryPolicy.attempt_timeout_ms === null,
     'defaults: one Attempt, no deadline, no Attempt timeout (no automatic retry)');
   let threw = false;
   try { raw.prepare('UPDATE work_requests SET retry_policy = ? WHERE id = (SELECT id FROM work_requests LIMIT 1)').run('{}'); } catch { threw = true; }
   assert(threw, 'the stored retry policy is immutable');
+}
+
+async function farDeadlines() {
+  console.log('\n[2b] a far-future deadline stays pending (setTimeout overflow)');
+  for (const days of [25, 365]) {
+    const stop = adapterLib.interruption({ signal: null, deadlineAt: Date.now() + days * 86_400_000 });
+    const raced = await Promise.race([stop.promise.then(() => 'fired'), sleep(30).then(() => 'pending')]);
+    stop.dispose();
+    assert(raced === 'pending', `a deadline ${days} days away does not fire early (${raced})`);
+  }
+  const near = adapterLib.interruption({ signal: null, deadlineAt: Date.now() + 5 });
+  const fired = await Promise.race([near.promise.then(f => f.category), sleep(1000).then(() => 'pending')]);
+  near.dispose();
+  assert(fired === 'timed_out', 'a near deadline still fires timed_out');
 }
 
 async function retryScenarios() {
@@ -686,6 +733,7 @@ async function main() {
 
   await cancelStateMachine();
   await deadlineScenarios();
+  await farDeadlines();
   policyUnits();
   await retryScenarios();
   await supersedingRetry();
