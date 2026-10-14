@@ -150,6 +150,22 @@ The initial profiles are:
 Unsupported authority fails closed. Edit authority is never granted merely because
 the target is a coding Agent.
 
+## Reviewed Git finalization
+
+A sandboxed coding Agent owns working-tree edits but does not receive broader host
+or `.git` authority merely to create a commit. Botmancers owns the workflow decision:
+it records the Agent Deck baseline reference, persists Agent Deck's terminal
+candidate path-and-digest manifest, obtains explicit reviewer and coordinator
+acceptance, and submits that same immutable manifest. Agent Deck owns the host-local
+mechanism that discovers the candidate manifest, validates the approved copy, and
+creates one audited commit.
+
+Finalization is run-scoped, separately authorized, idempotent, and fail-closed on a
+base/ref race, changed pre-existing dirty path, unexpected path, digest mismatch, or
+Git lock conflict. It preserves unrelated user changes. Push and PR creation remain
+separate authorized steps. The detailed contract and PoC evidence are in
+[the October 13 Git-finalization decision](design/2026-10-13-git-finalization-contract.md).
+
 ## Delegation and review policy
 
 A normal message produces one Agent turn. Automatic implementation, review, and
