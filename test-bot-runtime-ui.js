@@ -597,7 +597,7 @@ async function hierarchySection() {
   assert(offenders.length === 0, 'copy: no UI source renders "Runtime: <anything>" or a Runtime label/string');
   const pageSource = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
   const configSource = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
-  assert(/>\s*New Agent\s*<\/h2>/.test(pageSource) && has(pageSource, 'aria-label="New Agent"') && !/New Group|aria-pressed=\{kind/.test(pageSource), 'copy: the modal titles the one agent form "New Agent" with no kind switch');
+  assert(/>\s*New Agent\s*<\/h2>/.test(pageSource) && !has(pageSource, 'aria-label="New Agent"') && !/New Group|aria-pressed=\{kind/.test(pageSource), 'copy: the modal titles the one agent form "New Agent" (named once, by the dialog) with no kind switch');
   assert(!/>\s*Bot\s*</.test(pageSource) && !has(pageSource, 'Rename Bot') && !has(pageSource, 'Failed to create bot') && !has(pageSource, "|| 'Bot'"), 'copy: no "Bot" label in the roster/modal');
   assert(has(configSource, 'Agent configuration') && has(configSource, 'Agent not found.') && !/Bot (configuration|not found)/.test(configSource), 'copy: Config page says Agent, not Bot');
   assert(ui.SELECT_DECK_ERROR === 'Select an Agent Deck for this agent.' && ui.DECK_PLACEHOLDER === 'Select an Agent Deck…', 'copy: validation and placeholder name the Agent Deck');
@@ -613,7 +613,7 @@ function dialogSection() {
     && /<h2 id="new-agent-title"[^>]*>\s*New Agent\s*<\/h2>/.test(shell), 'one role="dialog" aria-modal="true" named by its "New Agent" heading');
   assert(/inert=\{showBotModal\}/.test(page) && page.indexOf('<BotModal') > page.indexOf('inert={showBotModal}')
     && /\{showBotModal && \(\s*<BotModal/.test(page), 'the page is inert while the dialog renders outside it');
-  assert(/ref=\{newRef\}[^>]*aria-haspopup="dialog"/.test(page) && /setShowBotModal\(false\);\s*requestAnimationFrame\(\(\) => newRef\.current\?\.focus\(\)\)/.test(page), 'closing returns focus to New');
+  assert(/ref=\{newRef\}[^>]*aria-haspopup="dialog"/.test(page) && /newRef\.current\?\.focus\(\)/.test(page), 'closing returns focus to New');
   assert(/nameRef\.current\?\.focus\(\)/.test(shell) && has(shell, 'ref={nameRef} id="bot-name"'), 'opening focuses the Name field');
   assert(/e\.key !== 'Escape'[^]*?onClose\(\)/.test(shell), 'Escape closes the dialog');
   assert(!/group|member-picks|setKind/i.test(shell), 'the dialog has no Group tab, member picker, or kind switch');
