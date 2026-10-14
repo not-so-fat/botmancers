@@ -196,8 +196,9 @@ export default function Home() {
   const [revealed, setRevealed] = useState<Record<string, Message[]>>({});
   const revealing = useRef<Record<string, boolean>>({});
   const [deleteAsk, setDeleteAsk] = useState<Bot | null>(null);
-  const [rowMenu, setRowMenu] = useState<{ bot: Bot; x: number; y: number } | null>(null);
+  const [rowMenu, setRowMenu] = useState<{ bot: Bot; x: number; y: number; returnTo: HTMLElement | null } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
+  const hiddenToggleRef = useRef<HTMLButtonElement>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const manageRef = useRef<HTMLButtonElement>(null);
   const [rosterStatus, setRosterStatus] = useState('');
@@ -490,6 +491,9 @@ export default function Home() {
     if (!res.ok) return;
     const saved = await res.json();
     setBots(current => current.map(item => item.id === saved.id ? { ...item, ...saved, hidden: saved.hidden ? 1 : 0 } : item));
+    // Keep keyboard focus visible once the row it sat on moves lists.
+    if (hidden) requestAnimationFrame(() => hiddenToggleRef.current?.focus());
+    else focusRow(bot.id);
   };
 
   const markBotUnread = async (bot: Bot) => {
@@ -505,7 +509,9 @@ export default function Home() {
   useEffect(() => {
     if (!rowMenu) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setRowMenu(null);
+      if (e.key !== 'Escape') return;
+      setRowMenu(null);
+      rowMenu.returnTo?.focus();
     };
     const onPointer = (e: PointerEvent) => {
       if (rowMenuRef.current && rowMenuRef.current.contains(e.target as Node)) return;
@@ -541,6 +547,7 @@ export default function Home() {
     setDeleteAsk(null);
     setManageOpen(false);
     setRosterStatus(deletedStatusLine(ids.length));
+    requestAnimationFrame(() => manageRef.current?.focus());
     setBots(current => current.filter(bot => !ids.includes(bot.id)));
     if (activeConversation && ids.includes(activeConversation.details.id)) {
       setActiveConversation(null);
@@ -551,8 +558,106 @@ export default function Home() {
 
   const openRowMenu = (bot: Bot, anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
-    setRowMenu({ bot, x: rect.left, y: rect.bottom + 4 });
+    setRowMenu({ bot, x: rect.left, y: rect.bottom + 4, returnTo: anchor });
   };
+
+  const focusRow = (id: string) => {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-open-bot="${id}"]`)?.focus();
+    });
+  };
+
+  // Close the row menu from one of its items; focus goes back to the trigger
+  // unless the action moves it somewhere else (rename input, delete dialog).
+  const closeRowMenu = (restore = true) => {
+    const returnTo = rowMenu?.returnTo;
+    setRowMenu(null);
+    if (restore && returnTo) requestAnimationFrame(() => { if (returnTo.isConnected) returnTo.focus(); });
+  };
+
+  const onRowMenuKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role=menuitem]'));
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const move = (index: number) => {
+      e.preventDefault();
+      items[(index + items.length) % items.length]?.focus();
+    };
+    if (e.key === 'ArrowDown') move(at + 1);
+    else if (e.key === 'ArrowUp') move(at - 1);
+    else if (e.key === 'Home') move(0);
+    else if (e.key === 'End') move(items.length - 1);
+    else if (e.key === 'Tab') {
+      e.preventDefault();
+      closeRowMenu();
+    }
+  };
+
+  const onRowContextMenu = (e: React.MouseEvent<HTMLElement>, bot: Bot) => {
+    e.preventDefault();
+    setRowMenu({ bot, x: e.clientX, y: e.clientY, returnTo: e.currentTarget.querySelector<HTMLElement>('[data-open-bot]') });
+  };
+
+  const rowRename = (bot: Bot, style?: React.CSSProperties) => (
+    <input
+      className="bot-name"
+      aria-label={`Rename ${bot.name}`}
+      value={rowName}
+      autoFocus
+      onChange={e => setRowName(e.target.value)}
+      onBlur={() => renameFromRow(bot)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          (e.target as HTMLInputElement).blur();
+          focusRow(bot.id);
+        }
+        if (e.key === 'Escape') {
+          setEditingId(null);
+          focusRow(bot.id);
+        }
+      }}
+      style={style}
+    />
+  );
+
+  // One semantic control per row: the name button opens the agent, and its
+  // ::after overlay stretches over the whole row so pointer selection and the
+  // focus ring cover the row without nesting the row actions inside it.
+  const rowOpen = (bot: Bot, style?: React.CSSProperties) => (
+    <button
+      type="button"
+      className="bot-name row-open"
+      data-open-bot={bot.id}
+      aria-current={activeConversation?.details.id === bot.id ? 'true' : undefined}
+      onClick={() => openBot(bot.id)}
+      style={style}
+    >
+      {bot.name}
+    </button>
+  );
+
+  const rowActions = (bot: Bot) => (
+    <button
+      type="button"
+      className="row-actions"
+      aria-haspopup="menu"
+      aria-expanded={rowMenu?.bot.id === bot.id}
+      aria-label={`Actions for ${bot.name}`}
+      title={`Actions for ${bot.name}`}
+      onClick={e => openRowMenu(bot, e.currentTarget)}
+    >
+      ⋯
+    </button>
+  );
+
+  const rowTip = (bot: Bot) => (
+    <div className="row-tip">
+      {bot.unread && !(activeConversation?.details.id === bot.id) ? (
+        <div className="card-role">Unread</div>
+      ) : null}
+      <div className="card-role">{lifeWord(bot.last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
+    </div>
+  );
 
   const mentionItems = mentionOpen
     ? bots.filter(bot => bot.name.toLowerCase().includes(mentionQuery.toLowerCase()))
@@ -694,169 +799,46 @@ export default function Home() {
               <div
                 key={bot.id}
                 className="card"
-                onClick={() => openBot(bot.id)}
-                onContextMenu={e => {
-                  e.preventDefault();
-                  setRowMenu({ bot, x: e.clientX, y: e.clientY });
-                }}
+                onContextMenu={e => onRowContextMenu(e, bot)}
               >
                 <div className="row-head">
                   <span className="mark-avatar">
                     <BotAvatar bot={bot} size={44} title={`${bot.name} avatar`} />
                     {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
                   </span>
-                  {editingId === bot.id ? (
-                    <input
-                      className="bot-name"
-                      value={rowName}
-                      autoFocus
-                      onClick={e => e.stopPropagation()}
-                      onChange={e => setRowName(e.target.value)}
-                      onBlur={() => renameFromRow(bot)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          (e.target as HTMLInputElement).blur();
-                        }
-                        if (e.key === 'Escape') {
-                          setEditingId(null);
-                        }
-                      }}
-                      style={{ color: '#D5D0C3', fontSize: 26 }}
-                    />
-                  ) : (
-                    <div className="bot-name" style={{ fontSize: 26 }}>
-                      {bot.name}
-                    </div>
-                  )}
+                  {editingId === bot.id
+                    ? rowRename(bot, { color: '#D5D0C3', fontSize: 26 })
+                    : rowOpen(bot, { fontSize: 26 })}
+                  {rowActions(bot)}
                 </div>
                 {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
                 <RosterRuntimeLine bot={bot} state={deckState} />
-                <div className="row-tip" onClick={e => e.stopPropagation()}>
-                  {bot.unread && !(activeConversation?.details.id === bot.id) ? (
-                    <div className="card-role">Unread</div>
-                  ) : null}
-                  <div className="card-role">{lifeWord(bot.last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
-                  <button
-                    type="button"
-                    className="pin-word"
-                    onClick={e => {
-                      e.stopPropagation();
-                      pinBot(bot);
-                    }}
-                  >
-                    {bot.pinned ? 'Unpin' : 'Pin'}
-                  </button>
-                  <button
-                    type="button"
-                    className="pin-word"
-                    onClick={e => {
-                      e.stopPropagation();
-                      hideBot(bot, true);
-                    }}
-                  >
-                    Hide
-                  </button>
-                  <button
-                    type="button"
-                    className="pin-word"
-                    aria-haspopup="menu"
-                    aria-label={`Actions for ${bot.name}`}
-                    onClick={e => {
-                      e.stopPropagation();
-                      openRowMenu(bot, e.currentTarget);
-                    }}
-                  >
-                    Actions
-                  </button>
-                </div>
+                {rowTip(bot)}
               </div>
             ) : (
               <div
                 key={bot.id}
                 className={activeConversation?.details.id === bot.id ? 'bot-row is-open' : 'bot-row'}
-                onClick={() => openBot(bot.id)}
-                onContextMenu={e => {
-                  e.preventDefault();
-                  setRowMenu({ bot, x: e.clientX, y: e.clientY });
-                }}
+                onContextMenu={e => onRowContextMenu(e, bot)}
               >
                 <span className="mark-avatar mark-avatar-sm">
                   <BotAvatar bot={bot} size={36} title={`${bot.name} avatar`} />
                   {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
                 </span>
                 <div className="bot-copy">
-                  {editingId === bot.id ? (
-                    <input
-                      className="bot-name"
-                      value={rowName}
-                      autoFocus
-                      onClick={e => e.stopPropagation()}
-                      onChange={e => setRowName(e.target.value)}
-                      onBlur={() => renameFromRow(bot)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          (e.target as HTMLInputElement).blur();
-                        }
-                        if (e.key === 'Escape') {
-                          setEditingId(null);
-                        }
-                      }}
-                    />
-                  ) : (
-                    <div className="bot-name">
-                      {bot.name}
-                    </div>
-                  )}
+                  {editingId === bot.id ? rowRename(bot) : rowOpen(bot)}
                   {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
                   <RosterRuntimeLine bot={bot} state={deckState} />
                 </div>
-                <div className="row-tip" onClick={e => e.stopPropagation()}>
-                  {bot.unread && !(activeConversation?.details.id === bot.id) ? (
-                    <div className="card-role">Unread</div>
-                  ) : null}
-                  <div className="card-role">{lifeWord(bot.last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
-                  <button
-                    type="button"
-                    className="pin-word"
-                    onClick={e => {
-                      e.stopPropagation();
-                      pinBot(bot);
-                    }}
-                  >
-                    {bot.pinned ? 'Unpin' : 'Pin'}
-                  </button>
-                  <button
-                    type="button"
-                    className="pin-word"
-                    onClick={e => {
-                      e.stopPropagation();
-                      hideBot(bot, true);
-                    }}
-                  >
-                    Hide
-                  </button>
-                  <button
-                    type="button"
-                    className="pin-word"
-                    aria-haspopup="menu"
-                    aria-label={`Actions for ${bot.name}`}
-                    onClick={e => {
-                      e.stopPropagation();
-                      openRowMenu(bot, e.currentTarget);
-                    }}
-                  >
-                    Actions
-                  </button>
-                </div>
+                {rowActions(bot)}
+                {rowTip(bot)}
               </div>
             ))}
           </div>
         )}
         {hiddenBots.length > 0 ? (
           <div className="roster">
-            <button type="button" className="pin-word" onClick={() => setShowHidden(open => !open)}>
+            <button ref={hiddenToggleRef} type="button" className="pin-word" aria-expanded={showHidden} onClick={() => setShowHidden(open => !open)}>
               Hidden
             </button>
             {showHidden ? hiddenBots.map(bot => (
@@ -1141,7 +1123,7 @@ export default function Home() {
       {deleteAsk ? (
         <DeleteAgentsDialog
           ids={[deleteAsk.id]}
-          onCancel={() => setDeleteAsk(null)}
+          onCancel={() => { focusRow(deleteAsk.id); setDeleteAsk(null); }}
           onDeleted={deleted => { void afterDelete(deleted); }}
         />
       ) : null}
@@ -1167,12 +1149,14 @@ export default function Home() {
           onPointerDown={e => e.stopPropagation()}
           onClick={e => e.stopPropagation()}
           onContextMenu={e => e.preventDefault()}
+          onKeyDown={onRowMenuKey}
         >
-          <button type="button" role="menuitem" autoFocus onClick={e => { e.stopPropagation(); setRowMenu(null); pinBot(rowMenu.bot); }}>Pin</button>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); hideBot(rowMenu.bot, true); }}>Hide from sidebar</button>
-          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); setDeleteAsk(rowMenu.bot); }}>Delete agent…</button>
+          <button type="button" role="menuitem" autoFocus onClick={e => { e.stopPropagation(); closeRowMenu(); pinBot(rowMenu.bot); }}>{rowMenu.bot.pinned ? 'Unpin' : 'Pin'}</button>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(false); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(false); hideBot(rowMenu.bot, true); }}>Hide from sidebar</button>
+          <Link role="menuitem" href={`/bots/${rowMenu.bot.id}/config`} onClick={() => setRowMenu(null)}>Config</Link>
+          <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); closeRowMenu(false); setDeleteAsk(rowMenu.bot); }}>Delete agent…</button>
         </div>
       ) : null}
 
