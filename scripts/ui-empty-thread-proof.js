@@ -189,10 +189,14 @@ async function run() {
     await waitFor(`document.querySelector('.msg-you')`, 'first message in thread');
     s = await threadState();
     console.log(`  first-message: ${JSON.stringify(s)}`);
-    check(s.empty === null && s.status === null && s.alert === null && s.messages === 1, 'first real message replaces the empty state');
+    check(s.empty === null && s.status === null && s.alert === null && s.messages >= 1, 'first real message replaces the empty state');
+    // The deck-less fixture agent answers through the real intake with a
+    // stored "[Deck needs selection]" reply; that is a real agent message.
     const stored = await readBack(conversationId);
     console.log(`  read-back: ${JSON.stringify(stored.map(m => [m.sender_type, m.content]))}`);
-    check(stored.length === 1 && stored[0].sender_type === 'user' && stored[0].content === text, 'API reads back exactly the one real message (no synthetic entry)');
+    check(stored[0]?.sender_type === 'user' && stored[0].content === text, 'API reads back the owner’s real first message first');
+    check(!stored.some(m => /No messages with|Say something below/.test(m.content)), 'no stored message carries empty-state copy (nothing synthetic)');
+    check(s.messages === stored.length, 'thread renders exactly the stored messages');
     await shot(vp, 'first-message');
   }
 
