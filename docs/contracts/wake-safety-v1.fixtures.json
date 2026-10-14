@@ -16,7 +16,8 @@
     "grant_denied",
     "depth_exceeded",
     "root_budget_exhausted",
-    "unattributed_wake"
+    "untracked_lineage",
+    "target_unavailable"
   ],
   "httpErrorCodes": [
     "authentication_unavailable",
@@ -231,7 +232,7 @@
     },
     {
       "name": "global_capacity_queues_not_denies",
-      "flow": "C",
+      "flow": "B",
       "principal": "agent_principal",
       "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "runningForTarget": 0, "runningGlobal": 4 },
       "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Researcher", "executionKind": "conversation", "objective": "Summarize the thread." } },
@@ -245,14 +246,106 @@
       }
     },
     {
-      "name": "unattributed_agent_message_does_not_route",
-      "flow": "unknown",
-      "principal": "unknown",
-      "given": { "parentRequest": null },
+      "name": "flow_c_edit_wake_unlaunchable_target_asks_grant_first",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [], "targetAvailability": { "available": false, "reason": "Dev is not available: the Codex CLI is not installed." } },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the notification change." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "grant_required" },
+        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
+        "continuation": false,
+        "audit": ["grant_requested"]
+      }
+    },
+    {
+      "name": "flow_c_owner_allows_while_target_unavailable",
+      "flow": "C",
+      "principal": "human_owner",
+      "given": { "wake": "flow_c_edit_wake_unlaunchable_target_asks_grant_first", "targetAvailability": { "available": false, "reason": "Dev is not available: the Codex CLI is not installed." } },
+      "action": { "type": "grant_decision", "decision": "allow" },
+      "expect": {
+        "persisted": true,
+        "grant": { "caller": "Tank", "target": "Dev", "authority": "edit", "grantedBy": "person:local-owner" },
+        "wake": { "status": "blocked", "reasonCode": "target_unavailable" },
+        "workRequest": { "state": "blocked", "transition": null, "reason": "target_unavailable" },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — Dev is not available: the Codex CLI is not installed.", "actions": [] }],
+        "continuation": false,
+        "audit": ["grant_approved"]
+      }
+    },
+    {
+      "name": "flow_c_target_becomes_available_after_allow",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "wake": "flow_c_owner_allows_while_target_unavailable", "grants": [{ "caller": "Tank", "target": "Dev", "authority": "edit" }], "targetAvailability": { "available": true } },
+      "action": { "type": "retry_wake" },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "transition": "blocked->queued", "reason": "target_available", "toolProfile": "edit", "grantRule": "edit_grant", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_accepted" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "flow_c_grant_revoked_while_waiting_for_target_asks_again",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "wake": "flow_c_owner_allows_while_target_unavailable", "grants": [{ "caller": "Tank", "target": "Dev", "authority": "edit", "revoked": true }], "targetAvailability": { "available": true } },
+      "action": { "type": "retry_wake" },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "grant_required" },
+        "workRequest": { "state": "blocked", "transition": null, "reason": "grant_required" },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
+        "continuation": false,
+        "audit": ["grant_requested"]
+      }
+    },
+    {
+      "name": "flow_c_owner_denies_while_target_unavailable",
+      "flow": "C",
+      "principal": "human_owner",
+      "given": { "wake": "flow_c_edit_wake_unlaunchable_target_asks_grant_first", "targetAvailability": { "available": false, "reason": "Dev is not available: the Codex CLI is not installed." } },
+      "action": { "type": "grant_decision", "decision": "deny" },
+      "expect": {
+        "persisted": true,
+        "grant": null,
+        "wake": { "status": "blocked", "reasonCode": "grant_denied" },
+        "workRequest": { "state": "cancelled", "transition": "blocked->cancelled", "reason": "grant_denied" },
+        "projection": [{ "kind": "request_cancelled", "text": "Cancelled: owner denied edit Wake" }],
+        "continuation": "result",
+        "audit": ["grant_denied"]
+      }
+    },
+    {
+      "name": "flow_c_readonly_wake_unlaunchable_target_blocks_on_availability",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [], "targetAvailability": { "available": false, "reason": "Researcher is not available: the Hermes gateway is not reachable." } },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Researcher", "executionKind": "conversation", "objective": "Summarize the thread." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "target_unavailable" },
+        "workRequest": { "state": "blocked", "reason": "target_unavailable", "toolProfile": "readonly", "grantRule": "readonly_default", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Researcher — Researcher is not available: the Hermes gateway is not reachable.", "actions": [] }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "untracked_lineage_agent_message_does_not_route",
+      "flow": "untracked",
+      "principal": "agent_principal",
+      "given": { "parentRequest": null, "lineage": "untracked" },
       "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "conversation", "objective": "Start fresh." } },
       "expect": {
         "persisted": true,
-        "wake": { "status": "rejected", "reasonCode": "unattributed_wake" },
+        "wake": { "status": "rejected", "reasonCode": "untracked_lineage" },
         "workRequest": null,
         "projection": [{ "kind": "wake_rejected", "text": "Wake not started: its source turn is not tracked work" }],
         "continuation": false,

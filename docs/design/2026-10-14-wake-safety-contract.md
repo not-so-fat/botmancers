@@ -29,10 +29,14 @@ runaway delegation without importing a multi-tenant authorization system is:
    global concurrency **4** running Attempts, per-target concurrency **1** running
    Attempt. The coordinator continuation cap is derived, not a fifth setting:
    2 × root budget = **24**.
-4. **Every refusal is recorded and shown.** A denied, exhausted, or unattributable
-   Wake creates a durable Wake row and a visible conversation event, never a
-   request lifecycle that implies work ran. Unauthenticated HTTP requests are
-   refused before anything is persisted.
+4. **Every refusal is recorded and shown.** A denied, exhausted, or untracked-lineage
+   Wake from an Agent principal creates a durable Wake row and a visible
+   conversation event, never a request lifecycle that implies work ran. Unknown
+   principals (unauthenticated or foreign-origin HTTP requests) are refused before
+   anything is persisted.
+5. **One evaluation order** composes every check, so a Wake that is both missing a
+   grant and aimed at an unlaunchable Agent has one defined state at each step
+   (see [Check order and composition](#check-order-and-composition)).
 
 ## Caller inventory
 
@@ -52,7 +56,8 @@ relative to the repository root.
 | Timers and routines | `lib/agent.ts` `fireTimerTick`, `armRoutine`, `armDurableOneShot` | Queue turns with no request row | **Human owner (scheduled)** | The owner configured the schedule; runs as one read-only turn |
 | Outbound adapters | Hermes gateway (`HERMES_API_SERVER_KEY`), Agent Deck run API (`AGENT_DECK_RUN_TOKEN`) | Botmancers authenticates *to* them | not a caller | No inbound callback reaches the engine |
 | Text that looks like a Wake in a human or API message | Intake stores it as message content | Never parsed as a Wake (`routeAgentWakes` requires a bot sender) | **Unknown** if it were treated as a Wake | Must stay text |
-| Agent message with no dispatched parent request | `routeAgentWakes` without `parentRequestId` | Starts a fresh lineage at depth 0 | **Unknown / unattributed** | A fresh root would reset depth and budget, so such Wakes must not route |
+| Agent message with no dispatched parent request (legacy queue turn, timer turn, restart-orphaned reply) | `routeAgentWakes` without `parentRequestId` | Starts a fresh lineage at depth 0 | **Agent principal, untracked lineage** | Identity is engine-derived (the message is stored with a registered Agent as sender, which `routeAgentWakes` already verifies); lineage is not. A fresh root would reset depth and budget, so the Wake is persisted `rejected`, `untracked_lineage` |
+| Message whose sender is not a registered Agent (deleted Agent, human, API) offered to the router | `routeAgentWakes` precondition | Throws `invalid_input`; nothing written | **Unknown** | No principal to attribute; refused before persistence |
 | Anything else (foreign origin, failed authenticator) | — | — | **Unknown** | Refused before persistence |
 
 Target-naming surfaces a builder must keep consistent with grants: the Wake
@@ -68,8 +73,12 @@ against whatever Agent its name resolves to at retry time.
 | --- | --- | --- | --- | --- |
 | Human owner | `person:local-owner` | **Loopback boundary**: server bound to `127.0.0.1`, `Host` is `127.0.0.1:<port>` or `localhost:<port>`, and every mutating request is same-origin (`Origin` matches, or `Sec-Fetch-Site: same-origin`) | Send messages; allow, deny, revoke grants; Stop any lineage; configure Agents | — |
 | Authenticated API principal | `{kind, id}` from the authenticator | The operator-installed `/api/v0` authenticator | Send direct (read-only) messages to Agents it may reach; read conversations it participates in | Allow, deny, or revoke grants; act as an Agent principal for Wakes (a `bot`-kind API principal is still an API principal) |
-| Agent principal | `bot:<agentId>` on the Wake row | The engine: the reply was produced by a Work Request it dispatched to that Agent | Emit Wakes within grants and limits | Approve its own or anyone's grant; declare caller, grant, budget, or tool profile |
+| Agent principal | `bot:<agentId>` on the Wake row | The engine: the message is stored with that registered Agent as sender. Lineage is *tracked* when the engine also dispatched the parent Work Request that produced it, *untracked* otherwise | With tracked lineage: emit Wakes within grants and limits. With untracked lineage: have its Wakes recorded as `rejected`, `untracked_lineage` | Approve its own or anyone's grant; declare caller, grant, budget, or tool profile; start a new lineage |
 | Unknown | not persisted as a principal | — | Nothing | Write any row, launch anything |
+
+The split is identity, not lineage: a registered Agent's message is always an Agent
+principal and its refusals are always durable; only a caller with no attributable
+identity is unknown.
 
 The loopback boundary is honest about what the transport proves: "a process on this
 machine, via a same-origin page." It is not user authentication. Exposing
@@ -87,7 +96,7 @@ from API-rooted work.
 | **A. Default-allow** (today) | Best: no prompts | High: one steered read-only turn (a researcher reading hostile text) can emit an `implementation` Wake and gain edit authority in another Agent's workspace | None |
 | **B. Default-deny, owner pre-configures pairs** | Poor: Flow B fails until the owner finds a settings surface that does not exist yet (and the config UI is out of scope); Flow A unaffected | Lowest | Breaking: every existing coordinator stops delegating |
 | **C. Owner approval on first use, every kind** | Fair: Flow B prompts for Dev *and* reviewer; every read-only consult prompts too | Low | Non-breaking, but noisy for harmless reads |
-| **D. Read-only default-allow; edit needs a pair grant approved on first use** *(recommended)* | Good: Flow A unchanged; Flow B prompts once per coordinator–developer pair, ever; reviewers never prompt; Flow C unchanged | Low where it matters: the only escalation (read-only → edit) needs the owner once per pair; read-only fan-out is bounded by depth, budget, and concurrency | Non-breaking: the first edit Wake per pair after upgrade waits for one click |
+| **D. Read-only default-allow; edit needs a pair grant approved on first use** *(recommended)* | Good: Flow A unchanged; Flow B prompts once per coordinator–developer pair, ever; reviewers never prompt; Flow C read-only Wakes unchanged, and an edit Wake to an unlaunchable Agent asks for the grant first, then waits for availability (see [Check order and composition](#check-order-and-composition)) | Low where it matters: the only escalation (read-only → edit) needs the owner once per pair; read-only fan-out is bounded by depth, budget, and concurrency | Non-breaking: the first edit Wake per pair after upgrade waits for one click |
 
 Recommendation: **D**.
 
@@ -105,8 +114,50 @@ Rules:
   needs a grant like any other edit Wake.
 - A grant never expands the target's authority: the target still runs with its own
   Deck, working directory, and the tool profile of the execution kind.
-- Revoking a grant affects only Wakes routed afterwards. Accepted requests keep
-  their frozen policy snapshot. Deleting either Agent deletes its grants.
+- Revoking a grant affects every Wake not yet `accepted`: newly routed Wakes and
+  retries of `blocked` or `unavailable` Wakes. Accepted requests keep their frozen
+  policy snapshot. Deleting either Agent deletes its grants.
+
+### Check order and composition
+
+The router evaluates one Wake in this fixed order and stops at the first unmet
+check. Each Wake has exactly one current `reason_code`; a blocked Work Request has
+one current `state_reason`.
+
+1. Envelope, references, depth, root budget → `rejected` (no Work Request).
+2. Target name resolution → `unavailable` (`target_not_found`, `target_ambiguous`;
+   no Work Request, no target ID, so no grant can be evaluated yet).
+3. Policy checks on the resolved Agent (resume constraint, reviewer independence)
+   → `rejected`.
+4. **Grant** for `implementation`/`revision` → `blocked`, `grant_required`
+   (Work Request created `blocked`).
+5. **Launchability and availability** → `blocked`, `target_unconfigured` or
+   `target_unavailable` (Work Request created `blocked`).
+6. Otherwise `accepted`; the Work Request is `queued` and waits for capacity.
+
+The grant precedes availability because only the owner can satisfy it, while
+availability is re-checked automatically; asking first means the owner is not
+prompted again after a long outage, and an unlaunchable target never hides a pending
+approval.
+
+Every transition out of a blocked state re-runs steps 4–6 against the stored target
+Agent ID in the same transaction:
+
+| From | Event | Grant now | Target now | Wake becomes | Work Request |
+| --- | --- | --- | --- | --- | --- |
+| `blocked`, `grant_required` | Owner **Allow** | granted | launchable | `accepted` | `blocked → queued`, reason `grant_approved` |
+| `blocked`, `grant_required` | Owner **Allow** | granted | not launchable | `blocked`, `target_unavailable` / `target_unconfigured` | stays `blocked`; `state_reason` updated; grant persisted |
+| `blocked`, `grant_required` | Owner **Deny** | — | any | `blocked`, `grant_denied` (terminal) | `blocked → cancelled`, reason `grant_denied` |
+| `blocked`, `target_*` | `retryWake` | present | launchable | `accepted` | `blocked → queued`, reason `target_available` |
+| `blocked`, `target_*` | `retryWake` | revoked | any | `blocked`, `grant_required` | stays `blocked`; Allow/Deny offered again |
+| `blocked`, `target_*` | `retryWake` | present | not launchable | `blocked`, current `target_*` reason | stays `blocked` |
+| `unavailable` | `retryWake` resolves the name | — | — | re-run steps 1 (root budget only) and 3–6 | created in the resulting state |
+
+Deny wins regardless of availability. `grant_denied` Wakes are never retried.
+Allow and Deny are offered only while the reason is `grant_required`; a Wake
+blocked on availability offers only **Stop**. A retried `unavailable` Wake re-checks
+the root budget before creating its request, because its request was never
+counted.
 
 ### Human override and recovery
 
@@ -115,7 +166,9 @@ When an edit Wake has no grant, the Wake is recorded `blocked` with
 source conversation shows the blocked Wake with two owner actions:
 
 - **Allow** — persists the (caller, target, `edit`) grant, records
-  `grant_approved`, and moves the request `blocked → queued`. Later edit Wakes for
+  `grant_approved`, then re-checks the target: if it can launch, the Wake becomes
+  `accepted` and the request moves `blocked → queued`; if not, both stay `blocked`
+  on the availability reason (see the composition table above). Later edit Wakes for
   the pair route without asking.
 - **Deny** — records `grant_denied`, moves the request `blocked → cancelled` with
   reason `grant_denied`, and creates no grant. The cancellation returns to the
@@ -168,13 +221,16 @@ coordinator.
 | Situation | Wake row | Work Request | Conversation shows | Coordinator | Audit |
 | --- | --- | --- | --- | --- | --- |
 | Edit Wake, no grant | `blocked`, `grant_required` | created `blocked` | `wake_blocked`: "Wake blocked: Dev — needs your approval for edit work" with Allow / Deny | nothing until decided | `grant_requested` engine event |
-| Owner allows | `accepted` | `blocked → queued` | `wake_accepted`, then normal lifecycle | normal result return | `grant_approved` + grant row |
+| Owner allows; target launchable | `accepted` | `blocked → queued` | `wake_accepted`, then normal lifecycle | normal result return | `grant_approved` + grant row |
 | Owner denies | stays `blocked`, `reason_code` → `grant_denied` | `blocked → cancelled`, reason `grant_denied` | `request_cancelled`: "Cancelled: owner denied edit Wake" | one result continuation saying no work ran | `grant_denied` |
 | Depth reached | `rejected`, `depth_exceeded` | none | `wake_rejected`: "Wake not started: Dev — depth limit 3 reached" | one `[Wake not started]` continuation | Wake row with `limit`, `observed` |
 | Root budget reached | `rejected`, `root_budget_exhausted` | none | `wake_rejected`: "Wake not started: Dev — this work already used 12 Wakes" | same | same |
 | Continuation cap reached | — | none | `lineage_stopped`: "Stopped: coordinator continuation limit 24 reached" | not continued | engine event on the last request |
 | Waiting for capacity | `accepted` | `queued` | `request_queued` with `data.waiting_for: "capacity"` | — | — |
-| Agent reply with no dispatched parent request | `rejected`, `unattributed_wake` | none | `wake_rejected`: "Wake not started: its source turn is not tracked work" | none (no parent to continue) | Wake row |
+| Edit Wake, no grant, target also unlaunchable | `blocked`, `grant_required` | created `blocked` | `wake_blocked` with Allow / Deny (grant asked first) | nothing until decided | `grant_requested` |
+| Owner allows; target still unlaunchable | `blocked`, `target_unavailable` | stays `blocked` | `wake_blocked`: "Wake blocked: Dev — <availability reason>" with no Allow / Deny | nothing until it runs or is stopped | `grant_approved` + grant row |
+| Read-only or granted Wake, target unlaunchable | `blocked`, `target_unavailable` / `target_unconfigured` | created `blocked` | `wake_blocked` with the availability reason | nothing until it runs or is stopped | Wake row |
+| Agent reply with no dispatched parent request (Agent principal, untracked lineage) | `rejected`, `untracked_lineage` | none | `wake_rejected`: "Wake not started: its source turn is not tracked work" | none (no parent to continue) | Wake row |
 | Wake-like text in a human or API message | none | none | the message text only | — | — |
 | `/api/v0` with no authenticator | none | none | nothing (no trusted conversation) | — | HTTP 503 `authentication_unavailable`; server log |
 | `/api/v0` authentication fails | none | none | nothing | — | HTTP 401 `unauthenticated`; server log |
@@ -183,7 +239,9 @@ coordinator.
 
 Unknown principals never write durable rows: persisting attacker-supplied input
 would let an unauthenticated caller fill the database or forge history. Refusals by
-known principals are always durable.
+known principals (human owner, API principal, Agent principal with tracked or
+untracked lineage) are always durable, except HTTP-level authorization refusals of a
+known principal (`owner_required`), which leave state unchanged.
 
 `wake_rejected` is a new conversation event kind projected from the Wake row, not
 from a Work Request, so a refused Wake never appears with `request_*` lifecycle
@@ -255,12 +313,14 @@ Each item is one testable slice; none needs a new policy decision.
    cross-origin mutating requests on every UI route with 403
    `owner_origin_required` before reading the body.
 2. Lineage: add `wake_depth` and `root_principal` columns with backfill; route
-   Wakes only with a dispatched parent request (`unattributed_wake` otherwise).
+   Wakes only with a dispatched parent request (`untracked_lineage` otherwise).
 3. Limits: depth 3 and root budget 12 in `lib/wake-router.ts` with distinct reason
    codes; continuation cap 24 in `lib/coordinator-loop.ts` with
    `lineage_stopped`.
-4. Grants: `wake_grants` table, `grant_required` blocking, owner-only
-   allow/deny/revoke routes, self-wake exemption, policy-snapshot fields.
+4. Grants: `wake_grants` table, `grant_required` blocking in the check order
+   above (grant before availability), owner-only allow/deny/revoke routes that
+   re-run availability on Allow, grant re-check in `retryWake`, self-wake
+   exemption, policy-snapshot fields.
 5. Projection: `wake_rejected` and `lineage_stopped` event kinds; Allow/Deny
    actions on `grant_required` blocked Wakes.
 6. Admission: global 4 and per-target 1 running Attempts with FIFO admission
@@ -284,6 +344,8 @@ commenting approval on the PR. Values to confirm:
 - [ ] Override and recovery: **Allow** creates a durable pair grant (no one-time
       option); **Deny** cancels only this Wake; pending approvals never expire;
       **Stop** cancels the lineage; **Revoke** is available any time.
+- [ ] Composition: the grant is asked before availability; Allow on an unlaunchable
+      target persists the grant and leaves the request blocked on availability.
 - [ ] Wake depth **3**.
 - [ ] Root budget **12** Wake-created requests (continuation cap derived as **24**).
 - [ ] Global concurrency **4** running Attempts.

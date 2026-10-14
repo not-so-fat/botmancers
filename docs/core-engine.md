@@ -230,7 +230,9 @@ The developer never moves text or session IDs between tools.
 
 1. An Agent wakes another configured Agent that is not currently launchable.
 2. Botmancers persists the wake and Work Request before trying to launch.
-3. The request remains queued or becomes blocked with a visible reason.
+3. The request remains queued or becomes blocked with a visible reason. An edit
+   Wake without a grant is blocked on the grant first and on availability after the
+   owner allows it (see [Wake safety policy](#grants)).
 4. Recovery resumes from durable state; it does not depend on an in-memory chain.
 
 ## Wake safety policy
@@ -246,13 +248,13 @@ alternatives, and fixtures are in
 | --- | --- | --- |
 | Human owner (`person:local-owner`) | Loopback boundary: server bound to `127.0.0.1`, loopback `Host`, same-origin mutating request | May message, configure, allow/deny/revoke grants, and Stop. This proves "a same-origin page on this machine", not a user identity |
 | Authenticated API principal | The operator-installed `/api/v0` authenticator; none ships, so the API fails closed | May send direct read-only messages. May not decide grants or act as an Agent |
-| Agent principal (`bot:<agentId>`) | The engine: the reply came from a Work Request it dispatched to that Agent | Identity is trusted; intent is not, because Agent output can be steered by what it read |
-| Unknown | — | Refused before anything is persisted |
+| Agent principal (`bot:<agentId>`) | The engine: the message is stored with that registered Agent as sender; lineage is tracked when the engine also dispatched the parent Work Request | Identity is trusted; intent is not, because Agent output can be steered by what it read |
+| Unknown | — | No attributable identity (failed or missing authentication, foreign origin, non-Agent sender offered to the router). Refused before anything is persisted |
 
 Text that looks like a Wake in a human or API message is only text. An Agent reply
-without a dispatched parent Work Request cannot start a lineage; its Wakes are
-recorded as rejected (`unattributed_wake`). Every Work Request records its root
-principal.
+without a dispatched parent Work Request is still an Agent principal, but with
+untracked lineage: it cannot start a lineage, and its Wakes are recorded as
+rejected (`untracked_lineage`). Every Work Request records its root principal.
 
 ### Grants
 
@@ -265,8 +267,15 @@ principal.
   (cancel this request; the coordinator is told no work ran).
 - An Agent the owner messages directly may wake itself for `implementation`
   without a grant. API-rooted and Wake-rooted self-wakes need a grant.
+- Checks run in a fixed order and stop at the first unmet one: envelope,
+  references, depth, and budget (rejected); target name (unavailable); resume and
+  reviewer rules (rejected); **grant** (blocked, `grant_required`); **availability**
+  (blocked, `target_unconfigured` or `target_unavailable`). Allow persists the grant
+  and re-checks availability: the request is queued only if the target can launch,
+  otherwise it stays blocked on availability and `retryWake` queues it later. Deny
+  cancels regardless of availability. Retries re-check the grant.
 - A grant never expands the target's own Deck, working directory, or the tool
-  profile of the execution kind. Revocation affects only later Wakes. The owner
+  profile of the execution kind. Revocation affects every Wake not yet accepted. The owner
   can Stop a lineage at any time, cancelling its open requests and pending
   approvals.
 
@@ -284,12 +293,13 @@ Concurrency waits are not denials. Envelope `limits` may only narrow these value
 
 ### Refusals
 
-A refusal caused by a known principal is durable and visible: the Wake row keeps
-its reason code, the source conversation shows a `wake_rejected` or `wake_blocked`
-event (never a `request_*` lifecycle for work that did not start), and the
-coordinator receives one continuation saying no work ran. A refusal of an unknown
-principal (missing or failed authentication, foreign origin) returns an HTTP error
-and writes nothing.
+A refusal caused by a known principal (including an Agent with untracked lineage)
+is durable and visible: the Wake row keeps its reason code, the source conversation
+shows a `wake_rejected` or `wake_blocked` event (never a `request_*` lifecycle for
+work that did not start), and the coordinator, when there is a parent request to
+continue, receives one continuation saying no work ran. A refusal of an unknown
+principal (missing or failed authentication, foreign origin, non-Agent sender)
+returns an error and writes nothing.
 
 ## Reliability and provenance
 

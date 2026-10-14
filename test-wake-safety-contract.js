@@ -31,6 +31,9 @@ const httpCodes = new Set(fixtures.httpErrorCodes);
 const grantRules = new Set(fixtures.grantRules);
 const envelopeKeys = new Set(['version', 'target', 'executionKind', 'objective', 'contextWorkRequests', 'resumeWorkRequest', 'limits']);
 const executionKinds = new Set(['conversation', 'implementation', 'review', 'revision']);
+const workRanStates = new Set(['running', 'completed']);
+const workRanKinds = new Set(['request_running', 'request_completed', 'wake_accepted']);
+const availabilityReasons = new Set(['target_unavailable', 'target_unconfigured']);
 const names = new Set();
 const covered = { reasons: new Set(), principals: new Set(), http: new Set(), rules: new Set() };
 
@@ -48,6 +51,18 @@ for (const fixture of fixtures.cases) {
 
   for (const event of expect.audit) assert(audits.has(event), `${name}: known audit event ${event}`);
   const kinds = expect.projection.map(part => part.kind);
+
+  // Unknown principals have no attributable identity, so nothing is written.
+  if (principal === 'unknown') assert.equal(expect.persisted, false, `${name}: an unknown principal persists nothing`);
+
+  // No refused, denied, blocked, or unpersisted outcome may claim work ran.
+  const refused = !expect.persisted
+    || (expect.wake && ['rejected', 'blocked'].includes(expect.wake.status))
+    || (expect.workRequest && ['blocked', 'cancelled'].includes(expect.workRequest.state));
+  if (refused) {
+    assert(!(expect.workRequest && workRanStates.has(expect.workRequest.state)), `${name}: a refused Wake has no running or completed request`);
+    assert(!kinds.some(kind => workRanKinds.has(kind)), `${name}: a refused Wake projects no accepted or running work`);
+  }
 
   if (!expect.persisted) {
     assert(expect.http && httpCodes.has(expect.http.code), `${name}: an unpersisted refusal names its HTTP code`);
@@ -76,6 +91,20 @@ for (const fixture of fixtures.cases) {
         assert(expect.audit.includes('grant_requested'), `${name}: the grant request is audited`);
       }
     }
+    if (expect.wake.status === 'blocked' && expect.wake.reasonCode !== 'grant_denied') {
+      assert.equal(expect.workRequest.state, 'blocked', `${name}: a blocked Wake's request is blocked`);
+      assert.equal(expect.workRequest.reason, expect.wake.reasonCode, `${name}: Wake and request carry one current reason`);
+    }
+    if (expect.wake.reasonCode === 'grant_denied') {
+      assert.equal(expect.workRequest.state, 'cancelled', `${name}: a denied grant cancels the request`);
+    }
+    if (availabilityReasons.has(expect.wake.reasonCode)) {
+      assert(kinds.includes('wake_blocked'), `${name}: an availability block is visible`);
+      assert.deepEqual(expect.projection[0].actions, [], `${name}: Allow and Deny are offered only for grant_required`);
+    }
+    if (expect.workRequest && expect.workRequest.transition === 'blocked->queued') {
+      assert.equal(expect.wake.status, 'accepted', `${name}: a request is queued only when its Wake is accepted`);
+    }
     if (expect.wake.limit !== undefined) {
       assert(expect.wake.observed >= expect.wake.limit, `${name}: an exhausted limit records what was observed`);
     }
@@ -92,6 +121,14 @@ for (const fixture of fixtures.cases) {
     assert(expect.workRequest.wakeDepth <= limits.maxWakeDepth, `${name}: accepted work stays within depth`);
   }
 }
+
+// Flow C: grant and availability blockers compose in the contract's order.
+const flowC = fixtures.cases.filter(fixture => fixture.flow === 'C');
+const unavailableTarget = fixture => fixture.given.targetAvailability && fixture.given.targetAvailability.available === false;
+assert(flowC.some(fixture => unavailableTarget(fixture) && fixture.expect.wake.reasonCode === 'grant_required'), 'Flow C: missing grant is asked before availability');
+assert(flowC.some(fixture => fixture.action.decision === 'allow' && unavailableTarget(fixture) && fixture.expect.grant && fixture.expect.wake.reasonCode === 'target_unavailable'), 'Flow C: Allow on an unlaunchable target keeps the request blocked');
+assert(flowC.some(fixture => fixture.action.type === 'retry_wake' && fixture.expect.workRequest.transition === 'blocked->queued'), 'Flow C: retry queues once the target can launch');
+assert(flowC.some(fixture => fixture.action.decision === 'deny' && unavailableTarget(fixture) && fixture.expect.workRequest.state === 'cancelled'), 'Flow C: Deny wins regardless of availability');
 
 assert.deepEqual([...covered.reasons].sort(), [...reasons].sort(), 'every reason code has a fixture');
 assert.deepEqual([...covered.principals].sort(), [...principals].sort(), 'every principal type has a fixture');
