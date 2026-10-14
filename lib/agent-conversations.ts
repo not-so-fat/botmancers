@@ -24,7 +24,7 @@
 // through the compatibility participants bound in ./db; they stay
 // writable only through the UI routes, whose agent loop owns their turns.
 import { createHash, randomUUID } from 'crypto';
-import db, { bots, engine, type Bot, type Principal, type PrincipalKind } from './db';
+import db, { bots, engine, projector, type Bot, type Principal, type PrincipalKind } from './db';
 import {
   DispatchFailure,
   agentForDispatch,
@@ -36,6 +36,7 @@ import {
 import { beginAttempt, runAttempt, type PreparedAttempt } from './attempt-executor';
 import { EngineStoreError, type EngineEvent, type WorkRequest, type WorkRequestState } from './engine-store';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
+import type { ConversationEventView } from './conversation-projection';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -153,6 +154,10 @@ export interface ConversationView {
   origin: Principal | null;
   participants: (Principal & { joinedAt: number })[];
   messages: ConversationMessageView[];
+  // NOT-470: projected Wake and Work Request lifecycle, in conversation
+  // order (lib/conversation-projection). The UI conversation read returns
+  // the same list.
+  events: ConversationEventView[];
 }
 
 export function isPrincipalKind(value: unknown): value is PrincipalKind {
@@ -520,6 +525,7 @@ export function getConversation(principal: Principal, conversationId: string): C
       requestId: row.request_id,
       createdAt: row.created_at,
     })),
+    events: projector.listConversationEvents(conversation.id),
   };
 }
 

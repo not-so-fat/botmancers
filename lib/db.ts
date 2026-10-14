@@ -4,6 +4,7 @@ import { applyAgentUpdate, DEFAULT_AGENT, migrateLegacyAgentFields, type AgentUp
 import { isChiefOfStaffName } from './avatar';
 import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } from './bot-deletion';
 import { createEngineStore, deleteEngineRecordsForAgent, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
+import { createConversationProjector } from './conversation-projection';
 import { AgentNameConflictError, agentDisplayName, agentNameKey, planNameMigration, type NameMigrationRow } from './agent-names';
 
 // Overridable so the stub-model delegation test uses an isolated file.
@@ -553,6 +554,8 @@ db.exec(`
 // the legacy tables exist so terminal agent_requests history backfills.
 migrateEngineSchema(db);
 export const engine = createEngineStore(db);
+// NOT-470: typed conversation projection of engine lifecycle events.
+export const projector = createConversationProjector(db);
 
 export type PrincipalKind = 'person' | 'bot' | 'service';
 

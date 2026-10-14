@@ -684,6 +684,63 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 8,
+    name: 'conversation_events',
+    up: db => {
+      db.exec(`
+        -- NOT-470: typed conversation projection of Wake and Work Request
+        -- lifecycle events (lib/conversation-projection). One row per
+        -- projected part of one engine event; the id is derived from the
+        -- engine event id and part, so replay and redelivery never add a
+        -- row. text is the human-facing line, data the machine-readable
+        -- meaning. sort_at never decreases within a request, so ordering
+        -- by (sort_at, request_created_at, request_id, request_sequence,
+        -- part) keeps each request's own order while requests interleave.
+        CREATE TABLE conversation_events (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          engine_event_id TEXT NOT NULL,
+          part INTEGER NOT NULL CHECK (part >= 0),
+          request_id TEXT NOT NULL,
+          request_sequence INTEGER NOT NULL,
+          attempt_id TEXT,
+          wake_id TEXT,
+          kind TEXT NOT NULL CHECK (kind IN (
+            'wake_accepted', 'wake_blocked', 'request_queued', 'request_blocked', 'request_running',
+            'request_waiting', 'request_completed', 'request_failed', 'request_cancelled',
+            'question', 'result', 'artifact'
+          )),
+          state TEXT CHECK (state IN (${stateList})),
+          text TEXT NOT NULL,
+          data TEXT NOT NULL,
+          sort_at INTEGER NOT NULL,
+          request_created_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (engine_event_id, part),
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (engine_event_id) REFERENCES engine_events(id),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        CREATE INDEX idx_conversation_events_order
+          ON conversation_events(conversation_id, sort_at, request_created_at, request_id, request_sequence, part);
+        CREATE INDEX idx_conversation_events_request ON conversation_events(request_id);
+
+        -- Last engine event sequence the projector has read per request,
+        -- including events that project to nothing.
+        CREATE TABLE conversation_projection_cursors (
+          request_id TEXT PRIMARY KEY,
+          sequence INTEGER NOT NULL CHECK (sequence >= 0),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+
+        CREATE TRIGGER trg_conversation_events_immutable BEFORE UPDATE ON conversation_events
+        BEGIN
+          SELECT RAISE(ABORT, 'conversation_events are immutable');
+        END;
+      `);
+    },
+  },
 ];
 
 // Requests whose events the running aggregate cleanup may delete, per
@@ -1328,6 +1385,9 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   }
   // Authorize the append-only guard for exactly the requests removed
   // here, only for the duration of this delete.
+  // Projections of removed requests go first: they name the events.
+  db.prepare(`DELETE FROM conversation_events WHERE request_id IN ${inSet}`).run(list(requests));
+  db.prepare(`DELETE FROM conversation_projection_cursors WHERE request_id IN ${inSet}`).run(list(requests));
   const authorized = purgeSet(db);
   for (const id of requests) authorized.add(id);
   try {
