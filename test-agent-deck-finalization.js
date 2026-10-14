@@ -12,6 +12,8 @@ const { randomUUID } = require('crypto');
 
 const ROOT = __dirname;
 const DB_PATH = path.join(os.tmpdir(), `botmancers-agent-deck-finalization-${process.pid}.db`);
+const FIXTURE_WORKTREE = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-finalization-worktree-'));
+fs.mkdirSync(path.join(FIXTURE_WORKTREE, '.git'));
 for (const suffix of ['', '-shm', '-wal']) {
   try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* fresh */ }
 }
@@ -49,8 +51,8 @@ process.env.AGENT_DECK_RUN_TOKEN = fake.token;
 deckApi.setAgentDeckApiFetch(fake.fetch);
 
 const coordinator = bots.create({ name: 'Coordinator 487', title: 'Coordinator', description: '', agent: 'hermes', deck_id: 'deck-coord' });
-const developer = bots.create({ name: 'Developer 487', title: 'Developer', description: '', agent: 'codex', deck_id: 'deck-dev', working_directory: os.tmpdir() });
-const reviewer = bots.create({ name: 'Reviewer 487', title: 'Reviewer', description: '', agent: 'claude', deck_id: 'deck-review', working_directory: os.tmpdir() });
+const developer = bots.create({ name: 'Developer 487', title: 'Developer', description: '', agent: 'codex', deck_id: 'deck-dev', working_directory: FIXTURE_WORKTREE });
+const reviewer = bots.create({ name: 'Reviewer 487', title: 'Reviewer', description: '', agent: 'claude', deck_id: 'deck-review', working_directory: FIXTURE_WORKTREE });
 const other = bots.create({ name: 'Other 487', title: 'Other', description: '', agent: 'cursor', deck_id: 'deck-other' });
 const conversation = conversations.getByBotId(coordinator.id);
 let clock = 1800000000000;
@@ -358,6 +360,7 @@ async function main() {
   for (const suffix of ['', '-shm', '-wal']) {
     try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* cleanup */ }
   }
+  fs.rmSync(FIXTURE_WORKTREE, { recursive: true, force: true });
   console.log(`\nTEST RESULT: ${failures === 0 ? 'PASS' : `FAIL (${failures})`}`);
   process.exit(failures === 0 ? 0 : 1);
 }
