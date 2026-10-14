@@ -647,6 +647,9 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
     const intent = dispatcher.launchIntent(attempt.id);
     decision = decideWithoutRunId({ reconcilable: !!reconciler, intent, currentGrantFingerprint: reconciler?.currentGrantFingerprint() ?? null });
     if (decision.action === 'repost' && reconciler && intent?.body && intent.idempotency_key) {
+      // The decision to re-POST is durable before the POST; its answer
+      // is recorded as a second decision below.
+      decided('launch', decision, null, null);
       observation = await reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
       decision = decideRepostResult(observation);
       if (observation.kind === 'accepted') {
