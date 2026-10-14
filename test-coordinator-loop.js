@@ -264,7 +264,10 @@ async function runMain() {
   const context = lastEntry(firstInput);
   assert(context.speakerLabel === 'Botmancers' && context.content.includes(`Work Request: ${impl.id}`) && context.content.includes('Execution kind: implementation'),
     'coordinator input names the canonical Work Request');
-  assert(context.content.includes('Implemented: Add retry to the uploader.'), 'coordinator input carries the result evidence');
+  const historyText = firstInput.prompt.history.slice(0, -1).map(entry => entry.content);
+  assert(historyText.filter(text => text.includes('Implemented: Add retry to the uploader.')).length === 1 && context.content.includes('Result: the Dev reply above.'),
+    'coordinator input carries the result evidence once (the projected reply), referenced from the continuation');
+  assert(!context.content.includes('Implemented:'), 'continuation does not repeat the reply already in history');
   const tankText = JSON.stringify(tankInputs.map(t => t.input.prompt));
   assert(!/dev-session-|run-\d+/.test(tankText), 'coordinator inputs expose no external run or session ids');
   assert(tankInputs.every(t => t.input.toolProfile === 'readonly'), 'every coordinator continuation launched read-only');
@@ -337,7 +340,11 @@ async function runMain() {
     let notice = null;
     const selfPlan = [
       () => `Dev first.\n${block({ target: 'Dev', executionKind: 'implementation', objective: 'Add logging.' })}`,
-      input => `Dev can check its own work.\n${block({ target: 'Dev', executionKind: 'review', objective: 'Review the logging.', contextWorkRequests: [/Work Request: (\S+)/.exec(lastEntry(input).content)[1]] })}`,
+      input => [
+        'Dev can check its own work.',
+        block({ target: 'Dev', executionKind: 'review', objective: 'Review the logging.', contextWorkRequests: [/Work Request: (\S+)/.exec(lastEntry(input).content)[1]] }),
+        block({ target: 'Dev', executionKind: 'review', objective: 'Review the logging without references.' }),
+      ].join('\n'),
       input => { notice = lastEntry(input).content; return 'No independent reviewer ran. Who should review the logging change: Reviewer or Auditor?'; },
     ];
     const first = service.acceptAgentMessage(PERSON, { agentId: tank.id, content: 'Add logging.', idempotencyKey: 'self-1' });
@@ -346,7 +353,8 @@ async function runMain() {
     await service.waitForAgentDispatchIdle();
     const convId = first.accepted.conversationId;
     const wakes = raw.prepare("SELECT * FROM wakes WHERE source_conversation_id = ? AND execution_kind = 'review'").all(convId);
-    assert(wakes.length === 1 && wakes[0].status === 'rejected' && wakes[0].reason_code === 'reviewer_not_independent', 'developer-as-reviewer Wake is rejected');
+    assert(wakes.length === 2 && wakes.every(w => w.status === 'rejected' && w.reason_code === 'reviewer_not_independent'),
+      'developer-as-reviewer Wake is rejected, with or without contextWorkRequests');
     assert(requestsIn(convId).filter(r => r.execution_kind === 'review').length === 0, 'no review Work Request exists');
     assert(notice && notice.startsWith('[Wake not started]') && /Dev did the work under review/.test(notice), 'Tank is told the review did not start');
     assert(/Who should review/.test(messagesIn(convId).pop().content), 'Tank asks the person instead of claiming a review');
@@ -493,6 +501,55 @@ async function runMain() {
     assert(continuationsOf(crashed.id).length === 1 && continuationsOf(crashed.id)[0].state === 'completed', 'recovered continuation completed for Tank');
     const twice = restart();
     assert(twice && sameCounts(twice.before, twice.after) && twice.launches.length === 0, 'second reopen creates nothing');
+  }
+
+  // =====================================================================
+  console.log('\nA Wake routing error is reported to the coordinator, once');
+  {
+    const convId = (await ask(tank, 'Routing error test.', 'route-error-1')).conversationId;
+    const person = messagesIn(convId)[0];
+    const turn = engine.createOrGetWorkRequest({
+      sourceConversationId: convId, sourceEventId: person.id, requester: PERSON, targetAgentId: tank.id,
+      intent: 'Routing error test.', executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: 'route-error-turn',
+    }).request;
+    engine.transitionWorkRequest(turn.id, { from: 'queued', to: 'running' });
+    // The reply's Wake was recorded with one payload, then the stored text
+    // changed: routing it again is an idempotency conflict.
+    const reply = db.messages.create(convId, 'bot', block({ target: 'Ghost', executionKind: 'implementation', objective: 'First payload.' }), tank.id);
+    router.routeAgentWakes({ sourceEventId: reply.id, parentRequestId: turn.id });
+    raw.prepare('UPDATE messages SET content = ? WHERE id = ?').run(block({ target: 'Dev', executionKind: 'implementation', objective: 'Changed payload.' }), reply.id);
+    engine.transitionWorkRequest(turn.id, { from: 'running', to: 'completed', result: { reply_message_id: reply.id } });
+    const queued = loop.continueAfterTerminal(turn.id);
+    const notice = queued.length === 1 ? engine.getWorkRequest(queued[0]) : null;
+    assert(notice && notice.target_agent_id === tank.id && notice.tool_profile === 'readonly' && /^\[Wake not started\] The Wakes in your last message could not be routed/.test(notice.intent),
+      'routing error creates one read-only Wake-outcome continuation for Tank');
+    assert(!requestsIn(convId).some(r => r.execution_kind === 'implementation'), 'no implementation started');
+    assert(loop.continueAfterTerminal(turn.id).length === 0, 'replaying the routing error queues nothing');
+    await service.startAgentDispatch(queued[0]);
+    await service.waitForAgentDispatchIdle();
+    assert(engine.getWorkRequest(queued[0]).state === 'completed', 'Tank ran the routing-error continuation');
+  }
+
+  // =====================================================================
+  console.log('\nRecovery never routes replies that ended before the follow-up marker existed');
+  {
+    const convId = (await ask(tank, 'Old conversation.', 'pre-upgrade-1')).conversationId;
+    const person = messagesIn(convId)[0];
+    const old = engine.createOrGetWorkRequest({
+      sourceConversationId: convId, sourceEventId: person.id, requester: PERSON, targetAgentId: tank.id,
+      intent: 'Old conversation.', executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: 'pre-upgrade-turn',
+    }).request;
+    engine.transitionWorkRequest(old.id, { from: 'queued', to: 'running' });
+    const reply = db.messages.create(convId, 'bot', `Old reply.\n${block({ target: 'Dev', executionKind: 'implementation', objective: 'Old work.' })}\nWAKE Reviewer: please look.`, tank.id);
+    engine.transitionWorkRequest(old.id, { from: 'running', to: 'completed', result: { reply_message_id: reply.id } });
+    // A request that went terminal before migration 9 has no follow-up row.
+    raw.prepare('DELETE FROM terminal_followups WHERE request_id = ?').run(old.id);
+    const before = counts();
+    const reopened = restart();
+    assert(reopened && sameCounts(reopened.before, reopened.after) && reopened.launches.length === 0, 'reopen creates and launches nothing for the old reply');
+    assert(loop.continueAfterTerminal(old.id).length === 0 && sameCounts(counts(), before), 'a direct replay creates nothing either');
+    assert(raw.prepare('SELECT COUNT(*) AS n FROM wakes WHERE source_event_id = ?').get(reply.id).n === 0, 'no Wake recorded from the old reply');
+    assert(raw.prepare('SELECT COUNT(*) AS n FROM terminal_followups WHERE done_at IS NULL').get().n === 0, 'no follow-up left open');
   }
 
   dispatch.setAttemptAdapterOverride(null);

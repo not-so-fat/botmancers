@@ -9,7 +9,8 @@
 //      exactly those requests and nothing else;
 //   2. tells the replying Agent, in one read-only continuation turn, about
 //      any of those Wakes that did not start (rejected, unavailable,
-//      blocked), so it never assumes work happened that did not;
+//      blocked, or not routable at all), so it never assumes work happened
+//      that did not;
 //   3. returns a Wake-created request's terminal result to the Agent that
 //      woke it (policy_snapshot.return_to) as exactly one read-only
 //      continuation turn carrying the canonical Work Request reference and
@@ -21,11 +22,16 @@
 // Wake or a safety limit (lib/wake-router limits, the continuation budget
 // below) stops it.
 //
-// Idempotency: continuations are keyed by what they continue (the
+// Idempotency: the follow-up runs only for a request with an open
+// terminal_followups row, written with its terminal transition, and closes
+// that row in the same transaction. Requests that ended before the row
+// existed (replies from before this engine routed Wakes) are never
+// followed up. Continuations are keyed by what they continue (the
 // specialist request, or the Wake source event) under one engine
-// requester, and Wake routing is keyed by source event, so replaying a
-// terminal request, in this process or after a restart, creates nothing
-// new. pendingCoordinatorWork rebuilds the same state from durable rows.
+// requester, and Wake routing is keyed by source event, so a replay, in
+// this process or after a restart, creates nothing new.
+// pendingCoordinatorWork recovers open follow-ups and their queued
+// requests from durable rows.
 //
 // Continuation context names Work Requests by canonical id only; external
 // run and session identifiers stay in Attempts and Session Bindings.
@@ -105,7 +111,9 @@ function bounded(text: string): string {
 
 // Canonical reference plus result evidence of one request. Failure text
 // is the request's fixed caller-facing message, never adapter output.
-export function resultEvidence(request: WorkRequest): string {
+// replyShown: the reply is already in the reader's history, so it is
+// referenced rather than repeated.
+export function resultEvidence(request: WorkRequest, replyShown = false): string {
   const lines = [
     `Work Request: ${request.id}`,
     `Agent: ${agentName(request.target_agent_id)}`,
@@ -113,7 +121,7 @@ export function resultEvidence(request: WorkRequest): string {
     `State: ${request.state}`,
   ];
   const reply = replyOf(request);
-  if (reply) lines.push(`Result:\n${bounded(reply.content)}`);
+  if (reply) lines.push(replyShown ? `Result: the ${agentName(request.target_agent_id)} reply above.` : `Result:\n${bounded(reply.content)}`);
   else if (request.state === 'failed' || request.state === 'cancelled') {
     lines.push(`Failure: ${request.error_code ?? request.state}${request.error_message ? ` - ${request.error_message}` : ''}`);
   } else if (request.terminal_at === null) lines.push('Result: not finished yet.');
@@ -127,10 +135,10 @@ const NEXT_STEP = [
   'did not run.',
 ].join(' ');
 
-function resultContinuationText(request: WorkRequest): string {
+function resultContinuationText(request: WorkRequest, replyShown: boolean): string {
   return [
     `[Work Request result] ${agentName(request.target_agent_id)} finished the ${request.execution_kind} you requested.`,
-    resultEvidence(request),
+    resultEvidence(request, replyShown),
     NEXT_STEP,
   ].join('\n\n');
 }
@@ -146,6 +154,14 @@ function wakeOutcomeText(unstarted: RoutedWake[]): string {
   return [
     `[Wake not started] ${unstarted.length === 1 ? 'One Wake' : `${unstarted.length} Wakes`} from your last message did not start any work:`,
     lines.join('\n'),
+    NEXT_STEP,
+  ].join('\n\n');
+}
+
+function routingFailureText(error: WakeRouterError): string {
+  return [
+    '[Wake not started] The Wakes in your last message could not be routed, so no work started:',
+    error.message,
     NEXT_STEP,
   ].join('\n\n');
 }
@@ -208,10 +224,15 @@ function continuation(spec: ContinuationSpec): WorkRequest | null {
 
 // Everything that follows one terminal request, in one transaction.
 // Returns the queued requests to dispatch (new or not yet dispatched).
+const openFollowup = db.prepare('SELECT 1 FROM terminal_followups WHERE request_id = ? AND done_at IS NULL');
+const closeFollowup = db.prepare('UPDATE terminal_followups SET done_at = ? WHERE request_id = ? AND done_at IS NULL');
+
 export function continueAfterTerminal(requestId: string, now: number = Date.now()): string[] {
   return engine.transaction((): string[] => {
+    if (!openFollowup.get(requestId)) return [];
     const request = engine.getWorkRequest(requestId);
     if (!request || request.terminal_at === null || request.legacy_agent_request_id !== null) return [];
+    closeFollowup.run(now, requestId);
     const dispatch: string[] = [];
     const queued = (next: WorkRequest | null | undefined) => {
       if (next && next.state === 'queued') dispatch.push(next.id);
@@ -220,22 +241,24 @@ export function continueAfterTerminal(requestId: string, now: number = Date.now(
     const reply = replyOf(request);
     if (reply) {
       let routed: RoutedWake[] = [];
+      let failure: WakeRouterError | null = null;
       try {
         routed = routeAgentWakes({ sourceEventId: reply.id, parentRequestId: request.id, now });
       } catch (error) {
         if (!(error instanceof WakeRouterError)) throw error;
         console.error(`Wakes of ${reply.id} could not be routed:`, error.message);
+        failure = error;
       }
       for (const entry of routed) queued(entry.request);
       const unstarted = routed.filter(entry => entry.wake.status !== 'accepted');
-      if (unstarted.length > 0) {
+      if (failure || unstarted.length > 0) {
         queued(continuation({
           key: `continuation:v1:wakes:${reply.id}`,
           coordinatorId: request.target_agent_id,
           conversationId: reply.conversation_id,
           sourceEventId: reply.id,
           parent: request,
-          intent: wakeOutcomeText(unstarted),
+          intent: failure ? routingFailureText(failure) : wakeOutcomeText(unstarted),
           continues: 'wake_outcome',
           subjects: unstarted.flatMap(entry => entry.wake.work_request_id ? [entry.wake.work_request_id] : []),
           now,
@@ -251,7 +274,9 @@ export function continueAfterTerminal(requestId: string, now: number = Date.now(
         conversationId: back.conversationId,
         sourceEventId: reply?.id ?? request.source_event_id,
         parent: request,
-        intent: resultContinuationText(request),
+        // The continuation's history runs through the reply when it is in
+        // the coordinator's conversation.
+        intent: resultContinuationText(request, reply?.conversation_id === back.conversationId),
         continues: 'result',
         subjects: [request.id],
         now,
@@ -261,14 +286,22 @@ export function continueAfterTerminal(requestId: string, now: number = Date.now(
   });
 }
 
-// Restart recovery: replays every terminal canonical request (idempotent)
-// and returns the queued Wake and continuation requests still to run.
+// Restart recovery: runs the follow-ups still open (a crash between the
+// terminal commit and its follow-up), then returns those and any queued
+// Wake or continuation requests a closed follow-up created but never
+// dispatched. Never touches requests without a follow-up row.
 export function pendingCoordinatorWork(now: number = Date.now()): string[] {
-  const terminal = db.prepare(
-    'SELECT id FROM work_requests WHERE terminal_at IS NOT NULL AND legacy_agent_request_id IS NULL ORDER BY created_at ASC, id ASC'
+  const open = db.prepare(
+    'SELECT request_id AS id FROM terminal_followups WHERE done_at IS NULL ORDER BY created_at ASC, request_id ASC'
   ).all() as { id: string }[];
   const ids = new Set<string>();
-  for (const row of terminal) for (const id of continueAfterTerminal(row.id, now)) ids.add(id);
+  for (const row of open) for (const id of continueAfterTerminal(row.id, now)) ids.add(id);
+  const undispatched = db.prepare(`
+    SELECT w.id FROM work_requests w JOIN terminal_followups f ON f.request_id = w.parent_request_id
+    WHERE w.state = 'queued' AND (w.wake_event_id IS NOT NULL OR (w.requester_kind = ? AND w.requester_id = ?))
+    ORDER BY w.created_at ASC, w.id ASC
+  `).all(ENGINE_REQUESTER.kind, ENGINE_REQUESTER.id) as { id: string }[];
+  for (const row of undispatched) ids.add(row.id);
   return [...ids];
 }
 

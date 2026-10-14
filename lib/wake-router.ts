@@ -189,7 +189,7 @@ function limitProblem(parent: WorkRequest | null): string | null {
 
 // Target resolution by name, then the launch checks. Used by first routing
 // and by retrying an unavailable Wake (which has no target yet).
-function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax): Outcome {
+function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax, rootRequestId: string | null): Outcome {
   const resolved = resolveWakeTarget(envelope.target);
   if (!resolved.ok) {
     if (resolved.reason === 'ambiguous') {
@@ -200,13 +200,13 @@ function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax): Outcome {
     }
     return { status: 'unavailable', code: 'target_not_found', reason: `No Agent is named ${envelope.target}.` };
   }
-  return checkTarget(envelope, syntax, { id: resolved.agentId, name: resolved.displayName });
+  return checkTarget(envelope, syntax, { id: resolved.agentId, name: resolved.displayName }, rootRequestId);
 }
 
 // Resume constraint, configuration, and availability of one resolved
 // Agent. A blocked Wake's retry calls this on its stored target, never on
 // whichever Agent now holds the requested name.
-function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: string; name: string }): Outcome {
+function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: string; name: string }, rootRequestId: string | null): Outcome {
   // NOT-471: authority comes from the envelope's explicit kind under the
   // central rules (structured: any kind, revision resumes; legacy:
   // conversation only), never from the target's Agent type.
@@ -224,13 +224,17 @@ function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: s
       return { status: 'rejected', code: 'invalid_reference', reason: 'A revision resumes an implementation Work Request of the same Agent.', target };
     }
   }
-  // An independent review: the reviewer did not do the work it reviews.
+  // An independent review: the reviewer did not do the work it reviews,
+  // whether or not the Wake references that work.
   if (envelope.executionKind === 'review') {
-    for (const ref of envelope.contextWorkRequests ?? []) {
+    const reviewsOwnWork = (envelope.contextWorkRequests ?? []).some(ref => {
       const reviewed = engine.getWorkRequest(ref);
-      if (reviewed && ['implementation', 'revision'].includes(reviewed.execution_kind) && reviewed.target_agent_id === target.id) {
-        return { status: 'rejected', code: 'reviewer_not_independent', reason: `${target.name} did the work under review; wake a different reviewer or ask the person.`, target };
-      }
+      return reviewed && ['implementation', 'revision'].includes(reviewed.execution_kind) && reviewed.target_agent_id === target.id;
+    }) || (rootRequestId !== null && !!db.prepare(
+      "SELECT 1 FROM work_requests WHERE root_request_id = ? AND target_agent_id = ? AND execution_kind IN ('implementation', 'revision') LIMIT 1"
+    ).get(rootRequestId, target.id));
+    if (reviewsOwnWork) {
+      return { status: 'rejected', code: 'reviewer_not_independent', reason: `${target.name} did the work under review; wake a different reviewer or ask the person.`, target };
     }
   }
   const bot = bots.getById(target.id) as Bot;
@@ -312,7 +316,7 @@ function routeCandidate(candidate: WakeCandidate, source: Message, requesterId: 
     const limit = problem ? null : limitProblem(parent);
     outcome = problem ? { status: 'rejected', code: 'invalid_reference', reason: problem }
       : limit ? { status: 'rejected', code: 'limit_exceeded', reason: limit }
-        : resolveOutcome(envelope, candidate.syntax);
+        : resolveOutcome(envelope, candidate.syntax, parent?.root_request_id ?? null);
   }
 
   const request = envelope && routable(outcome)
@@ -389,7 +393,7 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     `);
 
     if (wake.status === 'unavailable') {
-      const outcome = resolveOutcome(envelope, wake.syntax);
+      const outcome = resolveOutcome(envelope, wake.syntax, wake.root_request_id);
       if (!routable(outcome)) {
         // Still unresolved: keep it visible with the current reason. A
         // rejection is terminal, so status and reason never disagree.
@@ -408,7 +412,7 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     const request = engine.getWorkRequest(wake.work_request_id as string) as WorkRequest;
     const stored = bots.getById(request.target_agent_id) as Bot | undefined;
     if (!stored || request.state !== 'blocked') return routed(wake, false);
-    const outcome = checkTarget(envelope, wake.syntax, { id: stored.id, name: stored.name });
+    const outcome = checkTarget(envelope, wake.syntax, { id: stored.id, name: stored.name }, request.root_request_id);
     if (outcome.status === 'blocked' && (outcome.code !== wake.reason_code || outcome.reason !== wake.reason)) {
       update.run('blocked', outcome.code, outcome.reason, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);
       return routed(getWake(wake.id) as Wake, false);
