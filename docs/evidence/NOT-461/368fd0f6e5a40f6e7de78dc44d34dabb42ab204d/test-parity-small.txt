@@ -1,0 +1,86 @@
+HEAD: 368fd0f6e5a40f6e7de78dc44d34dabb42ab204d
+$ npm run test:parity-small
+
+> botmancers@0.1.0 test:parity-small
+> node test-parity-small.js
+
+NOT-420 small-parity test (real handlers, isolated DB, stub model)
+DB: /var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-parity-small-test-12176.db
+
+Return URL cleaning
+  PASS: dirty return URL parses
+  PASS: return URL strips userinfo
+  PASS: return URL strips fragment
+  PASS: return URL keeps origin, path and search
+  PASS: non-http(s) return rejected
+  PASS: unparseable return rejected
+
+Handoff destination
+  PASS: no destination when CLONE_MARKET_URL is unset
+  PASS: no destination when CLONE_MARKET_URL is invalid
+  PASS: destination builds when configured
+  PASS: destination keeps only target and return
+  PASS: destination return is the cleaned same-origin URL
+  PASS: destination strips market userinfo, fragment and old query
+
+Handoff query shape
+  PASS: missing query is invalid
+  PASS: exactly return is valid
+  PASS: extra parameter is invalid
+  PASS: wrong parameter name is invalid
+
+Forwarded origin
+  PASS: forwarded host accepted (got 404)
+  PASS: unconfigured market reports the snapshot message
+  PASS: 127.0.0.1 vs localhost mismatch rejected without the header (got 400)
+  PASS: forwarded proto honored (got 400)
+  PASS: wrong origin rejected (got 400)
+
+Configured redirect
+  PASS: handoff redirects with 307 (got 307)
+  PASS: redirect keeps only target and return
+  PASS: redirect return strips userinfo and fragment
+  PASS: redirect return keeps origin and path
+  PASS: status reports configured
+  PASS: status reports unconfigured
+
+End-token post-processor
+  PASS: no skill means no token
+  PASS: skill without the rule means no token
+  PASS: rule token parses from skill text
+  PASS: end token appended once
+  PASS: end token never doubled
+  PASS: bot without the rule passes through
+
+End-token integration
+  PASS: draft card stays parseable for a skill bot
+  PASS: draft JSON card stays verbatim
+  PASS: model reply ends with the token once
+  PASS: model reply never doubles the token
+  PASS: ask question ends with the token
+  PASS: ask question never doubles the token
+
+End-token mirror
+  PASS: mirror posts to both threads
+  PASS: caller-thread mirror ends with the token once
+  PASS: specialist-thread mirror ends with the token once
+  PASS: caller-thread mirror never doubles the token
+  PASS: retried mirror of the same round posts nothing
+
+Agent-only UI (NOT-461)
+  scanned 10 client sources; group API callers=[]
+  PASS: no client source requests /api/groups or /api/conversations?groupId=
+  PASS: copy scan keeps strings containing // and strips real trailing comments
+  Group copy offenders=[]
+  PASS: no client source renders Group copy (ARIA role="group" excepted)
+  PASS: app/page.tsx has no group type, state, loader, row, mention, or thread branch
+  PASS: New opens one New Agent panel with no kind switch or member picker
+  PASS: composer mentions suggest agents only
+  PASS: delete confirmation copy names no groups
+  PASS: no Group-only styles remain
+  PASS: design fixture keeps legacy groups only as hidden stored data
+  PASS: README describes the agent-only UI
+  PASS: PARITY.md no longer requires group UI captures
+
+TEST RESULT: PASS
+exit: 0

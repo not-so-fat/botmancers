@@ -1,0 +1,115 @@
+HEAD: 368fd0f6e5a40f6e7de78dc44d34dabb42ab204d
+$ npm run build
+
+> botmancers@0.1.0 build
+> next build
+
+▲ Next.js 16.3.8 (Turbopack)
+✓ Running next.config.ts took 772ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1977ms
+  Running TypeScript ...
+  Finished TypeScript in 1530ms ...
+  Collecting page data using 9 workers ...
+Error: Failed to collect configuration for /api/bots/manage
+    at ignore-listed frames {
+  [cause]: SqliteError: duplicate column name: template_url
+      at module evaluation (lib/db.ts:207:6)
+      at module evaluation (app/api/bots/manage/route.ts:2:1)
+    205 | }
+    206 | if (!botColumns.some(column => column.name === 'template_url')) {
+  > 207 |   db.exec('ALTER TABLE bots ADD COLUMN template_url TEXT');
+        |      ^
+    208 | }
+    209 | if (!botColumns.some(column => column.name === 'import_schema_version')) {
+    210 |   db.exec('ALTER TABLE bots ADD COLUMN import_schema_version TEXT'); {
+    code: 'SQLITE_ERROR'
+  }
+}
+Turbopack build encountered 2 warnings:
+./lib/artifacts.ts:109:7
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m107 |[0m   fs.mkdirSync(root, { recursive: [36mtrue[0m });
+  [90m108 |[0m   [36mconst[0m resolved = resolveArtifactPath(valid.name);
+[33m[1m>[0m [90m109 |[0m   [36mif[0m (fs.existsSync(resolved)) {
+  [90m    |[0m       [33m[1m^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m110 |[0m     [36mlet[0m stat: fs.[33mStats[0m;
+  [90m111 |[0m     [36mtry[0m {
+  [90m112 |[0m       stat = fs.statSync(resolved);
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.existsSync(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./lib/artifacts.ts
+    ./lib/approvals.ts
+    ./app/api/conversations/[id]/messages/route.ts
+
+  #2 [App Route]:
+    ./lib/artifacts.ts
+    ./lib/approvals.ts
+    ./app/api/conversations/[id]/messages/route.ts
+
+
+./lib/artifacts.ts:112:14
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m110 |[0m     [36mlet[0m stat: fs.[33mStats[0m;
+  [90m111 |[0m     [36mtry[0m {
+[33m[1m>[0m [90m112 |[0m       stat = fs.statSync(resolved);
+  [90m    |[0m              [33m[1m^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m113 |[0m     } [36mcatch[0m {
+  [90m114 |[0m       [36mthrow[0m [36mnew[0m [33mArtifactRefused[0m([32m`refused: cannot stat [0m${[33mJSON[0m.stringify(valid.name)[32m}`[0m);
+  [90m115 |[0m     }
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.statSync(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./lib/artifacts.ts
+    ./lib/approvals.ts
+    ./app/api/conversations/[id]/messages/route.ts
+
+  #2 [App Route]:
+    ./lib/artifacts.ts
+    ./lib/approvals.ts
+    ./app/api/conversations/[id]/messages/route.ts
+
+
+Error: Failed to collect configuration for /api/bots/availability
+    at ignore-listed frames {
+  [cause]: SqliteError: duplicate column name: import_timestamp
+      at module evaluation (lib/db.ts:216:6)
+      at module evaluation (lib/agent-deck-run.ts:21:1)
+      at module evaluation (app/api/bots/availability/route.ts:9:1)
+    214 | }
+    215 | if (!botColumns.some(column => column.name === 'import_timestamp')) {
+  > 216 |   db.exec('ALTER TABLE bots ADD COLUMN import_timestamp INTEGER');
+        |      ^
+    217 | }
+    218 | if (!botColumns.some(column => column.name === 'hermes_profile')) {
+    219 |   db.exec('ALTER TABLE bots ADD COLUMN hermes_profile TEXT'); {
+    code: 'SQLITE_ERROR'
+  }
+}
+
+> Build error occurred
+Error: Failed to collect page data for /api/bots/manage
+    at ignore-listed frames {
+  type: 'Error'
+}
+exit: 1
