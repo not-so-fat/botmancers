@@ -16,7 +16,9 @@
 import type { BotAgent } from './bot-definition';
 import type { ToolProfile } from './engine-store';
 
-export type AttemptAdapterName = 'hermes-gateway' | 'agent-deck-run';
+// NOT-487: 'agent-deck-api' is the canonical Agent Deck transport (public
+// run HTTP API); 'agent-deck-run' is the legacy CLI compatibility adapter.
+export type AttemptAdapterName = 'hermes-gateway' | 'agent-deck-run' | 'agent-deck-api';
 
 // Who is launched. Frozen by the caller before launch and recorded as the
 // Attempt's launch snapshot; adapters read it, never widen it.
@@ -64,6 +66,11 @@ export interface AttemptInput {
   deadlineAt?: number | null;
   signal?: AbortSignal | null;
   correlation: AttemptCorrelation;
+  // NOT-487: ask the runtime to capture a Git baseline before launch so the
+  // edit can later be finalized into one reviewed commit. Only an edit
+  // Attempt may ask; the caller decides (implementation and revision in a
+  // Git worktree), never the adapter.
+  prepareFinalization?: boolean;
 }
 
 export type AttemptFailureCategory =
@@ -99,6 +106,27 @@ export interface AttemptFailure {
   message: string;
 }
 
+// NOT-487: public finalization evidence of a prepared edit Attempt: the
+// opaque baseline reference/digest captured before launch and, once the run
+// is terminal, the ordered candidate manifest (paths, digests, modes; never
+// file contents or host paths) or the reason it is unavailable.
+export interface AttemptCandidateManifest {
+  baselineRef: string;
+  baselineDigest: string;
+  baseCommit: string;
+  manifestDigest: string;
+  files: { path: string; sha256: string | null; mode: '100644' | '100755' | null }[];
+}
+
+export interface AttemptFinalizationEvidence {
+  baselineRef: string | null;
+  baselineDigest: string | null;
+  candidate:
+    | { ok: true; manifest: AttemptCandidateManifest }
+    | { ok: false; code: string; message: string }
+    | null;
+}
+
 export interface AttemptResult {
   status: 'completed' | 'failed';
   adapter: AttemptAdapterName;
@@ -109,6 +137,8 @@ export interface AttemptResult {
   startedAt: number;
   finishedAt: number;
   failure: AttemptFailure | null;
+  // NOT-487: present only for an Attempt launched with prepareFinalization.
+  finalization?: AttemptFinalizationEvidence | null;
 }
 
 export type AttemptEventSink = (event: AttemptEvent) => void;

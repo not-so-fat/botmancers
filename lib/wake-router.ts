@@ -33,7 +33,6 @@
 import { randomUUID } from 'crypto';
 import db, { bots, engine, resolveWakeTarget, type Bot, type Message } from './db';
 import { agentTransport, resolveAgent } from './bot-definition';
-import { getAgentDeckServerUrl, isLocalAgentDeckUrl, remoteLaunchUnsupportedMessage } from './agent-deck-settings';
 import { loadHermesConfig } from './hermes';
 import type { WorkRequest } from './engine-store';
 import { selectExecutionPolicy, type ExecutionPolicySnapshot } from './execution-policy';
@@ -105,19 +104,17 @@ export class WakeRouterError extends Error {
 export type TargetAvailability = { available: true } | { available: false; reason: string };
 export type AvailabilityProbe = (bot: Bot) => TargetAvailability;
 
-// Whether a configured Agent's launch adapter can take work right now:
-// Hermes needs the gateway configured; Agent Deck launches need a local
-// Agent Deck server.
+// Whether a configured Agent's launch adapter can take work right now.
+// Agent Deck HTTP attempts perform their authenticated availability check
+// at launch; unlike the retired CLI path, a non-loopback workspace server
+// is a supported transport and must not be rejected here.
 export function defaultAvailability(bot: Bot): TargetAvailability {
   if (agentTransport(resolveAgent(bot).agent) === 'hermes-gateway') {
     return loadHermesConfig()
       ? { available: true }
       : { available: false, reason: 'The Hermes gateway is not configured (HERMES_API_SERVER_KEY is unset).' };
   }
-  const serverUrl = getAgentDeckServerUrl();
-  return isLocalAgentDeckUrl(serverUrl)
-    ? { available: true }
-    : { available: false, reason: remoteLaunchUnsupportedMessage(serverUrl) };
+  return { available: true };
 }
 
 let availabilityOverride: AvailabilityProbe | null = null;

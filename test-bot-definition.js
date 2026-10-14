@@ -43,8 +43,11 @@ const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 const db = jiti('./lib/db.ts');
 const def = jiti('./lib/bot-definition.ts');
 const deck = jiti('./lib/agent-deck-run.ts');
+const deckApi = jiti('./lib/agent-deck-api.ts');
+const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
 const dispatch = jiti('./lib/agent-dispatch.ts');
 const botsRoute = jiti('./app/api/bots/route.ts');
+const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
 const raw = db.default;
 
 let failures = 0;
@@ -240,6 +243,11 @@ async function main() {
     }
     return { stdout: '', stderr: 'unexpected', exitCode: 1 };
   });
+  const fakeApi = createFakeAgentDeck({ token: 'bot_definition_fixture_bearer' });
+  process.env.AGENT_DECK_RUN_TOKEN = fakeApi.token;
+  fakeApi.onStart = body => ({ result: `deck reply ${body.client}` });
+  deckApi.setAgentDeckApiFetch(fakeApi.fetch);
+  deckAttempt.setAgentDeckApiPollIntervalForTests(0);
   const hermesRequests = [];
   dispatch.setAgentDispatchHermesFetch(async (url, init) => {
     hermesRequests.push(url);
@@ -248,21 +256,28 @@ async function main() {
   for (const agent of FIVE) {
     const bot = db.bots.create({ name: `Dispatch-${agent}`, title: '', description: 'Replies.', agent, deck_id: `deck-run-${agent}`, working_directory: workdir });
     const startsBefore = starts.length;
+    const apiStartsBefore = fakeApi.calls('POST', '/api/agent-runs').length;
     const hermesBefore = hermesRequests.length;
     const reply = await dispatch.dispatchToAgent({ bot, history: [{ speakerLabel: 'user', fromAgent: false, content: 'hello' }] });
     check(`agentForDispatch reports ${agent}`, dispatch.agentForDispatch(bot) === agent);
     if (agent === 'hermes') {
-      check('Hermes with a selected deck dispatches through its gateway adapter only', reply === 'hermes reply' && hermesRequests.length === hermesBefore + 1 && starts.length === startsBefore);
+      check('Hermes with a selected deck dispatches through its gateway adapter only', reply === 'hermes reply' && hermesRequests.length === hermesBefore + 1 && starts.length === startsBefore && fakeApi.calls('POST', '/api/agent-runs').length === apiStartsBefore);
     } else {
-      const argv = starts[starts.length - 1];
-      const flag = name => argv[argv.indexOf(name) + 1];
+      const request = fakeApi.calls('POST', '/api/agent-runs').at(-1);
       check(
-        `${agent} with a selected deck dispatches agent-deck run on that deck with --client ${agent}`,
-        starts.length === startsBefore + 1 && argv[2] === `deck-run-${agent}` && flag('--client') === agent && flag('--cwd') === workdir && hermesRequests.length === hermesBefore && reply.startsWith('deck reply'),
-        JSON.stringify(argv)
+        `${agent} with a selected deck dispatches through the authenticated Agent Deck API`,
+        starts.length === startsBefore && fakeApi.calls('POST', '/api/agent-runs').length === apiStartsBefore + 1
+          && request.body.deckId === `deck-run-${agent}` && request.body.client === agent && request.body.cwd === workdir
+          && request.body.tools === 'readonly' && request.body.prepareFinalization === undefined
+          && request.headers.authorization === `Bearer ${fakeApi.token}` && hermesRequests.length === hermesBefore && reply.startsWith('deck reply'),
+        JSON.stringify(request)
       );
     }
   }
+  check('canonical coding-agent dispatch spawns zero Agent Deck CLI runs', starts.length === 0, JSON.stringify(starts));
+  deckApi.setAgentDeckApiFetch(null);
+  deckAttempt.setAgentDeckApiPollIntervalForTests(null);
+  delete process.env.AGENT_DECK_RUN_TOKEN;
   deck.resetDeckRunProcessForTests();
   dispatch.setAgentDispatchHermesFetch(null);
   fs.rmSync(workdir, { recursive: true, force: true });

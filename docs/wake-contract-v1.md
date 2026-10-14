@@ -119,6 +119,29 @@ If the person names a reviewer, Tank uses it. Otherwise Tank may choose a distin
 launchable Agent; if no suitable choice is clear, Tank asks the person. Reviewer
 output advises Tank but does not itself trigger a revision.
 
+## Finalization decision
+
+After a prepared implementation or revision and its distinct read-only review
+both finish, the coordinator may explicitly accept or reject those exact Attempts:
+
+````text
+```botmancers-finalize
+{
+  "version": 1,
+  "decision": "accept",
+  "implementationAttemptId": "<canonical Attempt id>",
+  "reviewAttemptId": "<canonical Attempt id>",
+  "commitMessage": "Optional bounded message"
+}
+```
+````
+
+Free-form review or coordinator prose is never approval. The block cannot contain
+paths, digests, modes, a working directory, or an external run ID. Botmancers
+validates the two Attempts, source conversation, lineage, independent reviewer,
+and immutable candidate artifact, then submits the already-persisted manifest.
+A `reject` decision records that nothing was committed.
+
 ## Legacy compatibility
 
 Legacy `WAKE <name>: <message>` may be translated only to a v1 `conversation` Wake.

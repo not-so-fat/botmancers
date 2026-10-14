@@ -157,13 +157,21 @@ async function run() {
     el.click();
     return true;
   })()`);
-  const rightClick = text => evaluate(`(() => {
-    const el = [...document.querySelectorAll('.bot-row, .card')].find(node => node.textContent.includes(${JSON.stringify(text)}));
-    if (!el) throw new Error('no roster row ${text}');
-    const r = el.getBoundingClientRect();
-    el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 10 }));
-    return true;
-  })()`);
+  // Match the row by its exact agent name, not its preview text: Bob's
+  // preview "[Handing off to Alice]" must not be mistaken for Alice's row.
+  const rowByName = name => `[...document.querySelectorAll('.bot-row, .card')].find(node => node.querySelector('.bot-name')?.textContent.trim() === ${JSON.stringify(name)})`;
+  const rightClick = async name => {
+    const target = await evaluate(`(() => {
+      const el = ${rowByName(name)};
+      if (!el) throw new Error('no roster row ${name}');
+      el.scrollIntoView({ block: 'center' });
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 10 }));
+      return el.querySelector('.bot-name').textContent.trim();
+    })()`);
+    console.log(`  context menu opened on: ${target}`);
+    check(target === name, `row menu targets ${name}`);
+  };
   const press = async key => {
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: key === 'Escape' ? 27 : 13 });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: key === 'Escape' ? 27 : 13 });
@@ -218,7 +226,7 @@ async function run() {
     await sleep(200);
     if (await evaluate("!!document.querySelector('form.bot-form')")) await click('button', 'Cancel');
 
-    await evaluate(`[...document.querySelectorAll('.bot-row')].find(n => n.textContent.includes('Bob')).click()`);
+    await evaluate(`${rowByName('Bob')}.click()`);
     await waitFor("document.querySelector('.composer textarea')", 'composer');
     await typeInto('.composer textarea', '@');
     await waitFor("document.querySelector('.mention-list')", 'mention list');
@@ -242,9 +250,18 @@ async function run() {
     await click('.row-menu [role=menuitem]', 'Hide from sidebar');
     await waitFor("[...document.querySelectorAll('button.pin-word')].some(b => b.textContent.trim() === 'Hidden')", 'Hidden toggle');
     await click('button.pin-word', 'Hidden');
-    await sleep(300);
-    await shot('hidden-agents');
-    await click('.card button.pin-word', 'Unhide');
+    await waitFor("[...document.querySelectorAll('.card-name')].some(n => n.textContent.trim() === 'Alice')", 'Alice in hidden agents');
+    await evaluate(`[...document.querySelectorAll('.card-name')].find(n => n.textContent.trim() === 'Alice').closest('.card').scrollIntoView({ block: 'center' })`);
+    await shot('hidden-agents', async () => {
+      const hidden = await evaluate(`(() => {
+        const card = [...document.querySelectorAll('.card-name')].find(n => n.textContent.trim() === 'Alice').closest('.card');
+        const r = card.getBoundingClientRect();
+        return { names: [...document.querySelectorAll('.card-name')].map(n => n.textContent.trim()), inView: r.top >= 0 && r.bottom <= innerHeight };
+      })()`);
+      console.log(`  hidden agents: ${JSON.stringify(hidden.names)}`);
+      checkFn(hidden.names.includes('Alice') && hidden.inView, 'hidden-agents card shows Alice in view');
+    });
+    await evaluate(`[...document.querySelectorAll('.card-name')].find(n => n.textContent.trim() === 'Alice').closest('.card').querySelector('button.pin-word').click()`);
     await sleep(300);
 
     await rightClick('Bob');

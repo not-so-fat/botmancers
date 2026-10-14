@@ -29,7 +29,9 @@ bot's coding-agent path is configured separately and contains:
 * Agent Deck deck name;
 * working directory.
 
-Botmancers launches coding agents through `agent-deck run`. A runtime may be
+Botmancers launches canonical coding-agent Attempts through Agent Deck's
+authenticated public run API. The older `agent-deck run` composite remains
+isolated compatibility code until its retirement ticket. A runtime may be
 offered in the UI only when its local launch path is real and available.
 Botmancers does not embed or require an OpenAI-compatible example model loop.
 
@@ -315,7 +317,7 @@ descendant-cascade behavior is post-gate.
    offered as a selectable option.
 3. In the existing conversation, the user asks the bot to implement a change
    and have it reviewed.
-4. The bot launches the configured coding agent through `agent-deck run` and
+4. The bot launches the configured coding agent through Agent Deck's public run API and
    records the returned run and session references.
 5. When implementation finishes, the bot hands the result to a configured
    reviewer agent in the same conversation.

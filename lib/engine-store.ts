@@ -763,6 +763,208 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    name: 'reviewed_git_finalization',
+    up: db => {
+      db.exec(`
+        -- NOT-487: reviewed Git finalization through Agent Deck
+        -- (docs/design/2026-10-13-git-finalization-contract.md). Rows hold
+        -- only public Agent Deck identifiers, repository-relative paths,
+        -- digests, and modes: never file contents, host paths, or the
+        -- Agent Deck bearer.
+        --
+        -- Public baseline of a prepared edit Attempt, captured before model
+        -- work. Set once.
+        CREATE TABLE attempt_finalization_baselines (
+          attempt_id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL,
+          external_run_id TEXT NOT NULL,
+          baseline_ref TEXT NOT NULL,
+          baseline_digest TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (attempt_id) REFERENCES work_attempts(id),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+
+        -- The ordered candidate manifest Agent Deck reported once the
+        -- prepared run was terminal: the immutable review evidence that a
+        -- finalization submits unchanged.
+        CREATE TABLE candidate_manifests (
+          id TEXT PRIMARY KEY,
+          attempt_id TEXT NOT NULL UNIQUE,
+          request_id TEXT NOT NULL,
+          conversation_id TEXT NOT NULL,
+          external_run_id TEXT NOT NULL,
+          baseline_ref TEXT NOT NULL,
+          baseline_digest TEXT NOT NULL,
+          base_commit TEXT NOT NULL,
+          manifest_digest TEXT NOT NULL,
+          files TEXT NOT NULL,
+          file_count INTEGER NOT NULL CHECK (file_count >= 0),
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (attempt_id) REFERENCES work_attempts(id),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id),
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        );
+
+        -- One accepted finalization decision and its outcome. The request
+        -- body is exactly what was (or will be) submitted; the idempotency
+        -- key is derived from the explicit acceptance event, implementation
+        -- Attempt, review, and manifest. Replay and restart submit the same
+        -- request, while a later acceptance can retry a terminal non-commit.
+        CREATE TABLE finalizations (
+          id TEXT PRIMARY KEY,
+          idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) > 0),
+          conversation_id TEXT NOT NULL,
+          decision_event_id TEXT NOT NULL,
+          decision_request_id TEXT NOT NULL,
+          coordinator_agent_id TEXT NOT NULL,
+          implementation_request_id TEXT NOT NULL,
+          implementation_attempt_id TEXT NOT NULL,
+          review_request_id TEXT NOT NULL,
+          review_attempt_id TEXT NOT NULL,
+          manifest_id TEXT NOT NULL,
+          external_run_id TEXT NOT NULL,
+          request_body TEXT NOT NULL,
+          request_hash TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('preparing', 'committed', 'blocked', 'failed', 'canceled')),
+          submitted_at INTEGER,
+          reason_code TEXT,
+          reason TEXT,
+          commit_id TEXT,
+          tree_id TEXT,
+          parent_commit TEXT,
+          result_manifest_digest TEXT,
+          file_count INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          finished_at INTEGER,
+          CHECK ((state = 'preparing') = (finished_at IS NULL)),
+          CHECK (state <> 'committed' OR commit_id IS NOT NULL),
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (implementation_request_id) REFERENCES work_requests(id),
+          FOREIGN KEY (implementation_attempt_id) REFERENCES work_attempts(id),
+          FOREIGN KEY (review_request_id) REFERENCES work_requests(id),
+          FOREIGN KEY (manifest_id) REFERENCES candidate_manifests(id)
+        );
+        CREATE INDEX idx_finalizations_open ON finalizations(created_at) WHERE finished_at IS NULL;
+        CREATE INDEX idx_finalizations_attempt ON finalizations(implementation_attempt_id);
+
+        CREATE TRIGGER trg_attempt_finalization_baselines_fk BEFORE INSERT ON attempt_finalization_baselines
+        BEGIN
+          SELECT RAISE(ABORT, 'attempt finalization baseline does not match its Attempt')
+            WHERE NOT EXISTS (
+              SELECT 1 FROM work_attempts
+              WHERE id = NEW.attempt_id AND request_id = NEW.request_id AND external_run_id = NEW.external_run_id
+            );
+        END;
+        CREATE TRIGGER trg_attempt_finalization_baselines_immutable BEFORE UPDATE ON attempt_finalization_baselines
+        BEGIN
+          SELECT RAISE(ABORT, 'attempt_finalization_baselines are immutable');
+        END;
+        CREATE TRIGGER trg_candidate_manifests_fk BEFORE INSERT ON candidate_manifests
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: candidate_manifests.attempt_id')
+            WHERE NOT EXISTS (
+              SELECT 1 FROM work_attempts a
+              JOIN work_requests r ON r.id = a.request_id
+              JOIN attempt_finalization_baselines b ON b.attempt_id = a.id
+              WHERE a.id = NEW.attempt_id AND a.request_id = NEW.request_id
+                AND a.external_run_id = NEW.external_run_id
+                AND r.source_conversation_id = NEW.conversation_id
+                AND b.external_run_id = NEW.external_run_id
+                AND b.baseline_ref = NEW.baseline_ref AND b.baseline_digest = NEW.baseline_digest
+            );
+        END;
+        CREATE TRIGGER trg_candidate_manifests_immutable BEFORE UPDATE ON candidate_manifests
+        BEGIN
+          SELECT RAISE(ABORT, 'candidate_manifests are immutable');
+        END;
+        CREATE TRIGGER trg_finalizations_fk BEFORE INSERT ON finalizations
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: finalizations.manifest_id')
+            WHERE NOT EXISTS (
+              SELECT 1 FROM candidate_manifests m
+              JOIN work_attempts ia ON ia.id = NEW.implementation_attempt_id
+              JOIN work_attempts ra ON ra.id = NEW.review_attempt_id
+              JOIN work_requests ir ON ir.id = NEW.implementation_request_id
+              JOIN work_requests rr ON rr.id = NEW.review_request_id
+              JOIN work_requests dr ON dr.id = NEW.decision_request_id
+              WHERE m.id = NEW.manifest_id AND m.attempt_id = ia.id AND m.request_id = ir.id
+                AND m.external_run_id = NEW.external_run_id
+                AND ia.request_id = ir.id AND ra.request_id = rr.id
+                AND ir.source_conversation_id = NEW.conversation_id
+                AND rr.source_conversation_id = NEW.conversation_id
+                AND dr.source_conversation_id = NEW.conversation_id
+                AND dr.target_agent_id = NEW.coordinator_agent_id
+            );
+        END;
+        CREATE TRIGGER trg_finalizations_immutable BEFORE UPDATE OF
+          id, idempotency_key, conversation_id, decision_event_id, decision_request_id, coordinator_agent_id,
+          implementation_request_id, implementation_attempt_id, review_request_id, review_attempt_id,
+          manifest_id, external_run_id, request_body, request_hash, created_at
+        ON finalizations
+        BEGIN
+          SELECT RAISE(ABORT, 'finalizations decision and request are immutable');
+        END;
+        CREATE TRIGGER trg_finalizations_terminal BEFORE UPDATE ON finalizations
+        WHEN OLD.finished_at IS NOT NULL
+        BEGIN
+          SELECT RAISE(ABORT, 'finished finalizations are immutable');
+        END;
+        CREATE TRIGGER trg_finalizations_submitted BEFORE UPDATE OF submitted_at ON finalizations
+        WHEN OLD.submitted_at IS NOT NULL AND NEW.submitted_at IS NOT OLD.submitted_at
+        BEGIN
+          SELECT RAISE(ABORT, 'finalizations submitted_at is set once');
+        END;
+
+        -- Conversation projection gains the finalization lifecycle kinds.
+        -- SQLite cannot widen a CHECK in place, so the table is rebuilt
+        -- with every row kept.
+        CREATE TABLE conversation_events_v10 (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          engine_event_id TEXT NOT NULL,
+          part INTEGER NOT NULL CHECK (part >= 0),
+          request_id TEXT NOT NULL,
+          request_sequence INTEGER NOT NULL,
+          attempt_id TEXT,
+          wake_id TEXT,
+          kind TEXT NOT NULL CHECK (kind IN (
+            'wake_accepted', 'wake_blocked', 'request_queued', 'request_blocked', 'request_running',
+            'request_waiting', 'request_completed', 'request_failed', 'request_cancelled',
+            'question', 'result', 'artifact',
+            'finalization_preparing', 'finalization_committed', 'finalization_blocked',
+            'finalization_failed', 'finalization_canceled', 'finalization_rejected'
+          )),
+          state TEXT CHECK (state IN (${stateList})),
+          text TEXT NOT NULL,
+          data TEXT NOT NULL,
+          sort_at INTEGER NOT NULL,
+          request_created_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (engine_event_id, part),
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (engine_event_id) REFERENCES engine_events(id),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        INSERT INTO conversation_events_v10 SELECT
+          id, conversation_id, engine_event_id, part, request_id, request_sequence, attempt_id, wake_id,
+          kind, state, text, data, sort_at, request_created_at, created_at
+        FROM conversation_events;
+        DROP TABLE conversation_events;
+        ALTER TABLE conversation_events_v10 RENAME TO conversation_events;
+        CREATE INDEX idx_conversation_events_order
+          ON conversation_events(conversation_id, sort_at, request_created_at, request_id, request_sequence, part);
+        CREATE INDEX idx_conversation_events_request ON conversation_events(request_id);
+        CREATE TRIGGER trg_conversation_events_immutable BEFORE UPDATE ON conversation_events
+        BEGIN
+          SELECT RAISE(ABORT, 'conversation_events are immutable');
+        END;
+      `);
+    },
+  },
 ];
 
 // Requests whose events the running aggregate cleanup may delete, per
@@ -1432,6 +1634,12 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   // here, only for the duration of this delete.
   // Projections of removed requests go first: they name the events.
   db.prepare(`DELETE FROM conversation_events WHERE request_id IN ${inSet}`).run(list(requests));
+  // NOT-487: finalization evidence goes with the requests it names.
+  db.prepare(
+    `DELETE FROM finalizations WHERE implementation_request_id IN ${inSet} OR review_request_id IN ${inSet} OR decision_request_id IN ${inSet}`
+  ).run(list(requests), list(requests), list(requests));
+  db.prepare(`DELETE FROM candidate_manifests WHERE request_id IN ${inSet}`).run(list(requests));
+  db.prepare(`DELETE FROM attempt_finalization_baselines WHERE request_id IN ${inSet}`).run(list(requests));
   db.prepare(`DELETE FROM conversation_projection_cursors WHERE request_id IN ${inSet}`).run(list(requests));
   const authorized = purgeSet(db);
   for (const id of requests) authorized.add(id);
