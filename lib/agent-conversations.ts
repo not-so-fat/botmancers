@@ -18,7 +18,9 @@
 // Idempotency: (principal kind, principal id, idempotency key) is unique.
 // An exact retry returns the original request; the same key with a
 // different payload fails with idempotency_conflict and writes nothing.
-// No retry policy runs here: a failed request stays failed.
+// NOT-473: a failed Attempt is retried only under the request's stored
+// bounded retry policy (one Attempt by default, so a failed request stays
+// failed); cancellation and deadlines go through lib/work-request-control.
 //
 // Existing UI threads ('bot'/'group' conversations) are readable here
 // through the compatibility participants bound in ./db; they stay
@@ -493,9 +495,10 @@ async function runTurn(requestId: string): Promise<boolean> {
       const claim = dispatcher.claim(requestId, { expectedVersion: request.version, data: { agent } });
       if (!claim.ok) return null;
       if (prepared) {
-        const deadlineAt = dispatcher.control.attemptDeadlineFor(claim.request, dispatcher.now());
+        const startedAt = dispatcher.now();
+        const deadlineAt = dispatcher.control.attemptDeadlineFor(claim.request, startedAt);
         const input = { ...prepared.input, deadlineAt, signal: controller.signal };
-        const attempt = beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input, snapshot });
+        const attempt = beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input, snapshot, now: startedAt });
         dispatcher.recordLaunchIntent(claim.lease, attempt.attempt.id, prepared.adapter.name, prepared.adapter.launchIntent?.(attempt.input) ?? null);
         return { lease: claim.lease, attempt };
       }
@@ -578,7 +581,19 @@ function eligibleRetryIds(): string[] {
 // not get.
 async function stopAbandoned(abandoned: AbandonedAttempt): Promise<void> {
   const local = localWork.get(abandoned.requestId);
-  if (local && local.attemptId === abandoned.attemptId) local.controller.abort();
+  if (local && local.attemptId === abandoned.attemptId) {
+    local.controller.abort();
+    // The abandoned worker may never return (a stalled runtime). Keep
+    // waiting for it under its own key so a retry of the request can
+    // start now instead of joining it.
+    const running = inFlight.get(abandoned.requestId);
+    if (running) {
+      const key = `abandoned:${abandoned.attemptId}`;
+      inFlight.delete(abandoned.requestId);
+      inFlight.set(key, running);
+      void running.finally(() => { if (inFlight.get(key) === running) inFlight.delete(key); });
+    }
+  }
   const reconciler = abandoned.transport ? adapterForTransport(abandoned.transport)?.reconciler ?? null : null;
   let status: 'requested' | 'failed' | 'unsupported' | 'not_launched';
   if (!abandoned.externalRunId) status = 'not_launched';
@@ -907,7 +922,7 @@ export function sweepDispatch(): Promise<void> {
     tasks.push(promise);
   }
   drainDeferred();
-  for (const id of eligibleRetryIds()) if (!inFlight.has(id)) tasks.push(startAgentDispatch(id));
+  for (const id of eligibleRetryIds()) if (!inFlight.has(id)) void startAgentDispatch(id);
   return Promise.all(tasks).then(() => undefined);
 }
 
@@ -978,12 +993,12 @@ const inFlight = new Map<string, Promise<void>>();
 export function startAgentDispatch(requestId: string): Promise<void> {
   const running = inFlight.get(requestId);
   if (running) return running;
-  const promise = runDispatch(requestId)
+  const promise: Promise<void> = runDispatch(requestId)
     .catch(error => {
       console.error('Agent dispatch failed unexpectedly:', error);
     })
     .finally(() => {
-      inFlight.delete(requestId);
+      if (inFlight.get(requestId) === promise) inFlight.delete(requestId);
     });
   inFlight.set(requestId, promise);
   return promise;
