@@ -487,10 +487,11 @@ async function main() {
     .map(m => (m.content.match(/^\[(Deck [a-z]+)\]/) || [])[1])
     .filter(Boolean);
   log(`  observation types: ${observed6.join(' -> ')}`);
-  assert(
-    JSON.stringify(observed6) === JSON.stringify(['Deck handoff', 'Deck run', 'Deck review', 'Deck resume', 'Deck result']),
-    'direct dispatch posts the ordered deck observations'
-  );
+  // NOT-471: an ordinary message is one Agent turn, not the composite
+  // implement/review/resume sequence.
+  assert(observed6.length === 0, 'direct dispatch posts no composite deck observations');
+  const replies6 = thread6.filter(m => m.sender_type === 'bot' && m.sender_id === coder.id);
+  assert(replies6.length === 1 && replies6[0].content === 'output of run-deck-1', 'direct dispatch posts the one run\'s reply');
   const implStart6 = deckRecorded6.find(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'deck-id-9');
   assert(
     !!implStart6 && implStart6.includes('--client') && implStart6.includes('codex') &&
@@ -499,11 +500,10 @@ async function main() {
   );
   const launches6 = deckRecorded6.filter(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'deck-id-9');
   assert(
-    JSON.stringify(launches6.map(a => a[a.indexOf('--tools') + 1])) === JSON.stringify(['edit', 'readonly', 'edit']),
-    'queue-driven composite workflow launches edit -> readonly -> edit'
+    JSON.stringify(launches6.map(a => a[a.indexOf('--tools') + 1])) === JSON.stringify(['readonly']),
+    'queue-driven coding-Agent turn launches exactly one readonly run'
   );
-  const resumeStart6 = deckRecorded6.find(a => a[1] === 'run' && a.includes('--resume'));
-  assert(!!resumeStart6 && resumeStart6.includes('ses-deck-impl'), 'direct dispatch resume reuses the original session ID');
+  assert(!deckRecorded6.some(a => a[1] === 'run' && a.includes('--resume')), 'direct dispatch never resumes a session');
   const chain6 = agent.getDelegationState(coderConv.id);
   assert(!!chain6 && chain6.handoffs === 0 && chain6.turns === 1, `direct dispatch consumes a turn, not a handoff (handoffs=${chain6 ? chain6.handoffs : '?'}, turns=${chain6 ? chain6.turns : '?'})`);
   assert(thread6.every(m => m.conversation_id === coderConv.id), 'all direct-dispatch observations stay in the originating thread');

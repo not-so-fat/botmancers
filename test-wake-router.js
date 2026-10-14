@@ -124,7 +124,7 @@ function runMain() {
   assert(policy.limits.maxAttempts === 3 && policy.root_wake_id === w1.id, 'policy snapshot keeps limits and root Wake');
   assert(w1.root_wake_id === w1.id && w1.parent_request_id === root.id && w1.root_request_id === root.id && w1.depth === 1, 'Wake row carries durable lineage');
   const events1 = engine.listEvents(r1.id);
-  assert(events1.length === 1 && events1[0].type === 'accepted', 'one accepted engine event');
+  assert(events1.map(e => e.type).join(',') === 'accepted,policy_selected', 'one accepted engine event plus its policy selection');
 
   console.log('Duplicate processing');
   for (let i = 0; i < 3; i++) {
@@ -132,7 +132,7 @@ function runMain() {
     assert(again.length === 1 && !again[0].created && again[0].wake.id === w1.id && again[0].request.id === r1.id, `reprocess ${i + 1} returns the same Wake and request`);
   }
   assert(sameCounts(counts(), after1), 'reprocessing wrote no rows');
-  assert(engine.listEvents(r1.id).length === 1, 'no duplicate accepted event');
+  assert(engine.listEvents(r1.id).length === 2, 'no duplicate accepted event');
   const reordered = messages.create(conversation.id, 'bot', block({ objective: implEnvelope.objective, executionKind: 'implementation', limits: { maxAttempts: 3 }, target: 'Dev', version: 1 }), tank.id);
   const keyA = wake.wakeIdempotencyKey(m1.id, wake.parseWakes(m1.content)[0]).split(':').pop();
   const keyB = wake.wakeIdempotencyKey(reordered.id, wake.parseWakes(reordered.content)[0]).split(':').pop();
@@ -169,7 +169,7 @@ function runMain() {
   assert(configReq.state === 'blocked' && /^target_unconfigured: .*Agent Deck/.test(configReq.state_reason), 'unconfigured target: blocked Work Request with reason');
   const tempReq = engine.getWorkRequest(blockedTemp.work_request_id);
   assert(blockedTemp.status === 'blocked' && blockedTemp.reason_code === 'target_unavailable' && tempReq.state === 'blocked' && tempReq.state_reason === 'target_unavailable: Flaky is restarting.', 'temporarily unavailable target: blocked with reason');
-  assert(engine.listEvents(tempReq.id).map(e => e.type).join(',') === 'accepted,state_changed', 'blocked request records accepted then blocked');
+  assert(engine.listEvents(tempReq.id).map(e => e.type).join(',') === 'accepted,policy_selected,state_changed', 'blocked request records accepted, policy, then blocked');
   assert(groupWake.status === 'rejected' && groupWake.reason_code === 'target_is_group' && groupWake.work_request_id === null, 'a Group is never a Wake target');
   assert(third.every(entry => entry.wake.status !== 'accepted' && (entry.request === null || entry.request.state !== 'queued')), 'no failure is reported as success');
   const after3 = counts();

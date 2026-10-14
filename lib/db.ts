@@ -500,6 +500,13 @@ if (!messageColumns.some(column => column.name === 'sender_kind')) {
 if (!messageColumns.some(column => column.name === 'request_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN request_id TEXT');
 }
+// NOT-471: a UI turn accepted through conversation intake names its
+// canonical Work Request, so the agent loop dispatches that request
+// instead of choosing a workflow itself.
+const queueColumns = db.prepare('PRAGMA table_info(processing_queue)').all() as { name: string }[];
+if (!queueColumns.some(column => column.name === 'work_request_id')) {
+  db.exec('ALTER TABLE processing_queue ADD COLUMN work_request_id TEXT');
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversation_participants (
@@ -634,6 +641,7 @@ export interface QueueItem {
   conversation_id: string;
   bot_id: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
+  work_request_id?: string | null;
   created_at: number;
   started_at?: number;
   completed_at?: number;
@@ -1288,18 +1296,19 @@ export const queue = {
     ).all(conversationId) as QueueItem[];
   },
 
-  enqueue: (conversationId: string, botId: string): QueueItem => {
+  enqueue: (conversationId: string, botId: string, workRequestId: string | null = null): QueueItem => {
     const item: QueueItem = {
       id: randomUUID(),
       conversation_id: conversationId,
       bot_id: botId,
       status: 'pending',
+      work_request_id: workRequestId,
       created_at: Date.now(),
     };
     
     db.prepare(
-      'INSERT INTO processing_queue (id, conversation_id, bot_id, status, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(item.id, item.conversation_id, item.bot_id, item.status, item.created_at);
+      'INSERT INTO processing_queue (id, conversation_id, bot_id, status, work_request_id, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(item.id, item.conversation_id, item.bot_id, item.status, item.work_request_id, item.created_at);
     
     return item;
   },

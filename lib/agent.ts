@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { bots, conversations, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines, wakeTargets } from './db';
+import { bots, conversations, engine, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines, wakeTargets } from './db';
 import { parseApprovalCode, parseDraft, parseFileNames, serializeDraft } from './draft';
 import { createDraft, parseDraftRequest } from './draft-producer';
 import {
@@ -50,12 +50,17 @@ import {
   setApprovalMessage,
   ApprovalActionRefused,
 } from './approvals';
+// NOT-471: the composite implement/review/resume path
+// (delegateCodingViaDeck) is deliberately not imported here: an ordinary
+// coding-Agent turn is one Attempt. It stays reachable only through the
+// explicit compatibility gate in ./agent-deck-run.
 import {
-  delegateCodingViaDeck,
+  createAgentDeckAttemptAdapter,
   parseDeckRuntime,
-  DECK_REVIEW_FOCUS_DEFAULT,
+  type DeckRuntime,
 } from './agent-deck-run';
-import type { DeckDelegationResult } from './agent-deck-run';
+import { startAgentDispatch } from './agent-conversations';
+import { selectExecutionPolicy } from './execution-policy';
 import {
   agentTransport,
   resolveAgent,
@@ -665,31 +670,80 @@ async function processAgentDeckTurn(args: {
     rememberedFacts,
     AGENT_DECK_TRANSPORT
   );
-  let deckDelegation: DeckDelegationResult | null = null;
-  let deckFailed = false;
-  try {
-    deckDelegation = await delegateCodingViaDeck({
-      conversationId: item.conversation_id,
-      botId: bot.id,
-      deck: resolved.deck_id,
-      client,
-      cwd,
-      task: task.trim(),
-      reviewFocus: DECK_REVIEW_FOCUS_DEFAULT,
-      isStopped: () => chain?.stopped ?? false,
-    });
-  } catch {
-    // [Deck failed] is already in the thread; the caller-managed return
-    // below still runs so the caller can report it.
-    deckFailed = true;
-  }
-  // A Stop-silent null (neither result nor failure) suppresses the
+  // NOT-471: one Agent turn per message, never an automatic
+  // implement/review/resume sequence. A turn accepted through conversation
+  // intake dispatches its canonical Work Request (one Attempt under that
+  // request's validated read-only policy); a turn without one (a legacy
+  // WAKE handoff, tick, or routine) runs one read-only Attempt on its task.
+  const answered = item.work_request_id
+    ? await runCanonicalDeckTurn(item.work_request_id, item, bot, client, resolved.deck_id)
+    : await runDirectDeckTurn({ item, bot, client, deck: resolved.deck_id, cwd, task: task.trim(), chain, delegated });
+  // A Stop-silent turn (neither result nor failure) suppresses the
   // return, like every other stopped path.
-  if ((deckDelegation || deckFailed) && chain && !chain.stopped) {
+  if (answered && chain && !chain.stopped) {
     const callerId = popCaller(chain, bot.id);
     if (callerId) queue.enqueue(item.conversation_id, callerId);
   }
   chainProcessQueue();
+}
+
+function postDeckFailed(item: QueueItem, bot: Bot, client: DeckRuntime, deck: string, error: string): void {
+  messages.create(item.conversation_id, 'bot', `[Deck failed] agent=${client} deck=${deck} error=${error.slice(0, 300)}`, bot.id);
+}
+
+// The canonical dispatcher (./agent-conversations) validates the policy
+// snapshot, persists one Attempt, and projects the reply into the source
+// conversation. A failed request posts its fixed failure text here so the
+// thread shows it. Returns whether the turn answered (reply or failure).
+async function runCanonicalDeckTurn(requestId: string, item: QueueItem, bot: Bot, client: DeckRuntime, deck: string): Promise<boolean> {
+  await startAgentDispatch(requestId);
+  const request = engine.getWorkRequest(requestId);
+  if (request?.state === 'failed') {
+    postDeckFailed(item, bot, client, deck, request.error_message ?? request.error_code ?? 'The agent runtime did not complete the turn.');
+    return true;
+  }
+  return request?.state === 'completed';
+}
+
+// One read-only Attempt for a turn with no canonical Work Request. A
+// delegated turn came from a legacy WAKE handoff, so it runs under the
+// legacy-Wake conversation rule; anything else is a direct conversation
+// turn. Either way the central policy selects read-only.
+async function runDirectDeckTurn(args: {
+  item: QueueItem;
+  bot: Bot;
+  client: DeckRuntime;
+  deck: string;
+  cwd: string;
+  task: string;
+  chain: DelegationChain | null;
+  delegated: boolean;
+}): Promise<boolean> {
+  const { item, bot, client, deck, cwd, task, chain, delegated } = args;
+  const selection = selectExecutionPolicy(delegated
+    ? { entryPoint: 'wake', executionKind: 'conversation', wakeSyntax: 'legacy' }
+    : { entryPoint: 'ui', executionKind: 'conversation' });
+  if (!selection.ok) {
+    postDeckFailed(item, bot, client, deck, selection.reason);
+    return true;
+  }
+  const result = await createAgentDeckAttemptAdapter().run({
+    target: { agentId: bot.id, agent: client },
+    prompt: { kind: 'text', text: task },
+    cwd,
+    deck,
+    toolProfile: selection.policy.tool_profile,
+    sessionBinding: null,
+    correlation: { conversationId: item.conversation_id },
+  });
+  // Stop promises no late messages; the run's outcome is discarded.
+  if (chain?.stopped) return false;
+  if (result.status !== 'completed' || result.output === null) {
+    postDeckFailed(item, bot, client, deck, result.failure?.message ?? `agent-deck run ${result.externalRunId ?? 'unknown'} failed`);
+    return true;
+  }
+  messages.create(item.conversation_id, 'bot', result.output, bot.id);
+  return true;
 }
 
 export async function processNextQueueItem(): Promise<boolean> {
