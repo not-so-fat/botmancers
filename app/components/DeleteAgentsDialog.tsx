@@ -6,7 +6,6 @@ import {
   DELETE_REMOVES_COPY,
   blockedReasonCopy,
   deleteConfirmLabel,
-  sharedConversationImpactCopy,
   type DeleteAgentRef,
   type DeletePreview,
 } from '@/lib/bot-deletion';
@@ -143,9 +142,6 @@ export default function DeleteAgentsDialog({ ids, onCancel, onDeleted }: {
               </div>
             ) : null}
             <p className="delete-copy">{DELETE_REMOVES_COPY}</p>
-            {preview.groups.length > 0 ? (
-              <p className="delete-copy" data-testid="delete-legacy-impact">{sharedConversationImpactCopy(preview.groups)}</p>
-            ) : null}
             <p className="delete-copy delete-keeps">{DELETE_KEEPS_COPY}</p>
           </>
         ) : null}

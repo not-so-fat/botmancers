@@ -252,9 +252,8 @@ async function run() {
     await click('.row-menu [role=menuitem]', 'Delete agent…');
     await waitFor("document.querySelector('[data-testid=delete-agents-dialog] .delete-names')", 'delete preview');
     await shot('delete-confirm', async () => {
-      const legacy = await evaluate(`document.querySelector('[data-testid=delete-legacy-impact]')?.textContent || ''`);
-      console.log(`  legacy disclosure: ${JSON.stringify(legacy)}`);
-      checkFn(/shared conversation/.test(legacy), 'delete confirmation discloses the stored legacy conversations the cascade would touch');
+      const legacy = await evaluate(`!!document.querySelector('[data-testid=delete-legacy-impact]')`);
+      checkFn(!legacy, 'delete confirmation shows no stored-group impact');
     });
     await click('[data-testid=delete-agents-dialog] button', 'Cancel');
     await sleep(200);

@@ -277,20 +277,12 @@ async function main() {
   assert((page.match(/<DeleteAgentsDialog/g) || []).length >= 1, 'row menu Delete routes through DeleteAgentsDialog');
   const panel = fs.readFileSync(path.join(ROOT, 'app', 'components', 'ManageAgentsPanel.tsx'), 'utf8');
   assert(/<DeleteAgentsDialog/.test(panel) && /Select all shown/.test(panel) && /Delete selected/.test(panel), 'Manage agents panel uses DeleteAgentsDialog with Select all shown and Delete selected');
-  assert(/delete-preview/.test(dialog) && /DELETE_REMOVES_COPY/.test(dialog) && /DELETE_KEEPS_COPY/.test(dialog) && /sharedConversationImpactCopy\(preview\.groups\)/.test(dialog), 'dialog renders the shared preview, permanent-data copy, and legacy shared-conversation impact (NOT-461)');
-  const visibleDialogCopy = dialog.split('\n').filter(line => !/^\s*(\/\/|import|\}|type )/.test(line) && !/preview\.groups|sharedConversationImpactCopy|DeleteGroupImpact/.test(line));
+  assert(/delete-preview/.test(dialog) && /DELETE_REMOVES_COPY/.test(dialog) && /DELETE_KEEPS_COPY/.test(dialog), 'dialog renders the shared preview and permanent-data copy');
+  assert(!/preview\.groups|delete-legacy-impact|sharedConversationImpactCopy|groupImpactLine/.test(dialog), 'dialog shows no stored-group impact (NOT-461)');
+  assert(!('sharedConversationImpactCopy' in deletion) && !('groupImpactLine' in deletion), 'no group-impact copy helpers remain (NOT-461)');
+  const visibleDialogCopy = dialog.split('\n').filter(line => !/^\s*(\/\/|import|\}|type )/.test(line));
   assert(!visibleDialogCopy.some(line => /group/i.test(line)), 'dialog renders no Group wording (NOT-461)');
-  const impactNone = deletion.sharedConversationImpactCopy([]);
-  const impactShrunk = deletion.sharedConversationImpactCopy([{ id: 'g1', name: 'G', outcome: 'shrunk', remaining: 2, newOwner: null }]);
-  const impactMixed = deletion.sharedConversationImpactCopy([
-    { id: 'g1', name: 'G', outcome: 'removed', remaining: 1, newOwner: null },
-    { id: 'g2', name: 'H', outcome: 'reassigned', remaining: 3, newOwner: null },
-  ]);
-  console.log(`  legacy impact copy: ${JSON.stringify([impactNone, impactShrunk, impactMixed])}`);
-  assert(impactNone === '', 'no legacy shared-conversation line when nothing stored is affected');
-  assert(/1 shared conversation\b/.test(impactShrunk) && !/removed with/.test(impactShrunk), 'shrunk legacy membership disclosed without a removal claim');
-  assert(/2 shared conversations/.test(impactMixed) && /1 drops below two agents and is permanently removed with its messages/.test(impactMixed), 'legacy conversations deleted by the cascade are disclosed before the no-undo confirm');
-  assert(![impactNone, impactShrunk, impactMixed].some(line => /group/i.test(line)), 'legacy impact copy uses no Group wording');
+  assert(!/group/i.test(deletion.DELETE_REMOVES_COPY), 'permanent-data copy uses no Group wording');
   console.log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }
