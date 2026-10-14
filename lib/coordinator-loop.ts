@@ -127,8 +127,11 @@ function bounded(text: string): string {
 // replyShown: the reply is already in the reader's history, so it is
 // referenced rather than repeated.
 export function resultEvidence(request: WorkRequest, replyShown = false): string {
+  const attempts = engine.listAttempts(request.id);
+  const attempt = attempts.length > 0 ? attempts[attempts.length - 1] : null;
   const lines = [
     `Work Request: ${request.id}`,
+    ...(attempt ? [`Attempt: ${attempt.id}`] : []),
     `Agent: ${agentName(request.target_agent_id)}`,
     `Execution kind: ${request.execution_kind}`,
     `State: ${request.state}`,
@@ -156,8 +159,8 @@ const NEXT_STEP = [
 // results only; approval is this block, never review prose.
 const FINALIZE_HINT = [
   'If this review satisfies you and the implementation has a candidate manifest, you may commit it by emitting',
-  'a botmancers-finalize block: {"version": 1, "decision": "accept", "implementationWorkRequest": "<id>",',
-  '"reviewWorkRequest": "<id>", "commitMessage": "<optional>"}, or "decision": "reject". Botmancers commits exactly',
+  'a botmancers-finalize block: {"version": 1, "decision": "accept", "implementationAttemptId": "<id>",',
+  '"reviewAttemptId": "<id>", "commitMessage": "<optional>"}, or "decision": "reject". Botmancers commits exactly',
   'the reviewed manifest; never list files or digests.',
 ].join(' ');
 

@@ -15,7 +15,7 @@
 //   before any adapter call, with the reason persisted;
 // - the composite implement/review/resume path is unreachable from
 //   default dispatch and runs only through its explicit compatibility gate.
-// Self-contained: isolated SQLite file, fake agent-deck process, no network.
+// Self-contained: isolated SQLite file, fake Agent Deck public API, no network.
 'use strict';
 
 const fs = require('fs');
@@ -55,42 +55,32 @@ const policy = jiti('./lib/execution-policy.ts');
 const router = jiti('./lib/wake-router.ts');
 const conversationsApi = jiti('./lib/agent-conversations.ts');
 const deckRun = jiti('./lib/agent-deck-run.ts');
+const deckApi = jiti('./lib/agent-deck-api.ts');
+const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
 const agent = jiti('./lib/agent.ts');
 const uiRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
 const raw = db.default;
 const { bots, conversations, messages, engine } = db;
 
-// Fake agent-deck CLI: every launch is recorded; runs end with one stable
-// session so a composite resume matches.
+// Fake Agent Deck API: every canonical launch is recorded. The legacy CLI
+// seam counts fallback and must stay unused.
 let launches = [];
-let runCounter = 0;
+const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
+const fakeDeck = createFakeAgentDeck();
+process.env.AGENT_DECK_RUN_TOKEN = fakeDeck.token;
+deckApi.setAgentDeckApiFetch(fakeDeck.fetch);
+deckAttempt.setAgentDeckApiPollIntervalForTests(1);
+fakeDeck.onStart = body => {
+  launches.push([
+    '--tools', body.tools, '--client', body.client,
+    ...(body.resumeSessionId ? ['--resume', body.resumeSessionId] : []),
+  ]);
+  return { result: `output ${launches.length}` };
+};
+let cliSpawns = 0;
 deckRun.setDeckRunProcess(async argv => {
-  if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
-    const runId = argv[3];
-    return {
-      stdout: JSON.stringify({
-        runId, deck: 'deck-x', client: 'codex', state: 'ended', sessionId: 'ses-1',
-        startedAt: '2026-10-13T00:00:00.000Z', lastLogTs: '2026-10-13T00:01:00.000Z',
-        logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
-      }),
-      stderr: '', exitCode: 0,
-    };
-  }
-  if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
-    const runId = argv[3];
-    const lines = [
-      JSON.stringify({ t: 'result', sessionId: 'ses-1', subtype: 'success', result: `output of ${runId}` }),
-      JSON.stringify({ t: 'end', sessionId: 'ses-1' }),
-    ].join('\n') + '\n';
-    return { stdout: lines, stderr: '', exitCode: 0 };
-  }
-  if (argv[0] === 'agent-deck' && argv[1] === 'run') {
-    launches.push(argv.slice());
-    runCounter += 1;
-    const runId = `run-${runCounter}`;
-    return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
-  }
-  return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
+  cliSpawns += 1;
+  return { stdout: '', stderr: `unexpected CLI fallback: ${argv.join(' ')}`, exitCode: 1 };
 });
 router.setWakeAvailabilityProbe(() => ({ available: true }));
 
@@ -283,7 +273,7 @@ async function main() {
     assert(attempts.length === 1 && attempts[0].tool_profile === 'readonly', `${agentType}: exactly one read-only Attempt`);
     assert(launches.length === 1 && flag(launches[0], '--tools') === 'readonly' && !launches[0].includes('--resume'),
       `${agentType}: one readonly launch, no resume (got ${launches.map(a => flag(a, '--tools')).join(',')})`);
-    assert(thread.length === 1 && thread[0].content === `output of run-${runCounter}` && !thread.some(m => /^\[Deck (handoff|review|resume|result)\]/.test(m.content)),
+    assert(thread.length === 1 && thread[0].content === 'output 1' && !thread.some(m => /^\[Deck (handoff|review|resume|result)\]/.test(m.content)),
       `${agentType}: one reply, no composite observations`);
   }
 
@@ -391,6 +381,10 @@ async function main() {
   }
 
   deckRun.setDeckRunProcess(null);
+  deckApi.setAgentDeckApiFetch(null);
+  deckAttempt.setAgentDeckApiPollIntervalForTests(null);
+  delete process.env.AGENT_DECK_RUN_TOKEN;
+  assert(cliSpawns === 0, 'canonical policy dispatch spawned zero Agent Deck CLI processes');
   router.setWakeAvailabilityProbe(null);
   console.log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

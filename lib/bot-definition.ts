@@ -47,8 +47,9 @@ export const DEFAULT_AGENT: BotAgent = AGENT_HERMES;
 
 // Launch adapter per agent. Every agent launches on its selected deck;
 // the adapter is only the transport that serves the turn. Hermes turns
-// run on the persistent Hermes gateway, the coding agents through
-// `agent-deck run --client <agent>`.
+// run on the persistent Hermes gateway. The historical `agent-deck-run`
+// transport key is retained for stored compatibility; canonical coding
+// Attempts map it to Agent Deck's HTTP API in lib/agent-dispatch.
 export type AgentTransport = 'hermes-gateway' | 'agent-deck-run';
 
 export const AGENT_TRANSPORTS: Record<BotAgent, AgentTransport> = {

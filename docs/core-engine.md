@@ -156,7 +156,8 @@ A sandboxed coding Agent owns working-tree edits but does not receive broader ho
 or `.git` authority merely to create a commit. Botmancers owns the workflow decision:
 it records the Agent Deck baseline reference, persists Agent Deck's terminal
 candidate path-and-digest manifest, obtains explicit reviewer and coordinator
-acceptance, and submits that same immutable manifest. Agent Deck owns the host-local
+acceptance naming the exact implementation and review Attempts, and submits that
+same immutable manifest. Agent Deck owns the host-local
 mechanism that discovers the candidate manifest, validates the approved copy, and
 creates one audited commit.
 

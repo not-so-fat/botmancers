@@ -179,15 +179,20 @@ function str(value: unknown): string | null {
 }
 
 function failureFor(status: number, body: Record<string, unknown> | null): AgentDeckApiError {
-  const deckCode = str(body?.error_code);
-  const deckMessage = str(body?.error);
+  const rawDeckCode = str(body?.error_code);
+  // Only Agent Deck's documented stable-code shape may leave the HTTP
+  // boundary. Arbitrary server text is never copied into durable state.
+  const deckCode = rawDeckCode && /^[A-Z][A-Z0-9_]{0,63}$/.test(rawDeckCode) ? rawDeckCode : null;
   if (status === 401) return new AgentDeckApiError('agent_deck_unauthorized', AGENT_DECK_API_MESSAGES.agent_deck_unauthorized, status, deckCode);
   if (status === 403) {
     return new AgentDeckApiError('agent_deck_forbidden', `${AGENT_DECK_API_MESSAGES.agent_deck_forbidden}${deckCode ? ` (${deckCode})` : ''}`, status, deckCode);
   }
   return new AgentDeckApiError(
     'agent_deck_rejected',
-    `Agent Deck rejected the request (${status}${deckCode ? ` ${deckCode}` : ''})${deckMessage ? `: ${deckMessage}` : '.'}`,
+    // Agent Deck-authored error prose is deliberately not propagated. It
+    // can contain echoed request diagnostics; the stable status/code are
+    // sufficient and are safe to persist in Attempt and conversation state.
+    `Agent Deck rejected the request (${status}${deckCode ? ` ${deckCode}` : ''}).`,
     status,
     deckCode
   );
@@ -281,11 +286,13 @@ export async function startAgentDeckRun(body: StartRunBody, idempotencyKey: stri
 
 export async function getAgentDeckRun(runId: string): Promise<AgentDeckRunStatus> {
   const data = await call('GET', `/api/agent-runs/${encodeURIComponent(runId)}`);
+  if (!str(data.runId) || !str(data.deckId) || !str(data.client)
+    || (data.tools !== 'edit' && data.tools !== 'readonly')) throw invalid('run status');
   return {
-    runId: str(data.runId) ?? runId,
-    deckId: String(data.deckId ?? ''),
-    client: String(data.client ?? ''),
-    tools: data.tools === 'edit' ? 'edit' : 'readonly',
+    runId: str(data.runId) as string,
+    deckId: str(data.deckId) as string,
+    client: str(data.client) as string,
+    tools: data.tools,
     state: runState(data.state),
     sessionId: str(data.sessionId),
     finalization: finalizationStatus(data.finalization),

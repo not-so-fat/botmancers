@@ -314,6 +314,80 @@ async function main() {
   assert(deck.resolveDeckForCwd === undefined, 'no working-directory deck resolution remains on the adapter');
   assert(deck.formatDeckHowTo === undefined, 'no directive how-to remains on the adapter');
 
+  // NOT-487: canonical Attempts use the authenticated public API. The
+  // CLI assertions above remain compatibility coverage only.
+  log('\nCanonical Agent Deck HTTP Attempt transport');
+  const { createFakeAgentDeck, sha } = require('./test-support/fake-agent-deck-api.js');
+  const deckApi = jiti('./lib/agent-deck-api.ts');
+  const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
+  const fakeApi = createFakeAgentDeck({ token: 'adg_agent_deck_run_secret_fixture' });
+  process.env.AGENT_DECK_RUN_TOKEN = fakeApi.token;
+  deckApi.setAgentDeckApiFetch(fakeApi.fetch);
+  deckAttempt.setAgentDeckApiPollIntervalForTests(1);
+  const canonical = deckAttempt.createAgentDeckApiAttemptAdapter();
+  const cliCallsBeforeApi = recorded.length;
+  const input = (attemptId, toolProfile, extra = {}) => ({
+    target: { agentId: `agent-${attemptId}`, agent: 'codex' },
+    prompt: { kind: 'conversation', system: 'system', history: [{ speakerLabel: 'Owner', fromAgent: false, content: 'work' }] },
+    deck: 'deck-public-api', cwd: '/workspace/public', toolProfile, sessionBinding: null,
+    correlation: { requestId: `request-${attemptId}`, attemptId }, ...extra,
+  });
+  fakeApi.onStart = body => ({
+    result: `${body.tools} done`,
+    files: body.prepareFinalization ? [{ path: 'src/api.ts', sha256: sha('api'), mode: '100644' }] : [],
+  });
+  const editResult = await canonical.run(input('implementation', 'edit', { prepareFinalization: true }));
+  const reviewResult = await canonical.run(input('review', 'readonly'));
+  const conversationResult = await canonical.run(input('conversation', 'readonly'));
+  const revisionResult = await canonical.run(input('revision', 'edit', {
+    prepareFinalization: true,
+    sessionBinding: { bindingId: 'binding-revision', externalSessionId: 'opaque-session-revision' },
+  }));
+  const starts = fakeApi.calls('POST').filter(call => call.path === '/api/agent-runs');
+  assert(editResult.status === 'completed' && editResult.finalization.candidate.ok, 'prepared edit reads terminal candidate changes through the API');
+  assert(reviewResult.status === 'completed' && reviewResult.finalization === undefined, 'readonly review never receives finalization evidence');
+  assert(conversationResult.status === 'completed' && conversationResult.finalization === undefined, 'readonly conversation never receives finalization evidence');
+  assert(revisionResult.status === 'completed' && revisionResult.externalSessionId === 'opaque-session-revision', 'revision resumes the opaque session through the API');
+  assert(starts[0].body.tools === 'edit' && starts[0].body.prepareFinalization === true, 'implementation sends edit plus prepareFinalization=true');
+  assert(starts[1].body.tools === 'readonly' && !Object.hasOwn(starts[1].body, 'prepareFinalization'), 'review sends readonly and never requests finalization');
+  assert(starts[2].body.tools === 'readonly' && !Object.hasOwn(starts[2].body, 'prepareFinalization'), 'conversation sends readonly and never requests finalization');
+  assert(starts[3].body.tools === 'edit' && starts[3].body.prepareFinalization === true
+    && starts[3].body.resumeSessionId === 'opaque-session-revision', 'revision sends edit, finalization preparation, and the opaque resume session');
+  assert(fakeApi.calls('GET', '/events').length >= 4 && fakeApi.calls('GET', '/changes').length === 2,
+    'canonical completion uses public events and changes endpoints');
+  assert(starts.every(call => call.headers.authorization === `Bearer ${fakeApi.token}`), 'every API launch authenticates with the server-only bearer header');
+  assert(recorded.length === cliCallsBeforeApi, 'canonical API Attempts spawn zero Agent Deck CLI processes');
+
+  fakeApi.onStart = () => ({ hold: true, result: 'must be canceled' });
+  const controller = new AbortController();
+  const cancelPromise = canonical.run(input('cancel', 'readonly', { signal: controller.signal }));
+  setImmediate(() => controller.abort());
+  const canceled = await cancelPromise;
+  assert(canceled.status === 'failed' && canceled.failure.category === 'cancelled', 'an interrupted Attempt reports cancellation');
+  assert(fakeApi.calls('POST', '/cancel').length === 1, 'interruption uses POST /api/agent-runs/:runId/cancel');
+
+  const secret = fakeApi.token;
+  delete process.env.AGENT_DECK_RUN_TOKEN;
+  const missing = await canonical.run(input('missing-token', 'readonly'));
+  assert(missing.failure.code === 'agent_deck_token_missing' && !JSON.stringify(missing).includes(secret), 'missing token fails with a stable actionable code and no bearer');
+  process.env.AGENT_DECK_RUN_TOKEN = 'invalid_fixture_bearer_must_not_escape';
+  const invalid = await canonical.run(input('invalid-token', 'readonly'));
+  assert(invalid.failure.code === 'agent_deck_unauthorized' && !JSON.stringify(invalid).includes(process.env.AGENT_DECK_RUN_TOKEN), 'invalid token fails safely without echoing the bearer');
+  process.env.AGENT_DECK_RUN_TOKEN = secret;
+  deckApi.setAgentDeckApiFetch(async () => { throw new Error(`network diagnostics ${secret}`); });
+  const unavailable = await canonical.run(input('unavailable-api', 'readonly'));
+  assert(unavailable.failure.code === 'agent_deck_unreachable' && !JSON.stringify(unavailable).includes(secret), 'unavailable API fails with a stable redacted reason');
+  deckApi.setAgentDeckApiFetch(async () => ({
+    status: 409,
+    json: async () => ({ success: false, error: `echoed ${secret}`, error_code: secret }),
+  }));
+  const rejectedApi = await canonical.run(input('rejected-api', 'readonly'));
+  assert(rejectedApi.failure.code === 'agent_deck_rejected' && !JSON.stringify(rejectedApi).includes(secret), 'Agent Deck-authored rejection text cannot echo the bearer into Attempt state');
+  assert(recorded.length === cliCallsBeforeApi, 'API authentication and availability failures never fall back to the CLI');
+  deckApi.setAgentDeckApiFetch(null);
+  deckAttempt.setAgentDeckApiPollIntervalForTests(null);
+  delete process.env.AGENT_DECK_RUN_TOKEN;
+
   // NOT-442 direct dispatch through the real queue loop: an ordinary
   // message to an Agent Deck bot launches the stored agent/deck/workdir
   // directly, while an ordinary message to a Hermes bot uses the Hermes

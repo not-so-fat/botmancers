@@ -130,6 +130,13 @@ async function finalizationEvidence(runId: string, status: AgentDeckRunStatus | 
   const base = { baselineRef: status.finalization.baselineRef, baselineDigest: status.finalization.baselineDigest };
   try {
     const changes = await getAgentDeckRunChanges(runId);
+    if (changes.baselineRef !== status.finalization.baselineRef
+      || changes.baselineDigest !== status.finalization.baselineDigest) {
+      return {
+        ...base,
+        candidate: { ok: false, code: 'BASELINE_MISMATCH', message: 'Agent Deck returned candidate evidence for a different baseline.' },
+      };
+    }
     return {
       ...base,
       candidate: {

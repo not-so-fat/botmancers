@@ -7,9 +7,9 @@
 // (AGENT_TRANSPORTS) serves the turn. Completion is typed by the adapter contract, never read
 // from reply prose: a Hermes turn completes when the gateway answers the
 // chat request with HTTP 200, and a coding-agent turn completes only when
-// `agent-deck run log --follow` reports an end event and run status is not
-// error/died. The detach acknowledgement from `agent-deck run` is a
-// transport acknowledgement, not completion.
+// the public Agent Deck event API reports a terminal result and status is
+// not error/died. The start acknowledgement is transport acceptance, not
+// completion.
 //
 // Failure messages are fixed per category so adapter output (which can
 // carry URLs, stderr, or gateway error bodies) never reaches the caller.
@@ -28,8 +28,6 @@ import { createHermesAttemptAdapter } from './hermes-attempt';
 import { createAgentDeckApiAttemptAdapter } from './agent-deck-attempt';
 import { AGENT_DECK_API_MESSAGES, type AgentDeckApiErrorCode } from './agent-deck-api';
 import {
-  getAgentDeckServerUrl,
-  isLocalAgentDeckUrl,
   resolveAndEnsureBotWorkdir,
 } from './agent-deck-settings';
 import { TOOL_PROFILE_FOR_KIND, type ToolProfile } from './engine-store';
@@ -154,9 +152,6 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
         cwd: null,
       },
     };
-  }
-  if (!isLocalAgentDeckUrl(getAgentDeckServerUrl())) {
-    throw new DispatchFailure('agent_unavailable', 'The agent runtime is not reachable from this engine.');
   }
   let cwd: string;
   try {

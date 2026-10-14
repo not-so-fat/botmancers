@@ -14,8 +14,8 @@ export type FinalizeDecisionKind = 'accept' | 'reject';
 export interface FinalizeDecision {
   version: 1;
   decision: FinalizeDecisionKind;
-  implementationWorkRequest: string;
-  reviewWorkRequest: string;
+  implementationAttemptId: string;
+  reviewAttemptId: string;
   commitMessage?: string;
 }
 
@@ -30,7 +30,7 @@ export interface FinalizeDecisionCandidate {
 
 export const FINALIZE_COMMIT_MESSAGE_MAX = 2000;
 
-const KEYS = new Set(['version', 'decision', 'implementationWorkRequest', 'reviewWorkRequest', 'commitMessage']);
+const KEYS = new Set(['version', 'decision', 'implementationAttemptId', 'reviewAttemptId', 'commitMessage']);
 
 function reference(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= 160;
@@ -43,13 +43,13 @@ export function validateFinalizeDecision(value: unknown): FinalizeDecisionValida
   if (unknown.length > 0) return { ok: false, reason: `unknown field ${unknown.join(', ')} (the manifest is never supplied in a decision)` };
   if (input.version !== 1) return { ok: false, reason: 'version must be 1' };
   if (input.decision !== 'accept' && input.decision !== 'reject') return { ok: false, reason: 'decision must be "accept" or "reject"' };
-  if (!reference(input.implementationWorkRequest)) return { ok: false, reason: 'implementationWorkRequest must name a Work Request' };
-  if (!reference(input.reviewWorkRequest)) return { ok: false, reason: 'reviewWorkRequest must name a Work Request' };
+  if (!reference(input.implementationAttemptId)) return { ok: false, reason: 'implementationAttemptId must name an Attempt' };
+  if (!reference(input.reviewAttemptId)) return { ok: false, reason: 'reviewAttemptId must name an Attempt' };
   const decision: FinalizeDecision = {
     version: 1,
     decision: input.decision,
-    implementationWorkRequest: input.implementationWorkRequest.trim(),
-    reviewWorkRequest: input.reviewWorkRequest.trim(),
+    implementationAttemptId: input.implementationAttemptId.trim(),
+    reviewAttemptId: input.reviewAttemptId.trim(),
   };
   if (input.commitMessage !== undefined) {
     if (typeof input.commitMessage !== 'string' || input.commitMessage.trim().length === 0

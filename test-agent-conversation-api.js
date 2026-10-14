@@ -3,8 +3,9 @@
 //
 // Self-contained: isolated SQLite file pre-seeded with pre-NOT-446 UI
 // rows, a test-only authenticator injected at the API boundary, a stub
-// Hermes gateway at the fetch seam, and a stub `agent-deck` process at the
-// run-adapter seam. No dev server, no network, no real runs.
+// Hermes gateway and Agent Deck public API at their fetch seams. The legacy
+// Agent Deck process seam counts unexpected CLI fallback. No dev server,
+// network, or real runs.
 //
 // Covers: fail-closed auth and principal mismatch with zero writes, all
 // three principal kinds against Hermes and Agent Deck agents, exact-retry

@@ -850,6 +850,14 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX idx_finalizations_open ON finalizations(created_at) WHERE finished_at IS NULL;
         CREATE INDEX idx_finalizations_attempt ON finalizations(implementation_attempt_id);
 
+        CREATE TRIGGER trg_attempt_finalization_baselines_fk BEFORE INSERT ON attempt_finalization_baselines
+        BEGIN
+          SELECT RAISE(ABORT, 'attempt finalization baseline does not match its Attempt')
+            WHERE NOT EXISTS (
+              SELECT 1 FROM work_attempts
+              WHERE id = NEW.attempt_id AND request_id = NEW.request_id AND external_run_id = NEW.external_run_id
+            );
+        END;
         CREATE TRIGGER trg_attempt_finalization_baselines_immutable BEFORE UPDATE ON attempt_finalization_baselines
         BEGIN
           SELECT RAISE(ABORT, 'attempt_finalization_baselines are immutable');
@@ -857,7 +865,16 @@ const MIGRATIONS: Migration[] = [
         CREATE TRIGGER trg_candidate_manifests_fk BEFORE INSERT ON candidate_manifests
         BEGIN
           SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: candidate_manifests.attempt_id')
-            WHERE NOT EXISTS (SELECT 1 FROM work_attempts WHERE id = NEW.attempt_id AND request_id = NEW.request_id);
+            WHERE NOT EXISTS (
+              SELECT 1 FROM work_attempts a
+              JOIN work_requests r ON r.id = a.request_id
+              JOIN attempt_finalization_baselines b ON b.attempt_id = a.id
+              WHERE a.id = NEW.attempt_id AND a.request_id = NEW.request_id
+                AND a.external_run_id = NEW.external_run_id
+                AND r.source_conversation_id = NEW.conversation_id
+                AND b.external_run_id = NEW.external_run_id
+                AND b.baseline_ref = NEW.baseline_ref AND b.baseline_digest = NEW.baseline_digest
+            );
         END;
         CREATE TRIGGER trg_candidate_manifests_immutable BEFORE UPDATE ON candidate_manifests
         BEGIN
@@ -867,8 +884,19 @@ const MIGRATIONS: Migration[] = [
         BEGIN
           SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: finalizations.manifest_id')
             WHERE NOT EXISTS (
-              SELECT 1 FROM candidate_manifests
-              WHERE id = NEW.manifest_id AND attempt_id = NEW.implementation_attempt_id AND request_id = NEW.implementation_request_id
+              SELECT 1 FROM candidate_manifests m
+              JOIN work_attempts ia ON ia.id = NEW.implementation_attempt_id
+              JOIN work_attempts ra ON ra.id = NEW.review_attempt_id
+              JOIN work_requests ir ON ir.id = NEW.implementation_request_id
+              JOIN work_requests rr ON rr.id = NEW.review_request_id
+              JOIN work_requests dr ON dr.id = NEW.decision_request_id
+              WHERE m.id = NEW.manifest_id AND m.attempt_id = ia.id AND m.request_id = ir.id
+                AND m.external_run_id = NEW.external_run_id
+                AND ia.request_id = ir.id AND ra.request_id = rr.id
+                AND ir.source_conversation_id = NEW.conversation_id
+                AND rr.source_conversation_id = NEW.conversation_id
+                AND dr.source_conversation_id = NEW.conversation_id
+                AND dr.target_agent_id = NEW.coordinator_agent_id
             );
         END;
         CREATE TRIGGER trg_finalizations_immutable BEFORE UPDATE OF

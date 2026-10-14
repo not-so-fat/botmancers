@@ -133,13 +133,17 @@ export function manifestFiles(row: CandidateManifestRow): CandidateManifestEntry
 // ---- prepared-Attempt evidence -------------------------------------------
 
 // The public baseline, recorded as soon as the run reports it.
-export function recordAttemptBaseline(attemptId: string, baseline: { baselineRef: string; baselineDigest: string }, now: number = Date.now()): void {
+export function recordAttemptBaseline(attemptId: string, baseline: { baselineRef: string; baselineDigest: string }, now: number = Date.now()): boolean {
   const attempt = engine.getAttempt(attemptId);
-  if (!attempt?.external_run_id) return;
+  if (!attempt?.external_run_id) return false;
+  const existing = db.prepare('SELECT baseline_ref, baseline_digest FROM attempt_finalization_baselines WHERE attempt_id = ?')
+    .get(attemptId) as { baseline_ref: string; baseline_digest: string } | undefined;
+  if (existing) return existing.baseline_ref === baseline.baselineRef && existing.baseline_digest === baseline.baselineDigest;
   db.prepare(`
     INSERT OR IGNORE INTO attempt_finalization_baselines (attempt_id, request_id, external_run_id, baseline_ref, baseline_digest, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(attemptId, attempt.request_id, attempt.external_run_id, baseline.baselineRef, baseline.baselineDigest, now);
+  return true;
 }
 
 // Persists the finalization evidence a prepared Attempt returned, inside
@@ -147,9 +151,15 @@ export function recordAttemptBaseline(attemptId: string, baseline: { baselineRef
 // immutable candidate manifest or the reason there is none.
 export function recordPreparedEvidence(request: WorkRequest, attempt: WorkAttempt, result: AttemptResult, now: number = Date.now()): void {
   const evidence = result.finalization;
-  if (!evidence || !attempt.external_run_id) return;
+  if (!evidence || !attempt.external_run_id || !EDIT_KINDS.includes(request.execution_kind) || request.tool_profile !== 'edit') return;
   if (evidence.baselineRef && evidence.baselineDigest) {
-    recordAttemptBaseline(attempt.id, { baselineRef: evidence.baselineRef, baselineDigest: evidence.baselineDigest }, now);
+    if (!recordAttemptBaseline(attempt.id, { baselineRef: evidence.baselineRef, baselineDigest: evidence.baselineDigest }, now)) {
+      engine.appendEvent(request.id, {
+        type: 'candidate_manifest_unavailable', attemptId: attempt.id,
+        data: { external_run_id: attempt.external_run_id, reason_code: 'BASELINE_MISMATCH', reason: 'The terminal baseline did not match the baseline captured at launch.' }, now,
+      });
+      return;
+    }
   }
   const candidate = evidence.candidate;
   if (!candidate) return;
@@ -256,13 +266,15 @@ type ChainCheck = { ok: true; chain: Chain; existing: string | null } | { ok: fa
 export function validateDecisionChain(decision: FinalizeDecision, decisionRequest: WorkRequest, conversationId: string): ChainCheck {
   const coordinator = decisionRequest.target_agent_id;
   const fail = (code: DecisionReasonCode, reason: string): ChainCheck => ({ ok: false, code, reason });
-  const implementation = engine.getWorkRequest(decision.implementationWorkRequest);
+  const namedImplementationAttempt = engine.getAttempt(decision.implementationAttemptId);
+  const implementation = namedImplementationAttempt ? engine.getWorkRequest(namedImplementationAttempt.request_id) : undefined;
   if (!implementation || !EDIT_KINDS.includes(implementation.execution_kind)) {
-    return fail('invalid_implementation', `Work Request ${decision.implementationWorkRequest} is not an implementation or revision.`);
+    return fail('invalid_implementation', `Attempt ${decision.implementationAttemptId} is not an implementation or revision Attempt.`);
   }
-  const review = engine.getWorkRequest(decision.reviewWorkRequest);
+  const namedReviewAttempt = engine.getAttempt(decision.reviewAttemptId);
+  const review = namedReviewAttempt ? engine.getWorkRequest(namedReviewAttempt.request_id) : undefined;
   if (!review || review.execution_kind !== 'review' || review.tool_profile !== 'readonly') {
-    return fail('invalid_review', `Work Request ${decision.reviewWorkRequest} is not a readonly review.`);
+    return fail('invalid_review', `Attempt ${decision.reviewAttemptId} is not a readonly review Attempt.`);
   }
   if (implementation.source_conversation_id !== conversationId || review.source_conversation_id !== conversationId) {
     return fail('cross_conversation', 'The implementation and review must belong to this conversation.');
@@ -276,7 +288,7 @@ export function validateDecisionChain(decision: FinalizeDecision, decisionReques
     return fail('implementation_not_completed', `Implementation ${implementation.id} is ${implementation.state}, not completed.`);
   }
   const implementationAttempt = latestAttempt(implementation.id);
-  if (!implementationAttempt || implementationAttempt.outcome !== 'succeeded') {
+  if (!implementationAttempt || implementationAttempt.id !== namedImplementationAttempt?.id || implementationAttempt.outcome !== 'succeeded') {
     return fail('implementation_not_completed', `Implementation ${implementation.id} has no successful Attempt.`);
   }
   const manifest = getCandidateManifest(implementationAttempt.id);
@@ -289,20 +301,25 @@ export function validateDecisionChain(decision: FinalizeDecision, decisionReques
     return fail('reviewer_not_independent', 'The reviewer did the work under review.');
   }
   const reviewAttempt = latestAttempt(review.id);
-  if (review.state !== 'completed' || !reviewAttempt || reviewAttempt.outcome !== 'succeeded') {
+  if (review.state !== 'completed' || !reviewAttempt || reviewAttempt.id !== namedReviewAttempt?.id || reviewAttempt.outcome !== 'succeeded') {
     return fail('review_not_completed', `Review ${review.id} did not complete.`);
   }
   // The review must have been requested after the manifest existed, and
   // no later edit of the same developer in this lineage may have replaced
   // the working tree it describes.
-  if (review.created_at < manifest.created_at) {
+  if (review.created_at <= manifest.created_at) {
     return fail('stale_manifest', `Review ${review.id} was requested before the candidate manifest was recorded.`);
   }
   const newer = db.prepare(`
-    SELECT id FROM work_requests
+    SELECT candidate.id FROM work_requests candidate
     WHERE root_request_id = ? AND target_agent_id = ? AND execution_kind IN ('implementation', 'revision')
-      AND id <> ? AND created_at > ? LIMIT 1
-  `).get(implementation.root_request_id, implementation.target_agent_id, implementation.id, implementation.created_at) as { id: string } | undefined;
+      AND id <> ? AND (
+        created_at > ? OR (created_at = ? AND candidate.rowid > (SELECT rowid FROM work_requests WHERE id = ?))
+      ) LIMIT 1
+  `).get(
+    implementation.root_request_id, implementation.target_agent_id, implementation.id,
+    implementation.created_at, implementation.created_at, implementation.id
+  ) as { id: string } | undefined;
   if (newer) return fail('stale_manifest', `A later edit (${newer.id}) replaced the manifest of ${implementation.id}.`);
   const existing = db.prepare("SELECT id FROM finalizations WHERE implementation_attempt_id = ? AND state IN ('preparing', 'committed') LIMIT 1")
     .get(implementationAttempt.id) as { id: string } | undefined;
@@ -318,12 +335,12 @@ export function commitMessageFor(decision: FinalizeDecision, implementation: Wor
   return `${subject.slice(0, COMMIT_MESSAGE_MAX - trailers.length)}${trailers}`;
 }
 
-export function finalizationIdempotencyKey(implementationAttemptId: string, reviewRequestId: string, manifestDigest: string): string {
-  return `botmancers-finalize-v1-${sha256([implementationAttemptId, reviewRequestId, manifestDigest].join(':')).slice(0, 48)}`;
+export function finalizationIdempotencyKey(implementationAttemptId: string, reviewAttemptId: string, manifestDigest: string): string {
+  return `botmancers-finalize-v1-${sha256([implementationAttemptId, reviewAttemptId, manifestDigest].join(':')).slice(0, 48)}`;
 }
 
 function insertFinalization(chain: Chain, decision: FinalizeDecision, decisionRequest: WorkRequest, reply: Message, now: number): { row: FinalizationRow; created: boolean } {
-  const key = finalizationIdempotencyKey(chain.implementationAttempt.id, chain.review.id, chain.manifest.manifest_digest);
+  const key = finalizationIdempotencyKey(chain.implementationAttempt.id, chain.reviewAttempt.id, chain.manifest.manifest_digest);
   const existing = db.prepare('SELECT * FROM finalizations WHERE idempotency_key = ?').get(key) as FinalizationRow | undefined;
   if (existing) return { row: existing, created: false };
   const body: FinalizeRequestBody = {
@@ -393,12 +410,14 @@ export function recordFinalizeDecisions(reply: Message, decisionRequest: WorkReq
     };
     if (!candidate.validation.ok) return reject('invalid_decision', candidate.validation.reason);
     const decision = candidate.validation.decision;
-    outcome.implementationRequestId = decision.implementationWorkRequest;
-    outcome.reviewRequestId = decision.reviewWorkRequest;
+    const namedImplementationAttempt = engine.getAttempt(decision.implementationAttemptId);
+    const namedReviewAttempt = engine.getAttempt(decision.reviewAttemptId);
+    outcome.implementationRequestId = namedImplementationAttempt?.request_id ?? null;
+    outcome.reviewRequestId = namedReviewAttempt?.request_id ?? null;
     if (decision.decision === 'reject') return reject('review_rejected', 'The coordinator rejected the review; nothing was finalized.');
     const checked = validateDecisionChain(decision, decisionRequest, reply.conversation_id);
     if (!checked.ok) return reject(checked.code, checked.reason);
-    const key = finalizationIdempotencyKey(checked.chain.implementationAttempt.id, checked.chain.review.id, checked.chain.manifest.manifest_digest);
+    const key = finalizationIdempotencyKey(checked.chain.implementationAttempt.id, checked.chain.reviewAttempt.id, checked.chain.manifest.manifest_digest);
     const sameKey = db.prepare('SELECT id FROM finalizations WHERE idempotency_key = ?').get(key) as { id: string } | undefined;
     if (checked.existing && !sameKey) {
       return reject('already_finalized', `Implementation ${checked.chain.implementation.id} already has a finalization (${checked.existing}).`);
@@ -509,6 +528,13 @@ export async function runFinalization(id: string): Promise<FinalizationRow | und
   }
   try {
     const result = await finalizeAgentDeckRun(row.external_run_id, body, row.idempotency_key);
+    if (result.manifestDigest !== manifest.manifest_digest || result.fileCount !== manifest.file_count
+      || result.reviewId !== row.review_request_id || result.parent !== manifest.base_commit) {
+      return finish(row, 'failed', {
+        reasonCode: 'agent_deck_invalid_response',
+        reason: 'Agent Deck returned commit evidence that does not match the persisted finalization request.',
+      }, now());
+    }
     return finish(row, 'committed', {
       commit: result.commit,
       tree: result.tree,
