@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // NOT-409: seed an isolated design-fixture DB showing the same screens as the
 // six reference screenshots: a chief-of-staff card, colored bots, one pinned,
-// one unread, groups, and threads with user + bot message cards.
+// one unread, and threads with user + bot message cards. Two legacy groups
+// stay in the DB as stored data hidden by the agent-only UI (NOT-461), so
+// captures prove the browser never renders or requests them.
 // Honors BOTMANCERS_DB_PATH; defaults to .temporal/design-fixture.db
 // (.temporal/design-fixture-nogroups.db with --no-groups).
 // Usage: BOTMANCERS_DB_PATH=.temporal/design-fixture.db node scripts/seed-design-fixture.js
-//        node scripts/seed-design-fixture.js --no-groups   (roster-nogroups screen)
+//        node scripts/seed-design-fixture.js --no-groups   (no legacy group rows)
 //        node scripts/seed-design-fixture.js --thread-cards (NOT-410 card demo thread)
 //        BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm run dev
 'use strict';
@@ -121,8 +123,9 @@ messages.create(
 // posts `[routine] routinemint2` ~8s after start, then every 60s.
 routines.create(cosConv, chiefOfStaff.id, 'routinemint2', Date.now() + 8000, 60000);
 
-// Two groups, newest first: "ClickproofGrove @Pine" then "Research Team".
-// Research Team keeps a null owner so the row renders the plain group name.
+// Two legacy groups: stored rows, memberships, and conversations hidden by
+// the agent-only UI (NOT-461). They remain reachable through /api/groups for
+// backend compatibility; the browser never requests or renders them.
 let grove = null;
 let research = null;
 if (!NO_GROUPS) {
@@ -215,8 +218,8 @@ for (const bot of rows) {
   console.log(`  - ${bot.name} color=${bot.color} pinned=${bot.pinned ? 1 : 0} unread=${bot.unread ? 1 : 0} hidden=${bot.hidden ? 1 : 0} ${beat}`);
 }
 if (grove) {
-  console.log(`  - group ClickproofGrove @Pine (${grove.id})`);
-  console.log(`  - group Research Team (${research.id})`);
+  console.log(`  - legacy group ClickproofGrove (${grove.id}), stored only; hidden by the agent-only UI`);
+  console.log(`  - legacy group Research Team (${research.id}), stored only; hidden by the agent-only UI`);
 }
 if (cardMint) {
   console.log(`  - thread-card demo thread on CardMint (${cardMint.id}): draft, approval cardmint1, file, handoff reveal`);

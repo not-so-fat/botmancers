@@ -284,7 +284,15 @@ async function main() {
   const groupCalls = clientSources.filter(file => /\/api\/groups|groupId=/.test(fs.readFileSync(file, 'utf8')));
   log(`  scanned ${clientSources.length} client sources; group API callers=${JSON.stringify(groupCalls.map(f => path.relative(ROOT, f)))}`);
   assert(groupCalls.length === 0, 'no client source requests /api/groups or /api/conversations?groupId=');
-  const groupCopy = clientSources.filter(file => />[^<{]*\bgroups?\b[^<]*</i.test(fs.readFileSync(file, 'utf8')) || /'[^']*\b[Gg]roups?\b[^']*'/.test(fs.readFileSync(file, 'utf8').replace(/role="(radio)?group"/g, '')));
+  // Per line, ignore comments, class names, and ARIA roles; flag "group" in
+  // JSX text or string literals (user-visible copy).
+  const copyLine = line => line
+    .replace(/^\s*(\/\/|\*|\/\*).*$/, '')
+    .replace(/\s\/\/.*$/, '')
+    .replace(/className=(["'])[^"']*\1/g, '')
+    .replace(/role="(radio)?group"/g, '');
+  const groupCopy = clientSources.filter(file => fs.readFileSync(file, 'utf8').split('\n').map(copyLine).some(line =>
+    />[^<{]*\bgroups?\b[^<]*</i.test(line) || /(['"`])[^'"`]*\bgroups?\b[^'"`]*\1/i.test(line)));
   log(`  Group copy offenders=${JSON.stringify(groupCopy.map(f => path.relative(ROOT, f)))}`);
   assert(groupCopy.length === 0, 'no client source renders Group copy (ARIA role="group" excepted)');
   const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
@@ -297,6 +305,10 @@ async function main() {
   assert(!/\.(group-error|member-picks|delete-groups)\b/.test(css), 'no Group-only styles remain');
   const seed = fs.readFileSync(path.join(ROOT, 'scripts', 'seed-design-fixture.js'), 'utf8');
   assert(/hidden by the agent-only UI/.test(seed), 'design fixture keeps legacy groups only as hidden stored data');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  assert(!/create bots and groups/.test(readme) && /UI shows agents\s+only/.test(readme), 'README describes the agent-only UI');
+  const parity = fs.readFileSync(path.join(ROOT, 'docs', 'PARITY.md'), 'utf8');
+  assert(/## Agent-only UI \(NOT-461\)/.test(parity) && /RETIRED \(NOT-461\)/.test(parity) && !/MATCH — flat rows, group pills/.test(parity), 'PARITY.md no longer requires group UI captures');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
