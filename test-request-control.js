@@ -150,7 +150,8 @@ function result(fields, input) {
     output: failed ? null : (fields.output ?? `ok ${input.correlation.requestId}`), artifacts: [], startedAt: now, finishedAt: now, failure: failed,
   };
 }
-function useControlledAdapter({ honorSignal = false, script = null, externalCancel = false } = {}) {
+// withRunId false: the runtime starts work but names no run (as Hermes).
+function useControlledAdapter({ honorSignal = false, script = null, externalCancel = false, withRunId = true } = {}) {
   dispatch.setAttemptAdapterOverride(() => ({
     name: 'hermes-gateway',
     ...(externalCancel ? { externalCancel: true } : {}),
@@ -161,7 +162,7 @@ function useControlledAdapter({ honorSignal = false, script = null, externalCanc
           finish(fields = {}) { if (!entry.done) { entry.done = true; resolve(result(fields, input)); } },
         };
         runs.push(entry);
-        onEvent({ type: 'started', adapter: 'hermes-gateway', at: Date.now(), externalRunId: `run-${entry.attemptId}`, externalSessionId: null });
+        onEvent({ type: 'started', adapter: 'hermes-gateway', at: Date.now(), externalRunId: withRunId ? `run-${entry.attemptId}` : null, externalSessionId: null });
         if (honorSignal && input.signal) {
           if (input.signal.aborted) entry.finish({ category: 'cancelled' });
           else input.signal.addEventListener('abort', () => entry.finish({ category: 'cancelled' }), { once: true });
@@ -272,6 +273,24 @@ async function cancelStateMachine() {
   assert(req(stalledId).state === 'cancelled' && attempts.length === 1 && attempts[0].outcome === 'cancelled' && attempts[0].output === null && repliesOf(stalledId).length === 0,
     'late result after cancellation does not complete the request, rewrite the Attempt, or post a reply');
 
+  // A stalled runtime that started work without a run id (Hermes): the
+  // run exists but cannot be addressed, so cancellation is unsupported,
+  // never not_launched.
+  useControlledAdapter({ honorSignal: false, withRunId: false });
+  const anon = service.acceptAgentMessage(PERSON, { agentId: hermes.id, content: 'Stalled run without id', idempotencyKey: 'cancel-stalled-no-id' });
+  const anonId = anon.accepted.requestId;
+  await waitFor(() => runsFor(anonId).length === 1, 'stalled no-id adapter entered');
+  await service.cancelWorkRequest(anonId, { actor: PERSON });
+  advance(31_000);
+  await service.sweepDispatch();
+  const anonExternal = eventData(anonId, 'external_cancel');
+  assert(req(anonId).state === 'cancelled' && attemptsOf(anonId)[0].external_run_id === null && attemptsOf(anonId)[0].error_category === 'abandoned'
+    && anonExternal.length === 1 && anonExternal[0].status === 'unsupported' && anonExternal[0].external_run_id === null,
+  `running (started, no run id): grace enforcement records unsupported, not not_launched (${anonExternal.map(e => e.status).join(',')})`);
+  runsFor(anonId)[0].finish({ output: 'LATE no id' });
+  await anon.dispatched;
+  assert(req(anonId).state === 'cancelled' && eventData(anonId, 'late_result_recorded').length === 1, 'running (started, no run id): the late result is evidence only');
+
   // waiting (operator attention, Attempt still open).
   const waiting = queuedRequest(hermes.id, 'cancel-waiting');
   const d = service.currentDispatcher();
@@ -367,6 +386,22 @@ async function deadlineScenarios() {
   assert(raced.state === 'failed' && raced.state_reason === 'timed_out' && repliesOf(raced.id).length === 0
     && attemptsOf(raced.id)[0].outcome === 'succeeded' && eventData(raced.id, 'late_result_recorded').length === 1,
   'a success committed after the deadline times out; the Attempt keeps its succeeded evidence');
+
+  // A stalled runtime that started without a run id, past its deadline:
+  // the sweep abandons it as unsupported, never not_launched.
+  clock = Date.now();
+  useControlledAdapter({ withRunId: false });
+  const anon = withPolicy({ BOTMANCERS_REQUEST_DEADLINE_MS: DEADLINE }, () =>
+    service.acceptAgentMessage(PERSON, { agentId: hermes.id, content: 'Stall past the deadline without id', idempotencyKey: 'deadline-no-id' }));
+  await waitFor(() => runsFor(anon.accepted.requestId).length === 1, 'no-id adapter entered');
+  advance(DEADLINE + 1_000);
+  await service.sweepDispatch();
+  const anonExternal = eventData(anon.accepted.requestId, 'external_cancel');
+  assert(req(anon.accepted.requestId).state_reason === 'timed_out' && anonExternal.length === 1 && anonExternal[0].status === 'unsupported' && anonExternal[0].reason === 'timed_out',
+    `deadline enforcement of a started run without id records unsupported (${anonExternal.map(e => e.status).join(',')})`);
+  runsFor(anon.accepted.requestId)[0].finish({ output: 'late' });
+  await anon.dispatched;
+  useControlledAdapter();
 
   // waiting past the deadline.
   clock = Date.now();
@@ -650,6 +685,45 @@ async function externalCancel() {
     && fake.runs.get(orphanRun).state === 'canceled', `worker gone: abandoned, Agent Deck cancel requested (${external.map(e => e.status).join(',')})`);
   await orphan.dispatched;
   assert(req(orphanId).state === 'cancelled' && repliesOf(orphanId).length === 0, 'the old worker\'s result never completed the request');
+
+  // The cancel endpoint refuses: the run is not stopped, so the Attempt is
+  // abandoned with failed external cancellation, not finished as stopped.
+  configure({ heartbeatMs: 10 });
+  fake.onStart = () => ({ result: 'DONE-refused', hold: true, cancelError: { status: 503, code: 'CANCEL_UNAVAILABLE' } });
+  const refused = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Cancel refused', idempotencyKey: 'deck-cancel-refused' });
+  const refusedId = refused.accepted.requestId;
+  await waitFor(() => attemptsOf(refusedId)[0]?.external_run_id, 'refused run id persisted');
+  const refusedRun = attemptsOf(refusedId)[0].external_run_id;
+  remote.cancel(refusedId, { actor: PERSON });
+  await refused.dispatched;
+  let refusedAttempt = attemptsOf(refusedId)[0];
+  let refusedExternal = eventData(refusedId, 'external_cancel');
+  let refusedAbandon = eventData(refusedId, 'attempt_abandoned');
+  assert(req(refusedId).state === 'cancelled' && refusedAttempt.outcome === 'cancelled' && refusedAttempt.error_category === 'abandoned'
+    && /did not accept the cancel/.test(refusedAttempt.error_message) && refusedAbandon.length === 1 && refusedAbandon[0].external_cancel === 'failed',
+  'cancel endpoint failure: the Attempt is recorded abandoned, not cancelled as if stopped');
+  assert(refusedExternal.length === 1 && refusedExternal[0].status === 'failed' && refusedExternal[0].external_run_id === refusedRun
+    && fake.runs.get(refusedRun).state === 'running' && fake.calls('POST', `/api/agent-runs/${refusedRun}/cancel`).length === 1,
+  `cancel endpoint failure: external_cancel is failed and the run is still running (${refusedExternal.map(e => e.status).join(',')})`);
+  fake.release(refusedRun);
+
+  // The same on the Attempt deadline: a refused cancel is not a stopped run.
+  clock = Date.now();
+  fake.onStart = () => ({ result: 'DONE-deadline', hold: true, cancelError: { status: 503, code: 'CANCEL_UNAVAILABLE' } });
+  const timedOut = withPolicy({ BOTMANCERS_REQUEST_DEADLINE_MS: 300, BOTMANCERS_RETRY_MAX_ATTEMPTS: 1 }, () =>
+    service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Deadline cancel refused', idempotencyKey: 'deck-deadline-refused' }));
+  const timedId = timedOut.accepted.requestId;
+  await timedOut.dispatched;
+  refusedAttempt = attemptsOf(timedId)[0];
+  const timedRun = refusedAttempt.external_run_id;
+  refusedExternal = eventData(timedId, 'external_cancel');
+  refusedAbandon = eventData(timedId, 'attempt_abandoned');
+  assert(req(timedId).state === 'failed' && refusedAttempt.outcome === 'timed_out' && refusedAttempt.error_category === 'abandoned'
+    && refusedAbandon.length === 1 && refusedAbandon[0].reason === 'timed_out' && refusedAbandon[0].external_cancel === 'failed'
+    && refusedExternal.length === 1 && refusedExternal[0].status === 'failed' && refusedExternal[0].reason === 'timed_out'
+    && fake.runs.get(timedRun).state === 'running' && repliesOf(timedId).length === 0,
+  `deadline cancel failure: Attempt abandoned, external_cancel failed, run still running (${req(timedId).state}/${refusedAttempt.outcome}/${refusedExternal.map(e => e.status).join(',')})`);
+  fake.release(timedRun);
 }
 
 // ---------------------------------------------------------------------

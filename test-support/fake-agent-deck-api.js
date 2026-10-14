@@ -153,6 +153,8 @@ function createFakeAgentDeck(options = {}) {
       return ok({ runId: run.runId, state: run.state, events, nextCursor: String(events.length ? events[events.length - 1].seq : after) });
     }
     if (method === 'POST' && action === 'cancel') {
+      // A refused cancel leaves the run going.
+      if (run.script.cancelError) return error(run.script.cancelError.status, run.script.cancelError.code);
       terminate(run, 'canceled');
       return ok(status(run));
     }

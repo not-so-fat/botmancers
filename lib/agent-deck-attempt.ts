@@ -258,8 +258,11 @@ async function followRun(runId: string, input: AttemptFollowInput, onEvent: Atte
       stop.promise.then(interrupted => ({ interrupted })),
     ]);
     if ('interrupted' in settled) {
-      try { await cancelAgentDeckRun(runId); } catch { /* reported by the interruption below */ }
-      return failed(settled.interrupted, ids);
+      // Only an accepted cancel stops the run; a refused or unreachable
+      // cancel is reported so the Attempt is recorded abandoned.
+      let externalCancel: 'requested' | 'failed' = 'requested';
+      try { await cancelAgentDeckRun(runId); } catch { externalCancel = 'failed'; }
+      return failed(settled.interrupted, { ...ids, externalCancel });
     }
     if ('error' in settled) {
       // Stop the run we can no longer observe rather than let it edit

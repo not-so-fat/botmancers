@@ -67,6 +67,10 @@ export interface AbandonedAttempt {
   externalRunId: string | null;
   transport: string | null;
   reason: 'cancelled' | 'timed_out' | 'retried';
+  // The Attempt is known to have started a run: its runtime_started event
+  // or an external id was recorded. A transport without run ids (Hermes)
+  // starts work that may continue even though it cannot be addressed.
+  launched: boolean;
 }
 
 export type CancelOutcome = 'cancelled' | 'cancel_requested' | 'already_terminal';
@@ -134,6 +138,7 @@ export function createRequestControl(db: Db, store: EngineStore, options: Reques
   const openAttemptOf = db.prepare('SELECT * FROM work_attempts WHERE request_id = ? AND finished_at IS NULL');
   const countAttempts = db.prepare('SELECT COUNT(*) AS n FROM work_attempts WHERE request_id = ?');
   const leaseOf = db.prepare('SELECT owner, token, expires_at FROM dispatch_leases WHERE request_id = ?');
+  const startedEventOf = db.prepare("SELECT 1 FROM engine_events WHERE attempt_id = ? AND type = 'runtime_started' LIMIT 1");
 
   function requireRequest(id: string): WorkRequest {
     const request = store.getWorkRequest(id);
@@ -193,6 +198,7 @@ export function createRequestControl(db: Db, store: EngineStore, options: Reques
       externalRunId: open.external_run_id,
       transport: typeof transport === 'string' ? transport : null,
       reason,
+      launched: !!open.external_run_id || !!open.external_session_id || !!startedEventOf.get(open.id),
     };
   }
 

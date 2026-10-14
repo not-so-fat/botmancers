@@ -36,7 +36,7 @@ import {
   type DispatchHistoryEntry,
   type PreparedDispatch,
 } from './agent-dispatch';
-import { beginAttempt, recordAttemptResult, recordLateResult, runAttempt, type PreparedAttempt } from './attempt-executor';
+import { abandonedLocally, beginAttempt, recordAbandonedResult, recordAttemptResult, recordLateResult, runAttempt, type LocallyAbandonedAttempt, type PreparedAttempt } from './attempt-executor';
 import { EngineStoreError, TERMINAL_STATES, type EngineEvent, type WorkAttempt, type WorkRequest, type WorkRequestState } from './engine-store';
 import { ControlError, type AbandonedAttempt, type CancelResult, type ControlActor, type ControlAuthorizer, type RetryResult } from './work-request-control';
 import type { AttemptEvent, AttemptResult, RunObservation } from './attempt-adapter';
@@ -595,7 +595,7 @@ async function stopAbandoned(abandoned: AbandonedAttempt): Promise<void> {
       void running.finally(() => { if (inFlight.get(key) === running) inFlight.delete(key); });
     }
   }
-  await recordExternalCancel(abandoned, { localSignalled: !!local && local.attemptId === abandoned.attemptId, launched: false });
+  await recordExternalCancel(abandoned, { localSignalled: !!local && local.attemptId === abandoned.attemptId, launched: abandoned.launched });
 }
 
 // Asks the runtime to stop an abandoned run where its transport can, and
@@ -603,12 +603,14 @@ async function stopAbandoned(abandoned: AbandonedAttempt): Promise<void> {
 // run even without a run id (a transport like Hermes has none), so a
 // missing id means the run cannot be addressed, not that none exists.
 async function recordExternalCancel(
-  abandoned: Pick<AbandonedAttempt, 'requestId' | 'attemptId' | 'externalRunId' | 'transport' | 'reason'>,
+  abandoned: Pick<AbandonedAttempt, 'requestId' | 'attemptId' | 'externalRunId' | 'transport' | 'reason'> & { externalCancel?: 'failed' | null },
   options: { localSignalled: boolean; launched: boolean },
 ): Promise<void> {
   const reconciler = abandoned.transport ? adapterForTransport(abandoned.transport)?.reconciler ?? null : null;
   let status: 'requested' | 'failed' | 'unsupported' | 'not_launched';
-  if (!abandoned.externalRunId) status = options.launched ? 'unsupported' : 'not_launched';
+  // The transport already asked the runtime to stop the run and failed.
+  if (abandoned.externalCancel === 'failed') status = 'failed';
+  else if (!abandoned.externalRunId) status = options.launched ? 'unsupported' : 'not_launched';
   else if (!reconciler?.cancel) status = 'unsupported';
   else status = await reconciler.cancel(abandoned.externalRunId);
   engine.appendEvent(abandoned.requestId, {
@@ -883,6 +885,7 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
         deadlineAt: typeof snapshot.deadline_at === 'number' ? snapshot.deadline_at : null,
         signal: controller.signal,
       }, event => recordBaselineEvent(lease, attempt.id, event));
+      let abandoned: LocallyAbandonedAttempt | null = null;
       const committed = engine.transaction(() => {
         // Abandoned meanwhile (cancellation or a deadline): evidence only.
         const current = engine.getAttempt(attempt.id);
@@ -892,9 +895,13 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
         }
         dispatcher.assertHeld(lease);
         if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable') throw new DeferCommit('unreachable');
-        const finished = recordAttemptResult(engine, attempt.id, result);
+        // A followed run whose cancel the runtime did not accept was only
+        // abandoned, exactly as in runAttempt.
+        abandoned = adapter ? abandonedLocally(attempt, adapter, controller.signal, result) : null;
+        const finished = abandoned ? recordAbandonedResult(engine, abandoned, result) : recordAttemptResult(engine, attempt.id, result);
         return commitTurn(lease, request, finished, result);
       });
+      if (abandoned) await recordExternalCancel(abandoned, { localSignalled: true, launched: true });
       if (committed.retryAt !== null) scheduleRetry(request.id, committed.retryAt);
     }, controller).finally(() => {
       if (localWork.get(request.id)?.attemptId === attempt.id) localWork.delete(request.id);

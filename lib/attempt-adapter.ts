@@ -143,6 +143,10 @@ export interface AttemptResult {
   // started (for example the response was lost). A dispatcher keeps the
   // Attempt open and reconciles it under the same idempotency key.
   launchUnconfirmed?: boolean;
+  // NOT-473: set by an externalCancel transport when its signal or deadline
+  // ended the wait: whether the runtime accepted the cancel request. On
+  // 'failed' the run may continue and the Attempt is abandoned, not stopped.
+  externalCancel?: 'requested' | 'failed';
 }
 
 export type AttemptEventSink = (event: AttemptEvent) => void;
