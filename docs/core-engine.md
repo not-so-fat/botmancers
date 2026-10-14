@@ -250,10 +250,12 @@ requirements:
 - the web UI and `/api/v0` use different queue and lifecycle models;
 - implementation and revision launches currently inherit read-only tools;
 - delegation-chain continuity is held in process memory;
-- the current review path reuses the same configured coding Agent;
-- the engine, rather than a coordinator Agent, currently owns parts of the review
-  sequence;
 - cancellation, timeout, recovery, grants, and complete provenance are incomplete.
+
+Since NOT-472, canonical requests no longer reach the composite review path:
+Wake-created requests return to their coordinator through one read-only
+continuation turn (`lib/coordinator-loop.ts`), reviews must target an Agent other
+than the developer, and revisions resume the implementation's Session Binding.
 
 Convergence should preserve existing working adapters while moving orchestration
 above them:
