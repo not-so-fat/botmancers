@@ -526,4 +526,120 @@ check('option sheet artifact is generated', () => {
   console.log(`option sheet: ${out} (${stats.size} bytes)`);
 });
 
+// 11. NOT-451: the Config avatar pickers are single-select radio groups.
+// Native radios sharing one `name` (no tabindex overrides) are what give one
+// Tab stop per group and arrow-key move-and-select in the browser.
+(function choiceGroups() {
+  const React = require('react');
+  const { renderToStaticMarkup } = require('react-dom/server');
+  const uiJiti = createJiti(__filename, { alias: { '@': __dirname }, jsx: { runtime: 'automatic' } });
+  const AvatarChoiceGroup = uiJiti('./app/components/AvatarChoiceGroup.tsx').default;
+
+  const GROUPS = [
+    { attribute: 'color', label: 'Color', options: AVATAR_COLORS },
+    { attribute: 'eyes', label: 'Eyes', options: AVATAR_EYES },
+    { attribute: 'hands', label: 'Hands', options: AVATAR_HANDS },
+    { attribute: 'accessory', label: 'Accessory', options: AVATAR_ACCESSORIES },
+  ];
+
+  // Renders one group and captures its element tree so each radio's real
+  // onChange can be invoked (the component is called inside a wrapper's
+  // render, so its hooks stay valid).
+  function renderGroup(group, current, onPick) {
+    let tree = null;
+    function Probe() {
+      tree = AvatarChoiceGroup({ ...group, current, onPick });
+      return tree;
+    }
+    const html = renderToStaticMarkup(React.createElement(Probe));
+    const inputs = [];
+    (function walk(node) {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== 'object' || !node.props) return;
+      if (node.type === 'input') inputs.push(node.props);
+      walk(node.props.children);
+    })(tree);
+    return { html, inputs };
+  }
+
+  function radios(html) {
+    return [...html.matchAll(/<input[^>]*>/g)].map(match => match[0]);
+  }
+
+  for (const group of GROUPS) {
+    check(`choice group ${group.label}: named radiogroup of native radios`, () => {
+      const { html } = renderGroup(group, DEFAULT_AVATAR, () => {});
+      assert.ok(!html.includes('aria-pressed'), 'options must not be toggle buttons');
+      assert.ok(!/<button/.test(html), 'options must not be buttons');
+      const groupTag = html.match(/<div[^>]*role="radiogroup"[^>]*>/);
+      assert.ok(groupTag, 'group must expose role="radiogroup"');
+      const labelId = groupTag[0].match(/aria-labelledby="([^"]+)"/)[1];
+      assert.ok(
+        html.includes(`<p id="${labelId}" class="avatar-group-label">${group.label}</p>`),
+        `radiogroup must be named by its visible "${group.label}" label`
+      );
+      const inputs = radios(html);
+      assert.strictEqual(inputs.length, group.options.length, 'one radio per option');
+      for (const [i, input] of inputs.entries()) {
+        assert.ok(input.includes('type="radio"'), 'option must be a native radio');
+        assert.ok(input.includes(`name="avatar-${group.attribute}"`), 'radios in a group share one name');
+        assert.ok(input.includes(`value="${group.options[i].id}"`), 'radio value is the option id');
+        assert.ok(!input.includes('tabindex'), 'radios keep native roving tab order');
+      }
+      // Each radio's label is the illustrated card; the thumbnail is
+      // decorative so the accessible name is the option label alone.
+      for (const option of group.options) {
+        assert.ok(
+          html.includes(`<span>${option.label}</span></label>`),
+          `${option.label} must label its radio`
+        );
+      }
+      const thumbs = html.match(/<span class="avatar-opt-art" aria-hidden="true">/g) || [];
+      assert.strictEqual(thumbs.length, group.options.length, 'option thumbnails are aria-hidden');
+    });
+
+    check(`choice group ${group.label}: exactly one checked on load and after every selection`, () => {
+      let current = { ...DEFAULT_AVATAR };
+      let state = renderGroup(group, current, () => {});
+      let checked = state.inputs.filter(input => input.checked);
+      assert.strictEqual(checked.length, 1, 'exactly one radio checked on load');
+      assert.strictEqual(checked[0].value, DEFAULT_AVATAR[group.attribute]);
+      assert.strictEqual((state.html.match(/checked=""/g) || []).length, 1);
+
+      for (const option of group.options) {
+        const picks = [];
+        const recorder = renderGroup(group, current, patch => picks.push(patch));
+        recorder.inputs.find(input => input.value === option.id).onChange();
+        assert.deepStrictEqual(picks.at(-1), { [group.attribute]: option.id }, 'selection patches only its attribute');
+        const before = current;
+        current = { ...current, ...picks.at(-1) };
+        for (const other of GROUPS) {
+          if (other.attribute !== group.attribute) {
+            assert.strictEqual(current[other.attribute], before[other.attribute], 'other attributes unchanged');
+          }
+        }
+        state = renderGroup(group, current, () => {});
+        checked = state.inputs.filter(input => input.checked);
+        assert.strictEqual(checked.length, 1, `exactly one radio checked after picking ${option.id}`);
+        assert.strictEqual(checked[0].value, option.id);
+        assert.strictEqual((state.html.match(/checked=""/g) || []).length, 1);
+      }
+    });
+  }
+
+  check('config page renders the four avatar choice groups (no toggle buttons)', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
+    assert.ok(!source.includes('aria-pressed'), 'config page must not use aria-pressed avatar toggles');
+    for (const group of GROUPS) {
+      assert.ok(
+        new RegExp(`<AvatarChoiceGroup\\s+attribute="${group.attribute}"\\s+label="${group.label}"`).test(source),
+        `config page must render the ${group.label} choice group`
+      );
+    }
+    const css = fs.readFileSync(path.join(__dirname, 'app', 'globals.css'), 'utf8');
+    assert.ok(css.includes('.avatar-opt:has(.avatar-opt-input:checked)'), 'selected card styling keys off :checked');
+    assert.ok(css.includes('.avatar-opt:has(.avatar-opt-input:focus-visible)'), 'focused card shows a focus ring');
+  });
+})();
+
 console.log(`\ntest:avatar-system: ${passed}/${passed} assertions passing`);
