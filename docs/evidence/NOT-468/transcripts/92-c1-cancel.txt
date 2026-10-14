@@ -1,0 +1,52 @@
+cancel s9-cancel-after-restart: Botmancers pid 69808; run run-20261014T152734-191fea
+→ POST /api/agent-runs/run-20261014T152734-191fea/cancel
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152734-191fea","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"canceled","sessionId":"<S:01a13b06…91c1f6>","startedAt":"2026-10-14T15:27:34.552Z","lastEventAt":"2026-10-14T15:27:39.434Z","finalization":{"baselineRef":"bl_ad17bf15b98f6347f6e3ef8c","baselineDigest":"8c53bd29c84d2b32d413fbca056aadb8a1e90bed89ab846629f5ae19273631ab","state":"prepared","commit":null}}}
+→ POST /api/agent-runs/run-20261014T152734-191fea/cancel
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152734-191fea","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"canceled","sessionId":"<S:01a13b06…91c1f6>","startedAt":"2026-10-14T15:27:34.552Z","lastEventAt":"2026-10-14T15:27:39.434Z","finalization":{"baselineRef":"bl_ad17bf15b98f6347f6e3ef8c","baselineDigest":"8c53bd29c84d2b32d413fbca056aadb8a1e90bed89ab846629f5ae19273631ab","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152734-191fea/events
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152734-191fea","state":"canceled","events":[{"seq":1,"ts":"2026-10-14T15:27:38.610Z","type":"text","text":"I’ll run `sleep 90`, wait for it to finish, then create the requested file."},{"seq":2,"ts":"2026-10-14T15:27:39.434Z","type":"canceled","sessionId":"<S:01a13b06…91c1f6>"}],"nextCursor":"2"}}
+→ GET /api/agent-runs/run-20261014T152734-191fea/events?after=2
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152734-191fea","state":"canceled","events":[],"nextCursor":"2"}}
+  cancel -> canceled; repeat cancel -> canceled; last event canceled
+  PASS: cancel is idempotent and reports canceled
+  PASS: canceled is the last event; no result/end recorded
+[after cancel] Botmancers durable state:
+{
+  "request": {
+    "id": "f0255864-93e1-43ad-aa2e-930f959f47dd",
+    "kind": "implementation",
+    "state": "failed",
+    "error_code": "runtime_failed"
+  },
+  "attempts": [
+    {
+      "id": "554b488a-c87f-472d-9efd-822e0b08ecc6",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152734-191fea",
+      "external_session_id": null,
+      "outcome": "cancelled",
+      "error_category": "cancelled",
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "df8f32a1ac00"
+    }
+  ],
+  "bindings": [],
+  "baselines": [
+    {
+      "attempt_id": "554b488a-c87f-472d-9efd-822e0b08ecc6",
+      "baseline_ref": "bl_ad17bf15b98f6347f6e3ef8c"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress",
+    "attempt_finished",
+    "state_changed"
+  ]
+}

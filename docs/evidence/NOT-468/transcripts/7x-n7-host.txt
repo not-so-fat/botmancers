@@ -1,0 +1,11 @@
+/tmp/not468/bin/scenario-ad-crash.sh: line 7: 68624 Killed: 9               $P launch $SC --crash-at=running --task="$TASK" > $L/70-n7-launch.txt 2>&1
+launch exit 137
+host: codex processes before Agent Deck crash: 1
+SIGKILL agent deck pid 63732
+host: codex processes after Agent Deck SIGKILL (orphaned): 1
+restart (Agent Deck down) exit 0
+started pid 68950
+host: codex processes after Agent Deck restart: 0
+restart (Agent Deck back) exit 0
+reattach exit 0
+host: run dirs 11

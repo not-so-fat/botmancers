@@ -1,0 +1,86 @@
+restart s6-expired-grant: new Botmancers process pid 68038; request e3baeab4-26d0-41e6-aa27-5a120cbfcb5f
+[on restart, before recovery] Botmancers durable state:
+{
+  "request": {
+    "id": "e3baeab4-26d0-41e6-aa27-5a120cbfcb5f",
+    "kind": "implementation",
+    "state": "running",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "9ba0c3d4-6daf-4734-8c5b-d7d3b38e1a1c",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152525-cf8def",
+      "external_session_id": null,
+      "outcome": null,
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "7fd7360a5a2c"
+    }
+  ],
+  "bindings": [],
+  "baselines": [
+    {
+      "attempt_id": "9ba0c3d4-6daf-4734-8c5b-d7d3b38e1a1c",
+      "baseline_ref": "bl_3593418fab2d58c4c814a676"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress"
+  ]
+}
+[after recoverCoordinatorLoops()] Botmancers durable state:
+{
+  "request": {
+    "id": "e3baeab4-26d0-41e6-aa27-5a120cbfcb5f",
+    "kind": "implementation",
+    "state": "running",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "9ba0c3d4-6daf-4734-8c5b-d7d3b38e1a1c",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152525-cf8def",
+      "external_session_id": null,
+      "outcome": null,
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "7fd7360a5a2c"
+    }
+  ],
+  "bindings": [],
+  "baselines": [
+    {
+      "attempt_id": "9ba0c3d4-6daf-4734-8c5b-d7d3b38e1a1c",
+      "baseline_ref": "bl_3593418fab2d58c4c814a676"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress"
+  ]
+}
+  PASS: recoverCoordinatorLoops made no Agent Deck call (0)
+  PASS: recoverCoordinatorLoops launched no run
+  PASS: recoverCoordinatorLoops left the open Attempt untouched (no reconciler exists today)
+  persisted run id run-20261014T152525-cf8def; reconciling read-only through the public API
+→ GET /api/agent-runs/run-20261014T152525-cf8def
+  ← 401 {"success":false,"error":"A valid agent grant bearer token is required","error_code":"GRANT_REQUIRED"}
+  observed error: {"code":"agent_deck_unauthorized","status":401,"deckCode":"GRANT_REQUIRED","message":"Agent Deck rejected the Botmancers run token (check AGENT_DECK_RUN_TOKEN and that its grant is not revoked or expired)."}
+  decision: manual_attention:grant
+  PASS: read-only reconcile launched no run (start POSTs total 15)

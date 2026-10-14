@@ -1,0 +1,70 @@
+reattach s2-started: Botmancers pid 66022; Attempt 62f49373-6980-48c3-859e-0c41a79744e3 run=run-20261014T152402-a7281c
+  PASS: reconstructed prompt matches the launch snapshot prompt_hash
+→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-62f49373-6980-48c3-859e-0c41a79744e3]
+    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:6f36ad57b2e9 len:1914>","tools":"edit","prepareFinalization":true}
+  ← 202 {"success":true,"data":{"runId":"run-20261014T152402-a7281c","state":"ended"}}
+→ GET /api/agent-runs/run-20261014T152402-a7281c
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152402-a7281c","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"ended","sessionId":"<S:01a13b03…7dec72>","startedAt":"2026-10-14T15:24:02.392Z","lastEventAt":"2026-10-14T15:24:10.032Z","finalization":{"baselineRef":"bl_4a8f7ec78c7f72f5cafcf4c7","baselineDigest":"e116261d62671f3673e02b12a21a916d6e7c6283dba2231c4dd1d75f863b0b27","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152402-a7281c/events
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152402-a7281c","state":"ended","events":[{"seq":1,"ts":"2026-10-14T15:24:06.170Z","type":"text","text":"I’ll create the requested file with the exact line.\n"},{"seq":2,"ts":"2026-10-14T15:24:07.384Z","type":"tool","name":"command:/bin/zsh -lc \"printf '%s\\\\n' 's2-started ok' > poc-s2-started.md\""},{"seq":3,"ts":"2026-10-14T15:24:09.180Z","type":"text","text":"DONE-s2-started"},{"seq":4,"ts":"2026-10-14T15:24:09.191Z","type":"result","subtype":"success","result":"DONE-s2-started","sessionId":"<S:01a13b03…7dec72>"},{"seq":5,"ts":"2026-10-14T15:24:10.032Z","type":"end","sessionId":"<S:01a13b03…7dec72>"}],"nextCursor":"5"}}
+→ GET /api/agent-runs/run-20261014T152402-a7281c/events?after=5
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152402-a7281c","state":"ended","events":[],"nextCursor":"5"}}
+→ GET /api/agent-runs/run-20261014T152402-a7281c
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152402-a7281c","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"ended","sessionId":"<S:01a13b03…7dec72>","startedAt":"2026-10-14T15:24:02.392Z","lastEventAt":"2026-10-14T15:24:10.032Z","finalization":{"baselineRef":"bl_4a8f7ec78c7f72f5cafcf4c7","baselineDigest":"e116261d62671f3673e02b12a21a916d6e7c6283dba2231c4dd1d75f863b0b27","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152402-a7281c/changes
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152402-a7281c","baselineRef":"bl_4a8f7ec78c7f72f5cafcf4c7","baselineDigest":"e116261d62671f3673e02b12a21a916d6e7c6283dba2231c4dd1d75f863b0b27","baseCommit":"dba6624c41572c3a55f02f01d80bc2e377e3b923","files":[{"path":"poc-s2-started.md","sha256":"990f752e8d95f21e6f395b9aa55ef70e9f28530865e858df0a5aab6827ee6be3","mode":"100644"}],"manifestDigest":"20734654117b955603da9821dfc1f9bdc6cd3948c353ee6de8a0ca65ff91c407"}}
+  result: status=completed run=run-20261014T152402-a7281c session=<S:01a13b03…7dec72> failure=null output="DONE-s2-started" artifacts=[{"kind":"candidate_manifest","ref":"20734654117b955603da9821dfc1f9bdc6cd3948c353ee6de8a0ca65ff91c407"}]
+  PASS: every start POST with key botmancers-attempt-62f49373-6980-48c3-859e-0c41a79744e3 returned the same run id (run-20261014T152402-a7281c); POSTs with this key: 1 before, 2 after
+  PASS: reattached run id equals the persisted run id
+  PASS: host: Agent Deck run directories unchanged by reattach (5 -> 5)
+  persisted Attempt outcome=succeeded category=null
+[after reattach] Botmancers durable state:
+{
+  "request": {
+    "id": "bd187cb2-03e5-4788-b100-ea189930aff5",
+    "kind": "implementation",
+    "state": "completed",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "62f49373-6980-48c3-859e-0c41a79744e3",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152402-a7281c",
+      "external_session_id": "<S:01a13b03…7dec72>",
+      "outcome": "succeeded",
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "4cee5b71ae82"
+    }
+  ],
+  "bindings": [
+    {
+      "id": "513e09b8-f4fd-49ff-8868-61e6686501ef",
+      "agent_id": "48127f5e-b198-4056-80de-2e62846a6d6f",
+      "adapter": "codex",
+      "external_session_id": "<S:01a13b03…7dec72>",
+      "source_attempt_id": "62f49373-6980-48c3-859e-0c41a79744e3",
+      "request_id": "bd187cb2-03e5-4788-b100-ea189930aff5"
+    }
+  ],
+  "baselines": [
+    {
+      "attempt_id": "62f49373-6980-48c3-859e-0c41a79744e3",
+      "baseline_ref": "bl_4a8f7ec78c7f72f5cafcf4c7"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "attempt_finished",
+    "candidate_manifest_recorded",
+    "session_bound",
+    "state_changed"
+  ]
+}

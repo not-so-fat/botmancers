@@ -1,0 +1,5 @@
+probe idempotency-conflict: Botmancers pid 67407
+→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-3d72377d-75ee-4eca-8220-dc1af3ab3637]
+    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:17f21f0a1d7b len:16>","tools":"edit","prepareFinalization":true}
+  ← 409 {"success":false,"error":"Idempotency-Key was already used with a different request","error_code":"IDEMPOTENCY_CONFLICT"}
+  POST start with botmancers-attempt-3d72377d-75ee-4eca-8220-dc1af3ab3637 and a different prompt: {"code":"agent_deck_rejected","status":409,"deckCode":"IDEMPOTENCY_CONFLICT","message":"Agent Deck rejected the request (409 IDEMPOTENCY_CONFLICT)."}

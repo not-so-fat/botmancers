@@ -1,0 +1,10 @@
+(4 empty starting/running event polls omitted)
+launch s3-running: work request f7e7d19c-a2fe-436a-8e45-d1db2b432b8b (implementation, edit) crash-at=running
+→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-be4bf11f-0c6f-4078-8bd9-75bee1f6b134]
+    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:7d1fbc64e822 len:2202>","tools":"edit","prepareFinalization":true}
+  ← 202 {"success":true,"data":{"runId":"run-20261014T152410-9d62d6","state":"starting"}}
+→ GET /api/agent-runs/run-20261014T152410-9d62d6
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152410-9d62d6","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"starting","sessionId":null,"startedAt":"2026-10-14T15:24:10.456Z","lastEventAt":null,"finalization":{"baselineRef":"bl_56e95460890f45d98d7132af","baselineDigest":"ef1958fa7507f43c761fa8be79b03c29efc9eecd7ba31ed0f9d95525b9f5163b","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152410-9d62d6/events?after=0
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152410-9d62d6","state":"running","events":[{"seq":1,"ts":"2026-10-14T15:24:15.279Z","type":"text","text":"I’ll create the file with the exact line requested.\n"},{"seq":2,"ts":"2026-10-14T15:24:16.364Z","type":"tool","name":"command:/bin/zsh -lc \"printf 's3-running ok\\\\n' > poc-s3-running.md\""}],"nextCursor":"2"}}
+!! SIGKILL Botmancers pid 66047 at boundary "running" (events page state=running)

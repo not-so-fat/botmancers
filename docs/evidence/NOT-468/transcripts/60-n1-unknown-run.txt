@@ -1,0 +1,15 @@
+probe unknown-run: Botmancers pid 67391
+→ GET /api/agent-runs/run-20260101T000000-000000
+  ← 404 {"success":false,"error":"Run not found","error_code":"RUN_NOT_FOUND"}
+  GET status run-20260101T000000-000000: {"code":"agent_deck_rejected","status":404,"deckCode":"RUN_NOT_FOUND","message":"Agent Deck rejected the request (404 RUN_NOT_FOUND)."}
+→ GET /api/agent-runs/run-20260101T000000-000000/events
+  ← 404 {"success":false,"error":"Run not found","error_code":"RUN_NOT_FOUND"}
+  GET events run-20260101T000000-000000: {"code":"agent_deck_rejected","status":404,"deckCode":"RUN_NOT_FOUND","message":"Agent Deck rejected the request (404 RUN_NOT_FOUND)."}
+→ POST /api/agent-runs/run-20260101T000000-000000/cancel
+  ← 404 {"success":false,"error":"Run not found","error_code":"RUN_NOT_FOUND"}
+  POST cancel run-20260101T000000-000000: {"code":"agent_deck_rejected","status":404,"deckCode":"RUN_NOT_FOUND","message":"Agent Deck rejected the request (404 RUN_NOT_FOUND)."}
+→ GET /api/agent-runs/..%2F..%2Fetc%2Fpasswd
+  ← 404 {"success":false,"error":"Run not found","error_code":"RUN_NOT_FOUND"}
+  GET status run id with path chars: {"code":"agent_deck_rejected","status":404,"deckCode":"RUN_NOT_FOUND","message":"Agent Deck rejected the request (404 RUN_NOT_FOUND)."}
+  decision: manual_attention:run_unknown_to_agent_deck
+  PASS: unknown run id: status/events/cancel are 404 RUN_NOT_FOUND
