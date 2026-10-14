@@ -38,7 +38,8 @@ import { EngineStoreError, type EngineEvent, type WorkRequest, type WorkRequestS
 import { authorizeWorkRequest } from './execution-policy';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 import type { ConversationEventView } from './conversation-projection';
-import { continueAfterTerminal, pendingCoordinatorWork, resumeBindingFor, turnContext } from './coordinator-loop';
+import { continueAfterFinalization, continueAfterTerminal, pendingCoordinatorWork, resumeBindingFor, turnContext } from './coordinator-loop';
+import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -345,9 +346,15 @@ function failRequest(requestId: string, attemptId: string | null, code: string, 
 // work binds the session it reports so a later revision can resume it.
 // Once the request is terminal, lib/coordinator-loop routes the reply's
 // Wakes and continues the coordinator; those requests dispatch here too.
+//
+// NOT-487: implementation and revision turns prepare Git finalization; the
+// Attempt's baseline and candidate manifest are persisted with it. A
+// coordinator's accepted finalization decision (recorded by the loop
+// follow-up) is submitted here, and its outcome returns to the coordinator.
 async function runDispatch(requestId: string): Promise<void> {
   await runTurn(requestId);
   for (const next of continueAfterTerminal(requestId)) void startAgentDispatch(next);
+  for (const id of openFinalizationIds()) if (!submittedThisProcess.has(id)) void startFinalization(id);
 }
 
 async function runTurn(requestId: string): Promise<void> {
@@ -398,6 +405,7 @@ async function runTurn(requestId: string): Promise<void> {
       history: [...historyFor(request, bot), ...turnContext(request)],
       toolProfile: policy.tool_profile,
       sessionBinding: resume.binding ? { bindingId: resume.binding.id, externalSessionId: resume.binding.external_session_id } : null,
+      prepareFinalization: policy.execution_kind === 'implementation' || policy.execution_kind === 'revision',
     });
   } catch (error) {
     unprepared = error instanceof DispatchFailure
@@ -429,9 +437,17 @@ async function runTurn(requestId: string): Promise<void> {
     return;
   }
 
+  const attemptId = started.attempt.id;
   await runAttempt(engine, started, prepared.adapter, {
+    onEvent: event => {
+      if (event.type === 'progress' && event.detail.phase === 'finalization_prepared'
+        && typeof event.detail.baseline_ref === 'string' && typeof event.detail.baseline_digest === 'string') {
+        recordAttemptBaseline(attemptId, { baselineRef: event.detail.baseline_ref, baselineDigest: event.detail.baseline_digest }, event.at);
+      }
+    },
     project: (result, attempt) => {
       const now = Date.now();
+      recordPreparedEvidence(request, attempt, result, now);
       if (result.status !== 'completed' || result.output === null) {
         const failure = dispatchFailureFor(result);
         engine.transitionWorkRequest(requestId, { from: 'running', to: 'failed', errorCode: failure.code, errorMessage: failure.message, now });
@@ -470,6 +486,32 @@ export function startAgentDispatch(requestId: string): Promise<void> {
   return promise;
 }
 
+// NOT-487: submits one open finalization (joined when already running),
+// then returns its outcome to the coordinator. A finalization left open by
+// a transport failure stays open for the next recovery pass.
+// Finalizations submitted since this process started. A new decision
+// starts only its own; recoverCoordinatorLoops retries every open one.
+const submittedThisProcess = new Set<string>();
+
+export function startFinalization(finalizationId: string): Promise<void> {
+  const key = `finalization:${finalizationId}`;
+  const running = inFlight.get(key);
+  if (running) return running;
+  submittedThisProcess.add(finalizationId);
+  const promise = runFinalization(finalizationId)
+    .then(row => {
+      if (row && row.state !== 'preparing') for (const next of continueAfterFinalization(row.id)) void startAgentDispatch(next);
+    })
+    .catch(error => {
+      console.error('Finalization failed unexpectedly:', error instanceof Error ? error.message : 'unknown error');
+    })
+    .finally(() => {
+      inFlight.delete(key);
+    });
+  inFlight.set(key, promise);
+  return promise;
+}
+
 // Resolves once no dispatch (including coordinator loop follow-ups it
 // started) is in flight.
 export async function waitForAgentDispatchIdle(): Promise<void> {
@@ -479,7 +521,10 @@ export async function waitForAgentDispatchIdle(): Promise<void> {
 // NOT-472 restart recovery: replays terminal requests' loop follow-ups
 // from durable state (idempotent) and dispatches what is still queued.
 export function recoverCoordinatorLoops(): Promise<void> {
-  return Promise.all(pendingCoordinatorWork().map(startAgentDispatch)).then(() => undefined);
+  return Promise.all([
+    ...pendingCoordinatorWork().map(startAgentDispatch),
+    ...openFinalizationIds().map(startFinalization),
+  ]).then(() => undefined);
 }
 
 // Engine event types in the documented request event vocabulary

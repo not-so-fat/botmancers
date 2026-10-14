@@ -35,11 +35,24 @@
 //
 // Continuation context names Work Requests by canonical id only; external
 // run and session identifiers stay in Attempts and Session Bindings.
+//
+// NOT-487: a coordinator reply may also carry botmancers-finalize decisions
+// (lib/agent-deck-finalization). They are recorded in the same follow-up;
+// a decision that does not authorize finalization is reported back to the
+// coordinator in one continuation, and a finished finalization returns its
+// commit evidence the same way (continueAfterFinalization).
 import db, { bots, engine, type Message } from './db';
 import type { SessionBinding, WorkRequest } from './engine-store';
 import { selectExecutionPolicy } from './execution-policy';
 import { routeAgentWakes, WakeRouterError, type RoutedWake } from './wake-router';
 import type { DispatchHistoryEntry } from './agent-dispatch';
+import {
+  candidateEvidence,
+  finalizationEvidence,
+  getFinalization,
+  recordFinalizeDecisions,
+  type DecisionOutcome,
+} from './agent-deck-finalization';
 
 // Continuation turns per root lineage. Placeholder value until the owner
 // confirms it; change one line here.
@@ -125,6 +138,10 @@ export function resultEvidence(request: WorkRequest, replyShown = false): string
   else if (request.state === 'failed' || request.state === 'cancelled') {
     lines.push(`Failure: ${request.error_code ?? request.state}${request.error_message ? ` - ${request.error_message}` : ''}`);
   } else if (request.terminal_at === null) lines.push('Result: not finished yet.');
+  // NOT-487: the exact candidate artifact a reviewer inspects and a
+  // coordinator may accept.
+  const candidate = candidateEvidence(request);
+  if (candidate) lines.push(candidate);
   return lines.join('\n');
 }
 
@@ -135,10 +152,29 @@ const NEXT_STEP = [
   'did not run.',
 ].join(' ');
 
+// NOT-487: how a coordinator commits reviewed work. Shown with review
+// results only; approval is this block, never review prose.
+const FINALIZE_HINT = [
+  'If this review satisfies you and the implementation has a candidate manifest, you may commit it by emitting',
+  'a botmancers-finalize block: {"version": 1, "decision": "accept", "implementationWorkRequest": "<id>",',
+  '"reviewWorkRequest": "<id>", "commitMessage": "<optional>"}, or "decision": "reject". Botmancers commits exactly',
+  'the reviewed manifest; never list files or digests.',
+].join(' ');
+
 function resultContinuationText(request: WorkRequest, replyShown: boolean): string {
   return [
     `[Work Request result] ${agentName(request.target_agent_id)} finished the ${request.execution_kind} you requested.`,
     resultEvidence(request, replyShown),
+    ...(request.execution_kind === 'review' && request.state === 'completed' ? [FINALIZE_HINT] : []),
+    NEXT_STEP,
+  ].join('\n\n');
+}
+
+function decisionOutcomeText(rejected: DecisionOutcome[]): string {
+  const lines = rejected.map(outcome => `- Decision ${outcome.position + 1}: ${outcome.reasonCode} - ${outcome.reason}`);
+  return [
+    `[Finalization not started] ${rejected.length === 1 ? 'One finalization decision' : `${rejected.length} finalization decisions`} from your last message committed nothing:`,
+    lines.join('\n'),
     NEXT_STEP,
   ].join('\n\n');
 }
@@ -177,7 +213,7 @@ interface ContinuationSpec {
   sourceEventId: string;
   parent: WorkRequest;
   intent: string;
-  continues: 'result' | 'wake_outcome';
+  continues: 'result' | 'wake_outcome' | 'finalize_decision' | 'finalization';
   subjects: string[];
   now: number;
 }
@@ -250,6 +286,22 @@ export function continueAfterTerminal(requestId: string, now: number = Date.now(
         failure = error;
       }
       for (const entry of routed) queued(entry.request);
+      const decisions = recordFinalizeDecisions(reply, request, now);
+      // An explicit reject needs no reply; any other refusal does.
+      const refused = decisions.filter(outcome => outcome.reasonCode !== null && outcome.reasonCode !== 'review_rejected');
+      if (refused.length > 0) {
+        queued(continuation({
+          key: `continuation:v1:finalize-decision:${reply.id}`,
+          coordinatorId: request.target_agent_id,
+          conversationId: reply.conversation_id,
+          sourceEventId: reply.id,
+          parent: request,
+          intent: decisionOutcomeText(refused),
+          continues: 'finalize_decision',
+          subjects: refused.flatMap(outcome => outcome.implementationRequestId ? [outcome.implementationRequestId] : []),
+          now,
+        }));
+      }
       const unstarted = routed.filter(entry => entry.wake.status !== 'accepted');
       if (failure || unstarted.length > 0) {
         queued(continuation({
@@ -283,6 +335,37 @@ export function continueAfterTerminal(requestId: string, now: number = Date.now(
       }));
     }
     return dispatch;
+  });
+}
+
+// NOT-487: one read-only continuation returning a finished finalization's
+// outcome (commit, tree, manifest, or the reason nothing was committed) to
+// the coordinator that decided it. Keyed by the finalization, so replay
+// and restart create it once.
+export function continueAfterFinalization(finalizationId: string, now: number = Date.now()): string[] {
+  return engine.transaction((): string[] => {
+    const row = getFinalization(finalizationId);
+    if (!row || row.state === 'preparing') return [];
+    const parent = engine.getWorkRequest(row.decision_request_id);
+    if (!parent) return [];
+    const next = continuation({
+      key: `continuation:v1:finalization:${row.id}`,
+      coordinatorId: row.coordinator_agent_id,
+      conversationId: row.conversation_id,
+      sourceEventId: row.decision_event_id,
+      parent,
+      intent: [
+        row.state === 'committed'
+          ? '[Finalization committed] The reviewed manifest was committed.'
+          : `[Finalization ${row.state}] The reviewed manifest was not committed.`,
+        finalizationEvidence(row),
+        NEXT_STEP,
+      ].join('\n\n'),
+      continues: 'finalization',
+      subjects: [row.implementation_request_id, row.review_request_id],
+      now,
+    });
+    return next && next.state === 'queued' ? [next.id] : [];
   });
 }
 

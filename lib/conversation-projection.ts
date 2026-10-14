@@ -26,6 +26,13 @@
 //
 // Requests backfilled from legacy agent_requests project nothing; their
 // messages remain the readable history.
+//
+// NOT-487: reviewed Git finalization projects from the implementation's
+// own event log (lib/agent-deck-finalization): its candidate manifest as an
+// artifact, then preparing, committed, blocked, failed, or canceled with
+// run/attempt/review linkage and public commit/tree/manifest identifiers.
+// A decision that authorizes nothing projects as finalization_rejected on
+// the coordinator request that carried it.
 import type Database from 'better-sqlite3';
 import type { EngineEvent, WorkAttempt, WorkRequest, WorkRequestState } from './engine-store';
 
@@ -41,12 +48,20 @@ export type ConversationEventKind =
   | 'request_cancelled'
   | 'question'
   | 'result'
-  | 'artifact';
+  | 'artifact'
+  | 'finalization_preparing'
+  | 'finalization_committed'
+  | 'finalization_blocked'
+  | 'finalization_failed'
+  | 'finalization_canceled'
+  | 'finalization_rejected';
 
 export const CONVERSATION_EVENT_KINDS: ConversationEventKind[] = [
   'wake_accepted', 'wake_blocked', 'request_queued', 'request_blocked', 'request_running',
   'request_waiting', 'request_completed', 'request_failed', 'request_cancelled',
   'question', 'result', 'artifact',
+  'finalization_preparing', 'finalization_committed', 'finalization_blocked',
+  'finalization_failed', 'finalization_canceled', 'finalization_rejected',
 ];
 
 export interface ConversationEventRow {
@@ -235,13 +250,63 @@ export function createConversationProjector(db: Db) {
           const parsed = JSON.parse(attempt.artifacts);
           if (Array.isArray(parsed)) artifacts = parsed;
         } catch { /* no artifacts */ }
-        return artifacts.map(artifact => {
+        // A candidate manifest projects from its own event, with its digests.
+        return artifacts.filter(artifact => !(artifact && typeof artifact === 'object' && (artifact as Record<string, unknown>).kind === 'candidate_manifest')).map(artifact => {
           const ref = artifact && typeof artifact === 'object' ? artifact as Record<string, unknown> : { ref: String(artifact) };
           const kind = str(ref.kind) ?? 'artifact';
           const value = str(ref.ref) ?? '';
           return { kind: 'artifact' as const, attemptId: attempt.id, text: `Artifact (${kind}): ${value}`, data: { artifact_kind: kind, ref: value, outcome: attempt.outcome } };
         });
       }
+      case 'candidate_manifest_recorded': {
+        const digest = str(data.manifest_digest);
+        const count = typeof data.file_count === 'number' ? data.file_count : 0;
+        return [{
+          kind: 'artifact', attemptId: event.attempt_id,
+          text: `Candidate manifest ${digest}: ${count} ${count === 1 ? 'file' : 'files'} on base ${str(data.base_commit)}`,
+          data: { artifact_kind: 'candidate_manifest', ref: digest, ...data },
+        }];
+      }
+      case 'candidate_manifest_unavailable':
+        return [{
+          kind: 'finalization_blocked', attemptId: event.attempt_id,
+          text: withReason('Not finalizable', str(data.reason_code)),
+          data: { phase: 'candidate', ...data },
+        }];
+      case 'finalization_preparing':
+        return [{
+          kind: 'finalization_preparing', attemptId: event.attempt_id,
+          text: `Finalization preparing: manifest ${str(data.manifest_digest)} (${data.file_count ?? 0} files), review ${str(data.review_request_id)}`,
+          data,
+        }];
+      case 'finalization_retry_pending':
+        return [{
+          kind: 'finalization_preparing', attemptId: event.attempt_id,
+          text: withReason('Finalization waiting to retry', str(data.reason_code)),
+          data: { retry: true, ...data },
+        }];
+      case 'finalization_committed':
+        return [{
+          kind: 'finalization_committed', attemptId: event.attempt_id,
+          text: `Finalization committed: commit ${str(data.commit)} (tree ${str(data.tree)}, manifest ${str(data.result_manifest_digest) ?? str(data.manifest_digest)})`,
+          data: { success: true, ...data },
+        }];
+      case 'finalization_blocked':
+      case 'finalization_failed':
+      case 'finalization_canceled': {
+        const label = event.type === 'finalization_blocked' ? 'blocked' : event.type === 'finalization_failed' ? 'failed' : 'canceled';
+        return [{
+          kind: event.type, attemptId: event.attempt_id,
+          text: withReason(`Finalization ${label}`, str(data.reason_code)),
+          data: { success: false, ...data },
+        }];
+      }
+      case 'finalization_rejected':
+        return [{
+          kind: 'finalization_rejected', attemptId: null,
+          text: withReason('Finalization not started', str(data.reason_code)),
+          data,
+        }];
       default:
         // attempt_started, session_bound, runtime_progress: internal.
         return [];

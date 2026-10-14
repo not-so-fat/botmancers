@@ -118,33 +118,36 @@ dispatch.setAgentDispatchHermesFetch(async (url, init) => {
   return new Response(JSON.stringify({ choices: [{ message: { content: `hermes reply #${hermesCalls.length} to ${last}` } }] }), { status: 200 });
 });
 
+// NOT-487: canonical Agent Deck turns go through the public run API; the
+// fake Agent Deck server captures every start. The CLI seam counts spawns
+// and must stay at zero.
+const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
+const deckApi = jiti('./lib/agent-deck-api.ts');
+const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
+const fakeDeck = createFakeAgentDeck();
+process.env.AGENT_DECK_RUN_TOKEN = fakeDeck.token;
+deckApi.setAgentDeckApiFetch(fakeDeck.fetch);
+deckAttempt.setAgentDeckApiPollIntervalForTests(5);
 const deckStarts = [];
 let deckMode = 'ok';
 let releaseGate = null;
-deckRun.setDeckRunProcess(async argv => {
-  if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
-    return { stdout: JSON.stringify({ runId: argv[3], deck: 'deck-api', client: 'codex', state: 'ended', sessionId: `ses-${argv[3]}`, logPath: '/tmp/x' }), stderr: '', exitCode: 0 };
+fakeDeck.onStart = body => {
+  deckStarts.push(body);
+  if (deckMode === 'noend') return { state: 'died' };
+  const script = { result: run => `deck reply from ${run.runId}` };
+  if (deckMode === 'gate') {
+    script.hold = true;
+    setImmediate(() => {
+      const runId = [...fakeDeck.runs.keys()].pop();
+      releaseGate = () => fakeDeck.release(runId);
+    });
   }
-  if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
-    const runId = argv[3];
-    if (deckMode === 'noend') {
-      return { stdout: JSON.stringify({ t: 'result', sessionId: `ses-${runId}`, subtype: 'success', result: 'partial' }) + '\n', stderr: '', exitCode: 0 };
-    }
-    if (deckMode === 'gate') {
-      await new Promise(resolve => { releaseGate = resolve; });
-    }
-    const lines = [
-      JSON.stringify({ t: 'result', sessionId: `ses-${runId}`, subtype: 'success', result: `deck reply from ${runId}` }),
-      JSON.stringify({ t: 'end', sessionId: `ses-${runId}` }),
-    ].join('\n') + '\n';
-    return { stdout: lines, stderr: '', exitCode: 0 };
-  }
-  if (argv[0] === 'agent-deck' && argv[1] === 'run') {
-    deckStarts.push(argv);
-    const runId = `run-api-${deckStarts.length}`;
-    return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake/${runId}.jsonl\n`, stderr: '', exitCode: 0 };
-  }
-  return { stdout: '', stderr: 'unexpected', exitCode: 1 };
+  return script;
+};
+let cliSpawns = 0;
+deckRun.setDeckRunProcess(async () => {
+  cliSpawns += 1;
+  return { stdout: '', stderr: 'canonical turns never spawn the agent-deck CLI', exitCode: 1 };
 });
 
 // ---- helpers -------------------------------------------------------------
@@ -292,8 +295,8 @@ async function main() {
   // NOT-462: the direct dispatchDeckRun() conversation turn is not the
   // composite implementation workflow; it stays read-only.
   assert(
-    deckStarts.length > 0 && deckStarts.every(argv => argv[argv.indexOf('--tools') + 1] === 'readonly' && !argv.includes('--resume')),
-    `direct Agent Deck conversation turns launch with --tools readonly (got ${deckStarts.map(argv => argv[argv.indexOf('--tools') + 1]).join(',')})`
+    deckStarts.length > 0 && deckStarts.every(body => body.tools === 'readonly' && !body.resumeSessionId && !body.prepareFinalization) && cliSpawns === 0,
+    `direct Agent Deck conversation turns launch through the API with tools readonly and no finalization (got ${deckStarts.map(body => body.tools).join(',')}, cli spawns ${cliSpawns})`
   );
   assert(hermesCalls.every(call => !call.url.includes(HERMES_KEY)), 'Hermes adapter used its own configured credentials');
   // NOT-465: requests are canonical Work Requests; the launch Attempt
@@ -444,7 +447,7 @@ async function phaseTwoRun(ctx, m) {
     const noend = await post2(person, deckAgent.id, { content: 'build it', idempotencyKey: 'fail-deck-noend', wait: true });
     deckMode = 'ok';
     log(`  Agent Deck acked but no end event -> state=${noend.json.state} failure=${JSON.stringify(noend.json.failure)} events=${noend.json.events.map(e => e.type).join('>')}`);
-    assert(noend.json.state === 'failed' && noend.json.failure.code === 'runtime_failed' && replyCount(noend.json.requestId) === 0, 'detach acknowledgement without a terminal log event is a failure, not completion');
+    assert(noend.json.state === 'failed' && noend.json.failure.code === 'runtime_failed' && replyCount(noend.json.requestId) === 0, 'launch acknowledgement without a terminal event (run died) is a failure, not completion');
 
     deckMode = 'gate';
     const gated = await post2(person, deckAgent.id, { content: 'long task', idempotencyKey: 'deck-gated' });
@@ -458,7 +461,7 @@ async function phaseTwoRun(ctx, m) {
     await running;
     const done = await getRequest2(person, gated.json.requestId);
     log(`  Agent Deck end event -> state=${done.json.state} reply=${JSON.stringify(done.json.reply && done.json.reply.content)}`);
-    assert(done.json.state === 'completed' && done.json.reply.content.startsWith('deck reply from run-api-'), 'request completes only after the run end event');
+    assert(done.json.state === 'completed' && done.json.reply.content.startsWith('deck reply from run-'), 'request completes only after the run end event');
 
     const missingAgent = await post2(person, 'no-such-agent', { content: 'hi', idempotencyKey: 'missing-agent' });
     assert(missingAgent.status === 404 && missingAgent.json.error.code === 'agent_not_found', 'unknown agent fails with agent_not_found');
