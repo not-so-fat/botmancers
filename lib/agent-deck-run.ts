@@ -145,14 +145,31 @@ export function parseDeckRunStatus(stdout: string): DeckRunStatus {
 // session id is copied through opaquely like the status one. `ended` is
 // true only once an `end` line is seen; an `error` line carries the run's
 // failure text. A stream with neither is not a completed run.
+//
+// NOT-483: the public result payload is usable only when it is a non-empty
+// string. Any other shape (object, null, missing, empty) leaves `result`
+// null and names the payload type in `resultMismatch`, so the caller fails
+// closed at this run instead of continuing with empty context. No `text`
+// events are reassembled into a substitute result.
 export interface DeckLogStream {
   result: { result: string; sessionId: string | null } | null;
+  resultMismatch: string | null;
   ended: boolean;
   errorMessage: string | null;
 }
 
+function describeResultPayload(event: Record<string, unknown>): string {
+  if (!Object.prototype.hasOwnProperty.call(event, 'result')) return 'missing';
+  const value = event.result;
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (value === '') return 'empty string';
+  return typeof value;
+}
+
 export function parseDeckLogStream(logJsonl: string): DeckLogStream {
   let result: { result: string; sessionId: string | null } | null = null;
+  let resultMismatch: string | null = null;
   let ended = false;
   let errorMessage: string | null = null;
   for (const line of logJsonl.split('\n')) {
@@ -166,10 +183,16 @@ export function parseDeckLogStream(logJsonl: string): DeckLogStream {
     }
     if (event.t === 'result') {
       const sessionId = event.sessionId ?? event.session_id;
-      result = {
-        result: typeof event.result === 'string' ? event.result : '',
-        sessionId: typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null,
-      };
+      if (typeof event.result === 'string' && event.result.length > 0) {
+        result = {
+          result: event.result,
+          sessionId: typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null,
+        };
+        resultMismatch = null;
+      } else {
+        result = null;
+        resultMismatch = describeResultPayload(event);
+      }
     } else if (event.t === 'end') {
       ended = true;
     } else if (event.t === 'error') {
@@ -177,7 +200,7 @@ export function parseDeckLogStream(logJsonl: string): DeckLogStream {
       errorMessage = typeof message === 'string' && message.length > 0 ? message : 'unknown log error';
     }
   }
-  return { result, ended, errorMessage };
+  return { result, resultMismatch, ended, errorMessage };
 }
 
 export interface DeckRunOutput {
@@ -252,6 +275,7 @@ export async function deckRunStatus(runId: string): Promise<DeckRunStatus> {
 export interface DeckRunLog {
   raw: string;
   result: { result: string; sessionId: string | null } | null;
+  resultMismatch: string | null;
   ended: boolean;
   errorMessage: string | null;
 }
@@ -262,7 +286,7 @@ export async function deckRunLog(runId: string, options?: DeckRunLogOptions): Pr
     throw new Error(`agent-deck run log failed for ${runId} (exit ${output.exitCode}): ${output.stderr.slice(0, 300)}`);
   }
   const stream = parseDeckLogStream(output.stdout);
-  return { raw: output.stdout, result: stream.result, ended: stream.ended, errorMessage: stream.errorMessage };
+  return { raw: output.stdout, ...stream };
 }
 
 export interface AwaitedDeckRun {
@@ -277,6 +301,8 @@ export interface AwaitedDeckRun {
 // all fail closed. Assumes the CLI's --follow terminates for died runs
 // (it exits once an end or error line is seen); a still-running run whose
 // log never terminates stays inside the CLI wait, never in adapter timing.
+// NOT-483: an ended run without a non-empty string result also fails
+// closed here, naming the run and the payload type, before any later run.
 export async function awaitDeckRunEnd(runId: string): Promise<AwaitedDeckRun> {
   const log = await deckRunLog(runId, { follow: true });
   if (log.errorMessage) {
@@ -289,10 +315,15 @@ export async function awaitDeckRunEnd(runId: string): Promise<AwaitedDeckRun> {
   if (status.state === 'error' || status.state === 'died') {
     throw new Error(`agent-deck run ${runId} ${status.state}`);
   }
+  if (!log.result) {
+    throw new Error(
+      `agent-deck run ${runId} result contract mismatch: expected a non-empty string result, got ${log.resultMismatch ?? 'no result event'}.`
+    );
+  }
   return {
     status,
-    result: log.result?.result ?? '',
-    sessionId: status.sessionId ?? log.result?.sessionId ?? null,
+    result: log.result.result,
+    sessionId: status.sessionId ?? log.result.sessionId,
   };
 }
 
