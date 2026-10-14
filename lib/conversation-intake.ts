@@ -23,6 +23,7 @@
 import { createHash, randomUUID } from 'crypto';
 import db, { bots, engine, type Conversation, type Message, type Principal } from './db';
 import { EngineStoreError, type WorkRequest } from './engine-store';
+import { selectExecutionPolicy } from './execution-policy';
 
 export type IntakeSurface = 'ui' | 'api';
 
@@ -242,6 +243,13 @@ function intakeTransaction(input: ConversationIntakeInput, hash: string): Accept
       }
     }
 
+    // NOT-471: a direct message is one read-only conversation turn for
+    // every target, whatever the message says or which Agent type it
+    // addresses (lib/execution-policy).
+    const selection = selectExecutionPolicy({ entryPoint: surface, executionKind: 'conversation' });
+    if (!selection.ok) throw new IntakeError('invalid_request', selection.reason);
+    const executionPolicy = selection.policy;
+
     const requestIds: string[] = [];
     for (const delivery of deliveries) {
       addParticipant(delivery.conversationId, { kind: 'bot', id: delivery.agentId }, now);
@@ -257,10 +265,11 @@ function intakeTransaction(input: ConversationIntakeInput, hash: string): Accept
         requester,
         targetAgentId: delivery.agentId,
         intent: input.content,
-        executionKind: 'conversation',
-        toolProfile: 'readonly',
+        executionKind: executionPolicy.execution_kind,
+        toolProfile: executionPolicy.tool_profile,
         idempotencyKey,
         policy: { source: 'conversation_intake', surface },
+        executionPolicy,
         now,
       });
       requestIds.push(request.id);

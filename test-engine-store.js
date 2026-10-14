@@ -544,7 +544,7 @@ function runLegacy() {
     messages: snapshotRows(legacy, 'SELECT id, conversation_id, sender_type, sender_id, content, created_at, request_id FROM messages ORDER BY id'),
     agent_requests: snapshotRows(legacy, 'SELECT * FROM agent_requests ORDER BY id'),
     agent_request_events: snapshotRows(legacy, 'SELECT * FROM agent_request_events ORDER BY id'),
-    processing_queue: snapshotRows(legacy, 'SELECT * FROM processing_queue ORDER BY id'),
+    processing_queue: snapshotRows(legacy, 'SELECT id, conversation_id, bot_id, status, created_at, started_at, completed_at FROM processing_queue ORDER BY id'),
   };
   legacy.close();
 
@@ -567,7 +567,7 @@ function runLegacy() {
     messages: 'SELECT id, conversation_id, sender_type, sender_id, content, created_at, request_id FROM messages ORDER BY id',
     agent_requests: 'SELECT * FROM agent_requests ORDER BY id',
     agent_request_events: 'SELECT * FROM agent_request_events ORDER BY id',
-    processing_queue: 'SELECT * FROM processing_queue ORDER BY id',
+    processing_queue: 'SELECT id, conversation_id, bot_id, status, created_at, started_at, completed_at FROM processing_queue ORDER BY id',
   })) {
     assert(snapshotRows(sqlite, sql) === before[name], `${name} rows are unchanged`);
   }

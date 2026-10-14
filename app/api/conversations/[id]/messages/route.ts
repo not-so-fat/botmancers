@@ -172,10 +172,12 @@ function uiRouting(conversation: Conversation, content: string, mentionedBotId: 
 
 // The UI agent loop (lib/agent processQueue) still executes UI turns: each
 // newly accepted Work Request becomes one queue item for its target and
-// conversation. Replays enqueue nothing. agent_requests is never written.
+// conversation, naming that request (NOT-471: a coding-Agent turn
+// dispatches it as one read-only Attempt). Replays enqueue nothing.
+// agent_requests is never written.
 function enqueueUiTurns(accepted: AcceptedIntake): void {
   if (accepted.replayed) return;
-  for (const request of accepted.requests) queue.enqueue(request.source_conversation_id, request.target_agent_id);
+  for (const request of accepted.requests) queue.enqueue(request.source_conversation_id, request.target_agent_id, request.id);
   processQueue().catch(console.error);
 }
 

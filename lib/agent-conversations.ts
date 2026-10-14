@@ -35,6 +35,7 @@ import {
 } from './agent-dispatch';
 import { beginAttempt, runAttempt, type PreparedAttempt } from './attempt-executor';
 import { EngineStoreError, type EngineEvent, type WorkRequest, type WorkRequestState } from './engine-store';
+import { authorizeWorkRequest } from './execution-policy';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 import type { ConversationEventView } from './conversation-projection';
 
@@ -328,7 +329,9 @@ function failRequest(requestId: string, attemptId: string | null, code: string, 
   });
 }
 
-// One read-only conversation turn for a queued canonical request: claim
+// One Attempt for a queued canonical request, under its validated policy
+// (a direct message is a read-only conversation turn; there is no
+// automatic review or resume child): claim
 // it (queued -> running) with one launch Attempt, run the selected agent
 // through its single-Attempt adapter (NOT-467: ./attempt-executor records
 // the runtime provenance), then project the reply into the source
@@ -342,19 +345,36 @@ async function runDispatch(requestId: string): Promise<void> {
     failRequest(requestId, null, 'agent_unavailable', 'The agent is no longer registered.');
     return;
   }
+  // NOT-471: the stored policy snapshot is re-validated against the
+  // request before anything launches. An unknown kind, unsupported
+  // authority, or malformed snapshot fails the request with its reason;
+  // no Attempt is created and no adapter runs.
+  const authorized = authorizeWorkRequest(request);
+  if (!authorized.ok) {
+    try {
+      engine.transitionWorkRequest(requestId, {
+        from: 'queued', to: 'failed', expectedVersion: request.version,
+        reason: 'policy_rejected', errorCode: authorized.code, errorMessage: authorized.reason,
+      });
+    } catch (error) {
+      if (!(error instanceof EngineStoreError && error.code === 'stale_state')) throw error;
+    }
+    return;
+  }
+  const policy = authorized.policy;
   // NOT-456: the attempt adapter records the dispatched agent identity
   // (hermes|cursor|claude|codex|muse), never Agent Deck.
   const agent = agentForDispatch(bot);
   let prepared: PreparedDispatch | null = null;
   let unprepared: DispatchFailure | null = null;
   try {
-    prepared = prepareDispatch({ bot, history: historyFor(request, bot), toolProfile: request.tool_profile });
+    prepared = prepareDispatch({ bot, history: historyFor(request, bot), toolProfile: policy.tool_profile });
   } catch (error) {
     unprepared = error instanceof DispatchFailure
       ? error
       : new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
   }
-  const snapshot = { agent, agent_id: bot.id, execution_kind: request.execution_kind, tool_profile: request.tool_profile };
+  const snapshot = { agent, agent_id: bot.id, execution_kind: policy.execution_kind, tool_profile: policy.tool_profile, policy_rule: policy.rule };
   let started: PreparedAttempt | string;
   try {
     started = engine.transaction(() => {
@@ -365,7 +385,7 @@ async function runDispatch(requestId: string): Promise<void> {
       return engine.createAttempt(requestId, {
         kind: 'launch',
         adapter: agent,
-        toolProfile: request.tool_profile,
+        toolProfile: policy.tool_profile,
         launchSnapshot: snapshot,
       }).id;
     });
@@ -425,7 +445,7 @@ function apiEventType(event: EngineEvent): string | null {
     if (to === 'failed' || to === 'cancelled') return 'failed';
     return to ?? null;
   }
-  if (['attempt_started', 'attempt_finished', 'session_bound', 'backfilled', 'runtime_progress'].includes(event.type)) return null;
+  if (['attempt_started', 'attempt_finished', 'session_bound', 'backfilled', 'runtime_progress', 'policy_selected'].includes(event.type)) return null;
   return event.type;
 }
 

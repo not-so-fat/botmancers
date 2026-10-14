@@ -1,5 +1,13 @@
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
+import {
+  TOOL_PROFILE_FOR_KIND,
+  isExecutionKind,
+  validateExecutionPolicy,
+  type ExecutionKind,
+  type ExecutionPolicySnapshot,
+  type ToolProfile,
+} from './execution-policy';
 
 // NOT-463: canonical core-engine persistence (docs/core-engine.md). One
 // Work Request store, immutable Attempts, opaque Session Bindings, and an
@@ -14,9 +22,10 @@ import { createHash, randomUUID } from 'crypto';
 // under enforcement). The declared FOREIGN KEY clauses document the same
 // relations and also hold if enforcement is ever switched on.
 
+export { TOOL_PROFILE_FOR_KIND };
+export type { ExecutionKind, ToolProfile };
+
 export type WorkRequestState = 'queued' | 'blocked' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
-export type ExecutionKind = 'conversation' | 'implementation' | 'review' | 'revision';
-export type ToolProfile = 'readonly' | 'edit';
 export type AttemptKind = 'launch' | 'resume';
 export type AttemptOutcome = 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'timed_out';
 export type RequesterKind = 'person' | 'bot' | 'service';
@@ -35,15 +44,6 @@ export const WORK_REQUEST_TRANSITIONS: Record<WorkRequestState, WorkRequestState
   completed: [],
   failed: [],
   cancelled: [],
-};
-
-// Tool authority per execution kind (docs/core-engine.md, Tool authority).
-// It is explicit on every request and never inferred from the Agent type.
-export const TOOL_PROFILE_FOR_KIND: Record<ExecutionKind, ToolProfile> = {
-  conversation: 'readonly',
-  implementation: 'edit',
-  review: 'readonly',
-  revision: 'edit',
 };
 
 export interface WorkRequest {
@@ -941,6 +941,10 @@ export interface CreateWorkRequestInput {
   wakeEventId?: string | null;
   // Extra policy recorded verbatim alongside the tool profile.
   policy?: Record<string, unknown>;
+  // NOT-471: the policy lib/execution-policy selected for this request.
+  // Stored as policy_snapshot.execution_policy; the dispatcher launches
+  // nothing for a request without a valid one.
+  executionPolicy?: ExecutionPolicySnapshot;
   // Initial state: a wake whose target is not launchable may start blocked.
   initialState?: 'queued' | 'blocked';
   stateReason?: string | null;
@@ -1044,10 +1048,20 @@ export function createEngineStore(db: Db) {
     }
     if (!nonEmpty(input.targetAgentId)) throw new EngineStoreError('invalid_input', 'targetAgentId is required.');
     if (typeof input.intent !== 'string') throw new EngineStoreError('invalid_input', 'intent is required.');
-    if (!(input.executionKind in TOOL_PROFILE_FOR_KIND)) throw new EngineStoreError('invalid_input', 'Unknown execution kind.');
+    if (!isExecutionKind(input.executionKind)) throw new EngineStoreError('invalid_input', 'Unknown execution kind.');
     // Unsupported authority fails closed; it is never defaulted.
     if (TOOL_PROFILE_FOR_KIND[input.executionKind] !== input.toolProfile) {
       throw new EngineStoreError('invalid_input', `Execution kind ${input.executionKind} requires the ${TOOL_PROFILE_FOR_KIND[input.executionKind]} tool profile.`);
+    }
+    if (input.policy && Object.prototype.hasOwnProperty.call(input.policy, 'execution_policy')) {
+      throw new EngineStoreError('invalid_input', 'The execution policy is passed as executionPolicy, never inside policy.');
+    }
+    if (input.executionPolicy !== undefined) {
+      const checked = validateExecutionPolicy(input.executionPolicy);
+      if (!checked.ok) throw new EngineStoreError('invalid_input', checked.reason);
+      if (checked.policy.execution_kind !== input.executionKind || checked.policy.tool_profile !== input.toolProfile) {
+        throw new EngineStoreError('invalid_input', 'The execution policy does not match the requested execution kind and tool profile.');
+      }
     }
     if (!nonEmpty(input.idempotencyKey)) throw new EngineStoreError('invalid_input', 'idempotencyKey is required.');
     if (input.initialState && input.initialState !== 'queued' && input.initialState !== 'blocked') {
@@ -1066,7 +1080,10 @@ export function createEngineStore(db: Db) {
     // nothing; a different payload is an idempotency conflict.
     createOrGetWorkRequest(input: CreateWorkRequestInput): { request: WorkRequest; created: boolean } {
       validateCreate(input);
-      const hash = workRequestHash(input);
+      const callerPolicy = input.executionPolicy
+        ? { ...(input.policy ?? {}), execution_policy: input.executionPolicy }
+        : input.policy;
+      const hash = workRequestHash({ ...input, policy: callerPolicy });
       return db.transaction(() => {
         const existing = getByIdempotency.get(input.requester.kind, input.requester.id, input.idempotencyKey) as WorkRequest | undefined;
         if (existing) {
@@ -1086,7 +1103,7 @@ export function createEngineStore(db: Db) {
           depth = parent.depth + 1;
         }
         const state = input.initialState ?? 'queued';
-        const policy = JSON.stringify({ ...(input.policy ?? {}), tool_profile: input.toolProfile });
+        const policy = JSON.stringify({ ...(callerPolicy ?? {}), tool_profile: input.toolProfile });
         db.prepare(`
           INSERT INTO work_requests (
             id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
@@ -1099,6 +1116,9 @@ export function createEngineStore(db: Db) {
           input.idempotencyKey, hash, policy, state, input.stateReason ?? null, now, now
         );
         insertEvent(id, 'accepted', { state, execution_kind: input.executionKind, tool_profile: input.toolProfile }, null, now);
+        // Audit record of the selection: kinds, profile, entry point, and
+        // rule only (no prompt text, sessions, or credentials).
+        if (input.executionPolicy) insertEvent(id, 'policy_selected', { ...input.executionPolicy }, null, now);
         if (state === 'blocked') insertEvent(id, 'state_changed', { from: 'queued', to: 'blocked', reason: input.stateReason ?? null }, null, now);
         return { request: requireRequest(id), created: true };
       }).immediate();

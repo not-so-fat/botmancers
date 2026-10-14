@@ -147,8 +147,8 @@ async function main() {
   {
     log(`  UI row delta:  ${JSON.stringify(uiDelta)}`);
     log(`  API row delta: ${JSON.stringify(apiDelta)}`);
-    assert(deltaIs(uiDelta, { messages: 1, work_requests: 1, engine_events: 1, conversation_intakes: 1 }), 'UI submission: one message, one Work Request (+accepted event), one intake record, nothing else');
-    assert(deltaIs(apiDelta, { messages: 1, conversations: 1, work_requests: 1, engine_events: 1, conversation_intakes: 1 }), 'API submission: one message, one new agent conversation, one Work Request (+accepted event), one intake record, nothing else');
+    assert(deltaIs(uiDelta, { messages: 1, work_requests: 1, engine_events: 2, conversation_intakes: 1 }), 'UI submission: one message, one Work Request (+accepted, policy_selected events), one intake record, nothing else');
+    assert(deltaIs(apiDelta, { messages: 1, conversations: 1, work_requests: 1, engine_events: 2, conversation_intakes: 1 }), 'API submission: one message, one new agent conversation, one Work Request (+accepted, policy_selected events), one intake record, nothing else');
 
     const uiRequest = workRequest(ui.json.intake.requestIds[0]);
     const apiRequest = workRequest(apiFirst.json.requestId);
@@ -163,7 +163,7 @@ async function main() {
     assert(apiRequest.requester_kind === 'service' && apiRequest.idempotency_key === 'api-1' && apiFirst.json.state === 'accepted' && apiFirst.status === 202, 'API keeps its key and documented 202 accepted response');
     const uiEvents = raw.prepare('SELECT type FROM engine_events WHERE request_id = ?').all(uiRequest.id).map(e => e.type);
     const apiEvents = raw.prepare('SELECT type FROM engine_events WHERE request_id = ?').all(apiRequest.id).map(e => e.type);
-    assert(uiEvents.join() === 'accepted' && apiEvents.join() === 'accepted', 'both requests start with the same lifecycle event');
+    assert(uiEvents.join() === 'accepted,policy_selected' && apiEvents.join() === 'accepted,policy_selected', 'both requests start with the same lifecycle and policy events');
 
     log('  duplicates');
     const before = counts();
@@ -192,7 +192,7 @@ async function main() {
     const fanDelta = delta(beforeGroup, counts());
     const keys = fan.json.intake.requestIds.map(id => workRequest(id).idempotency_key).sort();
     log(`  group -> ${fan.status} requests=${fan.json.intake.requestIds.length} keys=${keys.join(',')} delta=${JSON.stringify(fanDelta)}`);
-    assert(deltaIs(fanDelta, { messages: 1, work_requests: 2, engine_events: 2, conversation_intakes: 1 }), 'group message: one source event, one Work Request per member, one intake');
+    assert(deltaIs(fanDelta, { messages: 1, work_requests: 2, engine_events: 4, conversation_intakes: 1 }), 'group message: one source event, one Work Request per member, one intake');
     assert(fan.json.intake.requestIds.every(id => workRequest(id).source_event_id === fan.json.id) && fan.json.request_id === null, 'fan-out requests share the one source event');
   }
 

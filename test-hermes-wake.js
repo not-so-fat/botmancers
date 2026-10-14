@@ -700,8 +700,10 @@ async function main() {
     'Agent Deck direct-dispatch assertion: opposite adapter (Hermes) was not invoked'
   );
   assert(
-    thread10.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck handoff]')),
-    'Agent Deck direct-dispatch assertion: deck handoff posted from the stored configuration'
+    deckRuns === 1 && flag(launchedArgv, '--tools') === 'readonly' &&
+      thread10.some(m => m.sender_type === 'bot' && m.content === 'output of run-hermes-1') &&
+      !thread10.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck handoff]')),
+    'Agent Deck direct-dispatch assertion: one read-only run answers, no composite handoff'
   );
   try { fs.rmSync(deckWorkdir, { recursive: true, force: true }); } catch { /* best effort */ }
   try { gateway.restore(); } catch { /* best effort */ }

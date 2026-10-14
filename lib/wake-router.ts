@@ -28,7 +28,8 @@ import db, { bots, engine, resolveWakeTarget, type Bot, type Message } from './d
 import { agentTransport, resolveAgent } from './bot-definition';
 import { getAgentDeckServerUrl, isLocalAgentDeckUrl, remoteLaunchUnsupportedMessage } from './agent-deck-settings';
 import { loadHermesConfig } from './hermes';
-import { TOOL_PROFILE_FOR_KIND, type WorkRequest } from './engine-store';
+import type { WorkRequest } from './engine-store';
+import { selectExecutionPolicy, type ExecutionPolicySnapshot } from './execution-policy';
 import { parseWakes, wakeIdempotencyKey, wakePayload, type WakeCandidate, type WakeEnvelope, type WakeSyntax } from './wake';
 
 export type WakeStatus = 'accepted' | 'blocked' | 'unavailable' | 'rejected';
@@ -36,6 +37,7 @@ export type WakeStatus = 'accepted' | 'blocked' | 'unavailable' | 'rejected';
 export type WakeReasonCode =
   | 'invalid_envelope'
   | 'invalid_reference'
+  | 'unsupported_policy'
   | 'target_is_group'
   | 'target_not_found'
   | 'target_ambiguous'
@@ -127,7 +129,7 @@ function routed(wake: Wake, created: boolean): RoutedWake {
 }
 
 type Unrouted = { status: 'rejected' | 'unavailable'; code: WakeReasonCode; reason: string; target?: { id: string; name: string } };
-type Routable = { status: 'accepted' | 'blocked'; code: WakeReasonCode | null; reason: string | null; target: { id: string; name: string } };
+type Routable = { status: 'accepted' | 'blocked'; code: WakeReasonCode | null; reason: string | null; target: { id: string; name: string }; policy: ExecutionPolicySnapshot };
 type Outcome = Unrouted | Routable;
 
 function routable(outcome: Outcome): outcome is Routable {
@@ -154,7 +156,7 @@ function referenceProblem(envelope: WakeEnvelope, conversationId: string, parent
 
 // Target resolution by name, then the launch checks. Used by first routing
 // and by retrying an unavailable Wake (which has no target yet).
-function resolveOutcome(envelope: WakeEnvelope): Outcome {
+function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax): Outcome {
   const resolved = resolveWakeTarget(envelope.target);
   if (!resolved.ok) {
     if (resolved.reason === 'ambiguous') {
@@ -165,13 +167,24 @@ function resolveOutcome(envelope: WakeEnvelope): Outcome {
     }
     return { status: 'unavailable', code: 'target_not_found', reason: `No Agent is named ${envelope.target}.` };
   }
-  return checkTarget(envelope, { id: resolved.agentId, name: resolved.displayName });
+  return checkTarget(envelope, syntax, { id: resolved.agentId, name: resolved.displayName });
 }
 
 // Resume constraint, configuration, and availability of one resolved
 // Agent. A blocked Wake's retry calls this on its stored target, never on
 // whichever Agent now holds the requested name.
-function checkTarget(envelope: WakeEnvelope, target: { id: string; name: string }): Outcome {
+function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: string; name: string }): Outcome {
+  // NOT-471: authority comes from the envelope's explicit kind under the
+  // central rules (structured: any kind, revision resumes; legacy:
+  // conversation only), never from the target's Agent type.
+  const selection = selectExecutionPolicy({
+    entryPoint: 'wake',
+    executionKind: envelope.executionKind,
+    wakeSyntax: syntax,
+    resumesWorkRequest: !!envelope.resumeWorkRequest,
+  });
+  if (!selection.ok) return { status: 'rejected', code: 'unsupported_policy', reason: selection.reason, target };
+  const policy = selection.policy;
   if (envelope.resumeWorkRequest) {
     const resume = engine.getWorkRequest(envelope.resumeWorkRequest);
     if (!resume || resume.target_agent_id !== target.id || !['implementation', 'revision'].includes(resume.execution_kind)) {
@@ -184,11 +197,11 @@ function checkTarget(envelope: WakeEnvelope, target: { id: string; name: string 
     const reason = agent.needs_deck_selection
       ? `${target.name} has no Agent Deck selected.`
       : `${target.name} has an unsupported Agent type.`;
-    return { status: 'blocked', code: 'target_unconfigured', reason, target };
+    return { status: 'blocked', code: 'target_unconfigured', reason, target, policy };
   }
   const availability = (availabilityOverride ?? defaultAvailability)(bot);
-  if (!availability.available) return { status: 'blocked', code: 'target_unavailable', reason: availability.reason, target };
-  return { status: 'accepted', code: null, reason: null, target };
+  if (!availability.available) return { status: 'blocked', code: 'target_unavailable', reason: availability.reason, target, policy };
+  return { status: 'accepted', code: null, reason: null, target, policy };
 }
 
 function createRequest(wake: Pick<Wake, 'id' | 'idempotency_key' | 'source_conversation_id' | 'source_event_id' | 'requester_agent_id' | 'parent_request_id' | 'root_wake_id' | 'syntax'>,
@@ -199,8 +212,8 @@ function createRequest(wake: Pick<Wake, 'id' | 'idempotency_key' | 'source_conve
     requester: { kind: 'bot', id: wake.requester_agent_id },
     targetAgentId: outcome.target.id,
     intent: envelope.objective,
-    executionKind: envelope.executionKind,
-    toolProfile: TOOL_PROFILE_FOR_KIND[envelope.executionKind],
+    executionKind: outcome.policy.execution_kind,
+    toolProfile: outcome.policy.tool_profile,
     idempotencyKey: wake.idempotency_key,
     parentRequestId: wake.parent_request_id,
     wakeEventId: wake.id,
@@ -215,6 +228,7 @@ function createRequest(wake: Pick<Wake, 'id' | 'idempotency_key' | 'source_conve
       resume_work_request: envelope.resumeWorkRequest ?? null,
       limits: envelope.limits ?? {},
     },
+    executionPolicy: outcome.policy,
     initialState: outcome.status === 'blocked' ? 'blocked' : 'queued',
     stateReason: outcome.status === 'blocked' ? `${outcome.code}: ${outcome.reason}` : null,
     now,
@@ -250,7 +264,7 @@ function routeCandidate(candidate: WakeCandidate, source: Message, requesterId: 
   } else {
     envelope = candidate.validation.envelope;
     const problem = referenceProblem(envelope, source.conversation_id, parent);
-    outcome = problem ? { status: 'rejected', code: 'invalid_reference', reason: problem } : resolveOutcome(envelope);
+    outcome = problem ? { status: 'rejected', code: 'invalid_reference', reason: problem } : resolveOutcome(envelope, candidate.syntax);
   }
 
   const request = envelope && routable(outcome)
@@ -327,7 +341,7 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     `);
 
     if (wake.status === 'unavailable') {
-      const outcome = resolveOutcome(envelope);
+      const outcome = resolveOutcome(envelope, wake.syntax);
       if (!routable(outcome)) {
         // Still unresolved: keep it visible with the current reason. A
         // rejection is terminal, so status and reason never disagree.
@@ -346,7 +360,7 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     const request = engine.getWorkRequest(wake.work_request_id as string) as WorkRequest;
     const stored = bots.getById(request.target_agent_id) as Bot | undefined;
     if (!stored || request.state !== 'blocked') return routed(wake, false);
-    const outcome = checkTarget(envelope, { id: stored.id, name: stored.name });
+    const outcome = checkTarget(envelope, wake.syntax, { id: stored.id, name: stored.name });
     if (outcome.status === 'blocked' && (outcome.code !== wake.reason_code || outcome.reason !== wake.reason)) {
       update.run('blocked', outcome.code, outcome.reason, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);
       return routed(getWake(wake.id) as Wake, false);
