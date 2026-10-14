@@ -14,7 +14,7 @@
 // Failure messages are fixed per category so adapter output (which can
 // carry URLs, stderr, or gateway error bodies) never reaches the caller.
 import type { Bot } from './db';
-import { agentTransport, resolveAgent, type BotAgent } from './bot-definition';
+import { agentTransport, resolveAgent, type AgentTransport, type BotAgent } from './bot-definition';
 import { hermesProfilePathForBot } from './hermes';
 import { createHermesAttemptAdapter } from './hermes-attempt';
 import { createAgentDeckAttemptAdapter } from './agent-deck-run';
@@ -87,6 +87,13 @@ export interface PreparedDispatch {
   input: AttemptInput;
 }
 
+// Both transports satisfy the one AttemptAdapter contract (type-checked
+// here); selection is by the agent's transport only.
+export const ATTEMPT_ADAPTERS: Record<AgentTransport, () => AttemptAdapter> = {
+  'hermes-gateway': () => createHermesAttemptAdapter({ fetchImpl: hermesFetch }),
+  'agent-deck-run': () => createAgentDeckAttemptAdapter(),
+};
+
 export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   const resolved = resolveAgent(turn.bot);
   if (!resolved.launchable || !resolved.deck_id) {
@@ -102,7 +109,7 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   if (agentTransport(resolved.agent) === 'hermes-gateway') {
     return {
       agent: resolved.agent,
-      adapter: createHermesAttemptAdapter({ fetchImpl: hermesFetch }),
+      adapter: ATTEMPT_ADAPTERS['hermes-gateway'](),
       input: {
         ...base,
         target: { agentId: turn.bot.id, agent: resolved.agent, hermesProfilePath: hermesProfilePathForBot(turn.bot) },
@@ -121,7 +128,7 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   }
   return {
     agent: resolved.agent,
-    adapter: createAgentDeckAttemptAdapter(),
+    adapter: ATTEMPT_ADAPTERS['agent-deck-run'](),
     input: { ...base, target: { agentId: turn.bot.id, agent: resolved.agent }, cwd },
   };
 }
