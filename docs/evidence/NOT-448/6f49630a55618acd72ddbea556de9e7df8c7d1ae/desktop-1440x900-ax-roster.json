@@ -1,0 +1,91 @@
+{
+  "head": "6f49630a55618acd72ddbea556de9e7df8c7d1ae",
+  "state": "roster",
+  "scope": ".roster",
+  "nodes": [
+    {
+      "role": "button",
+      "name": "chief-of-staff",
+      "focusable": true
+    },
+    {
+      "role": "button",
+      "name": "Actions for chief-of-staff",
+      "focusable": true,
+      "hasPopup": "menu",
+      "expanded": false
+    },
+    {
+      "role": "button",
+      "name": "LaunchMint",
+      "focusable": true
+    },
+    {
+      "role": "button",
+      "name": "Actions for LaunchMint",
+      "focusable": true,
+      "hasPopup": "menu",
+      "expanded": false
+    },
+    {
+      "role": "button",
+      "name": "OvernightMint",
+      "focusable": true
+    },
+    {
+      "role": "button",
+      "name": "Actions for OvernightMint",
+      "focusable": true,
+      "hasPopup": "menu",
+      "expanded": false
+    },
+    {
+      "role": "button",
+      "name": "Pine",
+      "focusable": true
+    },
+    {
+      "role": "button",
+      "name": "Actions for Pine",
+      "focusable": true,
+      "hasPopup": "menu",
+      "expanded": false
+    },
+    {
+      "role": "button",
+      "name": "Cedar",
+      "focusable": true
+    },
+    {
+      "role": "button",
+      "name": "Actions for Cedar",
+      "focusable": true,
+      "hasPopup": "menu",
+      "expanded": false
+    },
+    {
+      "role": "button",
+      "name": "Bob",
+      "focusable": true
+    },
+    {
+      "role": "button",
+      "name": "Actions for Bob",
+      "focusable": true,
+      "hasPopup": "menu",
+      "expanded": false
+    },
+    {
+      "role": "button",
+      "name": "Alice",
+      "focusable": true
+    },
+    {
+      "role": "button",
+      "name": "Actions for Alice",
+      "focusable": true,
+      "hasPopup": "menu",
+      "expanded": false
+    }
+  ]
+}
