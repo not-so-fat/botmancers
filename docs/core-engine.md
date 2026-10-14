@@ -233,6 +233,64 @@ The developer never moves text or session IDs between tools.
 3. The request remains queued or becomes blocked with a visible reason.
 4. Recovery resumes from durable state; it does not depend on an in-memory chain.
 
+## Wake safety policy
+
+Botmancers is local and single-owner. Wake safety is a small fixed policy, not a
+multi-tenant authorization system. The implementation contract, caller inventory,
+alternatives, and fixtures are in
+[the October 14 wake-safety contract](design/2026-10-14-wake-safety-contract.md).
+
+### Principals
+
+| Principal | Authenticated by | Trust |
+| --- | --- | --- |
+| Human owner (`person:local-owner`) | Loopback boundary: server bound to `127.0.0.1`, loopback `Host`, same-origin mutating request | May message, configure, allow/deny/revoke grants, and Stop. This proves "a same-origin page on this machine", not a user identity |
+| Authenticated API principal | The operator-installed `/api/v0` authenticator; none ships, so the API fails closed | May send direct read-only messages. May not decide grants or act as an Agent |
+| Agent principal (`bot:<agentId>`) | The engine: the reply came from a Work Request it dispatched to that Agent | Identity is trusted; intent is not, because Agent output can be steered by what it read |
+| Unknown | — | Refused before anything is persisted |
+
+Text that looks like a Wake in a human or API message is only text. An Agent reply
+without a dispatched parent Work Request cannot start a lineage; its Wakes are
+recorded as rejected (`unattributed_wake`). Every Work Request records its root
+principal.
+
+### Grants
+
+- `conversation` and `review` Wakes are allowed between registered Agents without
+  a grant.
+- `implementation` and `revision` Wakes require a durable owner grant for the
+  exact (caller Agent, target Agent) pair. Without one, the Wake and its Work
+  Request are `blocked` with `grant_required`, and the source conversation offers
+  the owner **Allow** (create the pair grant and queue the request) or **Deny**
+  (cancel this request; the coordinator is told no work ran).
+- An Agent the owner messages directly may wake itself for `implementation`
+  without a grant. API-rooted and Wake-rooted self-wakes need a grant.
+- A grant never expands the target's own Deck, working directory, or the tool
+  profile of the execution kind. Revocation affects only later Wakes. The owner
+  can Stop a lineage at any time, cancelling its open requests and pending
+  approvals.
+
+### Limits
+
+| Limit | Default | Behavior |
+| --- | --- | --- |
+| Wake depth | 3 | Agent-to-Agent hops from the root; a continuation runs at the depth of the Agent it continues. Beyond it: Wake rejected, `depth_exceeded` |
+| Root budget | 12 | Wake-created Work Requests per root lineage. Beyond it: Wake rejected, `root_budget_exhausted` |
+| Coordinator continuations | 24 | Derived as 2 × root budget. Beyond it: the lineage stops, visibly |
+| Global concurrency | 4 | Running Attempts. Excess requests stay `queued` |
+| Per-target concurrency | 1 | Running Attempts per target Agent. Excess requests stay `queued` |
+
+Concurrency waits are not denials. Envelope `limits` may only narrow these values.
+
+### Refusals
+
+A refusal caused by a known principal is durable and visible: the Wake row keeps
+its reason code, the source conversation shows a `wake_rejected` or `wake_blocked`
+event (never a `request_*` lifecycle for work that did not start), and the
+coordinator receives one continuation saying no work ran. A refusal of an unknown
+principal (missing or failed authentication, foreign origin) returns an HTTP error
+and writes nothing.
+
 ## Reliability and provenance
 
 - Create requests idempotently from the source event and target.
@@ -242,7 +300,8 @@ The developer never moves text or session IDs between tools.
 - Support cancellation and bounded timeouts at the Work Request level.
 - Record requesting identity, target Agent, deck, working directory, tool profile,
   adapter, run/session IDs, prompts or prompt hashes, results, and artifacts.
-- Enforce authenticated wake grants, concurrency, depth, and budget before launch.
+- Enforce the [Wake safety policy](#wake-safety-policy) (principals, grants,
+  depth, budget, and concurrency) before launch.
 - Never report success from transport acceptance alone; success requires a terminal
   attempt outcome.
 
@@ -255,7 +314,11 @@ requirements:
 - the web UI and `/api/v0` use different queue and lifecycle models;
 - implementation and revision launches currently inherit read-only tools;
 - delegation-chain continuity is held in process memory;
-- cancellation, timeout, recovery, grants, and complete provenance are incomplete.
+- cancellation, timeout, recovery, grants, and complete provenance are incomplete;
+- UI routes trust any caller as the owner and the server listens on every
+  interface;
+- Wake depth counts continuations, limits use placeholder values, and canonical
+  dispatch has no global or per-target concurrency bound.
 
 Since NOT-472, canonical requests no longer reach the composite review path:
 Wake-created requests return to their coordinator through one read-only
