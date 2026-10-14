@@ -16,15 +16,17 @@
 //   GET  /api/v0/conversations/{id}          participants, origin, ordered messages
 //   GET  /api/v0/requests/{id}               request state, reply, typed failure
 // Failures use one envelope: { error: { code, message } } with a stable code.
+// NOT-465: POST accepts through the shared conversation intake, the same
+// service as the web UI message route; requestId is the canonical Work
+// Request id.
 import type { Principal } from './db';
 import {
   AgentApiError,
+  acceptAgentMessage,
   getAgentRequest,
   getConversation,
   isPrincipalKind,
   samePrincipal,
-  sendAgentMessage,
-  startAgentDispatch,
 } from './agent-conversations';
 
 export type AgentApiAuthenticator = (request: Request) => Promise<Principal | null> | Principal | null;
@@ -91,15 +93,14 @@ export async function handleSendAgentMessage(request: Request, agentId: string):
     if (headerKey && bodyKey && headerKey !== bodyKey) {
       throw new AgentApiError('invalid_request', 'Idempotency-Key header and body idempotencyKey differ.');
     }
-    const accepted = sendAgentMessage(principal, {
+    const { accepted, dispatched } = acceptAgentMessage(principal, {
       agentId,
       content: typeof body.content === 'string' ? body.content : '',
       idempotencyKey: headerKey ?? bodyKey ?? '',
       conversationId: typeof body.conversationId === 'string' ? body.conversationId : body.conversationId == null ? null : '',
     });
-    const dispatch = startAgentDispatch(accepted.requestId);
     if (body.wait === true) {
-      await dispatch;
+      await dispatched;
       return Response.json({ ...getAgentRequest(principal, accepted.requestId), replayed: accepted.replayed });
     }
     return Response.json(accepted, { status: accepted.replayed ? 200 : 202 });

@@ -1,6 +1,15 @@
 import { NextResponse } from 'next/server';
-import { messages, conversations, queue, groups, bots, draftActions, approvals, memories } from '@/lib/db';
-import type { Bot } from '@/lib/db';
+import { randomUUID } from 'crypto';
+import { messages, conversations, queue, groups, bots, draftActions, approvals, memories, UI_OWNER_PRINCIPAL } from '@/lib/db';
+import type { Bot, Conversation } from '@/lib/db';
+import {
+  IntakeError,
+  acceptConversationMessage,
+  getAcceptedMessage,
+  type AcceptedIntake,
+  type IntakeDelivery,
+  type IntakeRouting,
+} from '@/lib/conversation-intake';
 import { getApprovalByCode } from '@/lib/approvals';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { resumeBotIdsForConversation } from '@/lib/ask';
@@ -63,72 +72,32 @@ export async function POST(
     const { content, mentionedBotId } = body;
 
     if (!content) {
-      return NextResponse.json({ error: 'Content is required' }, { status: 400 });
+      return NextResponse.json({ error: 'Content is required', code: 'invalid_request' }, { status: 400 });
     }
 
-    const conversation = conversations.getUiById(id);
-    if (!conversation) {
-      return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
-    }
-
-    const isGroupThread = conversation.type === 'group';
-    const bareNameBots = isGroupThread && conversation.group_id ? groups.getMembers(conversation.group_id) : [];
-    const addressed = addressedBots(
-      String(content),
-      mentionedBotId ? String(mentionedBotId) : undefined,
-      isGroupThread,
-      bareNameBots
-    );
-    const handoffIds = addressed.map(bot => bot.id);
-    const message = messages.create(id, 'user', content, undefined, handoffIds);
-    const queued = new Set<string>();
-    const enqueueBot = (conversationId: string, botId: string) => {
-      const key = conversationId + ':' + botId;
-      if (queued.has(key)) return;
-      queued.add(key);
-      queue.enqueue(conversationId, botId);
-    };
-
-    // Ask-and-wait resume (NOT-415): when the thread holds parked questions,
-    // this user message is their answer, so only the asked bots resume. With
-    // nothing pending this block is skipped and routing is unchanged.
-    const resumeBotIds = resumeBotIdsForConversation(id);
-    if (resumeBotIds && resumeBotIds.length > 0) {
-      for (const botId of resumeBotIds) enqueueBot(id, botId);
-    } else if (addressed.length > 0) {
-      if (conversation.type === 'group' && conversation.group_id) {
-        const members = groups.getMembers(conversation.group_id);
-        for (const bot of addressed) {
-          if (members.some(member => member.id === bot.id)) {
-            enqueueBot(id, bot.id);
-          } else {
-            const target = conversations.getByBotId(bot.id);
-            if (!target) continue;
-            if (target.id !== id) messages.create(target.id, 'user', content, undefined, handoffIds);
-            enqueueBot(target.id, bot.id);
-          }
-        }
-      } else {
-        for (const bot of addressed) {
-          const target = conversations.getByBotId(bot.id);
-          if (!target) continue;
-          if (target.id !== id) messages.create(target.id, 'user', content, undefined, handoffIds);
-          enqueueBot(target.id, bot.id);
-        }
-      }
-    } else if (conversation.type === 'bot' && conversation.bot_id) {
-      enqueueBot(id, conversation.bot_id);
-    } else if (conversation.type === 'group' && conversation.group_id) {
-      // No fixed member. Every member is queued and decides in the agent.
-      const members = groups.getMembers(conversation.group_id);
-      for (const member of members) enqueueBot(id, member.id);
-    }
+    // NOT-465: the UI accepts through the same conversation intake as
+    // /api/v0. The client sends one key per submission so a resend
+    // replays; a request without one is a distinct submission.
+    const clientKey = request.headers.get('idempotency-key')
+      ?? (typeof body.idempotencyKey === 'string' && body.idempotencyKey ? body.idempotencyKey : randomUUID());
+    const intake = acceptConversationMessage({
+      surface: 'ui',
+      requester: UI_OWNER_PRINCIPAL,
+      idempotencyKey: `ui:${clientKey}`,
+      conversation: { id },
+      content: String(content),
+      fingerprint: [id, String(content), mentionedBotId ? String(mentionedBotId) : null],
+      route: conversation => uiRouting(conversation, String(content), mentionedBotId ? String(mentionedBotId) : undefined),
+      dispatch: enqueueUiTurns,
+    });
 
     // Per-bot memory (NOT-411): a direct thread teaches its own bot, unless
     // the message addresses another bot or carries a WAKE handoff (reference
     // guard). Learning never breaks sending.
+    const conversation = conversations.getUiById(id);
+    const handoffIds = addressedBots(String(content), mentionedBotId ? String(mentionedBotId) : undefined, false).map(bot => bot.id);
     const wakeLineCount = String(content).split(/\r?\n/).filter(line => /WAKE\s+\w+\s*:/.test(line)).length;
-    if (conversation.type === 'bot' && conversation.bot_id && handoffIds.length === 0 && wakeLineCount < 2) {
+    if (!intake.replayed && conversation?.type === 'bot' && conversation.bot_id && handoffIds.length === 0 && wakeLineCount < 2) {
       try {
         memories.rememberStatement(conversation.bot_id, String(content));
       } catch (error) {
@@ -136,13 +105,78 @@ export async function POST(
       }
     }
 
-    processQueue().catch(console.error);
-
-    return NextResponse.json(message);
+    const message = getAcceptedMessage(intake.acceptedMessageId);
+    return NextResponse.json({
+      ...message,
+      intake: {
+        conversationId: intake.conversationId,
+        acceptedMessageId: intake.acceptedMessageId,
+        requestIds: intake.requestIds,
+        replayed: intake.replayed,
+      },
+    });
   } catch (error) {
+    if (error instanceof IntakeError) return uiIntakeError(error);
     console.error('Error sending message:', error);
-    return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to send message', code: 'intake_failed' }, { status: 500 });
   }
+}
+
+// Normalized intake failures in the UI route's response shape. Agent
+// conversations stay invisible to the UI routes, so not-writable is 404.
+function uiIntakeError(error: IntakeError) {
+  switch (error.code) {
+    case 'conversation_not_found':
+    case 'conversation_not_writable':
+      return NextResponse.json({ error: 'Conversation not found', code: 'conversation_not_found' }, { status: 404 });
+    case 'intake_failed':
+      return NextResponse.json({ error: 'Failed to send message', code: error.code }, { status: 500 });
+    default:
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+  }
+}
+
+// UI target resolution (unchanged routing rules): ask-and-wait resume,
+// then addressed bots (group members turn in the group; others in their
+// direct thread), then the thread's own bot or every group member.
+function uiRouting(conversation: Conversation, content: string, mentionedBotId: string | undefined): IntakeRouting {
+  const isGroupThread = conversation.type === 'group';
+  const members = isGroupThread && conversation.group_id ? groups.getMembers(conversation.group_id) : [];
+  const addressed = addressedBots(content, mentionedBotId, isGroupThread, members);
+  const handoffTargets = addressed.map(bot => bot.id);
+  const deliveries: IntakeDelivery[] = [];
+
+  // Ask-and-wait resume (NOT-415): when the thread holds parked questions,
+  // this user message is their answer, so only the asked bots resume. With
+  // nothing pending this block is skipped and routing is unchanged.
+  const resumeBotIds = resumeBotIdsForConversation(conversation.id);
+  if (resumeBotIds && resumeBotIds.length > 0) {
+    for (const botId of resumeBotIds) deliveries.push({ agentId: botId });
+  } else if (addressed.length > 0) {
+    for (const bot of addressed) {
+      if (isGroupThread && members.some(member => member.id === bot.id)) {
+        deliveries.push({ agentId: bot.id });
+        continue;
+      }
+      const target = conversations.getByBotId(bot.id);
+      if (target) deliveries.push({ agentId: bot.id, conversationId: target.id });
+    }
+  } else if (conversation.type === 'bot' && conversation.bot_id) {
+    deliveries.push({ agentId: conversation.bot_id });
+  } else if (isGroupThread) {
+    // No fixed member. Every member is queued and decides in the agent.
+    for (const member of members) deliveries.push({ agentId: member.id });
+  }
+  return { deliveries, handoffTargets };
+}
+
+// The UI agent loop (lib/agent processQueue) still executes UI turns: each
+// newly accepted Work Request becomes one queue item for its target and
+// conversation. Replays enqueue nothing. agent_requests is never written.
+function enqueueUiTurns(accepted: AcceptedIntake): void {
+  if (accepted.replayed) return;
+  for (const request of accepted.requests) queue.enqueue(request.source_conversation_id, request.target_agent_id);
+  processQueue().catch(console.error);
 }
 
 function mentionAt(content: string, name: string): boolean {

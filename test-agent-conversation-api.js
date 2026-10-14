@@ -155,8 +155,10 @@ function count(table) {
 function counts() {
   return {
     messages: count('messages'),
-    requests: count('agent_requests'),
-    events: count('agent_request_events'),
+    requests: count('work_requests'),
+    events: count('engine_events'),
+    intakes: count('conversation_intakes'),
+    legacyRequests: count('agent_requests'),
     conversations: count('conversations'),
     hermesLaunches: hermesCalls.length,
     deckLaunches: deckStarts.length,
@@ -294,8 +296,11 @@ async function main() {
     `direct Agent Deck conversation turns launch with --tools readonly (got ${deckStarts.map(argv => argv[argv.indexOf('--tools') + 1]).join(',')})`
   );
   assert(hermesCalls.every(call => !call.url.includes(HERMES_KEY)), 'Hermes adapter used its own configured credentials');
-  const dispatchedAgents = raw.prepare("SELECT DISTINCT runtime FROM agent_requests WHERE runtime IS NOT NULL ORDER BY runtime").all().map(row => row.runtime);
+  // NOT-465: requests are canonical Work Requests; the launch Attempt
+  // records the dispatched agent and agent_requests is never written.
+  const dispatchedAgents = raw.prepare("SELECT DISTINCT adapter FROM work_attempts ORDER BY adapter").all().map(row => row.adapter);
   assert(JSON.stringify(dispatchedAgents) === JSON.stringify(['codex', 'hermes']), `requests record the dispatched agent identity, never Agent Deck (got ${dispatchedAgents.join(',')})`);
+  assert(count('agent_requests') === 0 && count('agent_request_events') === 0 && count('processing_queue') === 0, 'API acceptance writes no agent_requests or processing_queue rows');
 
   // AC2: idempotency.
   log('\nAC2 idempotency');
