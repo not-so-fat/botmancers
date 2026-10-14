@@ -7,20 +7,27 @@
 // (AGENT_TRANSPORTS) serves the turn. Completion is typed by the adapter contract, never read
 // from reply prose: a Hermes turn completes when the gateway answers the
 // chat request with HTTP 200, and a coding-agent turn completes only when
-// `agent-deck run log --follow` reports an end event and run status is not
-// error/died. The detach acknowledgement from `agent-deck run` is a
-// transport acknowledgement, not completion.
+// the public Agent Deck event API reports a terminal result and status is
+// not error/died. The start acknowledgement is transport acceptance, not
+// completion.
 //
 // Failure messages are fixed per category so adapter output (which can
 // carry URLs, stderr, or gateway error bodies) never reaches the caller.
+//
+// NOT-487: canonical coding-agent turns run through the Agent Deck public
+// run API (./agent-deck-attempt), authenticated with the server-only
+// AGENT_DECK_RUN_TOKEN. The `agent-deck run` CLI adapter (./agent-deck-run)
+// remains only for legacy non-canonical turns; an API failure never falls
+// back to it.
+import fs from 'fs';
+import path from 'path';
 import type { Bot } from './db';
 import { agentTransport, resolveAgent, type AgentTransport, type BotAgent } from './bot-definition';
 import { hermesProfilePathForBot } from './hermes';
 import { createHermesAttemptAdapter } from './hermes-attempt';
-import { createAgentDeckAttemptAdapter } from './agent-deck-run';
+import { createAgentDeckApiAttemptAdapter } from './agent-deck-attempt';
+import { AGENT_DECK_API_MESSAGES, type AgentDeckApiErrorCode } from './agent-deck-api';
 import {
-  getAgentDeckServerUrl,
-  isLocalAgentDeckUrl,
   resolveAndEnsureBotWorkdir,
 } from './agent-deck-settings';
 import { TOOL_PROFILE_FOR_KIND, type ToolProfile } from './engine-store';
@@ -56,6 +63,10 @@ export interface DispatchTurn {
   toolProfile?: ToolProfile;
   // NOT-472: opaque session to resume (a revision). Omitted: a fresh launch.
   sessionBinding?: AttemptInput['sessionBinding'];
+  // NOT-487: the caller's request to prepare Git finalization (an
+  // implementation or revision). Honored only for an Agent Deck edit turn
+  // whose working directory is inside a Git worktree.
+  prepareFinalization?: boolean;
 }
 
 export interface DispatchHooks {
@@ -93,7 +104,7 @@ export interface PreparedDispatch {
 // here); selection is by the agent's transport only.
 export const ATTEMPT_ADAPTERS: Record<AgentTransport, () => AttemptAdapter> = {
   'hermes-gateway': () => createHermesAttemptAdapter({ fetchImpl: hermesFetch }),
-  'agent-deck-run': () => createAgentDeckAttemptAdapter(),
+  'agent-deck-run': () => createAgentDeckApiAttemptAdapter(),
 };
 
 let adapterOverride: ((transport: AgentTransport) => AttemptAdapter) | null = null;
@@ -105,6 +116,18 @@ export function setAttemptAdapterOverride(next: ((transport: AgentTransport) => 
 
 function adapterFor(transport: AgentTransport): AttemptAdapter {
   return adapterOverride ? adapterOverride(transport) : ATTEMPT_ADAPTERS[transport]();
+}
+
+// Whether a working directory is inside a Git worktree (a `.git` entry in
+// it or an ancestor). A filesystem read only: no Git command runs here.
+export function isInGitWorktree(dir: string): boolean {
+  let current = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(current, '.git'))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
 }
 
 export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
@@ -130,9 +153,6 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
       },
     };
   }
-  if (!isLocalAgentDeckUrl(getAgentDeckServerUrl())) {
-    throw new DispatchFailure('agent_unavailable', 'The agent runtime is not reachable from this engine.');
-  }
   let cwd: string;
   try {
     cwd = resolveAndEnsureBotWorkdir(turn.bot.id, resolved.working_directory);
@@ -142,7 +162,12 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   return {
     agent: resolved.agent,
     adapter: adapterFor('agent-deck-run'),
-    input: { ...base, target: { agentId: turn.bot.id, agent: resolved.agent }, cwd },
+    input: {
+      ...base,
+      target: { agentId: turn.bot.id, agent: resolved.agent },
+      cwd,
+      ...(turn.prepareFinalization && base.toolProfile === 'edit' && isInGitWorktree(cwd) ? { prepareFinalization: true } : {}),
+    },
   };
 }
 
@@ -156,13 +181,25 @@ export function dispatchFailureFor(result: AttemptResult): DispatchFailure {
     }
     return new DispatchFailure('runtime_failed', `The agent runtime did not complete the turn (${result.failure?.code ?? 'unknown'}).`);
   }
+  // NOT-487: Agent Deck API failures name their stable, actionable reason
+  // (token, grant, or server) without echoing the transport diagnostics.
+  const apiCode = result.adapter === 'agent-deck-api' ? apiFailureCode(result) : null;
+  if (apiCode) return new DispatchFailure('agent_unavailable', `${AGENT_DECK_API_MESSAGES[apiCode]} [${apiCode}]`);
   if (category === 'unavailable') {
     return new DispatchFailure('agent_unavailable', 'The agent runtime is not available.');
   }
+  if (category === 'cancelled') return new DispatchFailure('runtime_failed', 'The agent run was cancelled.');
   if (category === 'launch_failed') {
     return new DispatchFailure('runtime_failed', 'The agent runtime did not start the turn.');
   }
   return new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
+}
+
+const API_UNAVAILABLE: AgentDeckApiErrorCode[] = ['agent_deck_token_missing', 'agent_deck_unauthorized', 'agent_deck_forbidden', 'agent_deck_unreachable'];
+
+function apiFailureCode(result: AttemptResult): AgentDeckApiErrorCode | null {
+  const code = result.failure?.code as AgentDeckApiErrorCode | null | undefined;
+  return code && API_UNAVAILABLE.includes(code) ? code : null;
 }
 
 export function replyFor(result: AttemptResult): string {

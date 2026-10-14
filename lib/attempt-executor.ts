@@ -55,6 +55,7 @@ export function attemptLaunchSnapshot(options: BeginAttemptOptions): Record<stri
     prompt_kind: input.prompt.kind,
     prompt_hash: promptHash(input),
     session_binding_id: input.sessionBinding?.bindingId ?? null,
+    prepare_finalization: input.prepareFinalization === true,
     deadline_at: input.deadlineAt ?? null,
   };
 }
