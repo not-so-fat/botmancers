@@ -411,6 +411,9 @@ export default function Home() {
     setPictureOpen(false);
     setAvatarStep(false);
     if (conv.id !== activeConversation?.id) setMessages([]);
+    // Retarget the stale-read guard before the new thread commits, so a read
+    // for the previous thread that resolves in between is dropped.
+    activeIdRef.current = conv.id;
     setActiveConversation({
       id: conv.id,
       details: bot,
@@ -669,6 +672,9 @@ export default function Home() {
   };
 
   const view = activeConversation ? threadView(threadLoad, activeConversation.id, messages.length) : 'loading';
+  // The chief-of-staff computer covers the message column; its band is the
+  // one see-through strip, so the thread note sits there instead.
+  const threadNote = activeConversation ? <ThreadState view={view} agentName={activeConversation.details.name} /> : null;
   const title = (activeConversation?.details.title || '').trim();
   const nameColor = activeConversation?.details.color;
 
@@ -962,7 +968,7 @@ export default function Home() {
 
             <div className="messages-wrap">
             <div className="messages">
-              <ThreadState view={view} agentName={activeConversation.details.name} />
+              {computerOpen ? null : threadNote}
               {messages.map((msg) => {
                 const mine = msg.sender_type === 'user';
                 const shown = messagePicture(stripStoredPrefix(msg.content));
@@ -1070,7 +1076,9 @@ export default function Home() {
                     </span>
                   </span>
                 </div>
-                <div className="computer-band" ref={computerBandRef} />
+                <div className={view === 'messages' ? 'computer-band' : 'computer-band computer-band-note'} ref={computerBandRef}>
+                  {threadNote}
+                </div>
                 <div className="computer-desk">
                   {computerHtml ? (
                     <iframe className="computer-page" sandbox="" srcDoc={computerHtml} tabIndex={-1} />

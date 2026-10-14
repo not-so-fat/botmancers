@@ -112,6 +112,27 @@ async function main() {
   assert(afterBot.json.length === 1 && afterBot.json[0].sender_type === 'bot', 'read-back holds exactly the real agent message');
   assert(state.threadView({ conversationId: soloConv.id, status: 'ready' }, soloConv.id, afterBot.json.length) === 'messages', 'first agent message -> messages view');
 
+  // The page's own path: send through the UI messages route, then re-read
+  // the thread the way loadMessages does after a send.
+  const sent = db.bots.create({ name: 'Linden', title: '', description: '' });
+  const sentConv = db.conversations.getByBotId(sent.id);
+  const before = await readMessages(sentConv.id);
+  assert(state.threadView({ conversationId: sentConv.id, status: 'ready' }, sentConv.id, before.json.length) === 'empty', 'send path starts from the empty view');
+  const post = await messagesRoute.POST(
+    new Request(`http://ui.test/api/conversations/${sentConv.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'empty-thread-first' },
+      body: JSON.stringify({ content: 'first words' }),
+    }),
+    { params: Promise.resolve({ id: sentConv.id }) }
+  );
+  assert(post.status >= 200 && post.status < 300, `UI send route accepts the first message (status ${post.status})`);
+  const reloaded = await readMessages(sentConv.id);
+  console.log(`  read-back after send: ${JSON.stringify(reloaded.json.map(m => [m.sender_type, m.content]))}`);
+  assert(reloaded.json[0]?.sender_type === 'user' && reloaded.json[0].content === 'first words', 'reload after send reads back the real first message first');
+  assert(!reloaded.json.some(m => /No messages with|Say something below/.test(m.content)), 'no stored message carries empty-state copy');
+  assert(state.threadView({ conversationId: sentConv.id, status: 'ready' }, sentConv.id, reloaded.json.length) === 'messages', 'reload after send -> messages view');
+
   console.log('\n(4) No workflow, suggestions, provider copy, or groups');
   assert(!/<(button|input|textarea|select|form|a)\b/.test(empty), 'empty state contains no controls or links');
   assert(!/suggest|try asking|example|workflow|template|step|onboard/i.test(empty), 'no suggested prompts, templates, or workflow copy');
@@ -121,6 +142,9 @@ async function main() {
   const component = fs.readFileSync(path.join(ROOT, 'app', 'components', 'ThreadState.tsx'), 'utf8');
   const lib = fs.readFileSync(path.join(ROOT, 'lib', 'thread-state.ts'), 'utf8');
   assert(/<ThreadState view=\{view\} agentName=\{activeConversation\.details\.name\} \/>/.test(page), 'page renders the state from the selected agent’s thread view');
+  assert(/\{computerOpen \? null : threadNote\}/.test(page), 'the message column shows the note when no computer covers it');
+  assert(/className=\{view === 'messages' \? 'computer-band' : 'computer-band computer-band-note'\}[^>]*>\s*\{threadNote\}/.test(page), 'with the chief-of-staff computer open, the note sits in its see-through band');
+  assert(/activeIdRef\.current = conv\.id;\s*setActiveConversation\(/.test(page), 'openBot retargets the stale-read guard before the new thread commits');
   assert(/threadView\(threadLoad, activeConversation\.id, messages\.length\)/.test(page), 'page derives the view from load status and real message count');
   assert(/setThreadLoad\(\{ conversationId: id, status: ok \? 'ready' : 'error' \}\)/.test(page), 'page records failed reads instead of treating them as empty');
   assert(!/group/i.test(component + lib), 'state sources carry no group terminology');

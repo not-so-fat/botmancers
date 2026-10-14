@@ -1272,6 +1272,20 @@ button.thread-name {
   pointer-events: none;
 }
 
+.computer-band-note {
+  height: auto;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 16px;
+}
+
+.computer-band-note .thread-empty {
+  flex: 0 0 auto;
+  padding-bottom: 0;
+}
+
 .computer-desk {
   flex: 1 1 auto;
   min-height: 0;

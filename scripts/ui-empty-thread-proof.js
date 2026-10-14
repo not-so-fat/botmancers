@@ -8,6 +8,10 @@
 // - once reads succeed again the empty note returns, and sending the first
 //   real message removes it; the conversation API reads back exactly that
 //   message (nothing synthetic stored).
+// It then proves the same for a zero-message chief-of-staff, whose thread
+// opens under the computer overlay: the note must not sit under the
+// overlay's opaque title bar or desk. Run against a DB whose chief-of-staff
+// has no messages (the proof creates one if the DB has none).
 // No dependencies beyond Node 22+ (global WebSocket) and a local Chrome.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm start   (other shell)
@@ -47,6 +51,15 @@ function freshAgent(viewport) {
   const name = `Juniper-${viewport.width}-${Date.now().toString(36)}`;
   const bot = db.bots.create({ name, title: '', description: '' });
   return { bot, conversationId: db.conversations.getByBotId(bot.id).id };
+}
+
+function emptyChief() {
+  const { createJiti } = require('jiti');
+  const db = createJiti(__filename)('../lib/db.ts');
+  const bot = db.bots.getAll().find(b => b.name.toLowerCase() === 'chief-of-staff')
+    || db.bots.create({ name: 'chief-of-staff', title: '', description: '' });
+  const conversationId = db.conversations.getByBotId(bot.id).id;
+  return { bot, conversationId, stored: db.messages.getByConversation(conversationId).length };
 }
 
 async function launchChrome() {
@@ -116,8 +129,21 @@ async function run() {
   const threadState = () => evaluate(`(() => ({
     name: document.querySelector('.thread-name')?.textContent.trim(),
     empty: document.querySelector('.thread-empty')?.innerText.replace(/\\s+/g, ' ').trim() || null,
-    status: document.querySelector('.messages [role=status]')?.textContent.trim() || null,
-    alert: document.querySelector('.messages [role=alert]')?.textContent.trim() || null,
+    status: document.querySelector('.messages-wrap [role=status]')?.textContent.trim() || null,
+    alert: document.querySelector('.messages-wrap [role=alert]')?.textContent.trim() || null,
+    computer: !!document.querySelector('.computer-float'),
+    // The overlay ignores pointer events, so hit-testing would see through
+    // it; compare boxes against its opaque parts instead.
+    noteUncovered: (() => {
+      const note = document.querySelector('.thread-empty, .thread-note');
+      if (!note) return null;
+      const r = note.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      return [...document.querySelectorAll('.computer-top, .computer-desk')].every(node => {
+        const o = node.getBoundingClientRect();
+        return r.bottom <= o.top || r.top >= o.bottom || r.right <= o.left || r.left >= o.right;
+      });
+    })(),
     messages: document.querySelectorAll('.msg-you, .msg-bot').length,
     placeholder: document.querySelector('.composer textarea')?.getAttribute('placeholder'),
     emptyControls: document.querySelectorAll('.thread-empty button, .thread-empty input, .thread-empty a, .thread-empty textarea').length,
@@ -151,6 +177,7 @@ async function run() {
     check(s.empty === `No messages with ${bot.name} yet. Say something below to start the conversation.`, 'empty state names the selected agent and points to the composer');
     check(s.placeholder === 'Say something' && s.emptyAboveComposer, 'copy sits above the unchanged "Say something" composer');
     check(s.emptyControls === 0 && !/group/i.test(s.empty), 'empty state has no controls and no group wording');
+    check(s.noteUncovered === true, 'empty note is on screen, not under an overlay');
     check((await readBack(conversationId)).length === 0, 'API reads back zero stored messages after viewing');
     await shot(vp, 'empty');
 
@@ -160,7 +187,7 @@ async function run() {
     await cdp.send('Page.reload');
     await waitFor(rowByName(bot.name), 'roster after reload');
     await evaluate(`${rowByName(bot.name)}.click()`);
-    await waitFor(`document.querySelector('.messages [role=status]')`, 'loading note');
+    await waitFor(`document.querySelector('.messages-wrap [role=status]')`, 'loading note');
     s = await threadState();
     console.log(`  loading: ${JSON.stringify(s)}`);
     check(s.status === 'Loading messages…' && s.empty === null && s.alert === null, 'held read shows loading, not empty');
@@ -168,7 +195,7 @@ async function run() {
 
     // Error: fail the held reads.
     for (const requestId of held.splice(0)) await cdp.send('Fetch.failRequest', { requestId, errorReason: 'Failed' }).catch(() => {});
-    await waitFor(`document.querySelector('.messages [role=alert]')`, 'error alert');
+    await waitFor(`document.querySelector('.messages-wrap [role=alert]')`, 'error alert');
     for (const requestId of held.splice(0)) await cdp.send('Fetch.failRequest', { requestId, errorReason: 'Failed' }).catch(() => {});
     s = await threadState();
     console.log(`  error: ${JSON.stringify(s)}`);
@@ -198,6 +225,52 @@ async function run() {
     check(!stored.some(m => /No messages with|Say something below/.test(m.content)), 'no stored message carries empty-state copy (nothing synthetic)');
     check(s.messages === stored.length, 'thread renders exactly the stored messages');
     await shot(vp, 'first-message');
+  }
+
+  // Chief-of-staff: the page auto-opens it first, under the computer overlay.
+  const chief = emptyChief();
+  for (const vp of VIEWPORTS) {
+    console.log(`\n${vp.name} chief-of-staff`);
+    if (!check((await readBack(chief.conversationId)).length === 0, 'chief-of-staff thread starts with zero stored messages')) break;
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: vp.mobile });
+    await cdp.send('Page.navigate', { url: `${URL_BASE}/` });
+    await waitFor(`document.querySelector('.thread-name')?.textContent.trim() === 'chief-of-staff' && document.querySelector('.thread-empty')`, 'chief-of-staff empty state');
+    let s = await threadState();
+    console.log(`  chief empty: ${JSON.stringify(s)}`);
+    check(s.computer, 'chief-of-staff thread opens with the computer overlay');
+    check(s.empty === 'No messages with chief-of-staff yet. Say something below to start the conversation.', 'empty note names chief-of-staff and points to the composer');
+    check(s.noteUncovered === true && s.emptyAboveComposer, 'empty note shows in the computer’s see-through band, above the composer');
+    await shot(vp, 'chief-empty');
+    if (vp !== VIEWPORTS[VIEWPORTS.length - 1]) continue;
+
+    // Loading and failure under the overlay stay visible too.
+    held.length = 0;
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `*/api/conversations/${chief.conversationId}/messages*`, requestStage: 'Request' }] });
+    await cdp.send('Page.reload');
+    await waitFor(`document.querySelector('.messages-wrap [role=status]')`, 'chief loading note');
+    s = await threadState();
+    check(s.status === 'Loading messages…' && s.empty === null && s.noteUncovered === true, 'chief loading note shows in the band, not empty');
+    for (const requestId of held.splice(0)) await cdp.send('Fetch.failRequest', { requestId, errorReason: 'Failed' }).catch(() => {});
+    await waitFor(`document.querySelector('.messages-wrap [role=alert]')`, 'chief error alert');
+    s = await threadState();
+    check(s.alert === 'Couldn’t load messages. Trying again…' && s.empty === null && s.noteUncovered === true, 'chief failure alert shows in the band, not empty');
+    await cdp.send('Fetch.disable');
+    for (const requestId of held.splice(0)) await cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
+    await waitFor(`document.querySelector('.thread-empty')`, 'chief empty state after recovery');
+
+    const text = 'first real message chief-of-staff';
+    await evaluate(`document.querySelector('.composer textarea').focus()`);
+    await cdp.send('Input.insertText', { text });
+    await evaluate(`document.querySelector('.send-btn').click()`);
+    await waitFor(`document.querySelector('.msg-you')`, 'chief first message in thread');
+    s = await threadState();
+    console.log(`  chief first-message: ${JSON.stringify(s)}`);
+    check(s.empty === null && s.status === null && s.alert === null && s.messages >= 1, 'first real message replaces the chief empty state');
+    const stored = await readBack(chief.conversationId);
+    console.log(`  chief read-back: ${JSON.stringify(stored.map(m => [m.sender_type, m.content]))}`);
+    check(stored[0]?.sender_type === 'user' && stored[0].content === text, 'API reads back the owner’s real first message to chief-of-staff');
+    check(!stored.some(m => /No messages with|Say something below/.test(m.content)), 'nothing synthetic stored for chief-of-staff');
+    await shot(vp, 'chief-first-message');
   }
 
   cdp.close();
