@@ -455,14 +455,15 @@ export default function BotConfigPage() {
         <div className="max-w-6xl mx-auto space-y-6">
           <div className="h-6 w-32 rounded animate-pulse cfg-skel" />
           <div className="h-20 rounded-lg animate-pulse cfg-skel" />
-          <div className="grid gap-6 lg:grid-cols-5">
-            <div className="lg:col-span-3 space-y-6">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="space-y-6">
               {[0, 1, 2].map(n => (
                 <div key={n} className="h-48 rounded-lg animate-pulse cfg-skel" />
               ))}
             </div>
-            <div className="lg:col-span-2">
+            <div className="space-y-6">
               <div className="h-64 rounded-lg animate-pulse cfg-skel" />
+              <div className="h-80 rounded-lg animate-pulse cfg-skel" />
             </div>
           </div>
         </div>
@@ -471,7 +472,7 @@ export default function BotConfigPage() {
   }
 
   if (loadFailed && !data) {
-    const errorSections = ['Skills', 'Rules', 'Agent', 'Avatar', 'Template source'];
+    const errorColumns = [['Skills', 'Rules', 'Agent', 'Template source'], ['Launch snapshots', 'Avatar']];
     return (
       <div className="cfg-page">
         <div className="max-w-6xl mx-auto">
@@ -492,31 +493,22 @@ export default function BotConfigPage() {
               </p>
             </div>
           </header>
-          <div className="grid gap-6 lg:grid-cols-5 items-start">
-            <div className="lg:col-span-3 space-y-6">
-              {errorSections.map(section => (
-                <div key={section} className="cfg-card">
-                  <h2 className="cfg-title mb-2">{section}</h2>
-                  <p className="text-sm cfg-muted">
-                    Couldn&apos;t load this section.{' '}
-                    <button onClick={retryLoad} className="cfg-link">
-                      Retry
-                    </button>
-                  </p>
-                </div>
-              ))}
-            </div>
-            <div className="lg:col-span-2">
-              <div className="cfg-card">
-                <h2 className="cfg-title mb-2">Launch snapshots</h2>
-                <p className="text-sm cfg-muted">
-                  Couldn&apos;t load this section.{' '}
-                  <button onClick={retryLoad} className="cfg-link">
-                    Retry
-                  </button>
-                </p>
+          <div className="grid gap-6 lg:grid-cols-2 items-start">
+            {errorColumns.map(column => (
+              <div key={column[0]} className="min-w-0 space-y-6">
+                {column.map(section => (
+                  <div key={section} className="cfg-card">
+                    <h2 className="cfg-title mb-2">{section}</h2>
+                    <p className="text-sm cfg-muted">
+                      Couldn&apos;t load this section.{' '}
+                      <button onClick={retryLoad} className="cfg-link">
+                        Retry
+                      </button>
+                    </p>
+                  </div>
+                ))}
               </div>
-            </div>
+            ))}
           </div>
         </div>
       </div>
@@ -625,8 +617,8 @@ export default function BotConfigPage() {
           </div>
         </header>
 
-        <div className="grid gap-6 lg:grid-cols-5 items-start">
-          <div className="lg:col-span-3 space-y-6">
+        <div className="grid gap-6 lg:grid-cols-2 items-start" data-cfg-layout="columns">
+          <div className="min-w-0 space-y-6" data-cfg-column="primary">
             <section className="cfg-card">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="cfg-title">Skills</h2>
@@ -828,75 +820,6 @@ export default function BotConfigPage() {
             </section>
 
             <section className="cfg-card">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="cfg-title">Avatar</h2>
-                {avatarStateLine}
-              </div>
-              <div className="flex items-center gap-4 mb-4">
-                <BotAvatar config={avatarShown} size={96} title="Avatar live preview" />
-                <p className="text-sm cfg-muted">
-                  Outline style: the color is the line color, nothing is filled.
-                  Pick an option to preview, then Save.
-                </p>
-              </div>
-              <AvatarChoiceGroup
-                attribute="color"
-                label="Color"
-                options={AVATAR_COLORS}
-                current={avatarShown}
-                onPick={pickAvatar}
-                className="mb-3"
-              />
-              <AvatarChoiceGroup
-                attribute="eyes"
-                label="Eyes"
-                options={AVATAR_EYES}
-                current={avatarShown}
-                onPick={pickAvatar}
-                className="mb-3"
-              />
-              <AvatarChoiceGroup
-                attribute="hands"
-                label="Hands"
-                options={AVATAR_HANDS}
-                current={avatarShown}
-                onPick={pickAvatar}
-                className="mb-3"
-              />
-              <AvatarChoiceGroup
-                attribute="accessory"
-                label="Accessory"
-                options={AVATAR_ACCESSORIES}
-                current={avatarShown}
-                onPick={pickAvatar}
-              />
-              {avatarPhase === 'error' && (
-                <p className="mt-2 text-sm cfg-error">
-                  Couldn&apos;t save: {avatarError}.{' '}
-                  <button onClick={saveAvatar} className="underline hover:no-underline">
-                    Retry
-                  </button>
-                </p>
-              )}
-              <div className="mt-3 flex gap-2">
-                <button
-                  onClick={saveAvatar}
-                  disabled={!avatarDirty || avatarPhase === 'saving'}
-                  className="flex-1 sm:flex-none cfg-btn-primary text-sm"
-                >
-                  {avatarPhase === 'saving' ? 'Saving…' : 'Save'}
-                </button>
-                <button
-                  onClick={discardAvatar}
-                  disabled={!avatarDirty || avatarPhase === 'saving'}
-                  className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
-                >
-                  Discard
-                </button>
-              </div>
-            </section>
-
-            <section className="cfg-card">
               <h2 className="cfg-title mb-3">Template source</h2>
               {!hasTemplateSource && (
                 <p className="text-sm cfg-muted mb-3">Created manually in Botmancers — no template source.</p>
@@ -943,22 +866,9 @@ export default function BotConfigPage() {
               </dl>
               <MarketplaceImportControl phase={importPhase} onImport={() => { void startImport(); }} />
             </section>
-
-            <section className="cfg-card cfg-danger" aria-labelledby="cfg-danger-title">
-              <h2 id="cfg-danger-title" className="cfg-title mb-3">Danger zone</h2>
-              <p className="text-sm cfg-muted">{DELETE_REMOVES_COPY}</p>
-              <p className="text-sm cfg-faint mt-2">{DELETE_KEEPS_COPY}</p>
-              <button
-                type="button"
-                onClick={() => setDeleteOpen(true)}
-                className="mt-3 delete-btn text-sm w-full sm:w-auto"
-              >
-                Delete agent
-              </button>
-            </section>
           </div>
 
-          <div className="lg:col-span-2">
+          <div className="min-w-0 space-y-6" data-cfg-column="secondary">
             <section className="cfg-card">
               <h2 className="cfg-title mb-3">Launch snapshots</h2>
               {snapshots.length === 0 ? (
@@ -1044,6 +954,88 @@ export default function BotConfigPage() {
                   })}
                 </ul>
               )}
+            </section>
+
+            <section className="cfg-card">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="cfg-title">Avatar</h2>
+                {avatarStateLine}
+              </div>
+              <div className="flex items-center gap-4 mb-4">
+                <BotAvatar config={avatarShown} size={96} title="Avatar live preview" />
+                <p className="text-sm cfg-muted">
+                  Outline style: the color is the line color, nothing is filled.
+                  Pick an option to preview, then Save.
+                </p>
+              </div>
+              <AvatarChoiceGroup
+                attribute="color"
+                label="Color"
+                options={AVATAR_COLORS}
+                current={avatarShown}
+                onPick={pickAvatar}
+                className="mb-3"
+              />
+              <AvatarChoiceGroup
+                attribute="eyes"
+                label="Eyes"
+                options={AVATAR_EYES}
+                current={avatarShown}
+                onPick={pickAvatar}
+                className="mb-3"
+              />
+              <AvatarChoiceGroup
+                attribute="hands"
+                label="Hands"
+                options={AVATAR_HANDS}
+                current={avatarShown}
+                onPick={pickAvatar}
+                className="mb-3"
+              />
+              <AvatarChoiceGroup
+                attribute="accessory"
+                label="Accessory"
+                options={AVATAR_ACCESSORIES}
+                current={avatarShown}
+                onPick={pickAvatar}
+              />
+              {avatarPhase === 'error' && (
+                <p className="mt-2 text-sm cfg-error">
+                  Couldn&apos;t save: {avatarError}.{' '}
+                  <button onClick={saveAvatar} className="underline hover:no-underline">
+                    Retry
+                  </button>
+                </p>
+              )}
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={saveAvatar}
+                  disabled={!avatarDirty || avatarPhase === 'saving'}
+                  className="flex-1 sm:flex-none cfg-btn-primary text-sm"
+                >
+                  {avatarPhase === 'saving' ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  onClick={discardAvatar}
+                  disabled={!avatarDirty || avatarPhase === 'saving'}
+                  className="flex-1 sm:flex-none cfg-btn-ghost text-sm"
+                >
+                  Discard
+                </button>
+              </div>
+            </section>
+
+            <section className="cfg-card cfg-danger" aria-labelledby="cfg-danger-title">
+              <h2 id="cfg-danger-title" className="cfg-title mb-3">Danger zone</h2>
+              <p className="text-sm cfg-muted">{DELETE_REMOVES_COPY}</p>
+              <p className="text-sm cfg-faint mt-2">{DELETE_KEEPS_COPY}</p>
+              <button
+                type="button"
+                onClick={() => setDeleteOpen(true)}
+                className="mt-3 delete-btn text-sm w-full sm:w-auto"
+              >
+                Delete agent
+              </button>
             </section>
           </div>
         </div>
