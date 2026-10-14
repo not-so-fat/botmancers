@@ -1,6 +1,6 @@
 # NOT-468 decision record: Agent Deck run reconciliation across a Botmancers restart
 
-**Status:** accepted. The product owner approved the fail-closed recovery policy on Linear NOT-468 (comment `248fa4f5-39e0-4aa5-9cf2-f7e7f0fa34a8`). Two amendments from that approval are applied below: a `died` run is always manual attention, and the no-run-TTL result is accepted in place of an expired-run-id transcript.
+**Status:** accepted. The product owner approved the fail-closed recovery policy on Linear NOT-468 (comment `248fa4f5-39e0-4aa5-9cf2-f7e7f0fa34a8`). Two amendments from that approval are applied below: a `died` run always sets the operator-attention flag (the Attempt itself becomes terminal `interrupted`; see the decision table), and the no-run-TTL result is accepted in place of an expired-run-id transcript.
 **Date:** 2026-10-14
 **Evidence:** [transcripts/](./transcripts/README.md). The real runs used Botmancers `7d0fa92` (with NOT-487) and Agent Deck `92e3293` (with NOT-480, NOT-481, and NOT-486). The edits were real Codex `edit` runs launched through Botmancers' canonical path (`startAgentDispatch` → `runTurn` → `createAgentDeckApiAttemptAdapter`) against a disposable Git workspace. The harness is `scripts/not-468-restart-poc.js`. It is investigation tooling with no production code changes.
 
@@ -10,7 +10,7 @@ Botmancers can restart while an Agent Deck run is starting, running, or already 
 
 ## Answer in one paragraph
 
-Everything needed is recoverable through the public API as long as Botmancers still holds the **run id** and the **same grant**. That includes the state, the full ordered events from `seq` 1, the final `result`, the opaque `sessionId`, the finalization baseline, and the candidate manifest. A completed run's session was resumed after a restart and came back byte-for-byte identical. If the run id was lost (a crash between the 202 and persistence), a re-POST with the deterministic Attempt key (`botmancers-attempt-<attemptId>`) and a byte-identical body returns the original run without launching. This held before and after an Agent Deck restart. Today, however, **Botmancers does none of this**: its startup recovery made zero Agent Deck calls in all 7 restarts and left every `running` request with an open Attempt forever. Two conditions lead to duplication or loss. First, idempotency and run visibility are **grant-scoped**: a re-POST under a rotated grant launched a real second run. Second, the reattach body must re-render byte-identically, which Botmancers can verify only through `prompt_hash`.
+Everything needed is recoverable through the public API as long as Botmancers still holds the **run id** and the **same grant**. That includes the state, the full ordered events from `seq` 1, the final `result`, the opaque `sessionId`, the finalization baseline, and the candidate manifest. A completed run's session was resumed after a restart and came back byte-for-byte identical. If the run id was lost (a crash between the 202 and persistence), a re-POST with the deterministic Attempt key (`botmancers-attempt-<attemptId>`) and a byte-identical body returns the original run without launching. This held before and after an Agent Deck restart. Today, however, **Botmancers does none of this**: its startup recovery made zero Agent Deck calls in all 9 captured restart passes (s1, s2, s3, s4, N5, the two N7 passes, N8, and C1) and left every `running` request with an open Attempt forever. Two conditions lead to duplication or loss. First, idempotency and run visibility are **grant-scoped**: a re-POST under a rotated grant launched a real second run. Second, the reattach body must re-render byte-identically, which Botmancers can verify only through `prompt_hash`.
 
 ## Observed results per boundary
 
@@ -44,7 +44,7 @@ Event invariants held in every read, including across Agent Deck restarts. `seq`
 
 ## Findings
 
-- **F1: There is no reconciler today.** `recoverCoordinatorLoops()` made 0 Agent Deck calls and changed nothing in all 7 restarts. `startAgentDispatch` skips any request that is not `queued`, so a `running` request with an open Attempt never progresses. The run keeps editing the workspace unobserved.
+- **F1: There is no reconciler today.** `recoverCoordinatorLoops()` made 0 Agent Deck calls and changed nothing in all 9 captured restart passes. `startAgentDispatch` skips any request that is not `queued`, so a `running` request with an open Attempt never progresses. The run keeps editing the workspace unobserved.
 - **F2: The run id is persisted at the adapter's `started` event**, synchronously after the 202. Only the start-response window (s1) loses it. A same-key re-POST closes that window safely.
 - **F3: Reattach depends on re-rendering the identical body.** Botmancers persists only `prompt_hash` (in the launch snapshot), not the start body. Re-rendering from conversation history matched the hash in all 6 reattaches. Any change to that history or to the bot's name or description would produce `409 IDEMPOTENCY_CONFLICT`, or, if the first POST never landed, a launch with a different prompt.
 - **F4: Idempotency and visibility are per grant.** A run is readable only by the grant that started it, and the same key under a new grant is a new launch (N5c). Botmancers does not record which grant launched an Attempt.
@@ -56,14 +56,22 @@ Event invariants held in every read, including across Agent Deck restarts. `seq`
 
 ## Decision table (accepted dispatcher policy)
 
-The dispatcher runs this at startup and for every Attempt that is still open, then periodically while `unreachable`. It uses only the persisted Attempt (`external_run_id`, launch snapshot, baseline rows) and the public API. Actions:
+The dispatcher runs this at startup and for every Attempt that is still open, then periodically while `unreachable`. It uses only the persisted Attempt (`external_run_id`, launch snapshot, baseline rows) and the public API.
 
-- **reconcile**: record the terminal outcome from API evidence.
-- **reattach**: keep the Attempt open and observe until terminal.
+Each row decides two separate things:
+
+1. **The Attempt transition.** The Attempt either stays **open** or becomes **terminal** with exactly one outcome.
+2. **The attention flag.** This is a persisted operator-attention flag with a reason. It is separate from the Attempt lifecycle and can be set on an open or a terminal Attempt. While it is set, the dispatcher makes no automatic launch, re-POST, retry, or resume for that Attempt's request. Only an operator clears it.
+
+Actions:
+
+- **reconcile**: make the Attempt terminal with the outcome shown by API evidence. The flag is not set.
+- **reattach**: keep the Attempt open and observe until terminal. The flag is not set.
+- **defer**: keep the Attempt open and retry the reconcile with backoff. The flag is not set.
 - **retry**: a fresh Attempt. This is automatic only when Agent Deck rejected the launch before any model work (table A pre-launch rejections). Once a run has existed, a fresh Attempt is never automatic (see `died`).
-- **interrupted**: finish with outcome `interrupted`.
-- **fail**: finish `failed` with a category.
-- **manual attention**: keep the Attempt open, flag it, and never auto-launch.
+- **interrupted + attention**: make the Attempt terminal with outcome `interrupted` **and** set the flag. The `died` row uses this.
+- **fail**: make the Attempt terminal with outcome `failed` and a category. The flag is not set.
+- **manual attention** (when used alone): keep the Attempt **open** and set the flag. It is used where the run may still exist or still be running and Botmancers cannot observe it. Because the Attempt is open, the reconcile can run again after the operator fixes the cause (for example, restores the grant).
 
 ### A. The Attempt is open and has no run id
 
@@ -85,7 +93,7 @@ The dispatcher runs this at startup and for every Attempt that is still open, th
 | `ended` without a valid result | **Fail** (`result_contract`). |
 | `error` | **Fail** (`runtime_failed`). |
 | `canceled` | **Reconcile cancelled.** |
-| `died` | **Manual attention (interrupted).** Classify the runtime outcome as `interrupted`, not `failed` (F6), read `/changes` for the operator, and keep the Attempt flagged. This holds **even when `/changes` lists no files**: an empty Git manifest cannot rule out shell, network, or other external side effects, and N7 shows model work had started (a model event and a live Codex process). Never auto-retry and never auto-resume a `died` run or session. A fresh Attempt requires explicit operator authorization, a review of possible side effects, a **new** idempotency key, and preserved prior evidence (the `died` run id, its events, and its manifest stay linked to the prior Attempt). |
+| `died` | **Interrupted + attention.** First read `/changes` and persist it as the Attempt's manifest for the operator. Then make the Attempt **terminal** with outcome `interrupted`, not `failed` (F6), and **set the attention flag** with reason `run_died`. The run is dead (there is nothing left to observe), so the Attempt does not stay open. The flag, not an open Attempt, is what blocks automation. This holds **even when `/changes` lists no files**: an empty Git manifest cannot rule out shell, network, or other external side effects, and N7 shows model work had started (a model event and a live Codex process). Never auto-retry and never auto-resume a `died` run or session. A fresh Attempt requires explicit operator authorization, a review of possible side effects, a **new** idempotency key, and preserved prior evidence (the `died` run id, its events, and its manifest stay linked to the prior Attempt). |
 | `404 RUN_NOT_FOUND` | **Manual attention.** Agent Deck does not hold the run: wrong server, or a lost, wiped, or replaced run store. Runs do not expire in `92e3293` (see the "Expired" row), so this is never treated as a normal expiry. Never relaunch automatically. |
 | `401 GRANT_REQUIRED` | **Manual attention: grant expired or revoked.** Only the original grant can read the run. A new grant cannot (N5b) and must not re-POST (N5c). |
 | `403 RESOURCE_OUT_OF_SCOPE` | **Manual attention: grant or deck mismatch.** |
@@ -103,7 +111,7 @@ Resume only from an active Session Binding of a **reconciled** `ended` edit run 
 
 1. Run the B-table reconcile at startup for every open Attempt whose transport is `agent-deck-api`, and the A table where the run id is null (F1).
 2. Persist enough to re-POST safely: either the exact start body or its canonical hash plus the inputs, and a **non-secret fingerprint of the launching grant** (F3, F4).
-3. Classify `died` as `interrupted` (F6) and route it to manual attention; never create a fresh Attempt for it without operator authorization, a side-effect review, a new idempotency key, and preserved prior evidence. Treat a transient `unreachable` during observation as **defer**, not fail (F7).
+3. Add a persisted operator-attention flag (with a reason) that is separate from the Attempt lifecycle and blocks all automatic launch, re-POST, retry, and resume for the request while set. Make a `died` Attempt terminal with outcome `interrupted` (F6) and set that flag; never create a fresh Attempt for it without operator authorization, a side-effect review, a new idempotency key, and preserved prior evidence. Treat a transient `unreachable` during observation as **defer**, not fail (F7).
 4. Never re-POST under a grant that differs from the launching grant (N5c).
 
 ## Explicitly not claimed
