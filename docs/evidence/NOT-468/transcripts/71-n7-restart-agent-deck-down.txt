@@ -1,0 +1,85 @@
+restart s7-agent-deck-crash: new Botmancers process pid 68945; request ccff66a7-ef9f-4449-9f0b-9bb31b221967
+[on restart, before recovery] Botmancers durable state:
+{
+  "request": {
+    "id": "ccff66a7-ef9f-4449-9f0b-9bb31b221967",
+    "kind": "implementation",
+    "state": "running",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "7cca0405-eba3-4a6f-a25e-6a403f1dc859",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152659-0816e9",
+      "external_session_id": null,
+      "outcome": null,
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "4b0ddab39efa"
+    }
+  ],
+  "bindings": [],
+  "baselines": [
+    {
+      "attempt_id": "7cca0405-eba3-4a6f-a25e-6a403f1dc859",
+      "baseline_ref": "bl_0341d689935a8dd4f2260234"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress"
+  ]
+}
+[after recoverCoordinatorLoops()] Botmancers durable state:
+{
+  "request": {
+    "id": "ccff66a7-ef9f-4449-9f0b-9bb31b221967",
+    "kind": "implementation",
+    "state": "running",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "7cca0405-eba3-4a6f-a25e-6a403f1dc859",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152659-0816e9",
+      "external_session_id": null,
+      "outcome": null,
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "4b0ddab39efa"
+    }
+  ],
+  "bindings": [],
+  "baselines": [
+    {
+      "attempt_id": "7cca0405-eba3-4a6f-a25e-6a403f1dc859",
+      "baseline_ref": "bl_0341d689935a8dd4f2260234"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress"
+  ]
+}
+  PASS: recoverCoordinatorLoops made no Agent Deck call (0)
+  PASS: recoverCoordinatorLoops launched no run
+  PASS: recoverCoordinatorLoops left the open Attempt untouched (no reconciler exists today)
+  persisted run id run-20261014T152659-0816e9; reconciling read-only through the public API
+→ GET /api/agent-runs/run-20261014T152659-0816e9  ✗ transport error (ECONNREFUSED)
+  observed error: {"code":"agent_deck_unreachable","status":null,"deckCode":null,"message":"The Agent Deck server is unreachable at the workspace Agent Deck URL (start it or correct the URL)."}
+  decision: defer:agent_deck_unreachable_retry_later
+  PASS: read-only reconcile launched no run (start POSTs total 17)

@@ -1,0 +1,10 @@
+(3 empty starting/running event polls omitted)
+launch s9-cancel-after-restart: work request f0255864-93e1-43ad-aa2e-930f959f47dd (implementation, edit) crash-at=running
+→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-554b488a-c87f-472d-9efd-822e0b08ecc6]
+    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:0330d4362c30 len:4022>","tools":"edit","prepareFinalization":true}
+  ← 202 {"success":true,"data":{"runId":"run-20261014T152734-191fea","state":"starting"}}
+→ GET /api/agent-runs/run-20261014T152734-191fea
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152734-191fea","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"starting","sessionId":null,"startedAt":"2026-10-14T15:27:34.552Z","lastEventAt":null,"finalization":{"baselineRef":"bl_ad17bf15b98f6347f6e3ef8c","baselineDigest":"8c53bd29c84d2b32d413fbca056aadb8a1e90bed89ab846629f5ae19273631ab","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152734-191fea/events?after=0
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152734-191fea","state":"running","events":[{"seq":1,"ts":"2026-10-14T15:27:38.610Z","type":"text","text":"I’ll run `sleep 90`, wait for it to finish, then create the requested file."}],"nextCursor":"1"}}
+!! SIGKILL Botmancers pid 69496 at boundary "running" (events page state=running)

@@ -26,7 +26,7 @@
 //   reattach <scenario>       idempotent re-POST of the persisted Attempt, observe, persist
 //   cancel <scenario>         cancel the persisted run, then mark the Attempt cancelled
 //   resume <scenario> <new>   revision that resumes <scenario>'s Session Binding
-//   probe <name> [args]       negative probes (unknown-run, foreign-grant, expired-grant,
+//   probe <name> [args]       negative probes (unknown-run, foreign-grant, expired-grant, rotated-grant,
 //                             unreachable, idempotency-conflict, resume-unknown-session)
 //   snapshot <scenario>
 'use strict';
@@ -108,7 +108,7 @@ function noteSessions(value) {
 }
 
 // --------------------------------------------------------------- transcript
-const scenarioName = positional[0] || command;
+const scenarioName = (command === 'resume' ? positional[1] : positional[0]) || command;
 function emit(entry) {
   const line = { at: new Date().toISOString(), pid: process.pid, cmd: command, scenario: scenarioName, ...entry };
   fs.appendFileSync(TRANSCRIPT, `${JSON.stringify(line)}\n`);
@@ -534,7 +534,7 @@ async function cmdProbe(name) {
     say(`  decision: ${verdict}`);
     check([a, b, c].every(r => !r.ok && r.info.status === 404 && r.info.deckCode === 'RUN_NOT_FOUND'), 'unknown run id: status/events/cancel are 404 RUN_NOT_FOUND');
     emit({ kind: 'decision', verdict, d: d.info });
-  } else if (name === 'foreign-grant' || name === 'expired-grant' || name === 'revoked-grant') {
+  } else if (name === 'foreign-grant' || name === 'expired-grant' || name === 'revoked-grant' || name === 'rotated-grant') {
     const r = await tryCall(`GET status ${runId} with ${name}`, () => deckApi.getAgentDeckRun(runId));
     const e = await tryCall(`GET events ${runId} with ${name}`, () => deckApi.getAgentDeckRunEvents(runId, null));
     const verdict = classify(attempt && { ...attempt, outcome: null }, { error: r.info });

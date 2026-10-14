@@ -1,0 +1,98 @@
+restart s8-agent-deck-crash-live: new Botmancers process pid 69430; request 2a3a0785-df94-4e4f-9049-1f23987ac767
+[on restart, before recovery] Botmancers durable state:
+{
+  "request": {
+    "id": "2a3a0785-df94-4e4f-9049-1f23987ac767",
+    "kind": "implementation",
+    "state": "failed",
+    "error_code": "agent_unavailable"
+  },
+  "attempts": [
+    {
+      "id": "cbf15876-61ca-49ea-a61f-7a4c855c76c3",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152717-3a18cb",
+      "external_session_id": null,
+      "outcome": "failed",
+      "error_category": "unavailable",
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "f32c4c0ae66d"
+    }
+  ],
+  "bindings": [],
+  "baselines": [
+    {
+      "attempt_id": "cbf15876-61ca-49ea-a61f-7a4c855c76c3",
+      "baseline_ref": "bl_09fa91c0b6bf681c36ce7f57"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress",
+    "attempt_finished",
+    "state_changed"
+  ]
+}
+[after recoverCoordinatorLoops()] Botmancers durable state:
+{
+  "request": {
+    "id": "2a3a0785-df94-4e4f-9049-1f23987ac767",
+    "kind": "implementation",
+    "state": "failed",
+    "error_code": "agent_unavailable"
+  },
+  "attempts": [
+    {
+      "id": "cbf15876-61ca-49ea-a61f-7a4c855c76c3",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152717-3a18cb",
+      "external_session_id": null,
+      "outcome": "failed",
+      "error_category": "unavailable",
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "f32c4c0ae66d"
+    }
+  ],
+  "bindings": [],
+  "baselines": [
+    {
+      "attempt_id": "cbf15876-61ca-49ea-a61f-7a4c855c76c3",
+      "baseline_ref": "bl_09fa91c0b6bf681c36ce7f57"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress",
+    "attempt_finished",
+    "state_changed"
+  ]
+}
+  PASS: recoverCoordinatorLoops made no Agent Deck call (0)
+  PASS: recoverCoordinatorLoops launched no run
+  PASS: recoverCoordinatorLoops left the open Attempt untouched (no reconciler exists today)
+  persisted run id run-20261014T152717-3a18cb; reconciling read-only through the public API
+→ GET /api/agent-runs/run-20261014T152717-3a18cb
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152717-3a18cb","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"died","sessionId":"<S:01a13b06…8cf84a>","startedAt":"2026-10-14T15:27:17.314Z","lastEventAt":"2026-10-14T15:27:21.897Z","finalization":{"baselineRef":"bl_09fa91c0b6bf681c36ce7f57","baselineDigest":"8c53bd29c84d2b32d413fbca056aadb8a1e90bed89ab846629f5ae19273631ab","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152717-3a18cb/events
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152717-3a18cb","state":"died","events":[{"seq":1,"ts":"2026-10-14T15:27:21.897Z","type":"text","text":"I’ll run `sleep 90`, wait for it to finish, then create the requested file.\n"}],"nextCursor":"1"}}
+→ GET /api/agent-runs/run-20261014T152717-3a18cb/events?after=1
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152717-3a18cb","state":"died","events":[],"nextCursor":"1"}}
+→ GET /api/agent-runs/run-20261014T152717-3a18cb/changes
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152717-3a18cb","baselineRef":"bl_09fa91c0b6bf681c36ce7f57","baselineDigest":"8c53bd29c84d2b32d413fbca056aadb8a1e90bed89ab846629f5ae19273631ab","baseCommit":"dba6624c41572c3a55f02f01d80bc2e377e3b923","files":[],"manifestDigest":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"}}
+  status=died sessionId=<S:01a13b06…8cf84a> events=1 terminal-events=[] seq-ordered=true
+  PASS: events are contiguous and ordered by seq from 1
+  changes: 0 file(s)  manifest 4f53cda18c2b
+  decision: noop:attempt_already_terminal
+  PASS: read-only reconcile launched no run (start POSTs total 19)
