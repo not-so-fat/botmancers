@@ -6,6 +6,8 @@ import { createHash, randomUUID } from 'crypto';
 // append-only per-request engine event log. Legacy processing_queue and
 // agent_requests stay in place and readable. NOT-465: UI and /api/v0
 // message intake create their Work Requests here (lib/conversation-intake).
+// NOT-466: Agent Wakes are recorded in wakes and create theirs through
+// lib/wake-router.
 //
 // Foreign keys are enforced by triggers because the shared connection
 // runs with PRAGMA foreign_keys off (legacy tables were never written
@@ -595,6 +597,90 @@ const MIGRATIONS: Migration[] = [
         -- NOT-467: the runtime output an Attempt returned, recorded with
         -- its terminal outcome (null while open or when none was returned).
         ALTER TABLE work_attempts ADD COLUMN output TEXT;
+      `);
+    },
+  },
+  {
+    version: 7,
+    name: 'wakes',
+    up: db => {
+      db.exec(`
+        -- NOT-466: one row per Wake found in an Agent reply (lib/wake-router).
+        -- Every Wake is kept, including ones whose target is missing or
+        -- whose envelope is invalid, so nothing is silently dropped. An
+        -- accepted or blocked Wake names its one Work Request. Lineage is
+        -- durable: parent/root request and root Wake, never process memory.
+        CREATE TABLE wakes (
+          id TEXT PRIMARY KEY,
+          idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) > 0),
+          source_conversation_id TEXT NOT NULL,
+          source_event_id TEXT NOT NULL,
+          position INTEGER NOT NULL CHECK (position >= 0),
+          syntax TEXT NOT NULL CHECK (syntax IN ('structured', 'legacy')),
+          payload TEXT NOT NULL,
+          requester_agent_id TEXT NOT NULL,
+          requested_target TEXT,
+          target_agent_id TEXT,
+          target_name_snapshot TEXT,
+          execution_kind TEXT CHECK (execution_kind IN ('conversation', 'implementation', 'review', 'revision')),
+          parent_request_id TEXT,
+          root_request_id TEXT,
+          root_wake_id TEXT NOT NULL,
+          depth INTEGER NOT NULL CHECK (depth >= 0),
+          status TEXT NOT NULL CHECK (status IN ('accepted', 'blocked', 'unavailable', 'rejected')),
+          reason_code TEXT,
+          reason TEXT,
+          work_request_id TEXT UNIQUE,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (source_event_id, position),
+          CHECK ((status IN ('accepted', 'blocked')) = (work_request_id IS NOT NULL)),
+          CHECK (status = 'accepted' OR reason_code IS NOT NULL),
+          FOREIGN KEY (source_conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (work_request_id) REFERENCES work_requests(id),
+          FOREIGN KEY (parent_request_id) REFERENCES work_requests(id)
+        );
+        CREATE INDEX idx_wakes_conversation ON wakes(source_conversation_id, created_at);
+        CREATE INDEX idx_wakes_status ON wakes(status, created_at);
+
+        CREATE TRIGGER trg_wakes_fk BEFORE INSERT ON wakes
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: wakes.source_conversation_id')
+            WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE id = NEW.source_conversation_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: wakes.parent_request_id')
+            WHERE NEW.parent_request_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM work_requests WHERE id = NEW.parent_request_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: wakes.work_request_id')
+            WHERE NEW.work_request_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM work_requests WHERE id = NEW.work_request_id);
+        END;
+
+        -- Source, payload, and lineage are fixed when the Wake is recorded.
+        CREATE TRIGGER trg_wakes_immutable BEFORE UPDATE OF
+          id, idempotency_key, source_conversation_id, source_event_id, position, syntax, payload,
+          requester_agent_id, requested_target, execution_kind, parent_request_id,
+          root_wake_id, depth, created_at
+        ON wakes
+        BEGIN
+          SELECT RAISE(ABORT, 'wakes source, payload, and lineage are immutable');
+        END;
+
+        -- Recovery only moves forward: an unavailable target may resolve
+        -- or turn out unroutable (rejected), a blocked request may become
+        -- accepted. The resolved target, Work
+        -- Request, and root request (for a Wake without a parent, its own
+        -- request) are set once.
+        CREATE TRIGGER trg_wakes_recovery BEFORE UPDATE ON wakes
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid wakes status change')
+            WHERE NEW.status <> OLD.status
+              AND (OLD.status || '>' || NEW.status) NOT IN ('unavailable>accepted', 'unavailable>blocked', 'unavailable>rejected', 'blocked>accepted');
+          SELECT RAISE(ABORT, 'wakes target and work request are set once')
+            WHERE (OLD.target_agent_id IS NOT NULL AND NEW.target_agent_id IS NOT OLD.target_agent_id)
+              OR (OLD.target_name_snapshot IS NOT NULL AND NEW.target_name_snapshot IS NOT OLD.target_name_snapshot)
+              OR (OLD.work_request_id IS NOT NULL AND NEW.work_request_id IS NOT OLD.work_request_id)
+              OR (OLD.root_request_id IS NOT NULL AND NEW.root_request_id IS NOT OLD.root_request_id);
+        END;
       `);
     },
   },
@@ -1269,12 +1355,17 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
       throw new Error('Engine records could not be removed: unexpected attempt/binding reference cycle.');
     }
   }
+  // Wakes go with the requests they created or descend from.
+  db.prepare(
+    `DELETE FROM wakes WHERE work_request_id IN ${inSet} OR parent_request_id IN ${inSet} OR root_request_id IN ${inSet}`
+  ).run(list(requests), list(requests), list(requests));
   const ordered = ids(`SELECT id FROM work_requests WHERE id IN ${inSet} ORDER BY depth DESC`, list(requests));
   for (const id of ordered) db.prepare('DELETE FROM work_requests WHERE id = ?').run(id);
 }
 
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
   db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM wakes WHERE source_conversation_id = ?').run(conversationId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE source_conversation_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE conversation_id = ?',
@@ -1283,6 +1374,10 @@ export function deleteEngineRecordsForConversation(db: Db, conversationId: strin
 }
 
 export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
+  // A Wake the Agent requested stays while its request (to another Agent)
+  // survives; deleteEngineRecords removes it with that request. Only the
+  // Agent's unrouted Wakes, which nothing references, go now.
+  db.prepare('DELETE FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL)').run(agentId, agentId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE target_agent_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE agent_id = ?',
