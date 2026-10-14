@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { conversations, bots, groups } from '@/lib/db';
+import { conversations, bots, groups, projector } from '@/lib/db';
 
 export async function GET(
   request: Request,
@@ -29,6 +29,8 @@ export async function GET(
     return NextResponse.json({
       ...conversation,
       details,
+      // NOT-470: the same projected lifecycle /api/v0 conversations return.
+      events: projector.listConversationEvents(conversation.id),
     });
   } catch (error) {
     console.error('Error fetching conversation:', error);

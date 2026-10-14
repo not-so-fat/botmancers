@@ -13,7 +13,8 @@
 //   POST /api/v0/agents/{agentId}/messages   open or continue a conversation
 //     body: { content, conversationId?, idempotencyKey?, principal?, wait? }
 //     header: Idempotency-Key (alternative to body idempotencyKey)
-//   GET  /api/v0/conversations/{id}          participants, origin, ordered messages
+//   GET  /api/v0/conversations/{id}          participants, origin, ordered messages,
+//                                            projected lifecycle events (NOT-470)
 //   GET  /api/v0/requests/{id}               request state, reply, typed failure
 // Failures use one envelope: { error: { code, message } } with a stable code.
 // NOT-465: POST accepts through the shared conversation intake, the same
