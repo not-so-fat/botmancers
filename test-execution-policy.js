@@ -295,8 +295,8 @@ async function main() {
   assert(!conversationsSource.includes('delegateCodingViaDeck') && !conversationsSource.includes('runCompositeCompatibility'),
     'lib/agent-conversations.ts never reaches the composite');
   const deckSource = fs.readFileSync(path.join(ROOT, 'lib/agent-deck-run.ts'), 'utf8');
-  assert(deckSource.includes('TEMPORARY COMPATIBILITY (NOT-471)') && typeof deckRun.runCompositeCompatibility === 'function',
-    'the composite is marked temporary compatibility behind runCompositeCompatibility');
+  assert(deckSource.includes('LEGACY (NOT-472)') && deckRun.runCompositeCompatibility === undefined && deckRun.COMPOSITE_COMPATIBILITY === undefined,
+    'NOT-472: the composite compatibility gate is retired; no canonical request reaches the composite');
 
   // ---------------------------------------------------------------
   console.log('\nWake fixtures: edit only for explicit implementation or revision');
@@ -340,9 +340,13 @@ async function main() {
   for (const [label, routed, , profile] of WAKES.slice(0, 2)) {
     launches = [];
     await conversationsApi.startAgentDispatch(routed.request.id);
+    // NOT-472: the result then returns to the waking Agent as one
+    // read-only continuation turn; it launches after the request's own.
+    await conversationsApi.waitForAgentDispatchIdle();
     const attempts = engine.listAttempts(routed.request.id);
-    assert(launches.length === 1 && flag(launches[0], '--tools') === profile && attempts.length === 1 && attempts[0].tool_profile === profile,
+    assert(launches.length >= 1 && flag(launches[0], '--tools') === profile && attempts.length === 1 && attempts[0].tool_profile === profile,
       `${label}: one Attempt launched with --tools ${profile}`);
+    assert(launches.slice(1).every(argv => flag(argv, '--tools') === 'readonly'), `${label}: follow-up turns are read-only`);
   }
 
   // ---------------------------------------------------------------
@@ -385,27 +389,6 @@ async function main() {
     assert(launches.length === 0 && after.state === 'failed' && after.error_code === 'malformed_policy',
       'a store-created request without a selected policy never launches');
   }
-
-  // ---------------------------------------------------------------
-  console.log('\nExplicit compatibility gate for the composite');
-  const compatRequest = { conversationId: hostConv.id, botId: host.id, deck: 'deck-x', client: 'codex', cwd: workdir, task: 'Implement it.', reviewFocus: deckRun.DECK_REVIEW_FOCUS_DEFAULT };
-  const GATE = [
-    ['no marker', { policy: good }],
-    ['wrong marker', { compatibility: 'default', policy: good }],
-    ['conversation policy', { compatibility: deckRun.COMPOSITE_COMPATIBILITY, policy: conversationPolicy }],
-    ['review policy', { compatibility: deckRun.COMPOSITE_COMPATIBILITY, policy: policy.selectExecutionPolicy({ entryPoint: 'wake', wakeSyntax: 'structured', executionKind: 'review' }).policy }],
-    ['malformed policy', { compatibility: deckRun.COMPOSITE_COMPATIBILITY, policy: { ...good, tool_profile: 'readonly' } }],
-  ];
-  for (const [label, gate] of GATE) {
-    launches = [];
-    let refused = null;
-    try { await deckRun.runCompositeCompatibility(gate, compatRequest); } catch (error) { refused = error; }
-    assert(refused instanceof deckRun.CompositeCompatibilityRefused && launches.length === 0, `${label}: refused before any run`);
-  }
-  launches = [];
-  const composite = await deckRun.runCompositeCompatibility({ compatibility: deckRun.COMPOSITE_COMPATIBILITY, policy: good }, compatRequest);
-  assert(!!composite && JSON.stringify(launches.map(a => flag(a, '--tools'))) === JSON.stringify(['edit', 'readonly', 'edit']),
-    'an explicit implementation policy runs the compatibility composite (edit -> readonly -> edit)');
 
   deckRun.setDeckRunProcess(null);
   router.setWakeAvailabilityProbe(null);

@@ -31,7 +31,6 @@ import {
   type AttemptPrompt,
   type AttemptResult,
 } from './attempt-adapter';
-import { validateExecutionPolicy } from './execution-policy';
 
 export const DECK_RUNTIMES = ['codex', 'claude', 'cursor', 'muse'] as const;
 
@@ -579,13 +578,12 @@ export const DECK_DELEGATION_PHASE_TOOLS = Object.freeze({
   revise: 'edit',
 } as const satisfies Record<'implement' | 'review' | 'revise', DeckToolProfile>);
 
-// TEMPORARY COMPATIBILITY (NOT-471): the composite implement -> review ->
-// resume sequence below predates explicit execution kinds. It is not the
-// default coding-Agent turn: conversation dispatch (lib/agent,
-// lib/agent-conversations) runs one Attempt and never imports it. New
-// callers go through runCompositeCompatibility, which admits only an
-// explicit, validated implementation policy. Remove once independent-review
-// orchestration (coordinator review/revision Wakes) replaces it.
+// LEGACY (NOT-472): the composite implement -> review -> resume sequence
+// below predates explicit execution kinds and is retired for canonical
+// requests: no Work Request reaches it (the NOT-471 compatibility gate is
+// removed). Implementation, review, and revision are separate coordinator
+// Wakes (lib/coordinator-loop) whose results return to the coordinator.
+// It remains only as the pre-engine helper its own tests pin.
 //
 // The conversation integration: from the same Botmancers conversation the
 // caller hands implementation to a local coding agent through agent-deck,
@@ -680,36 +678,6 @@ export async function delegateCodingViaDeck(request: DeckDelegationRequest): Pro
 // request carries only the task. Exported so callers and tests share the
 // exact string.
 export const DECK_REVIEW_FOCUS_DEFAULT = 'Correctness, edge cases, and fit to the stated goal.';
-
-// NOT-471: the explicit compatibility gate. A caller names the
-// compatibility behavior and supplies the execution policy it holds; only a
-// valid implementation policy (edit authority granted by the central
-// rules, e.g. a structured implementation Wake) runs the composite. A
-// conversation, review, or revision policy, a missing or malformed one,
-// or a missing marker fails before any run starts.
-export const COMPOSITE_COMPATIBILITY = 'composite-implement-review-resume-v0' as const;
-
-export class CompositeCompatibilityRefused extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CompositeCompatibilityRefused';
-  }
-}
-
-export async function runCompositeCompatibility(
-  gate: { compatibility: typeof COMPOSITE_COMPATIBILITY; policy: unknown },
-  request: DeckDelegationRequest
-): Promise<DeckDelegationResult | null> {
-  if (!gate || gate.compatibility !== COMPOSITE_COMPATIBILITY) {
-    throw new CompositeCompatibilityRefused('The composite path runs only through its explicit compatibility gate.');
-  }
-  const checked = validateExecutionPolicy(gate.policy);
-  if (!checked.ok) throw new CompositeCompatibilityRefused(checked.reason);
-  if (checked.policy.execution_kind !== 'implementation') {
-    throw new CompositeCompatibilityRefused(`The composite path requires an implementation policy, not ${checked.policy.execution_kind}.`);
-  }
-  return delegateCodingViaDeck(request);
-}
 
 // NOT-442: no DECK directive and no working-directory deck resolution.
 // Ordinary messages to an agent-deck bot launch the stored agent client on

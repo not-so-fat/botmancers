@@ -38,6 +38,7 @@ import { EngineStoreError, type EngineEvent, type WorkRequest, type WorkRequestS
 import { authorizeWorkRequest } from './execution-policy';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 import type { ConversationEventView } from './conversation-projection';
+import { continueAfterTerminal, pendingCoordinatorWork, resumeBindingFor, turnContext } from './coordinator-loop';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -337,7 +338,19 @@ function failRequest(requestId: string, attemptId: string | null, code: string, 
 // the runtime provenance), then project the reply into the source
 // conversation and complete, or fail with a typed code. The adapter never
 // writes conversation messages; the projection below does.
+//
+// NOT-472: a Wake-created request also sees its objective and referenced
+// results, and a revision resumes the Session Binding of the
+// implementation it names (fail closed when there is none). Edit-authorized
+// work binds the session it reports so a later revision can resume it.
+// Once the request is terminal, lib/coordinator-loop routes the reply's
+// Wakes and continues the coordinator; those requests dispatch here too.
 async function runDispatch(requestId: string): Promise<void> {
+  await runTurn(requestId);
+  for (const next of continueAfterTerminal(requestId)) void startAgentDispatch(next);
+}
+
+async function runTurn(requestId: string): Promise<void> {
   const request = engine.getWorkRequest(requestId);
   if (!request || request.state !== 'queued') return;
   const bot = bots.getById(request.target_agent_id);
@@ -365,10 +378,27 @@ async function runDispatch(requestId: string): Promise<void> {
   // NOT-456: the attempt adapter records the dispatched agent identity
   // (hermes|cursor|claude|codex|muse), never Agent Deck.
   const agent = agentForDispatch(bot);
+  const resume = resumeBindingFor(request, agent);
+  if (!resume.ok) {
+    try {
+      engine.transitionWorkRequest(requestId, {
+        from: 'queued', to: 'failed', expectedVersion: request.version,
+        reason: 'session_unavailable', errorCode: 'session_unavailable', errorMessage: resume.reason,
+      });
+    } catch (error) {
+      if (!(error instanceof EngineStoreError && error.code === 'stale_state')) throw error;
+    }
+    return;
+  }
   let prepared: PreparedDispatch | null = null;
   let unprepared: DispatchFailure | null = null;
   try {
-    prepared = prepareDispatch({ bot, history: historyFor(request, bot), toolProfile: policy.tool_profile });
+    prepared = prepareDispatch({
+      bot,
+      history: [...historyFor(request, bot), ...turnContext(request)],
+      toolProfile: policy.tool_profile,
+      sessionBinding: resume.binding ? { bindingId: resume.binding.id, externalSessionId: resume.binding.external_session_id } : null,
+    });
   } catch (error) {
     unprepared = error instanceof DispatchFailure
       ? error
@@ -400,7 +430,7 @@ async function runDispatch(requestId: string): Promise<void> {
   }
 
   await runAttempt(engine, started, prepared.adapter, {
-    project: result => {
+    project: (result, attempt) => {
       const now = Date.now();
       if (result.status !== 'completed' || result.output === null) {
         const failure = dispatchFailureFor(result);
@@ -411,6 +441,12 @@ async function runDispatch(requestId: string): Promise<void> {
       db.prepare(
         'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(replyId, request.source_conversation_id, 'bot', bot.id, 'bot', requestId, result.output, now);
+      if (policy.tool_profile === 'edit' && result.externalSessionId) {
+        engine.bindSession({
+          agentId: bot.id, adapter: agent, externalSessionId: result.externalSessionId,
+          conversationId: request.source_conversation_id, requestId, sourceAttemptId: attempt.id, now,
+        });
+      }
       engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: { reply_message_id: replyId }, now });
     },
   });
@@ -432,6 +468,18 @@ export function startAgentDispatch(requestId: string): Promise<void> {
     });
   inFlight.set(requestId, promise);
   return promise;
+}
+
+// Resolves once no dispatch (including coordinator loop follow-ups it
+// started) is in flight.
+export async function waitForAgentDispatchIdle(): Promise<void> {
+  while (inFlight.size > 0) await Promise.all([...inFlight.values()]);
+}
+
+// NOT-472 restart recovery: replays terminal requests' loop follow-ups
+// from durable state (idempotent) and dispatches what is still queued.
+export function recoverCoordinatorLoops(): Promise<void> {
+  return Promise.all(pendingCoordinatorWork().map(startAgentDispatch)).then(() => undefined);
 }
 
 // Engine event types in the documented request event vocabulary

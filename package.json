@@ -38,6 +38,7 @@
     "test:conversation-intake": "node test-conversation-intake.js",
     "test:attempt-adapter": "node test-attempt-adapter.js",
     "test:wake-router": "node test-wake-router.js",
+    "test:coordinator-loop": "node test-coordinator-loop.js",
     "test:conversation-projection": "node test-conversation-projection.js",
     "test:execution-policy": "node test-execution-policy.js"
   },

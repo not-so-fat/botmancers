@@ -741,6 +741,28 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    name: 'terminal_followups',
+    up: db => {
+      db.exec(`
+        -- NOT-472: one row per canonical request that became terminal on
+        -- this schema, written in the same transaction as the terminal
+        -- transition. lib/coordinator-loop runs the follow-up (Wake
+        -- routing, coordinator continuation) and sets done_at; restart
+        -- recovery only replays rows still open. Requests that ended
+        -- before this migration get no row, so their replies are never
+        -- routed retroactively.
+        CREATE TABLE terminal_followups (
+          request_id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          done_at INTEGER,
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        CREATE INDEX idx_terminal_followups_open ON terminal_followups(created_at) WHERE done_at IS NULL;
+      `);
+    },
+  },
 ];
 
 // Requests whose events the running aggregate cleanup may delete, per
@@ -1165,6 +1187,9 @@ export function createEngineStore(db: Db) {
           reason: input.reason ?? null,
           ...(input.errorCode ? { error_code: input.errorCode } : {}),
         }, null, now);
+        if (terminal && current.legacy_agent_request_id === null) {
+          db.prepare('INSERT OR IGNORE INTO terminal_followups (request_id, created_at) VALUES (?, ?)').run(id, now);
+        }
         return requireRequest(id);
       }).immediate();
     },
@@ -1439,7 +1464,8 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   db.prepare(
     `DELETE FROM wakes WHERE work_request_id IN ${inSet} OR parent_request_id IN ${inSet} OR root_request_id IN ${inSet}`
   ).run(list(requests), list(requests), list(requests));
-  const ordered = ids(`SELECT id FROM work_requests WHERE id IN ${inSet} ORDER BY depth DESC`, list(requests));
+  db.prepare(`DELETE FROM terminal_followups WHERE request_id IN ${inSet}`).run(list(requests));
+  const ordered =ids(`SELECT id FROM work_requests WHERE id IN ${inSet} ORDER BY depth DESC`, list(requests));
   for (const id of ordered) db.prepare('DELETE FROM work_requests WHERE id = ?').run(id);
 }
 

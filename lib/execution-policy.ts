@@ -15,6 +15,9 @@
 // - A structured Wake (botmancers-wake v1) may request any kind; a
 //   revision must name the Work Request it resumes, nothing else may.
 // - A legacy `WAKE <name>:` directive is a conversation Wake only.
+// - NOT-472: a coordinator continuation (the engine returning a
+//   specialist result to the Agent that woke it) is a read-only
+//   conversation turn only.
 //
 // The selected policy is frozen into the request's policy snapshot. The
 // dispatcher re-validates that snapshot against the request row before any
@@ -26,12 +29,12 @@
 
 export type ExecutionKind = 'conversation' | 'implementation' | 'review' | 'revision';
 export type ToolProfile = 'readonly' | 'edit';
-export type PolicyEntryPoint = 'ui' | 'api' | 'wake';
+export type PolicyEntryPoint = 'ui' | 'api' | 'wake' | 'continuation';
 export type WakeSyntaxKind = 'structured' | 'legacy';
 
 export const EXECUTION_KINDS: readonly ExecutionKind[] = Object.freeze(['conversation', 'implementation', 'review', 'revision']);
 export const TOOL_PROFILES: readonly ToolProfile[] = Object.freeze(['readonly', 'edit']);
-export const POLICY_ENTRY_POINTS: readonly PolicyEntryPoint[] = Object.freeze(['ui', 'api', 'wake']);
+export const POLICY_ENTRY_POINTS: readonly PolicyEntryPoint[] = Object.freeze(['ui', 'api', 'wake', 'continuation']);
 
 // Tool authority per execution kind. It is explicit on every request and
 // never inferred from the Agent type.
@@ -48,7 +51,8 @@ export const EXECUTION_POLICY_VERSION = 1;
 export type PolicyRule =
   | 'direct_message_conversation'
   | 'structured_wake'
-  | 'legacy_wake_conversation';
+  | 'legacy_wake_conversation'
+  | 'coordinator_continuation';
 
 export interface ExecutionPolicySnapshot {
   policy_version: typeof EXECUTION_POLICY_VERSION;
@@ -88,6 +92,12 @@ function ruleFor(entryPoint: unknown, kind: ExecutionKind, wakeSyntax: unknown, 
       return { code: 'unsupported_authority', reason: `A direct message runs as a read-only conversation turn, not ${kind}.` };
     }
     return 'direct_message_conversation';
+  }
+  if (entryPoint === 'continuation') {
+    if (kind !== 'conversation') {
+      return { code: 'unsupported_authority', reason: `A coordinator continuation runs as a read-only conversation turn, not ${kind}.` };
+    }
+    return 'coordinator_continuation';
   }
   if (entryPoint !== 'wake') return { code: 'unsupported_authority', reason: 'Unknown policy entry point.' };
   if (wakeSyntax === 'legacy') {
@@ -155,6 +165,7 @@ export function validateExecutionPolicy(value: unknown): PolicySelection {
   const allowed: Record<PolicyRule, { entry: PolicyEntryPoint[]; kinds: ExecutionKind[] }> = {
     direct_message_conversation: { entry: ['ui', 'api'], kinds: ['conversation'] },
     legacy_wake_conversation: { entry: ['wake'], kinds: ['conversation'] },
+    coordinator_continuation: { entry: ['continuation'], kinds: ['conversation'] },
     structured_wake: { entry: ['wake'], kinds: [...EXECUTION_KINDS] },
   };
   const rule = typeof input.rule === 'string' ? allowed[input.rule as PolicyRule] : undefined;

@@ -23,6 +23,13 @@
 // Idempotency: the key is source event + position + normalized payload
 // (lib/wake wakeIdempotencyKey). Routing the same event again, in this
 // process or after a restart, returns the stored Wakes and writes nothing.
+//
+// NOT-472: every Work Request a Wake creates records where its result
+// returns (policy_snapshot.return_to: the requesting Agent and source
+// conversation); lib/coordinator-loop continues that Agent when the
+// request ends. Loop safety limits (depth, specialist budget, open
+// requests) are checked per lineage before a request is created, and a
+// review never targets the Agent whose implementation it reviews.
 import { randomUUID } from 'crypto';
 import db, { bots, engine, resolveWakeTarget, type Bot, type Message } from './db';
 import { agentTransport, resolveAgent } from './bot-definition';
@@ -42,7 +49,15 @@ export type WakeReasonCode =
   | 'target_not_found'
   | 'target_ambiguous'
   | 'target_unconfigured'
-  | 'target_unavailable';
+  | 'target_unavailable'
+  | 'limit_exceeded'
+  | 'reviewer_not_independent';
+
+// NOT-472: coordinator loop safety limits, per root lineage. Values are
+// placeholders until the owner confirms them; change one line here.
+export const WAKE_MAX_DEPTH = 48;
+export const WAKE_MAX_SPECIALIST_REQUESTS = 24;
+export const WAKE_MAX_OPEN_REQUESTS = 16;
 
 export interface Wake {
   id: string;
@@ -154,9 +169,27 @@ function referenceProblem(envelope: WakeEnvelope, conversationId: string, parent
   return null;
 }
 
+// Depth, budget, and concurrency of the lineage this Wake would extend.
+// Counts include requests created earlier in the same reply.
+function limitProblem(parent: WorkRequest | null): string | null {
+  if (!parent) return null;
+  if (parent.depth + 1 > WAKE_MAX_DEPTH) return `This work is already ${parent.depth} Wakes deep (limit ${WAKE_MAX_DEPTH}).`;
+  const counts = db.prepare(`
+    SELECT COUNT(*) AS total, SUM(CASE WHEN terminal_at IS NULL THEN 1 ELSE 0 END) AS open
+    FROM work_requests WHERE root_request_id = ? AND wake_event_id IS NOT NULL
+  `).get(parent.root_request_id) as { total: number; open: number | null };
+  if (counts.total >= WAKE_MAX_SPECIALIST_REQUESTS) {
+    return `This work already woke ${counts.total} specialists (limit ${WAKE_MAX_SPECIALIST_REQUESTS}).`;
+  }
+  if ((counts.open ?? 0) >= WAKE_MAX_OPEN_REQUESTS) {
+    return `This work already has ${counts.open} specialist requests open (limit ${WAKE_MAX_OPEN_REQUESTS}).`;
+  }
+  return null;
+}
+
 // Target resolution by name, then the launch checks. Used by first routing
 // and by retrying an unavailable Wake (which has no target yet).
-function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax): Outcome {
+function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax, rootRequestId: string | null): Outcome {
   const resolved = resolveWakeTarget(envelope.target);
   if (!resolved.ok) {
     if (resolved.reason === 'ambiguous') {
@@ -167,13 +200,13 @@ function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax): Outcome {
     }
     return { status: 'unavailable', code: 'target_not_found', reason: `No Agent is named ${envelope.target}.` };
   }
-  return checkTarget(envelope, syntax, { id: resolved.agentId, name: resolved.displayName });
+  return checkTarget(envelope, syntax, { id: resolved.agentId, name: resolved.displayName }, rootRequestId);
 }
 
 // Resume constraint, configuration, and availability of one resolved
 // Agent. A blocked Wake's retry calls this on its stored target, never on
 // whichever Agent now holds the requested name.
-function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: string; name: string }): Outcome {
+function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: string; name: string }, rootRequestId: string | null): Outcome {
   // NOT-471: authority comes from the envelope's explicit kind under the
   // central rules (structured: any kind, revision resumes; legacy:
   // conversation only), never from the target's Agent type.
@@ -189,6 +222,19 @@ function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: s
     const resume = engine.getWorkRequest(envelope.resumeWorkRequest);
     if (!resume || resume.target_agent_id !== target.id || !['implementation', 'revision'].includes(resume.execution_kind)) {
       return { status: 'rejected', code: 'invalid_reference', reason: 'A revision resumes an implementation Work Request of the same Agent.', target };
+    }
+  }
+  // An independent review: the reviewer did not do the work it reviews,
+  // whether or not the Wake references that work.
+  if (envelope.executionKind === 'review') {
+    const reviewsOwnWork = (envelope.contextWorkRequests ?? []).some(ref => {
+      const reviewed = engine.getWorkRequest(ref);
+      return reviewed && ['implementation', 'revision'].includes(reviewed.execution_kind) && reviewed.target_agent_id === target.id;
+    }) || (rootRequestId !== null && !!db.prepare(
+      "SELECT 1 FROM work_requests WHERE root_request_id = ? AND target_agent_id = ? AND execution_kind IN ('implementation', 'revision') LIMIT 1"
+    ).get(rootRequestId, target.id));
+    if (reviewsOwnWork) {
+      return { status: 'rejected', code: 'reviewer_not_independent', reason: `${target.name} did the work under review; wake a different reviewer or ask the person.`, target };
     }
   }
   const bot = bots.getById(target.id) as Bot;
@@ -227,6 +273,9 @@ function createRequest(wake: Pick<Wake, 'id' | 'idempotency_key' | 'source_conve
       context_work_requests: envelope.contextWorkRequests ?? [],
       resume_work_request: envelope.resumeWorkRequest ?? null,
       limits: envelope.limits ?? {},
+      // NOT-472: the result returns to the requesting Agent in the
+      // source conversation.
+      return_to: { agent_id: wake.requester_agent_id, conversation_id: wake.source_conversation_id },
     },
     executionPolicy: outcome.policy,
     initialState: outcome.status === 'blocked' ? 'blocked' : 'queued',
@@ -264,7 +313,10 @@ function routeCandidate(candidate: WakeCandidate, source: Message, requesterId: 
   } else {
     envelope = candidate.validation.envelope;
     const problem = referenceProblem(envelope, source.conversation_id, parent);
-    outcome = problem ? { status: 'rejected', code: 'invalid_reference', reason: problem } : resolveOutcome(envelope, candidate.syntax);
+    const limit = problem ? null : limitProblem(parent);
+    outcome = problem ? { status: 'rejected', code: 'invalid_reference', reason: problem }
+      : limit ? { status: 'rejected', code: 'limit_exceeded', reason: limit }
+        : resolveOutcome(envelope, candidate.syntax, parent?.root_request_id ?? null);
   }
 
   const request = envelope && routable(outcome)
@@ -341,7 +393,7 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     `);
 
     if (wake.status === 'unavailable') {
-      const outcome = resolveOutcome(envelope, wake.syntax);
+      const outcome = resolveOutcome(envelope, wake.syntax, wake.root_request_id);
       if (!routable(outcome)) {
         // Still unresolved: keep it visible with the current reason. A
         // rejection is terminal, so status and reason never disagree.
@@ -360,7 +412,7 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     const request = engine.getWorkRequest(wake.work_request_id as string) as WorkRequest;
     const stored = bots.getById(request.target_agent_id) as Bot | undefined;
     if (!stored || request.state !== 'blocked') return routed(wake, false);
-    const outcome = checkTarget(envelope, wake.syntax, { id: stored.id, name: stored.name });
+    const outcome = checkTarget(envelope, wake.syntax, { id: stored.id, name: stored.name }, request.root_request_id);
     if (outcome.status === 'blocked' && (outcome.code !== wake.reason_code || outcome.reason !== wake.reason)) {
       update.run('blocked', outcome.code, outcome.reason, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);
       return routed(getWake(wake.id) as Wake, false);
