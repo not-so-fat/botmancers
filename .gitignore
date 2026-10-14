@@ -9,3 +9,4 @@ botmancers.db-wal
 .temporal
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+.agent-dealer-visual-qa

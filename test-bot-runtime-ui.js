@@ -24,6 +24,9 @@
 //     control, then the optional working directory, in every deck state;
 //     Config saves agent / deck / workdir independently for Hermes and
 //     Cursor; no user-facing source calls Agent Deck a runtime.
+// (7) NOT-447: New Agent is one named modal dialog outside an inert page,
+//     anchored under New with a 16px safe inset, and Tab/Shift+Tab wrap
+//     inside it; Escape closes and focus returns to New.
 // Components render through react-dom/server. Self-contained: isolated
 // SQLite file, mocked upstream fetch, injected process seam. No dev
 // server, no API key, no network.
@@ -594,10 +597,53 @@ async function hierarchySection() {
   assert(offenders.length === 0, 'copy: no UI source renders "Runtime: <anything>" or a Runtime label/string');
   const pageSource = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
   const configSource = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
-  assert(/>\s*New Agent\s*<\/h2>/.test(pageSource) && has(pageSource, 'aria-label="New Agent"') && !/New Group|aria-pressed=\{kind/.test(pageSource), 'copy: the modal titles the one agent form "New Agent" with no kind switch');
+  assert(/>\s*New Agent\s*<\/h2>/.test(pageSource) && !has(pageSource, 'aria-label="New Agent"') && !/New Group|aria-pressed=\{kind/.test(pageSource), 'copy: the modal titles the one agent form "New Agent" (named once, by the dialog) with no kind switch');
   assert(!/>\s*Bot\s*</.test(pageSource) && !has(pageSource, 'Rename Bot') && !has(pageSource, 'Failed to create bot') && !has(pageSource, "|| 'Bot'"), 'copy: no "Bot" label in the roster/modal');
   assert(has(configSource, 'Agent configuration') && has(configSource, 'Agent not found.') && !/Bot (configuration|not found)/.test(configSource), 'copy: Config page says Agent, not Bot');
   assert(ui.SELECT_DECK_ERROR === 'Select an Agent Deck for this agent.' && ui.DECK_PLACEHOLDER === 'Select an Agent Deck…', 'copy: validation and placeholder name the Agent Deck');
+}
+
+function dialogSection() {
+  log('\n(7) NOT-447 New Agent dialog shell');
+  const dialog = jiti('./lib/new-agent-dialog.ts');
+  const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
+  const shell = page.slice(page.indexOf('function BotModal('));
+  const dialogs = shell.match(/role="dialog"/g) || [];
+  assert(dialogs.length === 1 && has(shell, 'aria-modal="true"') && has(shell, 'aria-labelledby="new-agent-title"')
+    && /<h2 id="new-agent-title"[^>]*>\s*New Agent\s*<\/h2>/.test(shell), 'one role="dialog" aria-modal="true" named by its "New Agent" heading');
+  assert(/inert=\{showBotModal\}/.test(page) && page.indexOf('<BotModal') > page.indexOf('inert={showBotModal}')
+    && /\{showBotModal && \(\s*<BotModal/.test(page), 'the page is inert while the dialog renders outside it');
+  assert(/ref=\{newRef\}[^>]*aria-haspopup="dialog"/.test(page) && /newRef\.current\?\.focus\(\)/.test(page), 'closing returns focus to New');
+  assert(/nameRef\.current\?\.focus\(\)/.test(shell) && has(shell, 'ref={nameRef} id="bot-name"'), 'opening focuses the Name field');
+  assert(/e\.key !== 'Escape'[^]*?onClose\(\)/.test(shell), 'Escape closes the dialog');
+  assert(!/group|member-picks|setKind/i.test(shell), 'the dialog has no Group tab, member picker, or kind switch');
+
+  const desktop = dialog.newAgentDialogPlacement({ left: 16, bottom: 110 }, { width: 1280, height: 720 });
+  log(`  placement 1280x720 under New(16,110): ${JSON.stringify(desktop)}`);
+  assert(desktop.top === 118 && desktop.left === 16 && desktop.maxHeight === 720 - 118 - 16, 'desktop: anchored 8px under New, body capped to the 16px bottom inset');
+  const narrow = dialog.newAgentDialogPlacement({ left: 16, bottom: 110 }, { width: 390, height: 844 });
+  log(`  placement 390x844: ${JSON.stringify(narrow)}`);
+  assert(narrow.left === 16 && narrow.left + Math.min(dialog.DIALOG_WIDTH, 390 - 32) === 390 - 16 && narrow.top + narrow.maxHeight === 844 - 16, 'narrow: 16px inset on both sides and the bottom');
+  const tiny = dialog.newAgentDialogPlacement({ left: 16, bottom: 110 }, { width: 360, height: 640 });
+  log(`  placement 360x640: ${JSON.stringify(tiny)}`);
+  assert(tiny.left === 16 && tiny.left + Math.min(dialog.DIALOG_WIDTH, 360 - 32) === 360 - 16, 'sub-390: the dialog shrinks to keep the 16px inset on both sides');
+  const css = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
+  const dialogRule = (css.match(/\.form-card\.new-agent-dialog\s*\{([^}]*)\}/) || [])[1] || '';
+  assert(/width:\s*min\(358px,\s*calc\(100vw - 32px\)\)/.test(dialogRule) && /max-width:\s*none/.test(dialogRule),
+    'CSS: the dialog width rule outranks .form-card (width:100%, max-width:358px) so it shrinks with the viewport');
+  const short = dialog.newAgentDialogPlacement({ left: 16, bottom: 110 }, { width: 1280, height: 420 });
+  log(`  placement 1280x420: ${JSON.stringify(short)}`);
+  assert(short.top === 16 && short.maxHeight === 420 - 32, 'short: moves to the top inset rather than squeezing under New');
+  const farRight = dialog.newAgentDialogPlacement({ left: 1200, bottom: 60 }, { width: 1280, height: 720 });
+  assert(farRight.left === 1280 - 16 - 358, 'an anchor near the right edge is clamped inside the inset');
+  assert(JSON.stringify(dialog.newAgentDialogPlacement(null, { width: 390, height: 844 })) === JSON.stringify({ top: 16, left: 16, maxHeight: 812 }), 'no anchor: falls back to the inset corner');
+
+  const order = ['Name', 'Hermes', 'Agent Deck', 'Working directory', 'Cancel', 'Create'];
+  const wrap = dialog.wrapFocusTarget;
+  assert(wrap(order, 'Create', false) === 'Name' && wrap(order, 'Name', true) === 'Create', 'Tab from the last control wraps to Name; Shift+Tab from Name wraps to the last');
+  assert(wrap(order, 'Hermes', false) === null && wrap(order, 'Cancel', true) === null, 'Tab inside the sequence is left to the browser');
+  assert(wrap(order, null, false) === 'Name' && wrap(order, 'outside', true) === 'Create', 'focus outside the dialog is pulled back in');
+  assert(wrap([], 'Name', false) === null, 'no focusable controls: no wrap');
 }
 
 async function main() {
@@ -609,6 +655,7 @@ async function main() {
   await rosterConfigSection(created);
   await traceSection();
   await hierarchySection();
+  dialogSection();
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }

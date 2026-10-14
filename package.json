@@ -35,6 +35,7 @@
     "test:agent-names": "node test-agent-names.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js",
     "test:bot-runtime-ui": "node test-bot-runtime-ui.js",
+    "proof:new-agent-dialog": "node scripts/new-agent-dialog-proof.js",
     "test:brand-hierarchy": "node test-brand-hierarchy.js",
     "test:text-contrast": "node test-text-contrast.js",
     "test:config-layout": "node test-config-layout.js",

@@ -23,6 +23,7 @@ import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import ManageAgentsPanel from '@/app/components/ManageAgentsPanel';
 import { deletedStatusLine, type DeleteAgentRef } from '@/lib/bot-deletion';
+import { DIALOG_FOCUSABLE, newAgentDialogPlacement, wrapFocusTarget, type DialogPlacement } from '@/lib/new-agent-dialog';
 import ThreadState from '@/app/components/ThreadState';
 import { threadView, type ThreadLoad } from '@/lib/thread-state';
 
@@ -193,6 +194,7 @@ export default function Home() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const attachInputRef = useRef<HTMLInputElement>(null);
   const [showBotModal, setShowBotModal] = useState(false);
+  const newRef = useRef<HTMLButtonElement>(null);
   const [pictureOpen, setPictureOpen] = useState(false);
   const [avatarStep, setAvatarStep] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -678,8 +680,14 @@ export default function Home() {
   const title = (activeConversation?.details.title || '').trim();
   const nameColor = activeConversation?.details.color;
 
+  const closeBotModal = () => {
+    setShowBotModal(false);
+    requestAnimationFrame(() => newRef.current?.focus());
+  };
+
   return (
-    <div className="field">
+    <>
+    <div className="field" inert={showBotModal}>
       <aside className="rail">
         <div className="brand">
           <div className={logoDrop ? 'logo-shape is-settling' : 'logo-shape'}>
@@ -693,7 +701,13 @@ export default function Home() {
           <div className="logo-word">botmancers</div>
         </div>
         <div className="bar">
-          <button type="button" className="add-btn" onClick={() => setShowBotModal(true)}>
+          <button
+            ref={newRef}
+            type="button"
+            className="add-btn"
+            aria-haspopup="dialog"
+            onClick={() => setShowBotModal(true)}
+          >
             New
           </button>
           {noBots ? null : (
@@ -1202,19 +1216,23 @@ export default function Home() {
           <button type="button" role="menuitem" onClick={e => { e.stopPropagation(); setRowMenu(null); setDeleteAsk(rowMenu.bot); }}>Delete agent…</button>
         </div>
       ) : null}
-
-      {showBotModal && (
-        <BotModal
-          deckState={deckState}
-          onRetryDecks={retryDecks}
-          onClose={() => setShowBotModal(false)}
-          onCreated={() => {
-            loadBots();
-            setShowBotModal(false);
-          }}
-        />
-      )}
     </div>
+
+    {/* NOT-447: the dialog sits outside the inert page so only it stays
+        reachable by keyboard and assistive technology. */}
+    {showBotModal && (
+      <BotModal
+        anchorRef={newRef}
+        deckState={deckState}
+        onRetryDecks={retryDecks}
+        onClose={closeBotModal}
+        onCreated={() => {
+          loadBots();
+          closeBotModal();
+        }}
+      />
+    )}
+    </>
   );
 }
 
@@ -1375,7 +1393,8 @@ function FileLinks({ names }: { names: string[] }) {
 }
 
 
-function BotModal({ deckState, onRetryDecks, onClose, onCreated }: {
+function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
   deckState: DeckListState;
   onRetryDecks: () => void;
   onClose: () => void;
@@ -1384,10 +1403,50 @@ function BotModal({ deckState, onRetryDecks, onClose, onCreated }: {
   const [name, setName] = useState('');
   const [form, setForm] = useState<RuntimeFormInput>(DEFAULT_RUNTIME_FORM);
   const [botError, setBotError] = useState('');
+  const [placement, setPlacement] = useState<DialogPlacement | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     onRetryDecks();
   }, [onRetryDecks]);
+
+  // Anchor under New; re-place when the viewport changes.
+  useLayoutEffect(() => {
+    const place = () => {
+      const rect = anchorRef.current?.getBoundingClientRect();
+      setPlacement(newAgentDialogPlacement(
+        rect ? { left: rect.left, bottom: rect.bottom } : null,
+        { width: window.innerWidth, height: window.innerHeight },
+      ));
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [anchorRef]);
+
+  useEffect(() => {
+    nameRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
+  const containTab = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab' || !dialogRef.current) return;
+    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE));
+    const target = wrapFocusTarget(focusable, document.activeElement as HTMLElement | null, e.shiftKey);
+    if (!target) return;
+    e.preventDefault();
+    target.focus();
+  };
 
   const view = runtimeFormView(form, deckState);
 
@@ -1418,15 +1477,22 @@ function BotModal({ deckState, onRetryDecks, onClose, onCreated }: {
   };
 
   return (
-    <div className="modal-scrim">
-      <div className="new-forms">
-        <div className="form-card">
+    <div className="modal-scrim new-agent-scrim" onKeyDown={containTab}>
+      <div
+        ref={dialogRef}
+        className="form-card new-agent-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-agent-title"
+        style={placement ?? undefined}
+      >
         <div className="kind-row">
-          <h2 className="kind-word new-agent-title">New Agent</h2>
+          <h2 id="new-agent-title" className="kind-word new-agent-title">New Agent</h2>
         </div>
-        <form onSubmit={handleBot} className="bot-form" aria-label="New Agent">
+        <form onSubmit={handleBot} className="bot-form">
+          <div className="new-agent-body">
           <label htmlFor="bot-name">Name</label>
-          <input id="bot-name" type="text" value={name} onChange={e => setName(e.target.value)} required />
+          <input ref={nameRef} id="bot-name" type="text" value={name} onChange={e => setName(e.target.value)} required />
           <AgentSection
             idPrefix="bot"
             variant="modal"
@@ -1438,6 +1504,7 @@ function BotModal({ deckState, onRetryDecks, onClose, onCreated }: {
             workdirHint={NEW_BOT_WORKDIR_HINT}
           />
           {botError ? <p className="form-error" role="alert">{botError}</p> : null}
+          </div>
           <div className="form-actions">
             <button type="button" className="cancel-btn" onClick={onClose}>
               Cancel
@@ -1447,7 +1514,6 @@ function BotModal({ deckState, onRetryDecks, onClose, onCreated }: {
             </button>
           </div>
         </form>
-        </div>
       </div>
     </div>
   );
