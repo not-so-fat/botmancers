@@ -35,7 +35,8 @@
     "test:bot-runtime-ui": "node test-bot-runtime-ui.js",
     "test:brand-hierarchy": "node test-brand-hierarchy.js",
     "test:engine-store": "node test-engine-store.js",
-    "test:conversation-intake": "node test-conversation-intake.js"
+    "test:conversation-intake": "node test-conversation-intake.js",
+    "test:wake-router": "node test-wake-router.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
