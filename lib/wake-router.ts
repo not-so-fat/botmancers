@@ -309,8 +309,10 @@ export function routeAgentWakes(input: RouteWakesInput): RoutedWake[] {
 }
 
 // Recovery from durable state. An unavailable Wake re-resolves its
-// target and, once found, creates its Work Request; a blocked Wake whose
-// target can now launch moves its request from blocked to queued.
+// target and, once found, creates its Work Request; if the name now
+// resolves to something no Wake may target, it becomes rejected. A
+// blocked Wake whose target can now launch moves its request from blocked
+// to queued; one that stays blocked records the current reason.
 // Accepted and rejected Wakes are returned unchanged.
 export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake {
   return db.transaction((): RoutedWake => {
@@ -327,11 +329,10 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     if (wake.status === 'unavailable') {
       const outcome = resolveOutcome(envelope);
       if (!routable(outcome)) {
-        // Still unresolved (or no longer resolvable): keep it visible with
-        // the current reason; a rejection here stays retryable data, not a
-        // silent drop.
-        if (outcome.code !== wake.reason_code || outcome.reason !== wake.reason) {
-          update.run(wake.status, outcome.code, outcome.reason, null, null, null, wake.root_request_id, now, wake.id);
+        // Still unresolved: keep it visible with the current reason. A
+        // rejection is terminal, so status and reason never disagree.
+        if (outcome.status !== wake.status || outcome.code !== wake.reason_code || outcome.reason !== wake.reason) {
+          update.run(outcome.status, outcome.code, outcome.reason, null, null, null, wake.root_request_id, now, wake.id);
         }
         return routed(getWake(wake.id) as Wake, false);
       }
@@ -346,6 +347,10 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     const stored = bots.getById(request.target_agent_id) as Bot | undefined;
     if (!stored || request.state !== 'blocked') return routed(wake, false);
     const outcome = checkTarget(envelope, { id: stored.id, name: stored.name });
+    if (outcome.status === 'blocked' && (outcome.code !== wake.reason_code || outcome.reason !== wake.reason)) {
+      update.run('blocked', outcome.code, outcome.reason, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);
+      return routed(getWake(wake.id) as Wake, false);
+    }
     if (outcome.status !== 'accepted') return routed(wake, false);
     engine.transitionWorkRequest(request.id, { from: 'blocked', to: 'queued', reason: 'target_available', now });
     update.run('accepted', null, null, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);

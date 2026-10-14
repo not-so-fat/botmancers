@@ -665,15 +665,16 @@ const MIGRATIONS: Migration[] = [
           SELECT RAISE(ABORT, 'wakes source, payload, and lineage are immutable');
         END;
 
-        -- Recovery only moves forward: an unavailable target may resolve,
-        -- a blocked request may become accepted. The resolved target, Work
+        -- Recovery only moves forward: an unavailable target may resolve
+        -- or turn out unroutable (rejected), a blocked request may become
+        -- accepted. The resolved target, Work
         -- Request, and root request (for a Wake without a parent, its own
         -- request) are set once.
         CREATE TRIGGER trg_wakes_recovery BEFORE UPDATE ON wakes
         BEGIN
           SELECT RAISE(ABORT, 'invalid wakes status change')
             WHERE NEW.status <> OLD.status
-              AND (OLD.status || '>' || NEW.status) NOT IN ('unavailable>accepted', 'unavailable>blocked', 'blocked>accepted');
+              AND (OLD.status || '>' || NEW.status) NOT IN ('unavailable>accepted', 'unavailable>blocked', 'unavailable>rejected', 'blocked>accepted');
           SELECT RAISE(ABORT, 'wakes target and work request are set once')
             WHERE (OLD.target_agent_id IS NOT NULL AND NEW.target_agent_id IS NOT OLD.target_agent_id)
               OR (OLD.target_name_snapshot IS NOT NULL AND NEW.target_name_snapshot IS NOT OLD.target_name_snapshot)

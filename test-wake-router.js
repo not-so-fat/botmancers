@@ -199,6 +199,13 @@ function runMain() {
   const configRecovered = router.retryWake(blockedConfig.id);
   assert(configRecovered.wake.status === 'accepted' && configRecovered.request.state === 'queued', 'configured target recovers');
   assert(router.retryWake(groupWake.id).wake.status === 'rejected', 'rejected Wakes are not retried');
+  const mLate = messages.create(conversation.id, 'bot', block({ version: 1, target: 'Later', executionKind: 'conversation', objective: 'Anyone?' }), tank.id);
+  const lateWake = router.routeAgentWakes({ sourceEventId: mLate.id, parentRequestId: root.id })[0].wake;
+  assert(lateWake.status === 'unavailable' && lateWake.reason_code === 'target_not_found', 'Later starts unavailable');
+  groups.create('Later', [dev.id]);
+  const lateRetry = router.retryWake(lateWake.id);
+  assert(!lateRetry.created && lateRetry.wake.status === 'rejected' && lateRetry.wake.reason_code === 'target_is_group' && lateRetry.wake.work_request_id === null, 'unavailable Wake whose name becomes a Group is rejected, not left unavailable');
+  assert(router.retryWake(lateWake.id).wake.status === 'rejected', 'rejected after retry stays rejected');
 
   console.log('Blocked retry checks the stored target, not the name');
   const idle = bots.create({ name: 'Idle', title: 'Idle', description: 'No deck yet.', agent: 'cursor' });
@@ -212,7 +219,9 @@ function runMain() {
   assert(renamedRetry.wake.target_agent_id === idle.id && renamedRetry.request.target_agent_id === idle.id && impostor.id !== idle.id, 'Wake and request keep the stored target');
   router.setWakeAvailabilityProbe(bot => bot.id === idle.id ? { available: false, reason: 'Idle is restarting.' } : { available: true });
   bots.updateAgentSelection(idle.id, { deck_id: 'deck-idle' });
-  assert(router.retryWake(idleWake.id).request.state === 'blocked', 'stored target configured but unavailable stays blocked');
+  const idleStillBlocked = router.retryWake(idleWake.id);
+  assert(idleStillBlocked.request.state === 'blocked', 'stored target configured but unavailable stays blocked');
+  assert(idleStillBlocked.wake.status === 'blocked' && idleStillBlocked.wake.reason_code === 'target_unavailable' && idleStillBlocked.wake.reason === 'Idle is restarting.', 'still-blocked retry records the current reason');
   router.setWakeAvailabilityProbe(available);
   const idleRecovered = router.retryWake(idleWake.id);
   assert(idleRecovered.wake.status === 'accepted' && idleRecovered.request.state === 'queued' && idleRecovered.request.target_agent_id === idle.id, 'stored target recovers under its new name');
