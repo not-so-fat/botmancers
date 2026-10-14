@@ -273,8 +273,11 @@ async function run() {
   check(network.some(url => url.includes('/api/bots')) && groupHits.length === 0, 'browser requested agents and never /api/groups or ?groupId=');
 
   cdp.close();
-  chrome.proc.kill();
-  fs.rmSync(chrome.profile, { recursive: true, force: true });
+  await new Promise(resolve => {
+    chrome.proc.once('exit', resolve);
+    chrome.proc.kill();
+  });
+  fs.rmSync(chrome.profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
   const after = groupDigest();
   console.log(`group digest after:  sha256=${after.hash} ${JSON.stringify(after.counts)}`);
