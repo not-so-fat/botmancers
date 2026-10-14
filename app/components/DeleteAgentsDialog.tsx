@@ -6,7 +6,6 @@ import {
   DELETE_REMOVES_COPY,
   blockedReasonCopy,
   deleteConfirmLabel,
-  groupImpactLine,
   type DeleteAgentRef,
   type DeletePreview,
 } from '@/lib/bot-deletion';
@@ -143,16 +142,6 @@ export default function DeleteAgentsDialog({ ids, onCancel, onDeleted }: {
               </div>
             ) : null}
             <p className="delete-copy">{DELETE_REMOVES_COPY}</p>
-            <div className="delete-groups">
-              <p className="delete-label">Affected groups</p>
-              {preview.groups.length === 0 ? (
-                <p className="delete-copy">No groups are affected.</p>
-              ) : (
-                <ul aria-label="Affected groups">
-                  {preview.groups.map(group => <li key={group.id}>{groupImpactLine(group)}</li>)}
-                </ul>
-              )}
-            </div>
             <p className="delete-copy delete-keeps">{DELETE_KEEPS_COPY}</p>
           </>
         ) : null}

@@ -277,7 +277,7 @@ async function main() {
   assert((page.match(/<DeleteAgentsDialog/g) || []).length >= 1, 'row menu Delete routes through DeleteAgentsDialog');
   const panel = fs.readFileSync(path.join(ROOT, 'app', 'components', 'ManageAgentsPanel.tsx'), 'utf8');
   assert(/<DeleteAgentsDialog/.test(panel) && /Select all shown/.test(panel) && /Delete selected/.test(panel), 'Manage agents panel uses DeleteAgentsDialog with Select all shown and Delete selected');
-  assert(/delete-preview/.test(dialog) && /DELETE_REMOVES_COPY/.test(dialog) && /DELETE_KEEPS_COPY/.test(dialog) && /groupImpactLine/.test(dialog), 'dialog renders the shared preview and permanent-data copy');
+  assert(/delete-preview/.test(dialog) && /DELETE_REMOVES_COPY/.test(dialog) && /DELETE_KEEPS_COPY/.test(dialog) && !/group/i.test(dialog), 'dialog renders the shared preview and permanent-data copy with no group impact (NOT-461)');
   console.log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }

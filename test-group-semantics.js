@@ -7,9 +7,11 @@
 // server, no API key, no network.
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const DB_PATH = path.join(os.tmpdir(), `botmancers-group-semantics-test-${process.pid}.db`);
 for (const suffix of ['', '-shm', '-wal']) {
@@ -25,6 +27,8 @@ const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
 const groupsRoute = jiti('./app/api/groups/route.ts');
 const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
+const botsRoute = jiti('./app/api/bots/route.ts');
+const conversationsRoute = jiti('./app/api/conversations/route.ts');
 
 const { bots, conversations, messages, queue, groups } = db;
 
@@ -83,6 +87,40 @@ async function bodyJson(res) {
   } catch {
     return null;
   }
+}
+
+function patchGroups(body) {
+  return groupsRoute.PATCH(new Request('http://localhost/test', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+}
+
+function patchBots(body) {
+  return botsRoute.PATCH(new Request('http://localhost/test', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+}
+
+// NOT-461: every stored group row plus the records its conversations own.
+function groupDigest() {
+  const raw = db.default;
+  const groupConvs = "SELECT id FROM conversations WHERE type = 'group'";
+  const tables = {
+    groups: raw.prepare('SELECT * FROM groups ORDER BY id').all(),
+    group_members: raw.prepare('SELECT * FROM group_members ORDER BY group_id, bot_id').all(),
+    conversations: raw.prepare("SELECT * FROM conversations WHERE type = 'group' ORDER BY id").all(),
+    messages: raw.prepare(`SELECT * FROM messages WHERE conversation_id IN (${groupConvs}) ORDER BY id`).all(),
+    conversation_participants: raw.prepare(
+      `SELECT * FROM conversation_participants WHERE conversation_id IN (${groupConvs}) ORDER BY conversation_id, participant_kind, participant_id`
+    ).all(),
+  };
+  const counts = Object.fromEntries(Object.entries(tables).map(([name, rows]) => [name, rows.length]));
+  const hash = crypto.createHash('sha256').update(JSON.stringify(tables)).digest('hex');
+  return { hash, counts, tables };
 }
 
 function handoffIdsOf(msg) {
@@ -265,10 +303,9 @@ async function main() {
   assert(fallbackRes.status === 200 && fallbackGroup.owner_bot_id === sizeBots[0].id, 'owner outside members falls back to the first pick');
   const unknownRes = await postGroups({ name: 'Unknown', botIds: [sizeBots[0].id, 'missing-bot'] });
   assert(unknownRes.status === 400, `unknown botId rejected with 400 (got ${unknownRes.status})`);
+  // NOT-461: the UI no longer creates groups; the API keeps the 2-6 rule.
   const pageSource = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
-  assert(pageSource.includes('Pick 2 to 6 bots.'), 'UI group tab shows the Pick 2 to 6 bots. error line');
-  assert(pageSource.includes('picked.length < 2 || picked.length > 6'), 'UI group tab enforces 2 to 6 picks');
-  assert(pageSource.includes('ownerId: picked[0].id'), 'UI group tab sends the first pick as owner');
+  assert(!pageSource.includes('Pick 2 to 6 bots.') && !pageSource.includes('/api/groups'), 'UI has no group tab or group create call');
   if (failures === caseFailures) log('PASS: Case 4: group size and owner validation');
 
   // Case 5: delegation depth stops an in-group handoff loop; Stop stops a
@@ -444,6 +481,82 @@ async function main() {
   ).all();
   assert(undersized.length === 0, 'no surviving group has fewer than two members');
   if (failures === caseFailures) log('PASS: Case 7: deletion keeps groups at two or more members with a deterministic owner');
+
+  // Case 8 (NOT-461): the agent-only UI hides stored groups without
+  // touching them, and the /api/groups contract is unchanged.
+  log('\nCase 8: stored groups survive schema init and an agent-only UI session byte-for-byte');
+  caseFailures = failures;
+  const keepA = bots.create({ deck_id: 'deck-test', name: 'KeepA', title: '', description: 'Keeps.' });
+  const keepB = bots.create({ deck_id: 'deck-test', name: 'KeepB', title: '', description: 'Keeps.' });
+  const createRes = await postGroups({ name: 'Legacy Crew', botIds: [keepA.id, keepB.id], ownerId: keepB.id });
+  const legacy = await bodyJson(createRes);
+  assert(createRes.status === 200 && legacy.owner_bot_id === keepB.id && legacy.members.length === 2, 'POST /api/groups still creates a group with owner and members');
+  const renameRes = await patchGroups({ id: legacy.id, name: 'Legacy Crew Renamed' });
+  assert(renameRes.status === 200 && (await bodyJson(renameRes)).name === 'Legacy Crew Renamed', 'PATCH /api/groups still renames');
+  const listed = await bodyJson(await groupsRoute.GET());
+  assert(Array.isArray(listed) && listed.some(g => g.id === legacy.id && g.members.length === 2), 'GET /api/groups still lists groups with members');
+  const legacyConvRes = await conversationsRoute.GET(new Request(`http://localhost/api/conversations?groupId=${legacy.id}`));
+  const legacyConv = await bodyJson(legacyConvRes);
+  assert(legacyConvRes.status === 200 && legacyConv.type === 'group', 'GET /api/conversations?groupId= still resolves the group conversation');
+  const legacyPost = await postMessage(legacyConv.id, { content: 'legacy hello', idempotencyKey: crypto.randomUUID() });
+  assert(legacyPost.status === 200 || legacyPost.status === 201, `group message POST still accepted (got ${legacyPost.status})`);
+  // Settle the replies earlier cases and this post queued so the digest
+  // captures stored data only.
+  await drain();
+  await sleep(50);
+  await drain();
+
+  const before = groupDigest();
+  log(`  before: sha256=${before.hash} ${JSON.stringify(before.counts)}`);
+  assert(before.counts.groups > 0 && before.counts.group_members > 0 && before.counts.messages > 0 && before.counts.conversation_participants > 0, 'fixture holds groups, memberships, messages, and participants');
+
+  execFileSync(process.execPath, ['-e', "require('jiti').createJiti(process.cwd() + '/x.js', { alias: { '@': process.cwd() } })('./lib/db.ts')"], {
+    cwd: ROOT,
+    env: { ...process.env, BOTMANCERS_DB_PATH: DB_PATH, BOTMANCERS_NO_AUTOPROCESS: '1' },
+    stdio: 'ignore',
+  });
+  const afterInit = groupDigest();
+  log(`  after schema init: sha256=${afterInit.hash}`);
+  assert(afterInit.hash === before.hash, 'schema initialization leaves group records byte-for-byte unchanged');
+
+  // The calls app/page.tsx makes in an agent-only session; the group
+  // digest is rechecked after each one.
+  const unchanged = label => {
+    const now = groupDigest();
+    if (!assert(now.hash === before.hash, `${label}: group records byte-for-byte unchanged`)) {
+      for (const name of Object.keys(now.tables)) {
+        const was = new Set(before.tables[name].map(row => JSON.stringify(row)));
+        for (const row of now.tables[name]) if (!was.has(JSON.stringify(row))) log(`    changed ${name}: ${JSON.stringify(row).slice(0, 300)}`);
+      }
+    }
+  };
+  const roster = await bodyJson(await botsRoute.GET());
+  assert(Array.isArray(roster) && roster.some(b => b.id === keepA.id), 'GET /api/bots lists agents');
+  unchanged('GET /api/bots');
+  const agentConv = await bodyJson(await conversationsRoute.GET(new Request(`http://localhost/api/conversations?botId=${keepA.id}`)));
+  unchanged('GET /api/conversations?botId=');
+  const agentPost = await postMessage(agentConv.id, { content: '@KeepA hello', mentionedBotId: keepA.id, idempotencyKey: crypto.randomUUID() });
+  assert(agentPost.status === 200 || agentPost.status === 201, `agent message POST accepted (got ${agentPost.status})`);
+  unchanged('POST agent message');
+  await drain();
+  await sleep(20);
+  unchanged('agent turn processed');
+  await messagesRoute.GET(new Request('http://localhost/test'), { params: Promise.resolve({ id: agentConv.id }) });
+  unchanged('GET agent messages');
+  assert((await patchBots({ id: keepA.id, pinned: 1 })).status === 200, 'pin agent');
+  assert((await patchBots({ id: keepA.id, hidden: 1 })).status === 200 && (await patchBots({ id: keepA.id, hidden: 0 })).status === 200, 'hide and unhide agent');
+  assert((await patchBots({ id: keepA.id, unread: 1 })).status === 200, 'mark agent unread');
+  unchanged('pin, hide, unhide, mark unread');
+  assert((await patchBots({ id: keepA.id, name: 'KeepAlpha' })).status === 200, 'rename agent');
+  unchanged('rename agent');
+  const createdAgent = await botsRoute.POST(new Request('http://localhost/api/bots', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'KeepNew', deck_id: 'deck-test' }),
+  }));
+  assert(createdAgent.status === 200 || createdAgent.status === 201, `create agent (got ${createdAgent.status})`);
+  unchanged('create agent');
+  if (failures === caseFailures) log('PASS: Case 8: stored groups survive schema init and an agent-only UI session byte-for-byte');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

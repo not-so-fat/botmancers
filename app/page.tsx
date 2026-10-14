@@ -61,24 +61,9 @@ interface Message {
   created_at: number;
 }
 
-interface GroupRow {
-  id: string;
-  name: string;
-  owner_bot_id?: string | null;
-  members: Bot[];
-}
-
-function groupLabel(group: GroupRow) {
-  const owner = group.members.find(member => member.id === group.owner_bot_id);
-  if (!owner) return group.name;
-  if (group.name.startsWith(owner.name)) return '@' + group.name;
-  return group.name + ' @' + owner.name;
-}
-
 interface Conversation {
   id: string;
-  type: 'bot' | 'group';
-  details: Bot | { id: string; name: string };
+  details: Bot;
 }
 
 const HEARTBEAT_STALE_MS = 15000;
@@ -193,7 +178,6 @@ function messagePicture(content: string) {
 export default function Home() {
   const [bots, setBots] = useState<Bot[]>([]);
   const [botsLoaded, setBotsLoaded] = useState(false);
-  const [groups, setGroups] = useState<GroupRow[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -209,8 +193,6 @@ export default function Home() {
   const [avatarStep, setAvatarStep] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [rowName, setRowName] = useState('');
-  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
-  const [groupName, setGroupName] = useState('');
   const [revealed, setRevealed] = useState<Record<string, Message[]>>({});
   const revealing = useRef<Record<string, boolean>>({});
   const [deleteAsk, setDeleteAsk] = useState<Bot | null>(null);
@@ -253,7 +235,6 @@ export default function Home() {
     void loadBots().then(() => {
       if (deleted > 0) setRosterStatus(deletedStatusLine(deleted));
     });
-    loadGroups();
     const botsTimer = setInterval(loadBots, 2000);
     const clockTimer = setInterval(() => setNow(Date.now()), 1000);
     return () => {
@@ -288,10 +269,10 @@ export default function Home() {
     }
   }, [activeConversation]);
 
-  const openThreadBot = activeConversation?.type === 'bot'
-    ? (bots.find(bot => bot.id === activeConversation.details.id) ?? activeConversation.details as Bot)
+  const openThreadBot = activeConversation
+    ? (bots.find(bot => bot.id === activeConversation.details.id) ?? activeConversation.details)
     : undefined;
-  const computerOpen = !!activeConversation && activeConversation.type === 'bot' && isChiefOfStaff(openThreadBot);
+  const computerOpen = !!activeConversation && isChiefOfStaff(openThreadBot);
   const computerHtml = computerOpen ? computerPageHtml(messages) : null;
 
   useLayoutEffect(() => {
@@ -353,13 +334,6 @@ export default function Home() {
     setBotsLoaded(true);
   }
 
-  async function loadGroups(): Promise<GroupRow[]> {
-    const res = await fetch('/api/groups');
-    const data = await res.json();
-    setGroups(data);
-    return Array.isArray(data) ? data : [];
-  }
-
   async function loadMessages() {
     if (!activeConversation) return;
     const res = await fetch(`/api/conversations/${activeConversation.id}/messages`);
@@ -411,26 +385,6 @@ export default function Home() {
     }
   };
 
-  const renameGroup = async (group: GroupRow) => {
-    const name = groupName.trim();
-    setEditingGroupId(null);
-    if (!name || name === group.name) return;
-    const res = await fetch('/api/groups', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: group.id, name }),
-    });
-    if (!res.ok) return;
-    const saved = await res.json();
-    setGroups(current => current.map(item => item.id === saved.id ? { ...item, name: saved.name } : item));
-    if (activeConversation?.type === 'group' && activeConversation.details.id === saved.id) {
-      setActiveConversation({
-        ...activeConversation,
-        details: { ...activeConversation.details, name: saved.name },
-      });
-    }
-  };
-
   async function openBot(id: string) {
     const bot = bots.find(b => b.id === id);
     if (!bot) return;
@@ -442,13 +396,12 @@ export default function Home() {
     setAvatarStep(false);
     setActiveConversation({
       id: conv.id,
-      type: 'bot',
       details: bot,
     });
   }
 
   const setAvatar = async () => {
-    if (!activeConversation || activeConversation.type !== 'bot') return;
+    if (!activeConversation) return;
     const file = avatarFileRef.current?.files?.[0];
     if (!file) return;
     const data = await new Promise<string>((resolve, reject) => {
@@ -468,12 +421,12 @@ export default function Home() {
     setBots(current => current.map(bot => bot.id === saved.id ? { ...bot, avatar: saved.avatar } : bot));
     setActiveConversation({
       ...activeConversation,
-      details: { ...(activeConversation.details as Bot), avatar: saved.avatar },
+      details: { ...activeConversation.details, avatar: saved.avatar },
     });
   };
 
   const storeGallery = async (file: File | undefined) => {
-    if (!file || !activeConversation || activeConversation.type !== 'bot') return;
+    if (!file || !activeConversation) return;
     const data = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result || ''));
@@ -491,12 +444,12 @@ export default function Home() {
     setBots(current => current.map(bot => bot.id === saved.id ? { ...bot, avatar: saved.avatar } : bot));
     setActiveConversation({
       ...activeConversation,
-      details: { ...(activeConversation.details as Bot), avatar: saved.avatar },
+      details: { ...activeConversation.details, avatar: saved.avatar },
     });
   };
 
   const removePhoto = async () => {
-    if (!activeConversation || activeConversation.type !== 'bot') return;
+    if (!activeConversation) return;
     const res = await fetch('/api/bots', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -507,7 +460,7 @@ export default function Home() {
     setBots(current => current.map(bot => bot.id === saved.id ? { ...bot, avatar: saved.avatar || '' } : bot));
     setActiveConversation({
       ...activeConversation,
-      details: { ...(activeConversation.details as Bot), avatar: saved.avatar || '' },
+      details: { ...activeConversation.details, avatar: saved.avatar || '' },
     });
   };
 
@@ -578,8 +531,8 @@ export default function Home() {
     if (!res.ok) return;
     const saved = await res.json();
     setBots(current => current.map(item => item.id === saved.id ? { ...item, ...saved } : item));
-    if (activeConversation?.type === 'bot' && activeConversation.details.id === saved.id) {
-      setActiveConversation({ ...activeConversation, details: { ...(activeConversation.details as Bot), ...saved } });
+    if (activeConversation && activeConversation.details.id === saved.id) {
+      setActiveConversation({ ...activeConversation, details: { ...activeConversation.details, ...saved } });
     }
   };
 
@@ -589,15 +542,11 @@ export default function Home() {
     setManageOpen(false);
     setRosterStatus(deletedStatusLine(ids.length));
     setBots(current => current.filter(bot => !ids.includes(bot.id)));
-    if (activeConversation?.type === 'bot' && ids.includes(activeConversation.details.id)) {
+    if (activeConversation && ids.includes(activeConversation.details.id)) {
       setActiveConversation(null);
       setMessages([]);
     }
-    const [, nextGroups] = await Promise.all([loadBots(), loadGroups()]);
-    if (activeConversation?.type === 'group' && !nextGroups.some(group => group.id === activeConversation.details.id)) {
-      setActiveConversation(null);
-      setMessages([]);
-    }
+    await loadBots();
   };
 
   const openRowMenu = (bot: Bot, anchor: HTMLElement) => {
@@ -605,23 +554,8 @@ export default function Home() {
     setRowMenu({ bot, x: rect.left, y: rect.bottom + 4 });
   };
 
-  const openGroup = async (id: string) => {
-    const group = groups.find(g => g.id === id);
-    if (!group) return;
-    const convRes = await fetch(`/api/conversations?groupId=${id}`);
-    const conv = await convRes.json();
-    setActiveConversation({
-      id: conv.id,
-      type: 'group',
-      details: { id: group.id, name: group.name },
-    });
-  };
-
   const mentionItems = mentionOpen
-    ? [
-        ...bots.map(bot => ({ id: bot.id, name: bot.name, kind: 'bot' as const })),
-        ...groups.map(group => ({ id: group.id, name: group.name, kind: 'group' as const })),
-      ].filter(item => item.name.toLowerCase().includes(mentionQuery.toLowerCase()))
+    ? bots.filter(bot => bot.name.toLowerCase().includes(mentionQuery.toLowerCase()))
     : [];
 
   const syncMention = (value: string, cursor: number) => {
@@ -696,17 +630,8 @@ export default function Home() {
     if ((!text && names.length === 0) || !activeConversation) return;
     const content = [text, ...names].filter(part => part.length > 0).join('\n');
 
-    const targets: string[] = [];
-    if (activeConversation.type === 'bot') {
-      targets.push(activeConversation.details.id);
-    } else {
-      const group = groups.find(item => item.id === activeConversation.details.id);
-      const members = group?.members || [];
-      const named = members.filter(bot => mentionAt(content, bot.name));
-      const picked = named.length > 0 ? named : members;
-      for (const bot of picked) targets.push(bot.id);
-    }
-    if (targets.length > 0) markWorking(targets);
+    const targets = [activeConversation.details.id];
+    markWorking(targets);
 
     const mentioned = [...bots].sort((a, b) => b.name.length - a.name.length).find(bot => mentionAt(content, bot.name));
     const sent = await fetch(`/api/conversations/${activeConversation.id}/messages`, {
@@ -714,7 +639,7 @@ export default function Home() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, mentionedBotId: mentioned?.id, idempotencyKey: crypto.randomUUID() }),
     });
-    if (!sent.ok && targets.length > 0) {
+    if (!sent.ok) {
       for (const id of targets) delete pendingAfter.current[id];
       setWorkingIds(current => current.filter(id => !targets.includes(id)));
     }
@@ -726,12 +651,8 @@ export default function Home() {
     loadMessages();
   };
 
-  const title = activeConversation?.type === 'bot'
-    ? ((activeConversation.details as Bot).title || '').trim()
-    : '';
-  const nameColor = activeConversation?.type === 'bot'
-    ? (activeConversation.details as Bot).color
-    : undefined;
+  const title = (activeConversation?.details.title || '').trim();
+  const nameColor = activeConversation?.details.color;
 
   return (
     <div className="field">
@@ -812,7 +733,7 @@ export default function Home() {
                 {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
                 <RosterRuntimeLine bot={bot} state={deckState} />
                 <div className="row-tip" onClick={e => e.stopPropagation()}>
-                  {bot.unread && !(activeConversation?.type === 'bot' && activeConversation.details.id === bot.id) ? (
+                  {bot.unread && !(activeConversation?.details.id === bot.id) ? (
                     <div className="card-role">Unread</div>
                   ) : null}
                   <div className="card-role">{lifeWord(bot.last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
@@ -853,7 +774,7 @@ export default function Home() {
             ) : (
               <div
                 key={bot.id}
-                className={activeConversation?.type === 'bot' && activeConversation.details.id === bot.id ? 'bot-row is-open' : 'bot-row'}
+                className={activeConversation?.details.id === bot.id ? 'bot-row is-open' : 'bot-row'}
                 onClick={() => openBot(bot.id)}
                 onContextMenu={e => {
                   e.preventDefault();
@@ -892,7 +813,7 @@ export default function Home() {
                   <RosterRuntimeLine bot={bot} state={deckState} />
                 </div>
                 <div className="row-tip" onClick={e => e.stopPropagation()}>
-                  {bot.unread && !(activeConversation?.type === 'bot' && activeConversation.details.id === bot.id) ? (
+                  {bot.unread && !(activeConversation?.details.id === bot.id) ? (
                     <div className="card-role">Unread</div>
                   ) : null}
                   <div className="card-role">{lifeWord(bot.last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
@@ -933,45 +854,6 @@ export default function Home() {
             ))}
           </div>
         )}
-        {groups.length > 0 ? (
-          <div className="roster">
-            {groups.map(group => (
-              <div
-                key={group.id}
-                className="card"
-                onClick={() => openGroup(group.id)}
-                onDoubleClick={e => {
-                  e.stopPropagation();
-                  setEditingGroupId(group.id);
-                  setGroupName(group.name);
-                }}
-              >
-                {editingGroupId === group.id ? (
-                  <input
-                    className="card-name"
-                    value={groupName}
-                    autoFocus
-                    onClick={e => e.stopPropagation()}
-                    onChange={e => setGroupName(e.target.value)}
-                    onBlur={() => renameGroup(group)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        (e.target as HTMLInputElement).blur();
-                      }
-                      if (e.key === 'Escape') {
-                        setEditingGroupId(null);
-                      }
-                    }}
-                    style={{ background: 'transparent', border: 0, outline: 'none', padding: 0 }}
-                  />
-                ) : (
-                  <div className="card-name">{groupLabel(group)}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : null}
         {hiddenBots.length > 0 ? (
           <div className="roster">
             <button type="button" className="pin-word" onClick={() => setShowHidden(open => !open)}>
@@ -994,45 +876,33 @@ export default function Home() {
           <div className="thread">
             <div className="thread-bar">
               <div>
-                {activeConversation.type === 'bot' ? (
-                  <button type="button" className="thread-name" style={nameColor ? { color: nameColor } : undefined} onClick={() => {
-                    setPictureOpen(true);
-                    setAvatarStep(false);
-                  }}>
-                    {activeConversation.details.name}
-                  </button>
-                ) : (
-                  <span className="thread-name">
-                    {activeConversation.details.name}
-                  </span>
-                )}
+                <button type="button" className="thread-name" style={nameColor ? { color: nameColor } : undefined} onClick={() => {
+                  setPictureOpen(true);
+                  setAvatarStep(false);
+                }}>
+                  {activeConversation.details.name}
+                </button>
                 {title ? <div className="thread-role">{title}</div> : null}
-                {activeConversation.type === 'bot' ? (
-                  <>
-                    <div className="thread-role">{workWord(workingIds.includes(activeConversation.details.id))}</div>
-                    <div className="thread-role">{lifeWord((bots.find(bot => bot.id === activeConversation.details.id) || activeConversation.details as Bot).last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
-                  </>
-                ) : null}
-                {pictureOpen && activeConversation.type === 'bot' ? (
+                <div className="thread-role">{workWord(workingIds.includes(activeConversation.details.id))}</div>
+                <div className="thread-role">{lifeWord((openThreadBot ?? activeConversation.details).last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
+                {pictureOpen ? (
                   <button type="button" className="avatar-pic" onClick={() => setAvatarStep(true)} aria-label="Picture">
-                    {(activeConversation.details as Bot).avatar ? (
-                      <img src={(activeConversation.details as Bot).avatar} alt="" />
+                    {activeConversation.details.avatar ? (
+                      <img src={activeConversation.details.avatar} alt="" />
                     ) : (
-                      <BotAvatar bot={activeConversation.details as Bot} size={46} />
+                      <BotAvatar bot={activeConversation.details} size={46} />
                     )}
                   </button>
                 ) : null}
               </div>
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-                {activeConversation.type === 'bot' ? (
-                  <Link
-                    href={`/bots/${activeConversation.details.id}/config`}
-                    className="attach-word"
-                    style={{ textDecoration: 'none' }}
-                  >
-                    Config
-                  </Link>
-                ) : null}
+                <Link
+                  href={`/bots/${activeConversation.details.id}/config`}
+                  className="attach-word"
+                  style={{ textDecoration: 'none' }}
+                >
+                  Config
+                </Link>
                 <button
                   type="button"
                   className="attach-word"
@@ -1043,7 +913,7 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            {avatarStep && activeConversation.type === 'bot' ? (
+            {avatarStep ? (
               <>
                 <div className="avatar-step avatar-desk">
                   <span className="kind-word">Agent</span>
@@ -1080,73 +950,7 @@ export default function Home() {
                 const picture = shown.images.map(src => (
                   <img key={src.slice(0, 48)} src={src} alt="" style={{ display: 'block', width: 64, height: 64 }} />
                 ));
-                const mark = (bot: Bot) => (
-                  <span key={bot.id} className="agent-mark">
-                    <BotAvatar bot={bot} size={16} title={`${bot.name} avatar`} />
-                  </span>
-                );
-                if (!mine && activeConversation.type === 'group') {
-                  const sender = bots.find(bot => bot.id === msg.sender_id);
-                  const senderName = sender?.name || msg.sender_name || '';
-                  const groupDraft = parseDraft(stripStoredPrefix(msg.content));
-                  const groupCode = parseApprovalCode(msg.content);
-                  const groupFiles = parseFileNames(msg.content);
-                  const groupHandoff = parseHandoff(shown.text);
-                  const groupDraftStatus = msg.draftStatus ?? (groupDraft ? 'open' : null);
-                  const groupApprovalStatus = msg.approvalStatus ?? (groupCode ? 'pending' : null);
-                  return (
-                    <div key={msg.id} className="agent-turn">
-                      <div className="agent-from">
-                        <span>Message from</span>
-                        {sender ? mark(sender) : <span className="agent-mark" />}
-                        <span>{senderName}</span>
-                      </div>
-                      {groupDraft && groupDraftStatus ? (
-                        <div className="agent-bar">
-                          <DraftCard
-                            key={msg.id + groupDraftStatus}
-                            message={msg}
-                            conversationId={activeConversation.id}
-                            status={groupDraftStatus}
-                            onDone={() => { void loadMessages(); }}
-                          />
-                        </div>
-                      ) : (
-                        <div
-                          className="agent-bar"
-                          onClick={groupHandoff ? () => { void toggleReveal(msg, groupHandoff); } : undefined}
-                          title={groupHandoff ? 'Show the replies between this handoff and the reply' : undefined}
-                          style={groupHandoff ? { cursor: 'pointer' } : undefined}
-                        >
-                          {shown.text}
-                          {picture}
-                          {groupCode && groupApprovalStatus ? (
-                            <ApprovalCard
-                              key={msg.id + groupApprovalStatus}
-                              message={msg}
-                              conversationId={activeConversation.id}
-                              status={groupApprovalStatus}
-                              onDone={() => { void loadMessages(); }}
-                            />
-                          ) : null}
-                          <FileLinks names={groupFiles} />
-                        </div>
-                      )}
-                      {revealed[msg.id] ? (
-                        <div className="agent-bar">
-                          {revealed[msg.id].map(item => (
-                            <div key={item.id}>{(item.sender_name || 'Agent') + ': ' + displayBody(item.content)}</div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                }
-                const speaker = mine
-                  ? undefined
-                  : (activeConversation.type === 'bot'
-                    ? (activeConversation.details as Bot).color
-                    : bots.find(b => b.id === msg.sender_id)?.color);
+                const speaker = mine ? undefined : activeConversation.details.color;
                 const run = mine ? null : parseRun(msg.content);
                 const draft = !mine && !run ? parseDraft(stripStoredPrefix(msg.content)) : null;
                 const approvalCode = !mine && !run ? parseApprovalCode(msg.content) : null;
@@ -1266,7 +1070,7 @@ export default function Home() {
               {mentionOpen && mentionItems.length > 0 ? (
                 <div className="mention-list">
                   {mentionItems.map(item => (
-                    <button key={item.kind + item.id} type="button" onMouseDown={e => { e.preventDefault(); insertMention(item.name); }}>
+                    <button key={item.id} type="button" onMouseDown={e => { e.preventDefault(); insertMention(item.name); }}>
                       @{item.name}
                     </button>
                   ))}
@@ -1374,13 +1178,11 @@ export default function Home() {
 
       {showBotModal && (
         <BotModal
-          bots={bots}
           deckState={deckState}
           onRetryDecks={retryDecks}
           onClose={() => setShowBotModal(false)}
           onCreated={() => {
             loadBots();
-            loadGroups();
             setShowBotModal(false);
           }}
         />
@@ -1546,17 +1348,13 @@ function FileLinks({ names }: { names: string[] }) {
 }
 
 
-function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
-  bots: Bot[];
+function BotModal({ deckState, onRetryDecks, onClose, onCreated }: {
   deckState: DeckListState;
   onRetryDecks: () => void;
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [kind, setKind] = useState<'bot' | 'group'>('bot');
   const [name, setName] = useState('');
-  const [memberIds, setMemberIds] = useState<string[]>([]);
-  const [groupError, setGroupError] = useState('');
   const [form, setForm] = useState<RuntimeFormInput>(DEFAULT_RUNTIME_FORM);
   const [botError, setBotError] = useState('');
 
@@ -1592,47 +1390,13 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
     onCreated();
   };
 
-  const handleGroup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const picked = memberIds.map(id => bots.find(bot => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
-    if (picked.length < 2 || picked.length > 6) {
-      setGroupError('Pick 2 to 6 bots.');
-      return;
-    }
-    const generated = picked.map(bot => bot.name).join(', ');
-    const res = await fetch('/api/groups', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: generated, botIds: picked.map(bot => bot.id), ownerId: picked[0].id }),
-    });
-    if (!res.ok) {
-      setGroupError('Pick 2 to 6 bots.');
-      return;
-    }
-    onCreated();
-  };
-
-  const toggleMember = (id: string) => {
-    setMemberIds(current => {
-      if (current.includes(id)) return current.filter(item => item !== id);
-      if (current.length >= 6) return current;
-      return [...current, id];
-    });
-  };
-
   return (
     <div className="modal-scrim">
       <div className="new-forms">
         <div className="form-card">
         <div className="kind-row">
-          <button type="button" className="kind-word" aria-pressed={kind === 'bot'} onClick={() => setKind('bot')} style={{ opacity: kind === 'bot' ? 1 : 0.45 }}>
-            New Agent
-          </button>
-          <button type="button" className="kind-word" aria-pressed={kind === 'group'} onClick={() => setKind('group')} style={{ opacity: kind === 'group' ? 1 : 0.45 }}>
-            New Group
-          </button>
+          <h2 className="kind-word new-agent-title">New Agent</h2>
         </div>
-        {kind === 'bot' ? (
         <form onSubmit={handleBot} className="bot-form" aria-label="New Agent">
           <label htmlFor="bot-name">Name</label>
           <input id="bot-name" type="text" value={name} onChange={e => setName(e.target.value)} required />
@@ -1646,7 +1410,7 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
             workdirPlaceholder=""
             workdirHint={NEW_BOT_WORKDIR_HINT}
           />
-          {botError ? <p className="group-error" role="alert">{botError}</p> : null}
+          {botError ? <p className="form-error" role="alert">{botError}</p> : null}
           <div className="form-actions">
             <button type="button" className="cancel-btn" onClick={onClose}>
               Cancel
@@ -1656,36 +1420,6 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
             </button>
           </div>
         </form>
-        ) : (
-        <form onSubmit={handleGroup}>
-          {groupError ? <p className="group-error">{groupError}</p> : null}
-          <div className="member-picks">
-            {bots.map(bot => {
-              const on = memberIds.includes(bot.id);
-              return (
-                <button
-                  key={bot.id}
-                  type="button"
-                  className="card"
-                  aria-pressed={on}
-                  onClick={() => toggleMember(bot.id)}
-                  style={{ opacity: on ? 1 : 0.45 }}
-                >
-                  <div className="card-name" style={{ color: bot.color }}>{bot.name}</div>
-                </button>
-              );
-            })}
-          </div>
-          <div className="form-actions">
-            <button type="button" className="cancel-btn" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="create-btn">
-              Create
-            </button>
-          </div>
-        </form>
-        )}
         </div>
       </div>
     </div>
