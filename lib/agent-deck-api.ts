@@ -13,6 +13,7 @@
 //
 // The server URL is the workspace Agent Deck server URL
 // (lib/agent-deck-settings).
+import { createHash } from 'crypto';
 import { getAgentDeckServerUrl, normalizeAgentDeckServerUrl } from './agent-deck-settings';
 
 export const AGENT_DECK_RUN_TOKEN_ENV = 'AGENT_DECK_RUN_TOKEN';
@@ -164,6 +165,15 @@ export function setAgentDeckApiServerUrlForTests(url: string | null): void {
 export function agentDeckRunToken(): string | null {
   const value = process.env[AGENT_DECK_RUN_TOKEN_ENV];
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+// NOT-469: non-secret identity of the configured grant, recorded with a
+// launch intent so a re-POST never runs under a different grant (Agent Deck
+// idempotency and run visibility are per grant; NOT-468 N5c). A truncated
+// salted digest: it identifies, it cannot authenticate.
+export function agentDeckGrantFingerprint(): string | null {
+  const token = agentDeckRunToken();
+  return token ? createHash('sha256').update(`botmancers-grant-v1:${token}`).digest('hex').slice(0, 16) : null;
 }
 
 export function hasAgentDeckRunToken(): boolean {

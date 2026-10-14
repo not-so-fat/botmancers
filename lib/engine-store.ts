@@ -965,6 +965,79 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 11,
+    name: 'leased_dispatch',
+    up: db => {
+      db.exec(`
+        -- NOT-469: leased dispatcher (lib/dispatcher). One row per request a
+        -- worker owns. The token is a fencing value: heartbeat, release, and
+        -- every fenced commit match it, so a worker whose lease was taken
+        -- over can no longer write. An expired row is not free: its run may
+        -- still be live, so it counts toward concurrency until a worker
+        -- takes it over and reconciles it.
+        CREATE TABLE dispatch_leases (
+          request_id TEXT PRIMARY KEY,
+          target_agent_id TEXT NOT NULL,
+          owner TEXT NOT NULL CHECK (length(owner) > 0),
+          token TEXT NOT NULL UNIQUE CHECK (length(token) > 0),
+          acquired_at INTEGER NOT NULL,
+          heartbeat_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        CREATE INDEX idx_dispatch_leases_target ON dispatch_leases(target_agent_id);
+        CREATE INDEX idx_dispatch_leases_expiry ON dispatch_leases(expires_at);
+
+        -- Launch intent, written with the Attempt before any adapter call:
+        -- the exact start body (or null for a transport without external
+        -- runs), its idempotency key, and a non-secret fingerprint of the
+        -- launching grant. Reconciliation re-POSTs only this body, under
+        -- this key, with this grant (NOT-468 decision table A).
+        CREATE TABLE attempt_launch_intents (
+          attempt_id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL,
+          transport TEXT NOT NULL CHECK (length(transport) > 0),
+          idempotency_key TEXT,
+          body TEXT,
+          body_hash TEXT,
+          grant_fingerprint TEXT,
+          owner TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          CHECK ((body IS NULL) = (body_hash IS NULL)),
+          CHECK (body IS NULL OR idempotency_key IS NOT NULL),
+          FOREIGN KEY (attempt_id) REFERENCES work_attempts(id),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        CREATE TRIGGER trg_attempt_launch_intents_fk BEFORE INSERT ON attempt_launch_intents
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: attempt_launch_intents.attempt_id')
+            WHERE NOT EXISTS (SELECT 1 FROM work_attempts WHERE id = NEW.attempt_id AND request_id = NEW.request_id);
+        END;
+        CREATE TRIGGER trg_attempt_launch_intents_immutable BEFORE UPDATE ON attempt_launch_intents
+        BEGIN
+          SELECT RAISE(ABORT, 'attempt_launch_intents are immutable');
+        END;
+
+        -- Operator-attention flag, separate from the Attempt lifecycle. While
+        -- one is open for a request the dispatcher makes no automatic
+        -- launch, re-POST, retry, or resume for it. Only an operator clears
+        -- it (cleared_at).
+        CREATE TABLE dispatch_attention (
+          id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL,
+          attempt_id TEXT,
+          reason TEXT NOT NULL CHECK (length(reason) > 0),
+          detail TEXT,
+          created_at INTEGER NOT NULL,
+          cleared_at INTEGER,
+          FOREIGN KEY (request_id) REFERENCES work_requests(id),
+          FOREIGN KEY (attempt_id) REFERENCES work_attempts(id)
+        );
+        CREATE UNIQUE INDEX idx_dispatch_attention_open ON dispatch_attention(request_id) WHERE cleared_at IS NULL;
+      `);
+    },
+  },
 ];
 
 // Requests whose events the running aggregate cleanup may delete, per
@@ -1641,6 +1714,10 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   db.prepare(`DELETE FROM candidate_manifests WHERE request_id IN ${inSet}`).run(list(requests));
   db.prepare(`DELETE FROM attempt_finalization_baselines WHERE request_id IN ${inSet}`).run(list(requests));
   db.prepare(`DELETE FROM conversation_projection_cursors WHERE request_id IN ${inSet}`).run(list(requests));
+  // NOT-469: dispatch state goes with the requests it names.
+  db.prepare(`DELETE FROM dispatch_leases WHERE request_id IN ${inSet}`).run(list(requests));
+  db.prepare(`DELETE FROM attempt_launch_intents WHERE request_id IN ${inSet}`).run(list(requests));
+  db.prepare(`DELETE FROM dispatch_attention WHERE request_id IN ${inSet}`).run(list(requests));
   const authorized = purgeSet(db);
   for (const id of requests) authorized.add(id);
   try {

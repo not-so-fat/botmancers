@@ -22,6 +22,7 @@ import { randomUUID } from 'crypto';
 import {
   AGENT_DECK_TERMINAL_STATES,
   AgentDeckApiError,
+  agentDeckGrantFingerprint,
   cancelAgentDeckRun,
   getAgentDeckRun,
   getAgentDeckRunChanges,
@@ -30,6 +31,7 @@ import {
   type AgentDeckRunEvent,
   type AgentDeckRunState,
   type AgentDeckRunStatus,
+  type StartRunBody,
 } from './agent-deck-api';
 import { deckPromptForAttempt, parseDeckRuntime, type DeckRuntime } from './agent-deck-run';
 import {
@@ -37,11 +39,15 @@ import {
   interruption,
   preLaunchInterruption,
   type AttemptAdapter,
+  type AttemptEventSink,
   type AttemptFailure,
   type AttemptFailureCategory,
   type AttemptFinalizationEvidence,
+  type AttemptFollowInput,
   type AttemptInput,
+  type AttemptReconciler,
   type AttemptResult,
+  type RunObservation,
 } from './attempt-adapter';
 
 // Interval between event reads while a run is live. Placeholder value
@@ -154,136 +160,229 @@ async function finalizationEvidence(runId: string, status: AgentDeckRunStatus | 
   }
 }
 
-export function createAgentDeckApiAttemptAdapter(): AttemptAdapter {
-  const name = 'agent-deck-api' as const;
+// The start body run() sends for this input, or a reason it cannot launch.
+// Deterministic for a frozen input, so the launch intent persisted before
+// run() is byte-identical to what run() sends.
+function startBodyFor(input: Readonly<AttemptInput>): { ok: true; body: StartRunBody } | { ok: false; failure: AttemptFailure } {
+  if (input.toolProfile !== 'readonly' && input.toolProfile !== 'edit') {
+    return { ok: false, failure: attemptFailure('unsupported_authority', `Unsupported tool profile: ${JSON.stringify(String(input.toolProfile))}.`) };
+  }
+  if (input.prepareFinalization && input.toolProfile !== 'edit') {
+    return { ok: false, failure: attemptFailure('unsupported_authority', 'Only an edit Attempt can prepare Git finalization.') };
+  }
+  if (!input.deck) return { ok: false, failure: attemptFailure('unavailable', 'An Agent Deck run requires a deck.') };
+  if (!input.cwd) return { ok: false, failure: attemptFailure('unavailable', 'An Agent Deck run requires a working directory.') };
+  let client: DeckRuntime;
+  try {
+    client = parseDeckRuntime(input.target.agent);
+  } catch (error) {
+    return { ok: false, failure: attemptFailure('unavailable', error instanceof Error ? error.message : String(error)) };
+  }
+  const resume = input.sessionBinding?.externalSessionId ?? null;
   return {
-    name,
+    ok: true,
+    body: {
+      deckId: input.deck,
+      client,
+      cwd: input.cwd,
+      prompt: deckPromptForAttempt(input.prompt),
+      tools: input.toolProfile,
+      ...(resume ? { resumeSessionId: resume } : {}),
+      ...(input.prepareFinalization === true ? { prepareFinalization: true } : {}),
+    },
+  };
+}
+
+// NOT-469: classifies a public API failure as reconciliation evidence.
+function observationOf(error: unknown): RunObservation {
+  if (!(error instanceof AgentDeckApiError)) return { kind: 'rejected', status: null, code: null };
+  switch (error.code) {
+    case 'agent_deck_token_missing': return { kind: 'no_grant' };
+    case 'agent_deck_unauthorized': return { kind: 'unauthorized' };
+    case 'agent_deck_forbidden': return { kind: 'forbidden' };
+    case 'agent_deck_unreachable': return { kind: 'unreachable' };
+    default:
+      if (error.status === 404 && (error.deckCode === 'RUN_NOT_FOUND' || error.deckCode === null)) return { kind: 'not_found' };
+      return { kind: 'rejected', status: error.status, code: error.deckCode };
+  }
+}
+
+const NAME = 'agent-deck-api' as const;
+
+function resultBuilder(startedAt: number) {
+  const result = (fields: Partial<AttemptResult> & Pick<AttemptResult, 'status'>): AttemptResult => ({
+    adapter: NAME,
+    externalRunId: null,
+    externalSessionId: null,
+    output: null,
+    artifacts: [],
+    startedAt,
+    finishedAt: Date.now(),
+    failure: null,
+    ...fields,
+  });
+  const failed = (failure: AttemptFailure, extra: Partial<AttemptResult> = {}) => result({ status: 'failed', failure, ...extra });
+  return { result, failed };
+}
+
+// Observes a launched (or reattached) run to one normalized result: the
+// prepared baseline first, then events until terminal, then status, the
+// candidate manifest, and the result/session contract.
+async function followRun(runId: string, input: AttemptFollowInput, onEvent: AttemptEventSink | undefined, startedAt: number): Promise<AttemptResult> {
+  const { result, failed } = resultBuilder(startedAt);
+  const resume = input.resumeSessionId;
+  const prepare = input.prepareFinalization;
+  const stop = interruption({ signal: input.signal ?? null, deadlineAt: input.deadlineAt });
+  const ids = { externalRunId: runId };
+  try {
+    if (prepare) {
+      // The baseline exists before model work: record it right away so
+      // it survives even if this process stops before the run ends.
+      try {
+        const status = await getAgentDeckRun(runId);
+        if (status.finalization) {
+          onEvent?.({
+            type: 'progress', adapter: NAME, at: Date.now(),
+            detail: { phase: 'finalization_prepared', baseline_ref: status.finalization.baselineRef, baseline_digest: status.finalization.baselineDigest },
+          });
+        }
+      } catch { /* read again once the run is terminal */ }
+    }
+    const watching = observeRun(runId);
+    // An interrupted wait abandons this read; its rejection must not
+    // surface unhandled.
+    watching.catch(() => {});
+    const settled = await Promise.race([
+      watching.then(observed => ({ observed }), (error: unknown) => ({ error })),
+      stop.promise.then(interrupted => ({ interrupted })),
+    ]);
+    if ('interrupted' in settled) {
+      try { await cancelAgentDeckRun(runId); } catch { /* reported by the interruption below */ }
+      return failed(settled.interrupted, ids);
+    }
+    if ('error' in settled) {
+      // Stop the run we can no longer observe rather than let it edit
+      // unwatched; failure to reach the API is reported as is.
+      try { await cancelAgentDeckRun(runId); } catch { /* unreachable */ }
+      return failed(failureOf(settled.error, 'runtime_failed'), ids);
+    }
+    const { observed } = settled;
+    let status: AgentDeckRunStatus | null = null;
+    try {
+      status = await getAgentDeckRun(runId);
+    } catch (error) {
+      if (!prepare) return failed(failureOf(error, 'runtime_failed'), ids);
+    }
+    const sessionId = status?.sessionId ?? observed.sessionId;
+    const finalization = prepare ? await finalizationEvidence(runId, status) : undefined;
+    const evidence = { ...ids, externalSessionId: sessionId, ...(finalization ? { finalization } : {}) };
+    if (observed.state === 'canceled') return failed(attemptFailure('cancelled', `Agent Deck run ${runId} was canceled.`), evidence);
+    if (observed.state !== 'ended') {
+      // Agent Deck-authored event prose is not durable Botmancers
+      // evidence: it can contain model output, paths, or credentials.
+      return failed(attemptFailure('runtime_failed', `Agent Deck run ${runId} ended in state ${observed.state}.`), evidence);
+    }
+    if (observed.result === null) {
+      return failed(attemptFailure(
+        'result_contract',
+        `Agent Deck run ${runId} result contract mismatch: expected a non-empty string result, got ${observed.resultMismatch ?? 'no result event'}.`
+      ), evidence);
+    }
+    if (resume && sessionId !== null && sessionId !== resume) {
+      return failed(attemptFailure(
+        'session_mismatch',
+        `resume run ${runId} forked the session (expected ${resume}, got ${sessionId}); failing closed.`
+      ), evidence);
+    }
+    const manifest = finalization?.candidate?.ok ? finalization.candidate.manifest : null;
+    return result({
+      status: 'completed',
+      ...evidence,
+      externalSessionId: sessionId ?? resume,
+      output: observed.result,
+      // The candidate manifest is referenced by its digest; the run's
+      // private log path is never exposed by the API.
+      artifacts: manifest ? [{ kind: 'candidate_manifest', ref: manifest.manifestDigest }] : [],
+    });
+  } finally {
+    stop.dispose();
+  }
+}
+
+// NOT-469: public-API reconciliation of runs that outlived the process
+// that launched them. Reads are safe under any grant; a re-POST is the
+// caller's decision and sends the persisted body verbatim.
+export const agentDeckApiReconciler: AttemptReconciler = {
+  currentGrantFingerprint: agentDeckGrantFingerprint,
+  async inspect(runId) {
+    try {
+      const status = await getAgentDeckRun(runId);
+      return { kind: 'run', state: status.state };
+    } catch (error) {
+      return observationOf(error);
+    }
+  },
+  async repost(intent) {
+    let body: StartRunBody;
+    try {
+      body = JSON.parse(intent.body) as StartRunBody;
+    } catch {
+      return { kind: 'rejected', status: null, code: 'INTENT_UNREADABLE' };
+    }
+    try {
+      const started = await startAgentDeckRun(body, intent.idempotencyKey);
+      return { kind: 'accepted', runId: started.runId };
+    } catch (error) {
+      return observationOf(error);
+    }
+  },
+  follow(runId, input, onEvent) {
+    return followRun(runId, input, onEvent, Date.now());
+  },
+  async evidence(runId) {
+    let status: AgentDeckRunStatus | null = null;
+    try {
+      status = await getAgentDeckRun(runId);
+    } catch { /* reported as no baseline below */ }
+    return finalizationEvidence(runId, status);
+  },
+};
+
+export function createAgentDeckApiAttemptAdapter(): AttemptAdapter {
+  return {
+    name: NAME,
+    reconciler: agentDeckApiReconciler,
+    launchIntent(input) {
+      const start = startBodyFor(input);
+      if (!start.ok) return null;
+      return {
+        idempotencyKey: agentDeckStartIdempotencyKey(input),
+        body: JSON.stringify(start.body),
+        grantFingerprint: agentDeckGrantFingerprint(),
+      };
+    },
     async run(input: Readonly<AttemptInput>, onEvent): Promise<AttemptResult> {
       const startedAt = Date.now();
-      const result = (fields: Partial<AttemptResult> & Pick<AttemptResult, 'status'>): AttemptResult => ({
-        adapter: name,
-        externalRunId: null,
-        externalSessionId: null,
-        output: null,
-        artifacts: [],
-        startedAt,
-        finishedAt: Date.now(),
-        failure: null,
-        ...fields,
-      });
-      const failed = (failure: AttemptFailure, extra: Partial<AttemptResult> = {}) => result({ status: 'failed', failure, ...extra });
-
-      if (input.toolProfile !== 'readonly' && input.toolProfile !== 'edit') {
-        return failed(attemptFailure('unsupported_authority', `Unsupported tool profile: ${JSON.stringify(String(input.toolProfile))}.`));
-      }
-      if (input.prepareFinalization && input.toolProfile !== 'edit') {
-        return failed(attemptFailure('unsupported_authority', 'Only an edit Attempt can prepare Git finalization.'));
-      }
-      if (!input.deck) return failed(attemptFailure('unavailable', 'An Agent Deck run requires a deck.'));
-      if (!input.cwd) return failed(attemptFailure('unavailable', 'An Agent Deck run requires a working directory.'));
-      let client: DeckRuntime;
-      try {
-        client = parseDeckRuntime(input.target.agent);
-      } catch (error) {
-        return failed(attemptFailure('unavailable', error instanceof Error ? error.message : String(error)));
-      }
+      const { failed } = resultBuilder(startedAt);
+      const start = startBodyFor(input);
+      if (!start.ok) return failed(start.failure);
       const early = preLaunchInterruption(input);
       if (early) return failed(early);
 
-      const resume = input.sessionBinding?.externalSessionId ?? null;
-      const prepare = input.prepareFinalization === true;
       let runId: string;
       try {
-        const started = await startAgentDeckRun({
-          deckId: input.deck,
-          client,
-          cwd: input.cwd,
-          prompt: deckPromptForAttempt(input.prompt),
-          tools: input.toolProfile,
-          ...(resume ? { resumeSessionId: resume } : {}),
-          ...(prepare ? { prepareFinalization: true } : {}),
-        }, agentDeckStartIdempotencyKey(input));
+        const started = await startAgentDeckRun(start.body, agentDeckStartIdempotencyKey(input));
         runId = started.runId;
       } catch (error) {
         return failed(failureOf(error, 'launch_failed'));
       }
-      onEvent?.({ type: 'started', adapter: name, at: Date.now(), externalRunId: runId, externalSessionId: null });
-
-      const stop = interruption(input);
-      const ids = { externalRunId: runId };
-      try {
-        if (prepare) {
-          // The baseline exists before model work: record it right away so
-          // it survives even if this process stops before the run ends.
-          try {
-            const status = await getAgentDeckRun(runId);
-            if (status.finalization) {
-              onEvent?.({
-                type: 'progress', adapter: name, at: Date.now(),
-                detail: { phase: 'finalization_prepared', baseline_ref: status.finalization.baselineRef, baseline_digest: status.finalization.baselineDigest },
-              });
-            }
-          } catch { /* read again once the run is terminal */ }
-        }
-        const watching = observeRun(runId);
-        // An interrupted wait abandons this read; its rejection must not
-        // surface unhandled.
-        watching.catch(() => {});
-        const settled = await Promise.race([
-          watching.then(observed => ({ observed }), (error: unknown) => ({ error })),
-          stop.promise.then(interrupted => ({ interrupted })),
-        ]);
-        if ('interrupted' in settled) {
-          try { await cancelAgentDeckRun(runId); } catch { /* reported by the interruption below */ }
-          return failed(settled.interrupted, ids);
-        }
-        if ('error' in settled) {
-          // Stop the run we can no longer observe rather than let it edit
-          // unwatched; failure to reach the API is reported as is.
-          try { await cancelAgentDeckRun(runId); } catch { /* unreachable */ }
-          return failed(failureOf(settled.error, 'runtime_failed'), ids);
-        }
-        const { observed } = settled;
-        let status: AgentDeckRunStatus | null = null;
-        try {
-          status = await getAgentDeckRun(runId);
-        } catch (error) {
-          if (!prepare) return failed(failureOf(error, 'runtime_failed'), ids);
-        }
-        const sessionId = status?.sessionId ?? observed.sessionId;
-        const finalization = prepare ? await finalizationEvidence(runId, status) : undefined;
-        const evidence = { ...ids, externalSessionId: sessionId, ...(finalization ? { finalization } : {}) };
-        if (observed.state === 'canceled') return failed(attemptFailure('cancelled', `Agent Deck run ${runId} was canceled.`), evidence);
-        if (observed.state !== 'ended') {
-          // Agent Deck-authored event prose is not durable Botmancers
-          // evidence: it can contain model output, paths, or credentials.
-          return failed(attemptFailure('runtime_failed', `Agent Deck run ${runId} ended in state ${observed.state}.`), evidence);
-        }
-        if (observed.result === null) {
-          return failed(attemptFailure(
-            'result_contract',
-            `Agent Deck run ${runId} result contract mismatch: expected a non-empty string result, got ${observed.resultMismatch ?? 'no result event'}.`
-          ), evidence);
-        }
-        if (resume && sessionId !== null && sessionId !== resume) {
-          return failed(attemptFailure(
-            'session_mismatch',
-            `resume run ${runId} forked the session (expected ${resume}, got ${sessionId}); failing closed.`
-          ), evidence);
-        }
-        const manifest = finalization?.candidate?.ok ? finalization.candidate.manifest : null;
-        return result({
-          status: 'completed',
-          ...evidence,
-          externalSessionId: sessionId ?? resume,
-          output: observed.result,
-          // The candidate manifest is referenced by its digest; the run's
-          // private log path is never exposed by the API.
-          artifacts: manifest ? [{ kind: 'candidate_manifest', ref: manifest.manifestDigest }] : [],
-        });
-      } finally {
-        stop.dispose();
-      }
+      onEvent?.({ type: 'started', adapter: NAME, at: Date.now(), externalRunId: runId, externalSessionId: null });
+      return followRun(runId, {
+        resumeSessionId: input.sessionBinding?.externalSessionId ?? null,
+        prepareFinalization: input.prepareFinalization === true,
+        deadlineAt: input.deadlineAt ?? null,
+        signal: input.signal ?? null,
+      }, onEvent, startedAt);
     },
   };
 }

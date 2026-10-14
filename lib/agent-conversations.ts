@@ -27,14 +27,28 @@ import { createHash, randomUUID } from 'crypto';
 import db, { bots, engine, projector, type Bot, type Principal, type PrincipalKind } from './db';
 import {
   DispatchFailure,
+  adapterForTransport,
   agentForDispatch,
   dispatchFailureFor,
   prepareDispatch,
   type DispatchHistoryEntry,
   type PreparedDispatch,
 } from './agent-dispatch';
-import { beginAttempt, runAttempt, type PreparedAttempt } from './attempt-executor';
-import { EngineStoreError, type EngineEvent, type WorkRequest, type WorkRequestState } from './engine-store';
+import { beginAttempt, recordAttemptResult, runAttempt, type PreparedAttempt } from './attempt-executor';
+import { EngineStoreError, type EngineEvent, type WorkAttempt, type WorkRequest, type WorkRequestState } from './engine-store';
+import type { AttemptEvent, AttemptResult, RunObservation } from './attempt-adapter';
+import {
+  LeaseLostError,
+  createDispatcher,
+  decideRepostResult,
+  decideWithRunId,
+  decideWithoutRunId,
+  dispatchFault,
+  type DispatchLease,
+  type Dispatcher,
+  type DispatcherOptions,
+  type ReconcileDecision,
+} from './dispatcher';
 import { authorizeWorkRequest } from './execution-policy';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 import type { ConversationEventView } from './conversation-projection';
@@ -331,6 +345,25 @@ function failRequest(requestId: string, attemptId: string | null, code: string, 
   });
 }
 
+// NOT-469: the process's leased dispatcher (lib/dispatcher). Limits and
+// lease timing come from BOTMANCERS_DISPATCH_* (deterministic defaults).
+let dispatcher: Dispatcher = createDispatcher(db, engine);
+
+// Test seam: a fresh dispatcher (owner, limits, clock) for this process.
+export function configureDispatcher(options: DispatcherOptions = {}): Dispatcher {
+  dispatcher = createDispatcher(db, engine, options);
+  return dispatcher;
+}
+
+export function currentDispatcher(): Dispatcher {
+  return dispatcher;
+}
+
+// Thrown inside a commit transaction to roll it back when Agent Deck
+// became unreachable while a known run was observed: the run may still be
+// live, so the Attempt stays open and reconciliation retries (NOT-468 F7).
+class DeferCommit extends Error {}
+
 // One Attempt for a queued canonical request, under its validated policy
 // (a direct message is a read-only conversation turn; there is no
 // automatic review or resume child): claim
@@ -351,19 +384,44 @@ function failRequest(requestId: string, attemptId: string | null, code: string, 
 // Attempt's baseline and candidate manifest are persisted with it. A
 // coordinator's accepted finalization decision (recorded by the loop
 // follow-up) is submitted here, and its outcome returns to the coordinator.
+//
+// NOT-469: the claim is a lease (lib/dispatcher). The claim, the Attempt,
+// and its launch intent commit in one transaction before the adapter runs;
+// the terminal commit is fenced by the lease. A request refused for
+// capacity stays queued and is drained when a lease is released.
 async function runDispatch(requestId: string): Promise<void> {
-  await runTurn(requestId);
-  for (const next of continueAfterTerminal(requestId)) void startAgentDispatch(next);
-  for (const id of openFinalizationIds()) if (!submittedThisProcess.has(id)) void startFinalization(id);
+  const claimed = await runTurn(requestId);
+  afterRequest(requestId, claimed);
 }
 
-async function runTurn(requestId: string): Promise<void> {
+function afterRequest(requestId: string, released: boolean): void {
+  for (const next of continueAfterTerminal(requestId)) void startAgentDispatch(next);
+  for (const id of openFinalizationIds()) if (!submittedThisProcess.has(id)) void startFinalization(id);
+  if (released) drainDeferred();
+}
+
+// Queued requests whose last event is a capacity deferral, oldest first.
+function deferredRequestIds(): string[] {
+  return (db.prepare(`
+    SELECT w.id FROM work_requests w
+    WHERE w.state = 'queued'
+      AND (SELECT e.type FROM engine_events e WHERE e.request_id = w.id ORDER BY e.sequence DESC LIMIT 1) = 'dispatch_deferred'
+    ORDER BY w.created_at ASC, w.id ASC
+  `).all() as { id: string }[]).map(row => row.id);
+}
+
+function drainDeferred(): void {
+  for (const id of deferredRequestIds()) if (!inFlight.has(id)) void startAgentDispatch(id);
+}
+
+// Whether this call claimed (and so later released or handed off) a lease.
+async function runTurn(requestId: string): Promise<boolean> {
   const request = engine.getWorkRequest(requestId);
-  if (!request || request.state !== 'queued') return;
+  if (!request || request.state !== 'queued') return false;
   const bot = bots.getById(request.target_agent_id);
   if (!bot) {
     failRequest(requestId, null, 'agent_unavailable', 'The agent is no longer registered.');
-    return;
+    return false;
   }
   // NOT-471: the stored policy snapshot is re-validated against the
   // request before anything launches. An unknown kind, unsupported
@@ -379,7 +437,7 @@ async function runTurn(requestId: string): Promise<void> {
     } catch (error) {
       if (!(error instanceof EngineStoreError && error.code === 'stale_state')) throw error;
     }
-    return;
+    return false;
   }
   const policy = authorized.policy;
   // NOT-456: the attempt adapter records the dispatched agent identity
@@ -395,7 +453,7 @@ async function runTurn(requestId: string): Promise<void> {
     } catch (error) {
       if (!(error instanceof EngineStoreError && error.code === 'stale_state')) throw error;
     }
-    return;
+    return false;
   }
   let prepared: PreparedDispatch | null = null;
   let unprepared: DispatchFailure | null = null;
@@ -413,59 +471,305 @@ async function runTurn(requestId: string): Promise<void> {
       : new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
   }
   const snapshot = { agent, agent_id: bot.id, execution_kind: policy.execution_kind, tool_profile: policy.tool_profile, policy_rule: policy.rule };
-  let started: PreparedAttempt | string;
+  let started: { lease: DispatchLease; attempt: PreparedAttempt | string } | null;
   try {
     started = engine.transaction(() => {
-      engine.transitionWorkRequest(requestId, { from: 'queued', to: 'running', expectedVersion: request.version, data: { agent } });
+      const claim = dispatcher.claim(requestId, { expectedVersion: request.version, data: { agent } });
+      if (!claim.ok) return null;
       if (prepared) {
-        return beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input: prepared.input, snapshot });
+        const attempt = beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input: prepared.input, snapshot });
+        dispatcher.recordLaunchIntent(claim.lease, attempt.attempt.id, prepared.adapter.name, prepared.adapter.launchIntent?.(attempt.input) ?? null);
+        return { lease: claim.lease, attempt };
       }
-      return engine.createAttempt(requestId, {
-        kind: 'launch',
-        adapter: agent,
-        toolProfile: policy.tool_profile,
-        launchSnapshot: snapshot,
-      }).id;
+      return {
+        lease: claim.lease,
+        attempt: engine.createAttempt(requestId, {
+          kind: 'launch',
+          adapter: agent,
+          toolProfile: policy.tool_profile,
+          launchSnapshot: snapshot,
+        }).id,
+      };
     });
   } catch (error) {
-    if (error instanceof EngineStoreError && error.code === 'stale_state') return;
+    if (error instanceof EngineStoreError && error.code === 'stale_state') return false;
     throw error;
   }
-  if (!prepared || typeof started === 'string') {
+  if (!started) return false;
+  const { lease } = started;
+  if (!prepared || typeof started.attempt === 'string') {
     const failure = unprepared ?? new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
-    failRequest(requestId, typeof started === 'string' ? started : started.attempt.id, failure.code, failure.message);
-    return;
+    const attemptId = typeof started.attempt === 'string' ? started.attempt : started.attempt.attempt.id;
+    engine.transaction(() => {
+      dispatcher.assertHeld(lease);
+      failRequest(requestId, attemptId, failure.code, failure.message);
+      dispatcher.release(lease, 'failed');
+    });
+    return true;
   }
 
-  const attemptId = started.attempt.id;
-  await runAttempt(engine, started, prepared.adapter, {
-    onEvent: event => {
-      if (event.type === 'progress' && event.detail.phase === 'finalization_prepared'
-        && typeof event.detail.baseline_ref === 'string' && typeof event.detail.baseline_digest === 'string') {
-        recordAttemptBaseline(attemptId, { baselineRef: event.detail.baseline_ref, baselineDigest: event.detail.baseline_digest }, event.at);
+  const attemptId = started.attempt.attempt.id;
+  await withHeartbeat(lease, async () => {
+    dispatchFault('before_launch', requestId);
+    try {
+      await runAttempt(engine, started.attempt as PreparedAttempt, prepared.adapter, {
+        onEvent: event => {
+          // The executor has already persisted the run id for 'started'.
+          if (event.type === 'started') dispatchFault('after_run_id_persisted', requestId);
+          recordBaselineEvent(attemptId, event);
+        },
+        project: (result, attempt) => commitTurn(lease, request, attempt, result),
+      });
+    } catch (error) {
+      handleUncommitted(lease, attemptId, error);
+    }
+  });
+  return true;
+}
+
+function recordBaselineEvent(attemptId: string, event: AttemptEvent): void {
+  if (event.type === 'progress' && event.detail.phase === 'finalization_prepared'
+    && typeof event.detail.baseline_ref === 'string' && typeof event.detail.baseline_digest === 'string') {
+    recordAttemptBaseline(attemptId, { baselineRef: event.detail.baseline_ref, baselineDigest: event.detail.baseline_digest }, event.at);
+  }
+}
+
+async function withHeartbeat<T>(lease: DispatchLease, fn: () => Promise<T>): Promise<T> {
+  const timer = setInterval(() => {
+    try { dispatcher.heartbeat(lease); } catch (error) { console.error('Dispatch heartbeat failed:', error); }
+  }, dispatcher.config.heartbeatMs);
+  if (timer.unref) timer.unref();
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+// A commit that did not happen: the lease moved to another worker (which
+// reconciles the same run), or Agent Deck became unreachable mid-run.
+function handleUncommitted(lease: DispatchLease, attemptId: string, error: unknown): void {
+  if (error instanceof LeaseLostError) return;
+  if (error instanceof DeferCommit) {
+    try {
+      dispatcher.defer(lease, 'unreachable', attemptId);
+    } catch (deferError) {
+      if (!(deferError instanceof LeaseLostError)) throw deferError;
+    }
+    return;
+  }
+  throw error;
+}
+
+// The terminal commit of one Attempt result, inside the transaction that
+// finishes the Attempt and fenced by the lease: project the reply into the
+// source conversation and complete, or fail with a typed code, then
+// release the lease. Shared by a live run and a reattached one.
+function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAttempt, result: AttemptResult): void {
+  dispatchFault('before_terminal_commit', request.id);
+  dispatcher.assertHeld(lease);
+  if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable' && attempt.external_run_id) {
+    throw new DeferCommit();
+  }
+  const requestId = request.id;
+  const now = Date.now();
+  recordPreparedEvidence(request, attempt, result, now);
+  if (result.status !== 'completed' || result.output === null) {
+    const failure = dispatchFailureFor(result);
+    engine.transitionWorkRequest(requestId, { from: 'running', to: 'failed', errorCode: failure.code, errorMessage: failure.message, now });
+    dispatcher.release(lease, 'failed');
+    return;
+  }
+  const replyId = randomUUID();
+  db.prepare(
+    'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(replyId, request.source_conversation_id, 'bot', request.target_agent_id, 'bot', requestId, result.output, now);
+  if (request.tool_profile === 'edit' && result.externalSessionId) {
+    engine.bindSession({
+      agentId: request.target_agent_id, adapter: attempt.adapter, externalSessionId: result.externalSessionId,
+      conversationId: request.source_conversation_id, requestId, sourceAttemptId: attempt.id, now,
+    });
+  }
+  engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: { reply_message_id: replyId }, now });
+  dispatcher.release(lease, 'completed');
+}
+
+function observationData(observation: RunObservation | null): Record<string, unknown> | null {
+  if (!observation) return null;
+  return {
+    kind: observation.kind,
+    ...(observation.kind === 'run' ? { state: observation.state } : {}),
+    ...(observation.kind === 'accepted' ? { run_id: observation.runId } : {}),
+    ...(observation.kind === 'rejected' ? { status: observation.status, code: observation.code } : {}),
+  };
+}
+
+// NOT-469: reconciles one taken-over request from its persisted Attempt and
+// public runtime evidence, through the accepted NOT-468 decision table
+// (lib/dispatcher). Never relaunches an ambiguous run.
+async function reconcileRequest(lease: DispatchLease): Promise<void> {
+  const request = engine.getWorkRequest(lease.requestId);
+  if (!request || request.state !== 'running') {
+    dispatcher.release(lease, 'stale');
+    return;
+  }
+  const attempt = engine.listAttempts(request.id).find(row => row.finished_at === null);
+  if (!attempt) {
+    // A running request with no open Attempt never launched under it.
+    engine.transaction(() => {
+      dispatcher.assertHeld(lease);
+      engine.transitionWorkRequest(request.id, {
+        from: 'running', to: 'failed', reason: 'retryable', errorCode: 'interrupted',
+        errorMessage: 'The request was interrupted before its Attempt was recorded.',
+      });
+      dispatcher.release(lease, 'interrupted');
+    });
+    return;
+  }
+  let snapshot: Record<string, unknown> = {};
+  try { snapshot = JSON.parse(attempt.launch_snapshot) as Record<string, unknown>; } catch { /* no transport: unobservable */ }
+  const adapter = typeof snapshot.transport === 'string' ? adapterForTransport(snapshot.transport) : null;
+  const reconciler = adapter?.reconciler ?? null;
+  const decided = (phase: 'launch' | 'run', decision: ReconcileDecision, observation: RunObservation | null, runId: string | null) => {
+    engine.transaction(() => {
+      dispatcher.assertHeld(lease);
+      engine.appendEvent(request.id, {
+        type: 'reconcile_decided', attemptId: attempt.id,
+        data: { phase, ...decision, external_run_id: runId, observation: observationData(observation) },
+      });
+    });
+  };
+
+  let runId = attempt.external_run_id;
+  let decision: ReconcileDecision;
+  let observation: RunObservation | null = null;
+  if (!runId) {
+    const intent = dispatcher.launchIntent(attempt.id);
+    decision = decideWithoutRunId({ reconcilable: !!reconciler, intent, currentGrantFingerprint: reconciler?.currentGrantFingerprint() ?? null });
+    if (decision.action === 'repost' && reconciler && intent?.body && intent.idempotency_key) {
+      observation = await reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
+      decision = decideRepostResult(observation);
+      if (observation.kind === 'accepted') {
+        const accepted = observation.runId;
+        engine.transaction(() => {
+          dispatcher.assertHeld(lease);
+          engine.recordAttemptExternalIds(attempt.id, { externalRunId: accepted });
+          engine.appendEvent(request.id, {
+            type: 'runtime_started', attemptId: attempt.id,
+            data: { adapter: adapter?.name ?? null, external_run_id: accepted, recovered: true },
+          });
+        });
+        runId = accepted;
       }
-    },
-    project: (result, attempt) => {
-      const now = Date.now();
-      recordPreparedEvidence(request, attempt, result, now);
-      if (result.status !== 'completed' || result.output === null) {
-        const failure = dispatchFailureFor(result);
-        engine.transitionWorkRequest(requestId, { from: 'running', to: 'failed', errorCode: failure.code, errorMessage: failure.message, now });
+    }
+    decided('launch', decision, observation, runId);
+  } else if (!reconciler) {
+    decision = { action: 'interrupted', reason: 'runtime_unobservable' };
+    decided('run', decision, null, runId);
+  } else {
+    observation = await reconciler.inspect(runId);
+    decision = decideWithRunId(observation);
+    decided('run', decision, observation, runId);
+  }
+
+  const prepare = snapshot.prepare_finalization === true;
+  try {
+    switch (decision.action) {
+      case 'defer':
+        dispatcher.defer(lease, decision.reason, attempt.id);
+        return;
+      case 'attention':
+        dispatcher.setAttention(lease, { attemptId: attempt.id, reason: decision.reason, detail: observation ? JSON.stringify(observationData(observation)) : null });
+        return;
+      case 'interrupted_attention': {
+        // Keep what the dead run left for the operator, then end the
+        // Attempt interrupted and stop automation (never auto-retry).
+        const evidence = prepare && reconciler && runId ? await reconciler.evidence(runId) : null;
+        engine.transaction(() => {
+          dispatcher.assertHeld(lease);
+          const finished = engine.finishAttempt(attempt.id, {
+            outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: `Agent Deck run ${runId} died.`,
+          });
+          if (evidence) recordPreparedEvidence(request, finished, { finalization: evidence } as AttemptResult);
+          dispatcher.setAttention(lease, { attemptId: attempt.id, reason: decision.reason });
+        });
         return;
       }
-      const replyId = randomUUID();
-      db.prepare(
-        'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(replyId, request.source_conversation_id, 'bot', bot.id, 'bot', requestId, result.output, now);
-      if (policy.tool_profile === 'edit' && result.externalSessionId) {
-        engine.bindSession({
-          agentId: bot.id, adapter: agent, externalSessionId: result.externalSessionId,
-          conversationId: request.source_conversation_id, requestId, sourceAttemptId: attempt.id, now,
+      case 'fail':
+        engine.transaction(() => {
+          dispatcher.assertHeld(lease);
+          engine.finishAttempt(attempt.id, { outcome: 'failed', errorCategory: decision.category, errorMessage: `Agent Deck refused the launch (${decision.code}).` });
+          engine.transitionWorkRequest(request.id, {
+            from: 'running', to: 'failed', reason: 'retryable', errorCode: 'runtime_failed', errorMessage: 'The agent runtime did not start the turn.',
+          });
+          dispatcher.release(lease, 'failed');
         });
-      }
-      engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: { reply_message_id: replyId }, now });
-    },
-  });
+        return;
+      case 'interrupted':
+        engine.transaction(() => {
+          dispatcher.assertHeld(lease);
+          engine.finishAttempt(attempt.id, {
+            outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: 'The runtime cannot be observed after a restart; the outcome is unknown.',
+          });
+          engine.transitionWorkRequest(request.id, {
+            from: 'running', to: 'failed', reason: 'retryable', errorCode: 'interrupted',
+            errorMessage: 'The agent turn was interrupted by a restart. It was not relaunched.',
+          });
+          dispatcher.release(lease, 'interrupted');
+        });
+        return;
+      case 'repost':
+      case 'reattach':
+        break;
+    }
+    if (!reconciler || !runId) return;
+    const followRunId = runId;
+    const bindingId = typeof snapshot.session_binding_id === 'string' ? snapshot.session_binding_id : null;
+    const binding = bindingId
+      ? db.prepare('SELECT external_session_id FROM session_bindings WHERE id = ?').get(bindingId) as { external_session_id: string } | undefined
+      : undefined;
+    await withHeartbeat(lease, async () => {
+      const result = await reconciler.follow(followRunId, {
+        resumeSessionId: binding?.external_session_id ?? null,
+        prepareFinalization: prepare,
+        deadlineAt: typeof snapshot.deadline_at === 'number' ? snapshot.deadline_at : null,
+      }, event => recordBaselineEvent(attempt.id, event));
+      engine.transaction(() => {
+        dispatcher.assertHeld(lease);
+        if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable') throw new DeferCommit();
+        const finished = recordAttemptResult(engine, attempt.id, result);
+        commitTurn(lease, request, finished, result);
+      });
+    });
+  } catch (error) {
+    handleUncommitted(lease, attempt.id, error);
+  }
+}
+
+// NOT-469: one recovery sweep. Takes over expired leases, leases of
+// exited local processes, and unleased running requests, reconciles each,
+// then drains capacity-deferred requests. Runs at startup and
+// periodically; safe to run from several workers at once.
+export function sweepDispatch(): Promise<void> {
+  const tasks: Promise<void>[] = [];
+  for (const item of dispatcher.recoverable()) {
+    const key = `reconcile:${item.requestId}`;
+    if (inFlight.has(key) || inFlight.has(item.requestId)) continue;
+    const lease = dispatcher.takeOver(item);
+    if (!lease) continue;
+    const promise = reconcileRequest(lease)
+      .then(() => afterRequest(item.requestId, !dispatcher.holds(lease)))
+      .catch(error => {
+        console.error('Dispatch reconciliation failed unexpectedly:', error);
+      })
+      .finally(() => {
+        inFlight.delete(key);
+      });
+    inFlight.set(key, promise);
+    tasks.push(promise);
+  }
+  drainDeferred();
+  return Promise.all(tasks).then(() => undefined);
 }
 
 const inFlight = new Map<string, Promise<void>>();
@@ -522,6 +826,8 @@ export async function waitForAgentDispatchIdle(): Promise<void> {
 // from durable state (idempotent) and dispatches what is still queued.
 export function recoverCoordinatorLoops(): Promise<void> {
   return Promise.all([
+    // NOT-469: reconcile open Attempts before anything new is claimed.
+    sweepDispatch(),
     ...pendingCoordinatorWork().map(startAgentDispatch),
     ...openFinalizationIds().map(startFinalization),
   ]).then(() => undefined);
@@ -530,6 +836,13 @@ export function recoverCoordinatorLoops(): Promise<void> {
 // Engine event types in the documented request event vocabulary
 // (accepted > dispatched > runtime_started > completed|failed). Attempt
 // bookkeeping stays internal.
+const INTERNAL_EVENT_TYPES = [
+  'attempt_started', 'attempt_finished', 'session_bound', 'backfilled', 'runtime_progress', 'policy_selected',
+  // NOT-469 dispatcher bookkeeping.
+  'dispatch_claimed', 'dispatch_released', 'dispatch_deferred', 'dispatch_lease_taken_over', 'launch_intent_recorded',
+  'reconcile_decided', 'reconcile_deferred', 'attention_set',
+];
+
 function apiEventType(event: EngineEvent): string | null {
   if (event.type === 'state_changed') {
     const to = event.data ? (JSON.parse(event.data) as { to?: WorkRequestState }).to : undefined;
@@ -538,7 +851,7 @@ function apiEventType(event: EngineEvent): string | null {
     if (to === 'failed' || to === 'cancelled') return 'failed';
     return to ?? null;
   }
-  if (['attempt_started', 'attempt_finished', 'session_bound', 'backfilled', 'runtime_progress', 'policy_selected'].includes(event.type)) return null;
+  if (INTERNAL_EVENT_TYPES.includes(event.type)) return null;
   return event.type;
 }
 

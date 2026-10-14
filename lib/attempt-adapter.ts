@@ -143,9 +143,63 @@ export interface AttemptResult {
 
 export type AttemptEventSink = (event: AttemptEvent) => void;
 
+// NOT-469: what a launch will send, persisted by the dispatcher before the
+// adapter runs. body is the exact serialized start body; a re-POST after a
+// crash sends only this body, under this key, with the same grant.
+export interface AttemptLaunchIntent {
+  idempotencyKey: string;
+  body: string;
+  // Non-secret fingerprint of the credential the launch uses; null when
+  // none is configured.
+  grantFingerprint: string | null;
+}
+
+// Runtime evidence about an external run, read through the public API
+// only. Classifies the answer; deciding what to do is the dispatcher's
+// (lib/dispatcher, NOT-468 decision table).
+export type RunObservation =
+  | { kind: 'run'; state: 'starting' | 'running' | 'ended' | 'error' | 'died' | 'canceled' }
+  | { kind: 'accepted'; runId: string }
+  | { kind: 'not_found' }
+  | { kind: 'unauthorized' }
+  | { kind: 'forbidden' }
+  | { kind: 'no_grant' }
+  | { kind: 'unreachable' }
+  | { kind: 'rejected'; status: number | null; code: string | null };
+
+// What a reattach needs from the launch: re-derived from the persisted
+// launch snapshot and intent, never from process memory.
+export interface AttemptFollowInput {
+  resumeSessionId: string | null;
+  prepareFinalization: boolean;
+  deadlineAt: number | null;
+  signal?: AbortSignal | null;
+}
+
+// Optional capability of a transport whose runs outlive the process that
+// launched them. A transport without it cannot be reconciled: an open
+// Attempt is reported interrupted, never relaunched.
+export interface AttemptReconciler {
+  currentGrantFingerprint(): string | null;
+  inspect(runId: string): Promise<RunObservation>;
+  // Re-sends a persisted launch intent. 'accepted' names the run Agent
+  // Deck holds for the key (the original, or the first launch when the
+  // earlier POST never arrived).
+  repost(intent: { idempotencyKey: string; body: string }): Promise<RunObservation>;
+  // Observes an existing run to a terminal result, exactly like the tail
+  // of run(): the same result contract, deadline, and session checks.
+  follow(runId: string, input: AttemptFollowInput, onEvent?: AttemptEventSink): Promise<AttemptResult>;
+  // Public finalization evidence of a terminal (including died) run.
+  evidence(runId: string): Promise<AttemptFinalizationEvidence>;
+}
+
 export interface AttemptAdapter {
   readonly name: AttemptAdapterName;
   run(input: Readonly<AttemptInput>, onEvent?: AttemptEventSink): Promise<AttemptResult>;
+  // NOT-469: the start body run() would send for this input, or null when
+  // the transport has no external run or run() would fail before launch.
+  launchIntent?(input: Readonly<AttemptInput>): AttemptLaunchIntent | null;
+  readonly reconciler?: AttemptReconciler;
 }
 
 export function freezeAttemptInput(input: AttemptInput): Readonly<AttemptInput> {
@@ -166,7 +220,7 @@ export function attemptFailure(category: AttemptFailureCategory, message: string
 
 // Cancellation and deadline, shared by both adapters. Resolves to the
 // failure that ended the wait, or never resolves while neither fires.
-export function interruption(input: Readonly<AttemptInput>): { promise: Promise<AttemptFailure>; dispose: () => void } {
+export function interruption(input: Readonly<Pick<AttemptInput, 'signal' | 'deadlineAt'>>): { promise: Promise<AttemptFailure>; dispose: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let onAbort: (() => void) | null = null;
   const promise = new Promise<AttemptFailure>(resolve => {
