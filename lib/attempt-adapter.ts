@@ -139,6 +139,10 @@ export interface AttemptResult {
   failure: AttemptFailure | null;
   // NOT-487: present only for an Attempt launched with prepareFinalization.
   finalization?: AttemptFinalizationEvidence | null;
+  // NOT-469: the launch request failed in a way that does not prove no run
+  // started (for example the response was lost). A dispatcher keeps the
+  // Attempt open and reconciles it under the same idempotency key.
+  launchUnconfirmed?: boolean;
 }
 
 export type AttemptEventSink = (event: AttemptEvent) => void;

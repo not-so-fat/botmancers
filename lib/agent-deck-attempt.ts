@@ -49,6 +49,7 @@ import {
   type AttemptResult,
   type RunObservation,
 } from './attempt-adapter';
+import { launchRejectedBeforeWork } from './dispatcher';
 
 // Interval between event reads while a run is live. Placeholder value
 // until the owner confirms it; change one line here.
@@ -374,7 +375,11 @@ export function createAgentDeckApiAttemptAdapter(): AttemptAdapter {
         const started = await startAgentDeckRun(start.body, agentDeckStartIdempotencyKey(input));
         runId = started.runId;
       } catch (error) {
-        return failed(failureOf(error, 'launch_failed'));
+        // The POST may have reached Agent Deck and started model work
+        // before the response was lost: only a proven pre-launch refusal
+        // is a definite failure.
+        const definite = launchRejectedBeforeWork(observationOf(error));
+        return failed(failureOf(error, 'launch_failed'), definite ? {} : { launchUnconfirmed: true });
       }
       onEvent?.({ type: 'started', adapter: NAME, at: Date.now(), externalRunId: runId, externalSessionId: null });
       return followRun(runId, {

@@ -13,7 +13,10 @@
 //   no-run-id Attempts, never relaunching an ambiguous run;
 // - global and per-target concurrency limits with controlled adapter
 //   barriers, without losing queued work (also across a restart);
-// - a worker whose lease was taken over cannot commit;
+// - a worker whose lease was taken over cannot commit, nor write runtime
+//   events or external ids while its adapter is still running;
+// - a launch POST whose response is lost (or 5xx) keeps the Attempt open
+//   and reconciles into the one run; only a pre-launch refusal fails;
 // - ordered engine events for normal and crash-recovery flows;
 // - crash injection (SIGKILL) before launch, after launch acceptance,
 //   after run-id persistence, and before the terminal commit: no lost
@@ -506,6 +509,122 @@ async function fencingScenario() {
 }
 
 // ---------------------------------------------------------------------
+// A live launch POST that fails: only a proven pre-launch refusal fails
+// the Attempt. A lost response or a 5xx leaves it open (lease kept) and the
+// next reconcile re-POSTs under the same key, so no second run starts.
+async function launchFailureScenario() {
+  console.log('\n[4b] a failed launch POST fails only when provably pre-launch; ambiguous launches reconcile');
+  service.configureDispatcher({ owner: `test-launch:${process.pid}`, config: { maxGlobal: 50, maxPerTarget: 50 } });
+  const isStart = (url, init) => init.method === 'POST' && new URL(String(url), 'http://fake').pathname === '/api/agent-runs';
+  const cases = [
+    // The fake processes the POST (a run starts), then the client gets a
+    // network error. The process does not die.
+    { label: 'lost response', processed: true, ambiguous: true },
+    { label: '503 SERVER_ERROR', startError: { status: 503, code: 'SERVER_ERROR' }, ambiguous: true },
+    { label: '422 WORKSPACE_MISSING', startError: { status: 422, code: 'WORKSPACE_MISSING' }, ambiguous: false },
+  ];
+  for (const [index, c] of cases.entries()) {
+    let starts = 0;
+    fake.onStart = () => (starts++ === 0 && c.startError ? { startError: c.startError } : { result: `DONE-launch-${index}` });
+    let dropped = false;
+    deckApi.setAgentDeckApiFetch(async (url, init) => {
+      if (c.processed && !dropped && isStart(url, init)) {
+        dropped = true;
+        await fake.fetch(url, init);
+        throw new Error('socket hang up');
+      }
+      return fake.fetch(url, init);
+    });
+    const runsBefore = fake.runs.size;
+    const sent = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: `Launch failure ${index}`, idempotencyKey: `launch-failure-${index}` });
+    const id = sent.accepted.requestId;
+    await sent.dispatched;
+    deckApi.setAgentDeckApiFetch(fake.fetch);
+    let attempts = attemptsOf(id);
+    const key = `botmancers-attempt-${attempts[0].id}`;
+    if (!c.ambiguous) {
+      assert(attempts.length === 1 && attempts[0].outcome === 'failed' && attempts[0].error_category === 'launch_failed'
+        && engine.getWorkRequest(id).state === 'failed' && !leaseOf(id) && !types(id).includes('reconcile_deferred') && fake.runs.size === runsBefore,
+      `${c.label}: a pre-launch rejection fails the Attempt and releases the lease`);
+      continue;
+    }
+    assert(fake.runs.size === runsBefore + (c.processed ? 1 : 0), `${c.label}: Agent Deck ${c.processed ? 'started a run' : 'started nothing'}`);
+    assert(engine.getWorkRequest(id).state === 'running' && attempts.length === 1 && attempts[0].finished_at === null && attempts[0].external_run_id === null
+      && repliesOf(id).length === 0, `${c.label}: the Attempt and request stay open (not failed)`);
+    assert(leaseOf(id)?.owner === service.currentDispatcher().owner && eventData(id, 'reconcile_deferred').at(-1)?.reason === 'launch_unconfirmed'
+      && !types(id).includes('dispatch_released'), `${c.label}: lease kept, deferred launch_unconfirmed`);
+    await service.startAgentDispatch(id);
+    assert(attemptsOf(id).length === 1 && fake.runs.size === runsBefore + (c.processed ? 1 : 0), `${c.label}: a repeated dispatch creates no Attempt and launches nothing`);
+    raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
+    await service.sweepDispatch();
+    attempts = attemptsOf(id);
+    const runIds = fake.calls('POST', '/api/agent-runs').filter(call => call.headers['idempotency-key'] === key).length;
+    assert(engine.getWorkRequest(id).state === 'completed' && attempts.length === 1 && attempts[0].output === `DONE-launch-${index}`
+      && fake.runs.size === runsBefore + 1 && runIds === 2 && repliesOf(id).length === 1,
+    `${c.label}: reconciled by one same-key re-POST into exactly one run (${fake.runs.size - runsBefore} runs, ${runIds} POSTs)`);
+    assert(inOrder(types(id), ['dispatch_claimed', 'launch_intent_recorded', 'reconcile_deferred', 'dispatch_lease_taken_over', 'reconcile_decided', 'runtime_started', 'attempt_finished', 'state_changed', 'dispatch_released']),
+      `${c.label}: ordered events (${types(id).join(',')})`);
+  }
+}
+
+// ---------------------------------------------------------------------
+// A live worker whose lease was taken over while its adapter was waiting
+// writes no runtime events or external ids afterwards.
+async function staleWorkerScenario() {
+  console.log('\n[4c] a worker that lost its lease cannot write runtime events or external ids');
+  let entered = null;
+  let release = null;
+  dispatch.setAttemptAdapterOverride(() => ({
+    name: 'hermes-gateway',
+    async run(input, onEvent) {
+      await new Promise(resolve => { release = resolve; entered?.(); });
+      onEvent({ type: 'started', adapter: 'hermes-gateway', at: Date.now(), externalRunId: 'stale-run', externalSessionId: 'stale-session' });
+      onEvent({ type: 'progress', adapter: 'hermes-gateway', at: Date.now(), detail: { phase: 'stale' } });
+      const now = Date.now();
+      return { status: 'completed', adapter: 'hermes-gateway', externalRunId: 'stale-run', externalSessionId: 'stale-session', output: 'stale output', artifacts: [], startedAt: now, finishedAt: now, failure: null };
+    },
+  }));
+  const ownerA = `test-stale-a:${process.pid}`;
+  service.configureDispatcher({ owner: ownerA, config: { maxGlobal: 50, maxPerTarget: 50 } });
+
+  // Control: with its lease held, the same adapter's events are recorded.
+  let inAdapter = new Promise(resolve => { entered = resolve; });
+  const control = service.acceptAgentMessage(PERSON, { agentId: hermes.id, content: 'Stale control', idempotencyKey: 'stale-control' });
+  await inAdapter;
+  release();
+  await control.dispatched;
+  const controlId = control.accepted.requestId;
+  assert(types(controlId).includes('runtime_started') && types(controlId).includes('runtime_progress') && attemptsOf(controlId)[0].external_run_id === 'stale-run'
+    && engine.getWorkRequest(controlId).state === 'completed', 'control: a worker holding its lease records started/progress and the run id');
+
+  inAdapter = new Promise(resolve => { entered = resolve; });
+  const sent = service.acceptAgentMessage(PERSON, { agentId: hermes.id, content: 'Stale worker', idempotencyKey: 'stale-worker' });
+  const id = sent.accepted.requestId;
+  await inAdapter;
+  raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
+  const ownerB = `test-stale-b:${process.pid}`;
+  const other = lib.createDispatcher(raw, engine, { owner: ownerB });
+  assert(!!other.takeOver(other.recoverable().find(item => item.requestId === id)), 'worker B took over while worker A awaited its adapter');
+  const atTakeover = engine.listEvents(id).length;
+  release();
+  await sent.dispatched;
+  const after = engine.listEvents(id).slice(atTakeover).map(event => event.type);
+  const attempt = attemptsOf(id)[0];
+  assert(after.length === 0, `worker A wrote no events after the takeover (${after.join(',') || 'none'})`);
+  assert(!types(id).includes('runtime_started') && !types(id).includes('runtime_progress'), 'no runtime_started or runtime_progress from the stale worker');
+  assert(attempt.external_run_id === null && attempt.external_session_id === null && attempt.finished_at === null && repliesOf(id).length === 0
+    && leaseOf(id)?.owner === ownerB && engine.getWorkRequest(id).state === 'running', 'Attempt ids untouched, Attempt open, no reply, lease still B\'s');
+
+  // B's reconcile owns the outcome (an unobservable transport: interrupted).
+  raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
+  await service.sweepDispatch();
+  dispatch.setAttemptAdapterOverride(null);
+  const request = engine.getWorkRequest(id);
+  assert(request.state === 'failed' && request.error_code === 'interrupted' && attemptsOf(id).length === 1 && attemptsOf(id)[0].outcome === 'interrupted'
+    && !types(id).includes('runtime_started'), 'the new owner reconciled it; the stale run id never appeared');
+}
+
+// ---------------------------------------------------------------------
 async function concurrencyScenario() {
   console.log('\n[5] global and per-target limits with adapter barriers');
   const alpha = botNamed('Limit Alpha', { agent: 'hermes', deck_id: 'deck-limit' });
@@ -707,6 +826,8 @@ async function main() {
   decisionTable();
   await reconciliationScenarios();
   await fencingScenario();
+  await launchFailureScenario();
+  await staleWorkerScenario();
   await concurrencyScenario();
   await normalFlowEvents();
   await crashScenarios();

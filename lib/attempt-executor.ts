@@ -92,8 +92,10 @@ export function outcomeForResult(result: AttemptResult): AttemptOutcome {
   return 'failed';
 }
 
-function recordEvent(store: EngineStore, attempt: WorkAttempt, event: AttemptEvent): void {
-  store.transaction(() => {
+// False (nothing written) when the fence reports the caller's claim lost.
+function recordEvent(store: EngineStore, attempt: WorkAttempt, event: AttemptEvent, fence: (() => boolean) | undefined): boolean {
+  return store.transaction(() => {
+    if (fence && !fence()) return false;
     if (event.type === 'started') {
       if (event.externalRunId || event.externalSessionId) {
         store.recordAttemptExternalIds(attempt.id, {
@@ -115,6 +117,7 @@ function recordEvent(store: EngineStore, attempt: WorkAttempt, event: AttemptEve
         now: event.at,
       });
     }
+    return true;
   });
 }
 
@@ -135,6 +138,11 @@ export interface RunAttemptOptions<T> {
   // Runs in the transaction that finishes the Attempt.
   project?: (result: AttemptResult, attempt: WorkAttempt) => T;
   onEvent?: (event: AttemptEvent) => void;
+  // NOT-469: checked inside each event write's transaction. Once it
+  // returns false (the caller's lease was taken over) that event and every
+  // later one are dropped, external ids included, and onEvent is not
+  // called: the new owner reconciles the run.
+  fence?: () => boolean;
 }
 
 export async function runAttempt<T = undefined>(
@@ -144,9 +152,13 @@ export async function runAttempt<T = undefined>(
   options: RunAttemptOptions<T> = {}
 ): Promise<{ attempt: WorkAttempt; result: AttemptResult; projected: T | undefined }> {
   let result: AttemptResult;
+  let fenced = false;
   try {
     result = await adapter.run(prepared.input, event => {
-      recordEvent(store, prepared.attempt, event);
+      if (fenced || !recordEvent(store, prepared.attempt, event, options.fence)) {
+        fenced = true;
+        return;
+      }
       options.onEvent?.(event);
     });
   } catch (error) {

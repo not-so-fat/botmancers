@@ -359,10 +359,18 @@ export function currentDispatcher(): Dispatcher {
   return dispatcher;
 }
 
-// Thrown inside a commit transaction to roll it back when Agent Deck
-// became unreachable while a known run was observed: the run may still be
-// live, so the Attempt stays open and reconciliation retries (NOT-468 F7).
-class DeferCommit extends Error {}
+// Thrown inside a commit transaction to roll it back when the run may
+// still be live: Agent Deck became unreachable while a known run was
+// observed (NOT-468 F7), or a launch POST failed without proving that no
+// run started. The Attempt stays open and reconciliation retries; with no
+// run id that is a same-key re-POST, which returns the run if it exists.
+class DeferCommit extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(`Commit deferred: ${reason}`);
+    this.reason = reason;
+  }
+}
 
 // One Attempt for a queued canonical request, under its validated policy
 // (a direct message is a read-only conversation turn; there is no
@@ -513,10 +521,13 @@ async function runTurn(requestId: string): Promise<boolean> {
     dispatchFault('before_launch', requestId);
     try {
       await runAttempt(engine, started.attempt as PreparedAttempt, prepared.adapter, {
+        // A worker whose lease was taken over writes no runtime events or
+        // external ids: the new owner reconciles the run.
+        fence: () => dispatcher.holds(lease),
         onEvent: event => {
           // The executor has already persisted the run id for 'started'.
           if (event.type === 'started') dispatchFault('after_run_id_persisted', requestId);
-          recordBaselineEvent(attemptId, event);
+          recordBaselineEvent(lease, attemptId, event);
         },
         project: (result, attempt) => commitTurn(lease, request, attempt, result),
       });
@@ -527,10 +538,14 @@ async function runTurn(requestId: string): Promise<boolean> {
   return true;
 }
 
-function recordBaselineEvent(attemptId: string, event: AttemptEvent): void {
+// Fenced: dropped once the lease is no longer held.
+function recordBaselineEvent(lease: DispatchLease, attemptId: string, event: AttemptEvent): void {
   if (event.type === 'progress' && event.detail.phase === 'finalization_prepared'
     && typeof event.detail.baseline_ref === 'string' && typeof event.detail.baseline_digest === 'string') {
-    recordAttemptBaseline(attemptId, { baselineRef: event.detail.baseline_ref, baselineDigest: event.detail.baseline_digest }, event.at);
+    const baseline = { baselineRef: event.detail.baseline_ref, baselineDigest: event.detail.baseline_digest };
+    engine.transaction(() => {
+      if (dispatcher.holds(lease)) recordAttemptBaseline(attemptId, baseline, event.at);
+    });
   }
 }
 
@@ -547,12 +562,12 @@ async function withHeartbeat<T>(lease: DispatchLease, fn: () => Promise<T>): Pro
 }
 
 // A commit that did not happen: the lease moved to another worker (which
-// reconciles the same run), or Agent Deck became unreachable mid-run.
+// reconciles the same run), or the run may still be live (DeferCommit).
 function handleUncommitted(lease: DispatchLease, attemptId: string, error: unknown): void {
   if (error instanceof LeaseLostError) return;
   if (error instanceof DeferCommit) {
     try {
-      dispatcher.defer(lease, 'unreachable', attemptId);
+      dispatcher.defer(lease, error.reason, attemptId);
     } catch (deferError) {
       if (!(deferError instanceof LeaseLostError)) throw deferError;
     }
@@ -569,7 +584,10 @@ function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAtt
   dispatchFault('before_terminal_commit', request.id);
   dispatcher.assertHeld(lease);
   if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable' && attempt.external_run_id) {
-    throw new DeferCommit();
+    throw new DeferCommit('unreachable');
+  }
+  if (result.status === 'failed' && result.launchUnconfirmed && !attempt.external_run_id) {
+    throw new DeferCommit('launch_unconfirmed');
   }
   const requestId = request.id;
   const now = Date.now();
@@ -736,10 +754,10 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
         resumeSessionId: binding?.external_session_id ?? null,
         prepareFinalization: prepare,
         deadlineAt: typeof snapshot.deadline_at === 'number' ? snapshot.deadline_at : null,
-      }, event => recordBaselineEvent(attempt.id, event));
+      }, event => recordBaselineEvent(lease, attempt.id, event));
       engine.transaction(() => {
         dispatcher.assertHeld(lease);
-        if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable') throw new DeferCommit();
+        if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable') throw new DeferCommit('unreachable');
         const finished = recordAttemptResult(engine, attempt.id, result);
         commitTurn(lease, request, finished, result);
       });

@@ -450,6 +450,24 @@ function preLaunchRejection(observation: { status: number | null; code: string |
   return PRE_LAUNCH_REJECTIONS.some(rule => rule.status === observation.status && rule.code.test(observation.code ?? ''));
 }
 
+// A failed live POST: true only when Agent Deck provably started no model
+// work (no grant was sent, the grant was refused, or a known pre-launch
+// rejection). Anything else (unreachable, a lost response, 5xx, an
+// unrecognized answer) is ambiguous: the run may be live, so the Attempt
+// stays open for same-key reconciliation.
+export function launchRejectedBeforeWork(observation: RunObservation): boolean {
+  switch (observation.kind) {
+    case 'no_grant':
+    case 'unauthorized':
+    case 'forbidden':
+      return true;
+    case 'rejected':
+      return preLaunchRejection(observation);
+    default:
+      return false;
+  }
+}
+
 // Table A: the Attempt is open and has no run id. Decides whether a
 // re-POST is safe at all.
 export function decideWithoutRunId(input: {
