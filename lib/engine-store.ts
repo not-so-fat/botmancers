@@ -88,6 +88,7 @@ export interface WorkAttempt {
   external_run_id: string | null;
   external_session_id: string | null;
   outcome: AttemptOutcome | null;
+  output: string | null;
   error_category: string | null;
   error_message: string | null;
   artifacts: string;
@@ -590,6 +591,17 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 6,
+    name: 'attempt_output',
+    up: db => {
+      db.exec(`
+        -- NOT-467: the runtime output an Attempt returned, recorded with
+        -- its terminal outcome (null while open or when none was returned).
+        ALTER TABLE work_attempts ADD COLUMN output TEXT;
+      `);
+    },
+  },
+  {
+    version: 7,
     name: 'wakes',
     up: db => {
       db.exec(`
@@ -903,6 +915,7 @@ export interface CreateAttemptInput {
 
 export interface FinishAttemptInput {
   outcome: AttemptOutcome;
+  output?: string | null;
   errorCategory?: string | null;
   errorMessage?: string | null;
   artifacts?: unknown[];
@@ -1177,11 +1190,11 @@ export function createEngineStore(db: Db) {
         if (attempt.finished_at !== null) throw new EngineStoreError('attempt_conflict', 'The attempt is already finished.');
         const now = input.now ?? Date.now();
         db.prepare(`
-          UPDATE work_attempts SET outcome = ?, error_category = ?, error_message = ?, artifacts = ?,
+          UPDATE work_attempts SET outcome = ?, output = ?, error_category = ?, error_message = ?, artifacts = ?,
             external_run_id = ?, external_session_id = ?, finished_at = ?
           WHERE id = ? AND finished_at IS NULL
         `).run(
-          input.outcome, input.errorCategory ?? null, input.errorMessage ?? null, JSON.stringify(input.artifacts ?? []),
+          input.outcome, input.output ?? null, input.errorCategory ?? null, input.errorMessage ?? null, JSON.stringify(input.artifacts ?? []),
           input.externalRunId === undefined ? attempt.external_run_id : input.externalRunId,
           input.externalSessionId === undefined ? attempt.external_session_id : input.externalSessionId,
           now, attemptId

@@ -21,6 +21,16 @@ import { execFile } from 'child_process';
 import { messages } from './db';
 import { AGENTS, agentTransport, type BotAgent } from './bot-definition';
 import { loadHermesConfig } from './hermes';
+import {
+  attemptFailure,
+  interruption,
+  preLaunchInterruption,
+  type AttemptAdapter,
+  type AttemptFailure,
+  type AttemptInput,
+  type AttemptPrompt,
+  type AttemptResult,
+} from './attempt-adapter';
 
 export const DECK_RUNTIMES = ['codex', 'claude', 'cursor', 'muse'] as const;
 
@@ -289,6 +299,16 @@ export async function deckRunLog(runId: string, options?: DeckRunLogOptions): Pr
   return { raw: output.stdout, ...stream };
 }
 
+// Failure raised by awaitDeckRunEnd. The category is the stable Attempt
+// failure category; the message text is unchanged from earlier releases.
+export class DeckRunEndError extends Error {
+  readonly category: 'runtime_failed' | 'result_contract';
+  constructor(category: 'runtime_failed' | 'result_contract', message: string) {
+    super(message);
+    this.category = category;
+  }
+}
+
 export interface AwaitedDeckRun {
   status: DeckRunStatus;
   result: string;
@@ -306,17 +326,18 @@ export interface AwaitedDeckRun {
 export async function awaitDeckRunEnd(runId: string): Promise<AwaitedDeckRun> {
   const log = await deckRunLog(runId, { follow: true });
   if (log.errorMessage) {
-    throw new Error(`agent-deck run ${runId} failed: ${log.errorMessage.slice(0, 300)}`);
+    throw new DeckRunEndError('runtime_failed', `agent-deck run ${runId} failed: ${log.errorMessage.slice(0, 300)}`);
   }
   if (!log.ended) {
-    throw new Error(`agent-deck run ${runId} ended without a terminal log event; failing closed.`);
+    throw new DeckRunEndError('runtime_failed', `agent-deck run ${runId} ended without a terminal log event; failing closed.`);
   }
   const status = await deckRunStatus(runId);
   if (status.state === 'error' || status.state === 'died') {
-    throw new Error(`agent-deck run ${runId} ${status.state}`);
+    throw new DeckRunEndError('runtime_failed', `agent-deck run ${runId} ${status.state}`);
   }
   if (!log.result) {
-    throw new Error(
+    throw new DeckRunEndError(
+      'result_contract',
       `agent-deck run ${runId} result contract mismatch: expected a non-empty string result, got ${log.resultMismatch ?? 'no result event'}.`
     );
   }
@@ -401,6 +422,114 @@ export async function listAvailableAgents(): Promise<BotAgent[]> {
   return available;
 }
 
+// NOT-467: Agent Deck single-Attempt adapter (./attempt-adapter contract).
+// One Attempt is one detached `agent-deck run` (a resume when a session
+// binding is given) awaited to its terminal log event. The tool profile is
+// exactly the input's; there is no default here and nothing is derived
+// from the Agent type. A resumed run reporting a different session than
+// the binding fails closed as a session mismatch.
+export function deckPromptForAttempt(prompt: AttemptPrompt): string {
+  if (prompt.kind === 'text') return prompt.text;
+  const transcript = prompt.history
+    .map(entry => `[${entry.fromAgent ? 'you' : entry.speakerLabel}] ${entry.content}`)
+    .join('\n\n');
+  return `${prompt.system}\n\nConversation so far (reply to the last message):\n\n${transcript}`;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function createAgentDeckAttemptAdapter(): AttemptAdapter {
+  const name = 'agent-deck-run' as const;
+  return {
+    name,
+    async run(input: Readonly<AttemptInput>, onEvent): Promise<AttemptResult> {
+      const startedAt = Date.now();
+      const failed = (failure: AttemptFailure, ids: { runId?: string | null; sessionId?: string | null; logPath?: string | null } = {}): AttemptResult => ({
+        status: 'failed',
+        adapter: name,
+        externalRunId: ids.runId ?? null,
+        externalSessionId: ids.sessionId ?? null,
+        output: null,
+        artifacts: ids.logPath ? [{ kind: 'run_log', ref: ids.logPath }] : [],
+        startedAt,
+        finishedAt: Date.now(),
+        failure,
+      });
+      if (input.toolProfile !== 'readonly' && input.toolProfile !== 'edit') {
+        return failed(attemptFailure('unsupported_authority', `Unsupported tool profile: ${JSON.stringify(String(input.toolProfile))}.`));
+      }
+      if (!input.deck) return failed(attemptFailure('unavailable', 'agent-deck run requires a deck.'));
+      if (!input.cwd) return failed(attemptFailure('unavailable', 'agent-deck run requires --cwd.'));
+      let client: DeckRuntime;
+      try {
+        client = parseDeckRuntime(input.target.agent);
+      } catch (error) {
+        return failed(attemptFailure('unavailable', errorText(error)));
+      }
+      const early = preLaunchInterruption(input);
+      if (early) return failed(early);
+
+      const resume = input.sessionBinding?.externalSessionId ?? null;
+      let started: StartedDeckRun;
+      try {
+        started = await startDeckRun({
+          deck: input.deck,
+          client,
+          cwd: input.cwd,
+          prompt: deckPromptForAttempt(input.prompt),
+          tools: input.toolProfile,
+          ...(resume ? { resume } : {}),
+          detach: true,
+        });
+      } catch (error) {
+        return failed(attemptFailure('launch_failed', errorText(error)));
+      }
+      onEvent?.({ type: 'started', adapter: name, at: Date.now(), externalRunId: started.runId, externalSessionId: null });
+
+      const stop = interruption(input);
+      const awaiting = awaitDeckRunEnd(started.runId);
+      // An interrupted wait leaves the CLI child running; its outcome is
+      // discarded, so its rejection must not surface unhandled.
+      awaiting.catch(() => {});
+      const ids = { runId: started.runId, logPath: started.logPath };
+      try {
+        const settled = await Promise.race([
+          awaiting.then(awaited => ({ awaited }), (error: unknown) => ({ error })),
+          stop.promise.then(interrupted => ({ interrupted })),
+        ]);
+        if ('interrupted' in settled) return failed(settled.interrupted, ids);
+        if ('error' in settled) {
+          const category = settled.error instanceof DeckRunEndError ? settled.error.category : 'runtime_failed';
+          return failed(attemptFailure(category, errorText(settled.error)), ids);
+        }
+        const { awaited } = settled;
+        const logPath = awaited.status.logPath ?? started.logPath;
+        if (resume && awaited.sessionId !== null && awaited.sessionId !== resume) {
+          return failed(attemptFailure(
+            'session_mismatch',
+            `resume run ${started.runId} forked the session (expected ${resume}, got ${awaited.sessionId}); failing closed.`
+          ), { ...ids, sessionId: awaited.sessionId, logPath });
+        }
+        return {
+          status: 'completed',
+          adapter: name,
+          externalRunId: started.runId,
+          externalSessionId: awaited.sessionId ?? resume,
+          output: awaited.result,
+          artifacts: logPath ? [{ kind: 'run_log', ref: logPath }] : [],
+          startedAt,
+          finishedAt: Date.now(),
+          failure: null,
+        };
+      } finally {
+        stop.dispose();
+      }
+    },
+  };
+}
+
 // NOT-442: the model is never presented a DECK how-to. Ordinary turns
 // dispatch through the bot's own stored runtime in the conversation loop
 // (processAgentDeckTurn in ./agent), so no directive vocabulary is
@@ -460,69 +589,72 @@ export const DECK_DELEGATION_PHASE_TOOLS = Object.freeze({
 export async function delegateCodingViaDeck(request: DeckDelegationRequest): Promise<DeckDelegationResult | null> {
   const client = parseDeckRuntime(request.client);
   const stopped = request.isStopped ?? (() => false);
+  // NOT-467: compatibility caller. Each phase is one single Attempt through
+  // the shared adapter; phase order, authority, and observations stay here.
+  const adapter = createAgentDeckAttemptAdapter();
+  const phase = async (
+    prompt: string,
+    toolProfile: DeckToolProfile,
+    sessionBinding: AttemptInput['sessionBinding'] = null
+  ): Promise<AttemptResult> => adapter.run({
+    target: { agentId: request.botId, agent: client },
+    prompt: { kind: 'text', text: prompt },
+    cwd: request.cwd,
+    deck: request.deck,
+    toolProfile,
+    sessionBinding,
+    correlation: { conversationId: request.conversationId },
+  });
+  const outputOf = (result: AttemptResult): string => {
+    if (result.status !== 'completed' || result.output === null) {
+      throw new Error(result.failure?.message ?? `agent-deck run ${result.externalRunId ?? 'unknown'} failed`);
+    }
+    return result.output;
+  };
   try {
     if (stopped()) return null;
     observe(request, `[Deck handoff] agent=${client} deck=${request.deck}\n${request.task}`);
-    const impl = await startDeckRun({
-      deck: request.deck,
-      client,
-      cwd: request.cwd,
-      prompt: request.task,
-      tools: DECK_DELEGATION_PHASE_TOOLS.implement,
-      detach: true,
-    });
-    const implAwaited = await awaitDeckRunEnd(impl.runId);
+    const impl = await phase(request.task, DECK_DELEGATION_PHASE_TOOLS.implement);
     if (stopped()) return null;
-    const implSessionId = implAwaited.sessionId;
-    observe(request, `[Deck run] runId=${impl.runId} sessionId=${implSessionId ?? 'unknown'}`);
-    const implResult = implAwaited.result;
+    const implResult = outputOf(impl);
+    const implRunId = impl.externalRunId as string;
+    const implSessionId = impl.externalSessionId;
+    observe(request, `[Deck run] runId=${implRunId} sessionId=${implSessionId ?? 'unknown'}`);
 
     if (stopped()) return null;
-    const review = await startDeckRun({
-      deck: request.deck,
-      client,
-      cwd: request.cwd,
-      prompt: `Review this implementation result against the goal.\n\nGoal: ${request.task}\n\nReview focus: ${request.reviewFocus}\n\nImplementation result:\n${implResult}`,
-      tools: DECK_DELEGATION_PHASE_TOOLS.review,
-      detach: true,
-    });
-    const reviewAwaited = await awaitDeckRunEnd(review.runId);
+    const review = await phase(
+      `Review this implementation result against the goal.\n\nGoal: ${request.task}\n\nReview focus: ${request.reviewFocus}\n\nImplementation result:\n${implResult}`,
+      DECK_DELEGATION_PHASE_TOOLS.review
+    );
     if (stopped()) return null;
-    const reviewResult = reviewAwaited.result;
-    observe(request, `[Deck review] runId=${review.runId} result=${reviewResult.slice(0, 500)}`);
+    const reviewResult = outputOf(review);
+    const reviewRunId = review.externalRunId as string;
+    observe(request, `[Deck review] runId=${reviewRunId} result=${reviewResult.slice(0, 500)}`);
 
     if (!implSessionId) {
-      throw new Error(`implementation run ${impl.runId} reported no session to resume`);
+      throw new Error(`implementation run ${implRunId} reported no session to resume`);
     }
     if (stopped()) return null;
     // Resume receives the original session id unchanged: the value is
-    // copied from the bound run's status, never synthesized.
-    const resume = await resumeDeckRun({
-      deck: request.deck,
-      client,
-      cwd: request.cwd,
-      prompt: reviewResult,
-      tools: DECK_DELEGATION_PHASE_TOOLS.revise,
-      resume: implSessionId,
+    // copied from the bound run's status, never synthesized. The adapter
+    // fails closed when the resumed run reports a different session.
+    const resume = await phase(reviewResult, DECK_DELEGATION_PHASE_TOOLS.revise, {
+      bindingId: null,
+      externalSessionId: implSessionId,
     });
-    const resumeAwaited = await awaitDeckRunEnd(resume.runId);
     if (stopped()) return null;
-    const resumedSessionId = resumeAwaited.sessionId ?? implSessionId;
-    if (resumeAwaited.sessionId !== null && resumeAwaited.sessionId !== implSessionId) {
-      throw new Error(
-        `resume run ${resume.runId} forked the session (expected ${implSessionId}, got ${resumeAwaited.sessionId}); failing closed.`
-      );
-    }
-    observe(request, `[Deck resume] runId=${resume.runId} sessionId=${resumedSessionId}`);
-    const finalResult = resumeAwaited.result;
-    observe(request, `[Deck result] runId=${resume.runId} result=${finalResult.slice(0, 500)}`);
+    const finalResult = outputOf(resume);
+    const resumeRunId = resume.externalRunId as string;
+    const resumedSessionId = resume.externalSessionId ?? implSessionId;
+    observe(request, `[Deck resume] runId=${resumeRunId} sessionId=${resumedSessionId}`);
+    observe(request, `[Deck result] runId=${resumeRunId} result=${finalResult.slice(0, 500)}`);
     return {
-      implRunId: impl.runId,
+      implRunId,
       implSessionId,
       implResult,
-      reviewRunId: review.runId,
+      reviewRunId,
       reviewResult,
-      resumeRunId: resume.runId,
+      resumeRunId,
       resumedSessionId,
       finalResult,
     };
