@@ -822,14 +822,48 @@ button.thread-name {
   padding: 16px;
 }
 
-.new-forms {
+/* NOT-447: New Agent dialog. Script places it under New (top/left/
+   max-height inline); these defaults keep a 16px inset everywhere. Header
+   and actions stay put while the field body scrolls. */
+.new-agent-scrim {
+  display: block;
+  overflow: hidden;
+  padding: 0;
+}
+
+.new-agent-dialog {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  width: min(358px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  width: 100%;
-  max-width: 358px;
-  align-items: flex-start;
-  margin-top: 48px;
+}
+
+.new-agent-dialog .kind-row {
+  flex: 0 0 auto;
+}
+
+.new-agent-dialog .bot-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.new-agent-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* Room for the 2px + 2px focus ring inside the scroll clip. */
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.new-agent-dialog .form-actions {
+  flex: 0 0 auto;
+  padding-top: 4px;
 }
 
 .kind-row {
