@@ -59,7 +59,7 @@ import {
   parseDeckRuntime,
   type DeckRuntime,
 } from './agent-deck-run';
-import { startAgentDispatch } from './agent-conversations';
+import { recoverCoordinatorLoops, startAgentDispatch } from './agent-conversations';
 import { selectExecutionPolicy } from './execution-policy';
 import {
   agentTransport,
@@ -2294,6 +2294,8 @@ function modelTurn(msg: Message, selfId: string): { role: 'user'; content: strin
 if (AUTO_PROCESS) {
   bots.touchSeen();
   resumeLoopTimers();
+  // NOT-472: coordinator continuations and Wake requests survive restart.
+  recoverCoordinatorLoops().catch(console.error);
   setInterval(() => {
     bots.touchSeen();
     resumeLoopTimers();

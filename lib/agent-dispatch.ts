@@ -54,6 +54,8 @@ export interface DispatchTurn {
   // read-only (TOOL_PROFILE_FOR_KIND.conversation) when omitted; it is
   // never derived from the agent type.
   toolProfile?: ToolProfile;
+  // NOT-472: opaque session to resume (a revision). Omitted: a fresh launch.
+  sessionBinding?: AttemptInput['sessionBinding'];
 }
 
 export interface DispatchHooks {
@@ -94,6 +96,17 @@ export const ATTEMPT_ADAPTERS: Record<AgentTransport, () => AttemptAdapter> = {
   'agent-deck-run': () => createAgentDeckAttemptAdapter(),
 };
 
+let adapterOverride: ((transport: AgentTransport) => AttemptAdapter) | null = null;
+
+// Test seam: replaces the transport adapter selection. Pass null to restore.
+export function setAttemptAdapterOverride(next: ((transport: AgentTransport) => AttemptAdapter) | null): void {
+  adapterOverride = next;
+}
+
+function adapterFor(transport: AgentTransport): AttemptAdapter {
+  return adapterOverride ? adapterOverride(transport) : ATTEMPT_ADAPTERS[transport]();
+}
+
 export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   const resolved = resolveAgent(turn.bot);
   if (!resolved.launchable || !resolved.deck_id) {
@@ -103,13 +116,13 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
     prompt: { kind: 'conversation' as const, system: systemPromptFor(turn.bot), history: turn.history },
     deck: resolved.deck_id,
     toolProfile: turn.toolProfile ?? TOOL_PROFILE_FOR_KIND.conversation,
-    sessionBinding: null,
+    sessionBinding: turn.sessionBinding ?? null,
     correlation: {},
   };
   if (agentTransport(resolved.agent) === 'hermes-gateway') {
     return {
       agent: resolved.agent,
-      adapter: ATTEMPT_ADAPTERS['hermes-gateway'](),
+      adapter: adapterFor('hermes-gateway'),
       input: {
         ...base,
         target: { agentId: turn.bot.id, agent: resolved.agent, hermesProfilePath: hermesProfilePathForBot(turn.bot) },
@@ -128,7 +141,7 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   }
   return {
     agent: resolved.agent,
-    adapter: ATTEMPT_ADAPTERS['agent-deck-run'](),
+    adapter: adapterFor('agent-deck-run'),
     input: { ...base, target: { agentId: turn.bot.id, agent: resolved.agent }, cwd },
   };
 }
