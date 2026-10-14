@@ -152,7 +152,8 @@ function referenceProblem(envelope: WakeEnvelope, conversationId: string, parent
   return null;
 }
 
-// Target resolution and launch checks. Shared by first routing and retry.
+// Target resolution by name, then the launch checks. Used by first routing
+// and by retrying an unavailable Wake (which has no target yet).
 function resolveOutcome(envelope: WakeEnvelope): Outcome {
   const resolved = resolveWakeTarget(envelope.target);
   if (!resolved.ok) {
@@ -164,7 +165,13 @@ function resolveOutcome(envelope: WakeEnvelope): Outcome {
     }
     return { status: 'unavailable', code: 'target_not_found', reason: `No Agent is named ${envelope.target}.` };
   }
-  const target = { id: resolved.agentId, name: resolved.displayName };
+  return checkTarget(envelope, { id: resolved.agentId, name: resolved.displayName });
+}
+
+// Resume constraint, configuration, and availability of one resolved
+// Agent. A blocked Wake's retry calls this on its stored target, never on
+// whichever Agent now holds the requested name.
+function checkTarget(envelope: WakeEnvelope, target: { id: string; name: string }): Outcome {
   if (envelope.resumeWorkRequest) {
     const resume = engine.getWorkRequest(envelope.resumeWorkRequest);
     if (!resume || resume.target_agent_id !== target.id || !['implementation', 'revision'].includes(resume.execution_kind)) {
@@ -311,7 +318,6 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     if (!wake) throw new WakeRouterError('not_found', `No Wake ${wakeId}.`);
     if (wake.status !== 'unavailable' && wake.status !== 'blocked') return routed(wake, false);
     const envelope = (JSON.parse(wake.payload) as { envelope: WakeEnvelope }).envelope;
-    const outcome = resolveOutcome(envelope);
     const update = db.prepare(`
       UPDATE wakes SET status = ?, reason_code = ?, reason = ?, target_agent_id = ?, target_name_snapshot = ?,
         work_request_id = ?, root_request_id = ?, updated_at = ?
@@ -319,6 +325,7 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     `);
 
     if (wake.status === 'unavailable') {
+      const outcome = resolveOutcome(envelope);
       if (!routable(outcome)) {
         // Still unresolved (or no longer resolvable): keep it visible with
         // the current reason; a rejection here stays retryable data, not a
@@ -333,8 +340,13 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
       return routed(getWake(wake.id) as Wake, true);
     }
 
+    // Blocked: the request already names its target. Re-check that Agent,
+    // even if it was renamed and another Agent now holds the name.
     const request = engine.getWorkRequest(wake.work_request_id as string) as WorkRequest;
-    if (outcome.status !== 'accepted' || request.state !== 'blocked') return routed(wake, false);
+    const stored = bots.getById(request.target_agent_id) as Bot | undefined;
+    if (!stored || request.state !== 'blocked') return routed(wake, false);
+    const outcome = checkTarget(envelope, { id: stored.id, name: stored.name });
+    if (outcome.status !== 'accepted') return routed(wake, false);
     engine.transitionWorkRequest(request.id, { from: 'blocked', to: 'queued', reason: 'target_available', now });
     update.run('accepted', null, null, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);
     return routed(getWake(wake.id) as Wake, true);

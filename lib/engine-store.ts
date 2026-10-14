@@ -1360,7 +1360,10 @@ export function deleteEngineRecordsForConversation(db: Db, conversationId: strin
 }
 
 export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
-  db.prepare('DELETE FROM wakes WHERE requester_agent_id = ? OR target_agent_id = ?').run(agentId, agentId);
+  // A Wake the Agent requested stays while its request (to another Agent)
+  // survives; deleteEngineRecords removes it with that request. Only the
+  // Agent's unrouted Wakes, which nothing references, go now.
+  db.prepare('DELETE FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL)').run(agentId, agentId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE target_agent_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE agent_id = ?',

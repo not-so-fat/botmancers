@@ -200,6 +200,23 @@ function runMain() {
   assert(configRecovered.wake.status === 'accepted' && configRecovered.request.state === 'queued', 'configured target recovers');
   assert(router.retryWake(groupWake.id).wake.status === 'rejected', 'rejected Wakes are not retried');
 
+  console.log('Blocked retry checks the stored target, not the name');
+  const idle = bots.create({ name: 'Idle', title: 'Idle', description: 'No deck yet.', agent: 'cursor' });
+  const mIdle = messages.create(conversation.id, 'bot', block({ version: 1, target: 'Idle', executionKind: 'conversation', objective: 'Wake up.' }), tank.id);
+  const idleWake = router.routeAgentWakes({ sourceEventId: mIdle.id, parentRequestId: root.id })[0].wake;
+  assert(idleWake.status === 'blocked' && idleWake.target_agent_id === idle.id, 'unconfigured Idle is blocked');
+  bots.updateIdentity(idle.id, 'Idle Old', idle.title, idle.description);
+  const impostor = bots.create({ deck_id: 'deck-impostor', name: 'Idle', title: 'New', description: 'Took the name.', agent: 'hermes' });
+  const renamedRetry = router.retryWake(idleWake.id);
+  assert(!renamedRetry.created && renamedRetry.wake.status === 'blocked' && renamedRetry.request.state === 'blocked', 'launchable Agent holding the old name does not unblock the request');
+  assert(renamedRetry.wake.target_agent_id === idle.id && renamedRetry.request.target_agent_id === idle.id && impostor.id !== idle.id, 'Wake and request keep the stored target');
+  router.setWakeAvailabilityProbe(bot => bot.id === idle.id ? { available: false, reason: 'Idle is restarting.' } : { available: true });
+  bots.updateAgentSelection(idle.id, { deck_id: 'deck-idle' });
+  assert(router.retryWake(idleWake.id).request.state === 'blocked', 'stored target configured but unavailable stays blocked');
+  router.setWakeAvailabilityProbe(available);
+  const idleRecovered = router.retryWake(idleWake.id);
+  assert(idleRecovered.wake.status === 'accepted' && idleRecovered.request.state === 'queued' && idleRecovered.request.target_agent_id === idle.id, 'stored target recovers under its new name');
+
   console.log('Legacy WAKE compatibility');
   for (const fixture of fixtures.valid) {
     assert(wake.validateWakeEnvelope(fixture.envelope).ok, `valid fixture: ${fixture.name}`);
@@ -276,6 +293,18 @@ function runMain() {
   assert(sameCounts(counts(), afterAll), 'restart reprocessing wrote no rows');
 
   console.log('Deletion keeps referential integrity');
+  const scout = bots.create({ deck_id: 'deck-scout', name: 'Scout', title: 'Scout', description: 'Scouts.', agent: 'hermes' });
+  const scoutConversation = conversations.getByBotId(scout.id);
+  const mScout = messages.create(scoutConversation.id, 'bot', [
+    block({ version: 1, target: 'Dev', executionKind: 'conversation', objective: 'Look at this.' }),
+    block({ version: 1, target: 'Nobody', executionKind: 'conversation', objective: 'Hello?' }),
+  ].join('\n'), scout.id);
+  const [scoutRouted, scoutUnrouted] = router.routeAgentWakes({ sourceEventId: mScout.id }).map(entry => entry.wake);
+  raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForAgent(raw, scout.id))();
+  const survivor = engine.getWorkRequest(scoutRouted.work_request_id);
+  assert(survivor && router.getWake(survivor.wake_event_id), 'deleting the requester keeps the Wake its surviving request references');
+  assert(!router.getWake(scoutUnrouted.id), "deleting the requester removes its unrouted Wakes");
+  raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForConversation(raw, scoutConversation.id))();
   raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForConversation(raw, conversation.id))();
   assert(raw.prepare('SELECT COUNT(*) AS n FROM wakes').get().n === 0, 'deleting the conversation removes its Wakes');
 
