@@ -1,0 +1,19 @@
+HEAD: 6f49630a55618acd72ddbea556de9e7df8c7d1ae
+$ npm run lint
+
+> botmancers@0.1.0 lint
+> eslint
+
+
+/Users/not_so_fat/.agent-dealer/execution/worktrees/github.com/not-so-fat/botmancers/b091e0e0-60c7-4d4d-8c78-a6b2029106d8-developer/app/page.tsx
+   252:6   warning  React Hook useEffect has a missing dependency: 'openBot'. Either include it or remove the dependency array                                                                                                                                                                               react-hooks/exhaustive-deps
+   271:6   warning  React Hook useEffect has a missing dependency: 'loadMessages'. Either include it or remove the dependency array                                                                                                                                                                          react-hooks/exhaustive-deps
+   874:23  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+   934:19  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+  1043:21  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+  1044:21  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+  1045:21  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+✖ 7 problems (0 errors, 7 warnings)
+
+exit: 0

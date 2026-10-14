@@ -466,6 +466,79 @@ textarea {
   display: none;
 }
 
+/* The tip only carries status words now; the row actions live behind the
+   always-visible trigger, so the tip must not swallow clicks on the next row. */
+.row-tip {
+  pointer-events: none;
+}
+
+/* NOT-448: one named button per row opens the agent. Its overlay spans the
+   whole row so pointer selection works anywhere, and its focus ring outlines
+   the row rather than just the name. */
+.row-open {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.row-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: 8px;
+}
+
+.bot-row .row-open::after {
+  inset: -4px -8px;
+}
+
+.bot-row.is-open .row-open::after {
+  inset: 0;
+}
+
+.card .row-open::after {
+  border-radius: 16px;
+}
+
+.row-open:focus-visible::after {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.row-actions {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: auto;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 4px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 16px;
+  line-height: 1;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.row-actions:hover,
+.row-actions[aria-expanded="true"] {
+  color: var(--ink);
+}
+
+.row-actions:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .card-lead {
   padding: 28px 22px;
 }
@@ -527,7 +600,7 @@ textarea {
   padding: 8px 10px;
 }
 
-.row-menu button {
+.row-menu [role="menuitem"] {
   display: block;
   width: 100%;
   background: none;
@@ -539,9 +612,10 @@ textarea {
   color: var(--ink);
   cursor: pointer;
   margin-top: 8px;
+  text-decoration: none;
 }
 
-.row-menu button:first-child {
+.row-menu [role="menuitem"]:first-child {
   margin-top: 0;
 }
 
@@ -1757,7 +1831,7 @@ button.avatar-pic {
 .delete-card button:focus-visible,
 .manage-card button:focus-visible,
 .manage-card input:focus-visible,
-.row-menu button:focus-visible,
+.row-menu [role="menuitem"]:focus-visible,
 .cfg-danger button:focus-visible,
 .bar button:focus-visible {
   outline: 2px solid var(--accent);

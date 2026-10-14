@@ -226,7 +226,7 @@ async function run() {
     await sleep(200);
     if (await evaluate("!!document.querySelector('form.bot-form')")) await click('button', 'Cancel');
 
-    await evaluate(`${rowByName('Bob')}.click()`);
+    await evaluate(`${rowByName('Bob')}.querySelector('.row-open').click()`);
     await waitFor("document.querySelector('.composer textarea')", 'composer');
     await typeInto('.composer textarea', '@');
     await waitFor("document.querySelector('.mention-list')", 'mention list');
