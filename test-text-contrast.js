@@ -103,8 +103,6 @@ const MUTED = [
   ['.cfg-muted', 'ink-muted', SURFACES],
   ['.cfg-faint', 'ink-faint', SURFACES],
   ['.composer textarea::placeholder', 'ink-faint', ['composer']],
-  ['.kind-word[aria-pressed="false"]', 'ink-faint', ['card']],
-  ['.delete-label', 'ink-muted', ['card']],
   ['.delete-keeps', 'ink-muted', ['card']],
   ['.manage-count', 'ink-muted', ['card']],
   ['.manage-tag', 'ink-muted', ['card']],

@@ -277,7 +277,12 @@ async function main() {
   assert((page.match(/<DeleteAgentsDialog/g) || []).length >= 1, 'row menu Delete routes through DeleteAgentsDialog');
   const panel = fs.readFileSync(path.join(ROOT, 'app', 'components', 'ManageAgentsPanel.tsx'), 'utf8');
   assert(/<DeleteAgentsDialog/.test(panel) && /Select all shown/.test(panel) && /Delete selected/.test(panel), 'Manage agents panel uses DeleteAgentsDialog with Select all shown and Delete selected');
-  assert(/delete-preview/.test(dialog) && /DELETE_REMOVES_COPY/.test(dialog) && /DELETE_KEEPS_COPY/.test(dialog) && /groupImpactLine/.test(dialog), 'dialog renders the shared preview and permanent-data copy');
+  assert(/delete-preview/.test(dialog) && /DELETE_REMOVES_COPY/.test(dialog) && /DELETE_KEEPS_COPY/.test(dialog), 'dialog renders the shared preview and permanent-data copy');
+  assert(!/preview\.groups|delete-legacy-impact|sharedConversationImpactCopy|groupImpactLine/.test(dialog), 'dialog shows no stored-group impact (NOT-461)');
+  assert(!('sharedConversationImpactCopy' in deletion) && !('groupImpactLine' in deletion), 'no group-impact copy helpers remain (NOT-461)');
+  const visibleDialogCopy = dialog.split('\n').filter(line => !/^\s*(\/\/|import|\}|type )/.test(line));
+  assert(!visibleDialogCopy.some(line => /group/i.test(line)), 'dialog renders no Group wording (NOT-461)');
+  assert(!/group/i.test(deletion.DELETE_REMOVES_COPY), 'permanent-data copy uses no Group wording');
   console.log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }

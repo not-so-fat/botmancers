@@ -14,11 +14,11 @@ approval, file, and config states.
 All current-side captures run from the exact PR HEAD:
 
 ```sh
-node scripts/seed-design-fixture.js            # grouped roster fixture
+node scripts/seed-design-fixture.js            # roster fixture (legacy groups stored, hidden)
 BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm run dev
 # open http://localhost:43123 at 1440x900 and 390x800
 
-node scripts/seed-design-fixture.js --no-groups   # roster-nogroups screen
+node scripts/seed-design-fixture.js --no-groups   # same fixture without legacy group rows
 node scripts/seed-design-fixture.js --thread-cards # NOT-410 card demo thread
 ```
 
@@ -27,6 +27,18 @@ Side-by-side composites go in `docs/parity/` as
 Status `PENDING` below means the current-side capture still needs a
 browser session; the dev sandbox for this change has no browser and no
 loopback, so captures are routed to the operator.
+
+## Agent-only UI (NOT-461)
+
+Group is no longer a UI concept: the roster, New panel (one New Agent
+form, no kind switch), composer mentions, thread view, and delete
+confirmation show agents only, and the browser never requests
+`/api/groups` or `/api/conversations?groupId=`. The seed fixture still
+stores two legacy groups so captures prove they stay hidden; their rows
+remain unchanged and reachable through the backend API. Group pills in
+the reference screenshots are therefore intentionally absent from the
+current side, and row 4 is retired. Earlier captures below predate this
+change and are kept as dated history.
 
 ## Operator capture notes (2026-10-12)
 
@@ -79,12 +91,12 @@ still pending.
 
 | # | Screen | Reference file | Current-side repro | Side-by-side | Verdict |
 |---|--------|----------------|--------------------|--------------|---------|
-| 1 | Grouped roster, botmancer idle, card rows | `botmancer-idle.png` | seed fixture, `/` at 1440x900 | [`docs/parity/botmancer-idle.png`](parity/botmancer-idle.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — palette, tokens, thread cards and composer match; roster is flat rows with sans names (Atelier 2026-10-03 spec) vs reference card rows, the only style difference. The computer-preview overlay is main-only (see Intentionally different) |
+| 1 | Roster, botmancer idle, card rows | `botmancer-idle.png` | seed fixture, `/` at 1440x900 | [`docs/parity/botmancer-idle.png`](parity/botmancer-idle.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — palette, tokens, thread cards and composer match; roster is flat rows with sans names (Atelier 2026-10-03 spec) vs reference card rows, the only style difference. The computer-preview overlay is main-only (see Intentionally different) |
 | 2 | Same, scrolled to top | `botmancer-idle-top.png` | seed fixture, `/` scrolled top | [`docs/parity/botmancer-idle-top.png`](parity/botmancer-idle-top.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — thread view (mono message cards, You labels, header) matches; roster is flat rows vs reference card rows, the only difference |
 | 3 | Botmancer working (heartbeat "Working") | `botmancer-working.png` | seed fixture, trigger a run, capture mid-run | [`docs/parity/botmancer-working.png`](parity/botmancer-working.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — header shows "Working" as in the reference; roster is flat rows vs reference card rows, the only style difference. The lead-card error line is a fixture limit (no OPENAI_API_KEY) and the computer-preview overlay is main-only |
-| 4 | Flat rows, group section | `flat-rows-group.png` | seed fixture, `/` scrolled to groups | [`docs/parity/flat-rows-group.png`](parity/flat-rows-group.png) | MATCH — flat rows, group pills (ClickproofGrove @Pine, Research Team), thread cards match; only the listed main-only additions (logo, Import button, Config/Stop) differ |
-| 5 | Flat rows, top | `flat-rows-top.png` | seed fixture, `/` scrolled top | [`docs/parity/flat-rows-top.png`](parity/flat-rows-top.png) | MATCH — same as flat-rows-group at the top of the roster |
-| 6 | Roster without groups | `roster-nogroups.png` | `--no-groups` fixture, `/` | [`docs/parity/roster-nogroups.png`](parity/roster-nogroups.png) | MATCH — flat roster without groups, highlighted active row, thread cards match; only the main-only additions differ |
+| 4 | Flat rows, group section | `flat-rows-group.png` | seed fixture, `/` scrolled to groups | [`docs/parity/flat-rows-group.png`](parity/flat-rows-group.png) | RETIRED (NOT-461) — the agent-only UI renders no group section; the reference group pills are intentionally absent. The 2026-10-12 capture is dated history |
+| 5 | Flat rows, top | `flat-rows-top.png` | seed fixture, `/` scrolled top | [`docs/parity/flat-rows-top.png`](parity/flat-rows-top.png) | MATCH — flat rows and thread cards at the top of the roster; only the main-only additions differ |
+| 6 | Agent-only roster | `roster-nogroups.png` | seed fixture (or `--no-groups`), `/` | [`docs/parity/roster-nogroups.png`](parity/roster-nogroups.png) | MATCH — flat agent-only roster, highlighted active row, thread cards match; only the main-only additions differ |
 | 7 | Unread badge cleared | `unread-cleared.png` | seed fixture, open the Cedar thread, no menu | [`docs/parity/unread-cleared.png`](parity/unread-cleared.png) | DRIFT (repro, operator recapture below) — attached capture shows the LaunchMint thread with the row menu open; the reference shows the Cedar thread with no menu, so this pair is not like-for-like |
 | 8 | Unread row hover (tooltip) | `unread-hover.png` | seed fixture, hover unread row (Alice unread) | [`docs/parity/unread-hover.png`](parity/unread-hover.png) | DRIFT (repro) + ACCEPTED DRIFT = MATCH on roster style per owner/human decision 2026-10-12 — row menu style matches; the attached capture has no "Unread" line because no bot was unread at capture time (operator recapture below restores it). Roster is flat rows vs reference card rows: accepted, the only style difference once unread is seeded |
 | 9 | Unread thread with tooltip menu | `unread-thread.png` | seed fixture, hover row in thread view | [`docs/parity/unread-thread.png`](parity/unread-thread.png) | ACCEPTED DRIFT = MATCH per owner/human decision 2026-10-12 — thread and row-menu styling match; roster is flat rows vs reference card rows, the only style difference. The menu reads Unpin because LaunchMint is pinned in the fixture (fixture state, not a style drift) |

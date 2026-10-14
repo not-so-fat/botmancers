@@ -6,7 +6,7 @@ export const MAX_DELETE_IDS = 500;
 
 export const DELETE_REMOVES_COPY =
   'Permanently removes each agent with its direct conversation, messages, queue rows, approvals, ' +
-  'launch snapshots, group memberships, memories, one-shots, routines, and pending questions. There is no undo.';
+  'launch snapshots, memories, one-shots, routines, and pending questions. There is no undo.';
 
 export const DELETE_KEEPS_COPY =
   'Skill files, working directories, Hermes profiles, and imported source files stay on disk.';
@@ -73,14 +73,6 @@ export function parseDeleteIds(body: unknown): ParsedDeleteIds {
 
 export function blockedReasonCopy(reason: DeleteBlocked['reason']): string {
   return reason === 'chief' ? CHIEF_BLOCK_REASON : ACTIVE_BLOCK_REASON;
-}
-
-export function groupImpactLine(group: DeleteGroupImpact): string {
-  if (group.outcome === 'removed') return `${group.name}: removed with its conversation (fewer than two agents left)`;
-  if (group.outcome === 'reassigned') {
-    return `${group.name}: owner reassigned to ${group.newOwner?.name ?? 'the earliest remaining agent'}; ${group.remaining} agents stay`;
-  }
-  return `${group.name}: ${group.remaining} agents stay`;
 }
 
 export function deleteConfirmLabel(count: number): string {

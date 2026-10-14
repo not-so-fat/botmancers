@@ -36,7 +36,9 @@ dated history.
 
 The current application is an early compatibility shell. It can:
 
-- create bots and groups;
+- create, open, mention, and delete individual agents (legacy group data
+  stays stored and reachable through `/api/groups`, but the UI shows agents
+  only);
 - converse through the persistent Hermes runtime;
 - route `@bot` and legacy `WAKE` handoffs;
 - show a dark roster-and-thread UI with unread tracking;

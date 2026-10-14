@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-420: small snapshot-parity items (marketplace handoff hardening, skill
-// end-token post-processing).
+// end-token post-processing). NOT-461: agent-only UI surface assertions.
 //
 // Self-contained like test-approvals.js: isolated SQLite file, stub model at
 // the model-call boundary, real route handlers invoked in-process. No dev
@@ -264,6 +264,68 @@ async function main() {
   const retry = agent.mirrorSpecialistReply(mirrorArgs);
   assert(retry.callerMessageId === null && retry.targetMessageId === null, 'retried mirror of the same round posts nothing');
   agent.setDelegationChatStub(null);
+
+  // NOT-461: the UI is agent-only. No client source requests group data or
+  // renders Group copy; stored groups stay a backend-only compatibility
+  // surface (covered by test:group-semantics).
+  log('\nAgent-only UI (NOT-461)');
+  const clientSources = [];
+  const walk = dir => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (full !== path.join(ROOT, 'app', 'api')) walk(full);
+      } else if (/\.tsx?$/.test(entry.name)) {
+        clientSources.push(full);
+      }
+    }
+  };
+  walk(path.join(ROOT, 'app'));
+  const groupCalls = clientSources.filter(file => /\/api\/groups|groupId=/.test(fs.readFileSync(file, 'utf8')));
+  log(`  scanned ${clientSources.length} client sources; group API callers=${JSON.stringify(groupCalls.map(f => path.relative(ROOT, f)))}`);
+  assert(groupCalls.length === 0, 'no client source requests /api/groups or /api/conversations?groupId=');
+  // Per line, ignore comments, class names, and ARIA roles; flag "group" in
+  // JSX text or string literals (user-visible copy).
+  // A trailing ` //` comment is stripped only outside string literals, so a
+  // URL inside a string cannot hide copy later on the same line.
+  const stripTrailingComment = line => {
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (ch === '\\') i++;
+        else if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'" || ch === '`') {
+        quote = ch;
+      } else if (ch === '/' && line[i + 1] === '/' && (i === 0 || /\s/.test(line[i - 1]))) {
+        return line.slice(0, i);
+      }
+    }
+    return line;
+  };
+  const copyLine = line => stripTrailingComment(line.replace(/^\s*(\/\/|\*|\/\*).*$/, ''))
+    .replace(/className=(["'])[^"']*\1/g, '')
+    .replace(/role="(radio)?group"/g, '');
+  const groupCopy = clientSources.filter(file => fs.readFileSync(file, 'utf8').split('\n').map(copyLine).some(line =>
+    />[^<{]*\bgroups?\b[^<]*</i.test(line) || /(['"`])[^'"`]*\bgroups?\b[^'"`]*\1/i.test(line)));
+  const probe = ["const u = 'https://x.test // y'; const c = 'New group';", 'f(); // a group note'].map(copyLine);
+  assert(/New group/.test(probe[0]) && !/group/.test(probe[1]), 'copy scan keeps strings containing // and strips real trailing comments');
+  log(`  Group copy offenders=${JSON.stringify(groupCopy.map(f => path.relative(ROOT, f)))}`);
+  assert(groupCopy.length === 0, 'no client source renders Group copy (ARIA role="group" excepted)');
+  const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
+  assert(!/group/i.test(page), 'app/page.tsx has no group type, state, loader, row, mention, or thread branch');
+  assert((page.match(/>\s*New Agent\s*</g) || []).length === 1 && !/New Group|setKind|member-picks/.test(page), 'New opens one New Agent panel with no kind switch or member picker');
+  assert(/const mentionItems = mentionOpen\s*\?\s*bots\.filter/.test(page), 'composer mentions suggest agents only');
+  const deleteCopy = jiti('./lib/bot-deletion.ts');
+  assert(!/group/i.test(deleteCopy.DELETE_REMOVES_COPY + deleteCopy.DELETE_KEEPS_COPY), 'delete confirmation copy names no groups');
+  const css = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
+  assert(!/\.(group-error|member-picks|delete-groups)\b/.test(css), 'no Group-only styles remain');
+  const seed = fs.readFileSync(path.join(ROOT, 'scripts', 'seed-design-fixture.js'), 'utf8');
+  assert(/hidden by the agent-only UI/.test(seed), 'design fixture keeps legacy groups only as hidden stored data');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  assert(!/create bots and groups/.test(readme) && /UI shows agents\s+only/.test(readme), 'README describes the agent-only UI');
+  const parity = fs.readFileSync(path.join(ROOT, 'docs', 'PARITY.md'), 'utf8');
+  assert(/## Agent-only UI \(NOT-461\)/.test(parity) && /RETIRED \(NOT-461\)/.test(parity) && !/MATCH — flat rows, group pills/.test(parity), 'PARITY.md no longer requires group UI captures');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

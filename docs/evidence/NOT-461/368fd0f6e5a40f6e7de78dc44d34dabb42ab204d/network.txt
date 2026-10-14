@@ -1,0 +1,107 @@
+GET http://127.0.0.1:43461/
+GET http://127.0.0.1:43461/_next/static/media/797e433ab948586e-s.p.0r6juujl39pe6.woff2
+GET http://127.0.0.1:43461/_next/static/media/caa3a2e1cccd8315-s.p.0wgildi0cnwt9.woff2
+GET http://127.0.0.1:43461/_next/static/chunks/03_1864flh17g.css
+GET http://127.0.0.1:43461/_next/static/chunks/3s6nzrbk-8mnv.js
+GET http://127.0.0.1:43461/_next/static/chunks/19mx3mg6lkumu.js
+GET http://127.0.0.1:43461/_next/static/chunks/3g4px251sg85e.js
+GET http://127.0.0.1:43461/_next/static/chunks/2z-e6jheq0ftu.js
+GET http://127.0.0.1:43461/_next/static/chunks/turbopack-03rfayxv7ep_b.js
+GET http://127.0.0.1:43461/_next/static/chunks/3fntmmi971322.js
+GET http://127.0.0.1:43461/_next/static/chunks/3wdlh25l1vww9.js
+GET http://127.0.0.1:43461/_next/static/chunks/2mwzayey7x3uu.js
+GET http://127.0.0.1:43461/api/agent-deck/decks
+GET http://127.0.0.1:43461/api/bots
+GET http://127.0.0.1:43461/brand/botmancers-logo-filled-64.png
+GET http://127.0.0.1:43461/api/conversations?botId=29a4b09c-1e34-4880-bae3-97acf9f3fb30
+GET http://127.0.0.1:43461/computer/wallpaper.png
+GET http://127.0.0.1:43461/computer/dock-chrome.png
+GET http://127.0.0.1:43461/computer/dock-gray.png
+GET http://127.0.0.1:43461/computer/dock-terminal.png
+GET http://127.0.0.1:43461/api/conversations/ca793355-eb50-47e7-b89b-6b6961c39bf6/messages
+GET http://127.0.0.1:43461/_next/image?url=%2Fbrand%2Fbotmancers-logo-filled-256.png&w=48&q=75
+GET http://127.0.0.1:43461/settings?_rsc=5CB68i4pnAekjehf
+GET http://127.0.0.1:43461/bots/29a4b09c-1e34-4880-bae3-97acf9f3fb30/config?_rsc=5CB68i4pnAekjehf
+GET http://127.0.0.1:43461/bots/29a4b09c-1e34-4880-bae3-97acf9f3fb30/config?_rsc=tXyZJ52UQVBCVsD3
+GET http://127.0.0.1:43461/settings?_rsc=DROqpzYuhFJcAG-b
+GET http://127.0.0.1:43461/_next/static/chunks/0d3ein53nlgja.js
+GET http://127.0.0.1:43461/api/agent-deck/decks
+GET http://127.0.0.1:43461/api/bots
+GET http://127.0.0.1:43461/api/conversations/ca793355-eb50-47e7-b89b-6b6961c39bf6/messages
+GET http://127.0.0.1:43461/api/conversations?botId=03f0d972-cabd-4412-8311-20205283b4de
+GET http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+GET http://127.0.0.1:43461/bots/03f0d972-cabd-4412-8311-20205283b4de/config?_rsc=tXyZJ52UQVBCVsD3
+GET http://127.0.0.1:43461/api/bots
+POST http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+GET http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+PATCH http://127.0.0.1:43461/api/bots
+GET http://127.0.0.1:43461/api/bots
+GET http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+PATCH http://127.0.0.1:43461/api/bots
+POST http://127.0.0.1:43461/api/bots/delete-preview
+GET http://127.0.0.1:43461/api/bots/manage
+GET http://127.0.0.1:43461/api/bots
+GET http://127.0.0.1:43461/
+GET http://127.0.0.1:43461/_next/static/media/797e433ab948586e-s.p.0r6juujl39pe6.woff2
+GET http://127.0.0.1:43461/_next/static/media/caa3a2e1cccd8315-s.p.0wgildi0cnwt9.woff2
+GET http://127.0.0.1:43461/_next/static/chunks/03_1864flh17g.css
+GET http://127.0.0.1:43461/_next/static/chunks/3s6nzrbk-8mnv.js
+GET http://127.0.0.1:43461/_next/static/chunks/19mx3mg6lkumu.js
+GET http://127.0.0.1:43461/_next/static/chunks/3g4px251sg85e.js
+GET http://127.0.0.1:43461/_next/static/chunks/2z-e6jheq0ftu.js
+GET http://127.0.0.1:43461/_next/static/chunks/turbopack-03rfayxv7ep_b.js
+GET http://127.0.0.1:43461/_next/static/chunks/3fntmmi971322.js
+GET http://127.0.0.1:43461/_next/static/chunks/3wdlh25l1vww9.js
+GET http://127.0.0.1:43461/_next/static/chunks/2mwzayey7x3uu.js
+GET http://127.0.0.1:43461/_next/image?url=%2Fbrand%2Fbotmancers-logo-filled-256.png&w=48&q=75
+GET http://127.0.0.1:43461/api/agent-deck/decks
+GET http://127.0.0.1:43461/api/bots
+GET http://127.0.0.1:43461/settings?_rsc=5CB68i4pnAekjehf
+GET http://127.0.0.1:43461/api/conversations?botId=29a4b09c-1e34-4880-bae3-97acf9f3fb30
+GET http://127.0.0.1:43461/settings?_rsc=DROqpzYuhFJcAG-b
+GET http://127.0.0.1:43461/computer/dock-chrome.png
+GET http://127.0.0.1:43461/computer/dock-gray.png
+GET http://127.0.0.1:43461/computer/dock-terminal.png
+GET http://127.0.0.1:43461/computer/wallpaper.png
+GET http://127.0.0.1:43461/api/conversations/ca793355-eb50-47e7-b89b-6b6961c39bf6/messages
+GET http://127.0.0.1:43461/_next/static/chunks/0d3ein53nlgja.js
+GET http://127.0.0.1:43461/bots/29a4b09c-1e34-4880-bae3-97acf9f3fb30/config?_rsc=5CB68i4pnAekjehf
+GET http://127.0.0.1:43461/bots/29a4b09c-1e34-4880-bae3-97acf9f3fb30/config?_rsc=tXyZJ52UQVBCVsD3
+GET http://127.0.0.1:43461/api/agent-deck/decks
+GET http://127.0.0.1:43461/api/conversations?botId=03f0d972-cabd-4412-8311-20205283b4de
+GET http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+GET http://127.0.0.1:43461/bots/03f0d972-cabd-4412-8311-20205283b4de/config?_rsc=tXyZJ52UQVBCVsD3
+GET http://127.0.0.1:43461/api/bots
+POST http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+GET http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+PATCH http://127.0.0.1:43461/api/bots
+GET http://127.0.0.1:43461/api/bots
+PATCH http://127.0.0.1:43461/api/bots
+POST http://127.0.0.1:43461/api/bots/delete-preview
+GET http://127.0.0.1:43461/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+GET http://127.0.0.1:43461/api/bots/manage
+GET http://127.0.0.1:43461/api/bots
+
+# in-page fetch/XHR spy (last page load)
+/api/agent-deck/decks
+/api/bots
+http://127.0.0.1:43461/settings?_rsc=5CB68i4pnAekjehf
+/api/conversations?botId=29a4b09c-1e34-4880-bae3-97acf9f3fb30
+http://127.0.0.1:43461/settings?_rsc=DROqpzYuhFJcAG-b
+/api/conversations/ca793355-eb50-47e7-b89b-6b6961c39bf6/messages
+http://127.0.0.1:43461/bots/29a4b09c-1e34-4880-bae3-97acf9f3fb30/config?_rsc=5CB68i4pnAekjehf
+http://127.0.0.1:43461/bots/29a4b09c-1e34-4880-bae3-97acf9f3fb30/config?_rsc=tXyZJ52UQVBCVsD3
+/api/agent-deck/decks
+/api/conversations?botId=03f0d972-cabd-4412-8311-20205283b4de
+/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+http://127.0.0.1:43461/bots/03f0d972-cabd-4412-8311-20205283b4de/config?_rsc=tXyZJ52UQVBCVsD3
+/api/bots
+/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+/api/bots
+/api/bots
+/api/bots
+/api/bots/delete-preview
+/api/conversations/2ff620ed-8f56-4da9-bbe2-bdb6a8f5b5b7/messages
+/api/bots/manage
+/api/bots
