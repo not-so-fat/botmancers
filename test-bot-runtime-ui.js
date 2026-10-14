@@ -686,7 +686,7 @@ function runtimeFailureSection() {
 
   const html = render(Notice, { failure });
   log(`  notice: ${html.slice(0, 160)}…`);
-  assert(has(html, 'role="status"') && has(html, 'data-runtime-failure="hermes-config-missing"'), 'thread: the notice is announced as a status');
+  assert(has(html, 'role="status"') && /aria-labelledby="([^"]+)"[^]*<p class="runtime-failure-title" id="\1">/.test(html) && has(html, 'data-runtime-failure="hermes-config-missing"'), 'thread: the notice is a status named by its severity + title');
   assert(has(html, '>Error<') && has(html, 'Hermes needs configuration') && has(html, escapeHtml(failure.recovery)), 'thread: severity, title, and recovery copy are visible');
   assert(/<details[^>]*><summary>Details<\/summary>/.test(html) && has(html, escapeHtml(raw)) && has(html, '>Copy details</button>'), 'thread: the exact diagnostic sits behind a labelled Details disclosure with Copy');
   assert(!has(html, 'msg-bot') && !has(html, 'msg-name') && !has(html, 'Chief'), 'thread: no bot card, speaker name, or agent attribution');

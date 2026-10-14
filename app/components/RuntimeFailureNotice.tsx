@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { severityLabel, type RuntimeFailure } from '@/lib/runtime-failure';
 
 // NOT-449: a known runtime/setup failure shown as application status, not
@@ -9,6 +9,7 @@ import { severityLabel, type RuntimeFailure } from '@/lib/runtime-failure';
 export default function RuntimeFailureNotice({ failure }: { failure: RuntimeFailure }) {
   const [copied, setCopied] = useState<'idle' | 'copied' | 'failed'>('idle');
   const label = severityLabel(failure.severity);
+  const titleId = useId();
 
   async function copyDetail() {
     try {
@@ -23,9 +24,10 @@ export default function RuntimeFailureNotice({ failure }: { failure: RuntimeFail
     <div
       className={`runtime-failure runtime-failure-${failure.severity}`}
       role="status"
+      aria-labelledby={titleId}
       data-runtime-failure={failure.kind}
     >
-      <p className="runtime-failure-title">
+      <p className="runtime-failure-title" id={titleId}>
         <span className="runtime-failure-severity">{label}</span>
         {failure.title}
       </p>
