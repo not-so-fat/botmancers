@@ -5,20 +5,29 @@
 // ordered history and the agent's reply. Bot-to-bot team conversations and
 // external-caller conversations use the same rows: one conversation, its
 // explicit participants and origin principal, ordered messages, and one
-// agent request per accepted message carrying a runtime-neutral state
+// request per accepted message reported in a runtime-neutral state
 // (accepted -> dispatched -> completed|failed) plus durable events.
 //
-// Idempotency: (principal kind, principal id, operation, idempotency key)
-// is unique. An exact retry returns the original request; the same key
-// with a different payload fails with idempotency_conflict and writes
-// nothing. No retry policy runs here: a failed request stays failed.
+// NOT-465: messages are accepted through the shared conversation intake
+// (./conversation-intake), the same service the web UI route uses. Each
+// accepted message is one canonical Work Request (./engine-store); the
+// request id is the Work Request id and its lifecycle is the canonical
+// state machine shown in the documented API vocabulary. agent_requests
+// is read only, for requests and idempotency keys accepted before NOT-465.
+//
+// Idempotency: (principal kind, principal id, idempotency key) is unique.
+// An exact retry returns the original request; the same key with a
+// different payload fails with idempotency_conflict and writes nothing.
+// No retry policy runs here: a failed request stays failed.
 //
 // Existing UI threads ('bot'/'group' conversations) are readable here
 // through the compatibility participants bound in ./db; they stay
 // writable only through the UI routes, whose agent loop owns their turns.
 import { createHash, randomUUID } from 'crypto';
-import db, { bots, type Bot, type Principal, type PrincipalKind } from './db';
+import db, { bots, engine, type Bot, type Principal, type PrincipalKind } from './db';
 import { DispatchFailure, agentForDispatch, dispatchToAgent, type DispatchHistoryEntry } from './agent-dispatch';
+import { EngineStoreError, type EngineEvent, type WorkRequest, type WorkRequestState } from './engine-store';
+import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -33,7 +42,8 @@ export type AgentApiErrorCode =
   | 'conversation_not_found'
   | 'conversation_not_writable'
   | 'request_not_found'
-  | 'idempotency_conflict';
+  | 'idempotency_conflict'
+  | 'internal_error';
 
 export const AGENT_API_ERROR_STATUS: Record<AgentApiErrorCode, number> = {
   authentication_unavailable: 503,
@@ -45,6 +55,7 @@ export const AGENT_API_ERROR_STATUS: Record<AgentApiErrorCode, number> = {
   conversation_not_writable: 409,
   request_not_found: 404,
   idempotency_conflict: 409,
+  internal_error: 500,
 };
 
 export class AgentApiError extends Error {
@@ -160,45 +171,6 @@ function isParticipant(conversationId: string, principal: Principal): boolean {
   ).get(conversationId, principal.kind, principal.id);
 }
 
-function addParticipant(conversationId: string, principal: Principal, at: number): void {
-  db.prepare(
-    'INSERT OR IGNORE INTO conversation_participants (conversation_id, participant_kind, participant_id, joined_at) VALUES (?, ?, ?, ?)'
-  ).run(conversationId, principal.kind, principal.id, at);
-}
-
-function recordEvent(requestId: string, type: string, data?: Record<string, unknown>): void {
-  db.prepare(
-    'INSERT INTO agent_request_events (id, request_id, type, data, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(randomUUID(), requestId, type, data ? JSON.stringify(data) : null, Date.now());
-}
-
-function insertMessage(args: {
-  conversationId: string;
-  sender: Principal;
-  content: string;
-  requestId: string;
-  at: number;
-}): string {
-  const id = randomUUID();
-  db.prepare(
-    'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(
-    id,
-    args.conversationId,
-    args.sender.kind === 'bot' ? 'bot' : 'user',
-    args.sender.id,
-    args.sender.kind,
-    args.requestId,
-    args.content,
-    args.at
-  );
-  return id;
-}
-
-function getRequestRow(requestId: string): AgentRequestRow | undefined {
-  return db.prepare('SELECT * FROM agent_requests WHERE id = ?').get(requestId) as AgentRequestRow | undefined;
-}
-
 function acceptedView(row: AgentRequestRow, replayed: boolean): AcceptedAgentRequest {
   return {
     requestId: row.id,
@@ -207,6 +179,22 @@ function acceptedView(row: AgentRequestRow, replayed: boolean): AcceptedAgentReq
     state: row.state,
     replayed,
   };
+}
+
+// Canonical lifecycle seen through the documented API vocabulary.
+export function apiStateOf(state: WorkRequestState): AgentRequestState {
+  switch (state) {
+    case 'running':
+    case 'waiting':
+      return 'dispatched';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+    case 'cancelled':
+      return 'failed';
+    default:
+      return 'accepted';
+  }
 }
 
 // Principals the authenticator vouched for still have to name something
@@ -220,7 +208,30 @@ export function assertKnownPrincipal(principal: Principal): void {
   }
 }
 
-export function sendAgentMessage(principal: Principal, input: SendAgentMessageInput): AcceptedAgentRequest {
+// Normalized intake categories in the documented /api/v0 envelope.
+const INTAKE_TO_API: Record<IntakeErrorCode, AgentApiErrorCode> = {
+  invalid_request: 'invalid_request',
+  conversation_not_found: 'conversation_not_found',
+  conversation_not_writable: 'conversation_not_writable',
+  target_not_found: 'agent_not_found',
+  idempotency_conflict: 'idempotency_conflict',
+  intake_failed: 'internal_error',
+};
+
+export function agentApiErrorFromIntake(error: IntakeError): AgentApiError {
+  return new AgentApiError(INTAKE_TO_API[error.code], error.code === 'intake_failed' ? 'The request could not be processed.' : error.message);
+}
+
+// Accepted API work runs through the canonical request dispatcher; it is
+// idempotent, so exact replays may call it again.
+function dispatchAccepted(accepted: AcceptedIntake): Promise<void> {
+  return Promise.all(accepted.requestIds.map(startAgentDispatch)).then(() => undefined);
+}
+
+// Accepts through the shared conversation intake (lib/conversation-intake).
+// A key first used before NOT-465 still replays its legacy agent request
+// (compatibility read); new acceptance never writes agent_requests.
+export function acceptAgentMessage(principal: Principal, input: SendAgentMessageInput): { accepted: AcceptedAgentRequest; dispatched: Promise<void> } {
   assertKnownPrincipal(principal);
   if (!nonEmptyString(input.agentId)) throw new AgentApiError('invalid_request', 'agentId is required.');
   if (!nonEmptyString(input.content)) throw new AgentApiError('invalid_request', 'content is required.');
@@ -230,61 +241,48 @@ export function sendAgentMessage(principal: Principal, input: SendAgentMessageIn
   if (input.conversationId !== undefined && input.conversationId !== null && !nonEmptyString(input.conversationId)) {
     throw new AgentApiError('invalid_request', 'conversationId must be a non-empty string when present.');
   }
-  const hash = payloadHash(input);
 
-  return db.transaction((): AcceptedAgentRequest => {
-    const existing = db.prepare(
-      'SELECT * FROM agent_requests WHERE principal_kind = ? AND principal_id = ? AND operation = ? AND idempotency_key = ?'
-    ).get(principal.kind, principal.id, SEND_MESSAGE_OPERATION, input.idempotencyKey) as AgentRequestRow | undefined;
-    if (existing) {
-      if (existing.payload_hash !== hash) {
-        throw new AgentApiError('idempotency_conflict', 'The idempotency key was already used with a different payload.');
-      }
-      return acceptedView(existing, true);
+  const legacy = db.prepare(
+    'SELECT * FROM agent_requests WHERE principal_kind = ? AND principal_id = ? AND operation = ? AND idempotency_key = ?'
+  ).get(principal.kind, principal.id, SEND_MESSAGE_OPERATION, input.idempotencyKey) as AgentRequestRow | undefined;
+  if (legacy) {
+    if (legacy.payload_hash !== payloadHash(input)) {
+      throw new AgentApiError('idempotency_conflict', 'The idempotency key was already used with a different payload.');
     }
+    return { accepted: acceptedView(legacy, true), dispatched: Promise.resolve() };
+  }
 
-    const target = bots.getById(input.agentId);
-    if (!target) throw new AgentApiError('agent_not_found', 'No registered agent has that id.');
-    if (principal.kind === 'bot' && principal.id === target.id) {
-      throw new AgentApiError('invalid_request', 'An agent cannot address itself.');
-    }
+  let intake: ReturnType<typeof acceptConversationMessage>;
+  try {
+    intake = acceptConversationMessage({
+      surface: 'api',
+      requester: principal,
+      idempotencyKey: input.idempotencyKey,
+      conversation: input.conversationId ? { id: input.conversationId } : { create: true },
+      content: input.content,
+      fingerprint: [input.agentId, input.conversationId ?? null, input.content],
+      route: () => ({ deliveries: [{ agentId: input.agentId }] }),
+      dispatch: dispatchAccepted,
+    });
+  } catch (error) {
+    if (error instanceof IntakeError) throw agentApiErrorFromIntake(error);
+    throw error;
+  }
+  const request = intake.requests[0];
+  return {
+    accepted: {
+      requestId: intake.requestIds[0],
+      conversationId: intake.conversationId,
+      acceptedMessageId: intake.acceptedMessageId,
+      state: request ? apiStateOf(request.state) : 'accepted',
+      replayed: intake.replayed,
+    },
+    dispatched: intake.dispatched,
+  };
+}
 
-    const now = Date.now();
-    let conversationId: string;
-    if (input.conversationId) {
-      const conversation = db.prepare('SELECT id, type FROM conversations WHERE id = ?').get(input.conversationId) as
-        | { id: string; type: string }
-        | undefined;
-      if (!conversation || !isParticipant(conversation.id, principal)) {
-        throw new AgentApiError('conversation_not_found', 'No conversation with that id is visible to this principal.');
-      }
-      if (conversation.type !== 'agent') {
-        throw new AgentApiError('conversation_not_writable', 'UI conversations are written through the UI compatibility routes.');
-      }
-      conversationId = conversation.id;
-    } else {
-      conversationId = randomUUID();
-      db.prepare(
-        'INSERT INTO conversations (id, type, origin_kind, origin_id, created_at) VALUES (?, ?, ?, ?, ?)'
-      ).run(conversationId, 'agent', principal.kind, principal.id, now);
-      addParticipant(conversationId, principal, now);
-    }
-    addParticipant(conversationId, { kind: 'bot', id: target.id }, now);
-
-    const requestId = randomUUID();
-    const acceptedMessageId = insertMessage({ conversationId, sender: principal, content: input.content, requestId, at: now });
-    db.prepare(
-      `INSERT INTO agent_requests (
-        id, principal_kind, principal_id, operation, idempotency_key, payload_hash,
-        conversation_id, target_bot_id, accepted_message_id, state, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)`
-    ).run(
-      requestId, principal.kind, principal.id, SEND_MESSAGE_OPERATION, input.idempotencyKey, hash,
-      conversationId, target.id, acceptedMessageId, now, now
-    );
-    recordEvent(requestId, 'accepted');
-    return acceptedView(getRequestRow(requestId) as AgentRequestRow, false);
-  })();
+export function sendAgentMessage(principal: Principal, input: SendAgentMessageInput): AcceptedAgentRequest {
+  return acceptAgentMessage(principal, input).accepted;
 }
 
 function speakerLabel(row: MessageRow): string {
@@ -295,12 +293,12 @@ function speakerLabel(row: MessageRow): string {
   return `${row.sender_kind ?? 'person'}:${row.sender_id ?? 'unknown'}`;
 }
 
-function historyFor(row: AgentRequestRow, bot: Bot): DispatchHistoryEntry[] {
+function historyFor(request: WorkRequest, bot: Bot): DispatchHistoryEntry[] {
   const rows = db.prepare(
     `SELECT * FROM messages WHERE conversation_id = ?
        AND rowid <= (SELECT rowid FROM messages WHERE id = ?)
      ORDER BY rowid ASC`
-  ).all(row.conversation_id, row.accepted_message_id) as MessageRow[];
+  ).all(request.source_conversation_id, request.source_event_id) as MessageRow[];
   return rows.map(message => ({
     speakerLabel: speakerLabel(message),
     fromAgent: message.sender_kind === 'bot' && message.sender_id === bot.id,
@@ -308,71 +306,76 @@ function historyFor(row: AgentRequestRow, bot: Bot): DispatchHistoryEntry[] {
   }));
 }
 
-function failRequest(requestId: string, code: string, message: string): void {
-  db.transaction(() => {
-    db.prepare(
-      "UPDATE agent_requests SET state = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND state IN ('accepted', 'dispatched')"
-    ).run(code, message, Date.now(), requestId);
-    recordEvent(requestId, 'failed', { code });
-  })();
+function failRequest(requestId: string, attemptId: string | null, code: string, message: string): void {
+  engine.transaction(() => {
+    if (attemptId) engine.finishAttempt(attemptId, { outcome: 'failed', errorCategory: code, errorMessage: message });
+    const current = engine.getWorkRequest(requestId);
+    if (!current || (current.state !== 'queued' && current.state !== 'running')) return;
+    engine.transitionWorkRequest(requestId, { from: current.state, to: 'failed', errorCode: code, errorMessage: message });
+  });
 }
 
+// One read-only conversation turn for a queued canonical request: claim
+// it (queued -> running) with one launch Attempt, run the selected agent
+// through the existing dispatch adapter, then project the reply into the
+// source conversation and complete, or fail with a typed code.
 async function runDispatch(requestId: string): Promise<void> {
-  const row = getRequestRow(requestId);
-  if (!row || row.state !== 'accepted') return;
-  const bot = bots.getById(row.target_bot_id);
+  const request = engine.getWorkRequest(requestId);
+  if (!request || request.state !== 'queued') return;
+  const bot = bots.getById(request.target_agent_id);
   if (!bot) {
-    failRequest(requestId, 'agent_unavailable', 'The agent is no longer registered.');
+    failRequest(requestId, null, 'agent_unavailable', 'The agent is no longer registered.');
     return;
   }
-  // NOT-456: the agent_requests.runtime column records the dispatched
-  // agent identity (hermes|cursor|claude|codex|muse), never Agent Deck.
+  // NOT-456: the attempt adapter records the dispatched agent identity
+  // (hermes|cursor|claude|codex|muse), never Agent Deck.
   const agent = agentForDispatch(bot);
-  const claimed = db.transaction(() => {
-    const result = db.prepare(
-      "UPDATE agent_requests SET state = 'dispatched', runtime = ?, updated_at = ? WHERE id = ? AND state = 'accepted'"
-    ).run(agent, Date.now(), requestId);
-    if (result.changes !== 1) return false;
-    recordEvent(requestId, 'dispatched', { agent });
-    return true;
-  })();
-  if (!claimed) return;
+  let attemptId: string;
+  try {
+    attemptId = engine.transaction(() => {
+      engine.transitionWorkRequest(requestId, { from: 'queued', to: 'running', expectedVersion: request.version, data: { agent } });
+      return engine.createAttempt(requestId, {
+        kind: 'launch',
+        adapter: agent,
+        toolProfile: request.tool_profile,
+        launchSnapshot: { agent, agent_id: bot.id, execution_kind: request.execution_kind, tool_profile: request.tool_profile },
+      }).id;
+    });
+  } catch (error) {
+    if (error instanceof EngineStoreError && error.code === 'stale_state') return;
+    throw error;
+  }
 
   let reply: string;
   try {
     reply = await dispatchToAgent(
-      { bot, history: historyFor(row, bot) },
-      { onStarted: () => recordEvent(requestId, 'runtime_started') }
+      { bot, history: historyFor(request, bot) },
+      { onStarted: () => { engine.appendEvent(requestId, { type: 'runtime_started', attemptId }); } }
     );
   } catch (error) {
     if (error instanceof DispatchFailure) {
-      failRequest(requestId, error.code, error.message);
+      failRequest(requestId, attemptId, error.code, error.message);
     } else {
-      failRequest(requestId, 'runtime_failed', 'The agent runtime did not complete the turn.');
+      failRequest(requestId, attemptId, 'runtime_failed', 'The agent runtime did not complete the turn.');
     }
     return;
   }
 
-  db.transaction(() => {
+  engine.transaction(() => {
     const now = Date.now();
-    const replyId = insertMessage({
-      conversationId: row.conversation_id,
-      sender: { kind: 'bot', id: bot.id },
-      content: reply,
-      requestId,
-      at: now,
-    });
+    const replyId = randomUUID();
     db.prepare(
-      "UPDATE agent_requests SET state = 'completed', reply_message_id = ?, updated_at = ? WHERE id = ? AND state = 'dispatched'"
-    ).run(replyId, now, requestId);
-    recordEvent(requestId, 'completed');
-  })();
+      'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(replyId, request.source_conversation_id, 'bot', bot.id, 'bot', requestId, reply, now);
+    engine.finishAttempt(attemptId, { outcome: 'succeeded', now });
+    engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: { reply_message_id: replyId }, now });
+  });
 }
 
 const inFlight = new Map<string, Promise<void>>();
 
-// Starts (or joins) the dispatch of one accepted request. Requests past
-// 'accepted' are never re-dispatched, so exact retries launch nothing.
+// Starts (or joins) the dispatch of one queued request. Requests past
+// 'queued' are never re-dispatched, so exact retries launch nothing.
 export function startAgentDispatch(requestId: string): Promise<void> {
   const running = inFlight.get(requestId);
   if (running) return running;
@@ -387,12 +390,46 @@ export function startAgentDispatch(requestId: string): Promise<void> {
   return promise;
 }
 
-export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {
-  assertKnownPrincipal(principal);
-  const row = getRequestRow(requestId);
-  if (!row || !isParticipant(row.conversation_id, principal)) {
-    throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
+// Engine event types in the documented request event vocabulary
+// (accepted > dispatched > runtime_started > completed|failed). Attempt
+// bookkeeping stays internal.
+function apiEventType(event: EngineEvent): string | null {
+  if (event.type === 'state_changed') {
+    const to = event.data ? (JSON.parse(event.data) as { to?: WorkRequestState }).to : undefined;
+    if (to === 'running') return 'dispatched';
+    if (to === 'completed') return 'completed';
+    if (to === 'failed' || to === 'cancelled') return 'failed';
+    return to ?? null;
   }
+  if (['attempt_started', 'attempt_finished', 'session_bound', 'backfilled'].includes(event.type)) return null;
+  return event.type;
+}
+
+function workRequestView(request: WorkRequest): AgentRequestView {
+  const result = request.result ? (JSON.parse(request.result) as { reply_message_id?: string }) : null;
+  const reply = result?.reply_message_id
+    ? (db.prepare('SELECT id, content FROM messages WHERE id = ?').get(result.reply_message_id) as { id: string; content: string } | undefined)
+    : undefined;
+  const failed = request.state === 'failed' || request.state === 'cancelled';
+  return {
+    requestId: request.id,
+    conversationId: request.source_conversation_id,
+    agentId: request.target_agent_id,
+    acceptedMessageId: request.source_event_id,
+    state: apiStateOf(request.state),
+    reply: reply ? { messageId: reply.id, content: reply.content } : null,
+    failure: failed ? { code: request.error_code ?? request.state, message: request.error_message ?? '' } : null,
+    events: engine.listEvents(request.id).flatMap(event => {
+      const type = apiEventType(event);
+      return type ? [{ type, at: event.created_at }] : [];
+    }),
+    createdAt: request.created_at,
+    updatedAt: request.updated_at,
+  };
+}
+
+// Pre-NOT-465 agent requests stay readable (compatibility read).
+function legacyRequestView(row: AgentRequestRow): AgentRequestView {
   const reply = row.reply_message_id
     ? (db.prepare('SELECT id, content FROM messages WHERE id = ?').get(row.reply_message_id) as { id: string; content: string } | undefined)
     : undefined;
@@ -411,6 +448,22 @@ export function getAgentRequest(principal: Principal, requestId: string): AgentR
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {
+  assertKnownPrincipal(principal);
+  const request = engine.getWorkRequest(requestId);
+  if (request) {
+    if (!isParticipant(request.source_conversation_id, principal)) {
+      throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
+    }
+    return workRequestView(request);
+  }
+  const row = db.prepare('SELECT * FROM agent_requests WHERE id = ?').get(requestId) as AgentRequestRow | undefined;
+  if (!row || !isParticipant(row.conversation_id, principal)) {
+    throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
+  }
+  return legacyRequestView(row);
 }
 
 const CONVERSATION_TYPE_VIEW: Record<string, ConversationView['type']> = {

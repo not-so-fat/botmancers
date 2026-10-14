@@ -4,8 +4,8 @@ import { createHash, randomUUID } from 'crypto';
 // NOT-463: canonical core-engine persistence (docs/core-engine.md). One
 // Work Request store, immutable Attempts, opaque Session Bindings, and an
 // append-only per-request engine event log. Legacy processing_queue and
-// agent_requests stay in place and readable; nothing routes through this
-// store yet.
+// agent_requests stay in place and readable. NOT-465: UI and /api/v0
+// message intake create their Work Requests here (lib/conversation-intake).
 //
 // Foreign keys are enforced by triggers because the shared connection
 // runs with PRAGMA foreign_keys off (legacy tables were never written
@@ -558,6 +558,31 @@ const MIGRATIONS: Migration[] = [
           SELECT RAISE(ABORT, 'engine_events are append-only')
             WHERE NOT engine_event_purge_authorized(OLD.request_id);
         END;
+      `);
+    },
+  },
+  {
+    version: 5,
+    name: 'conversation_intakes',
+    up: db => {
+      db.exec(`
+        -- NOT-465: one row per accepted conversation message, keyed by the
+        -- requester's idempotency key. It names the source event (message)
+        -- and the Work Requests created from it, so an exact retry replays
+        -- the original identifiers whether or not any request was created.
+        CREATE TABLE conversation_intakes (
+          requester_kind TEXT NOT NULL CHECK (requester_kind IN ('person', 'bot', 'service')),
+          requester_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) > 0),
+          request_hash TEXT NOT NULL,
+          surface TEXT NOT NULL CHECK (surface IN ('ui', 'api')),
+          conversation_id TEXT NOT NULL,
+          source_event_id TEXT NOT NULL,
+          work_request_ids TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (requester_kind, requester_id, idempotency_key)
+        );
+        CREATE INDEX idx_conversation_intakes_conversation ON conversation_intakes(conversation_id);
       `);
     },
   },
@@ -1236,6 +1261,7 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
 }
 
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
+  db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE source_conversation_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE conversation_id = ?',

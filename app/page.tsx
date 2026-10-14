@@ -712,7 +712,7 @@ export default function Home() {
     const sent = await fetch(`/api/conversations/${activeConversation.id}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, mentionedBotId: mentioned?.id }),
+      body: JSON.stringify({ content, mentionedBotId: mentioned?.id, idempotencyKey: crypto.randomUUID() }),
     });
     if (!sent.ok && targets.length > 0) {
       for (const id of targets) delete pendingAfter.current[id];
