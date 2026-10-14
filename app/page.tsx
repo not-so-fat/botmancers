@@ -23,6 +23,8 @@ import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import ManageAgentsPanel from '@/app/components/ManageAgentsPanel';
 import { deletedStatusLine, type DeleteAgentRef } from '@/lib/bot-deletion';
+import ThreadState from '@/app/components/ThreadState';
+import { threadView, type ThreadLoad } from '@/lib/thread-state';
 
 interface Bot {
   id: string;
@@ -181,6 +183,8 @@ export default function Home() {
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [threadLoad, setThreadLoad] = useState<ThreadLoad | null>(null);
+  const activeIdRef = useRef<string | null>(null);
   const [inputMessage, setInputMessage] = useState('');
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionOpen, setMentionOpen] = useState(false);
@@ -252,6 +256,7 @@ export default function Home() {
 
 
   useEffect(() => {
+    activeIdRef.current = activeConversation?.id ?? null;
     if (activeConversation) {
       loadMessages();
 
@@ -336,9 +341,20 @@ export default function Home() {
 
   async function loadMessages() {
     if (!activeConversation) return;
-    const res = await fetch(`/api/conversations/${activeConversation.id}/messages`);
-    const data = await res.json();
-    setMessages(data);
+    const id = activeConversation.id;
+    let data: unknown = null;
+    let ok = false;
+    try {
+      const res = await fetch(`/api/conversations/${id}/messages`);
+      data = await res.json();
+      ok = res.ok && Array.isArray(data);
+    } catch {
+      ok = false;
+    }
+    // A reply for a thread the owner already left must not paint this one.
+    if (activeIdRef.current !== id) return;
+    if (ok) setMessages(data as Message[]);
+    setThreadLoad({ conversationId: id, status: ok ? 'ready' : 'error' });
   }
 
   const stopRun = async (messageId: string) => {
@@ -394,6 +410,7 @@ export default function Home() {
 
     setPictureOpen(false);
     setAvatarStep(false);
+    if (conv.id !== activeConversation?.id) setMessages([]);
     setActiveConversation({
       id: conv.id,
       details: bot,
@@ -651,6 +668,7 @@ export default function Home() {
     loadMessages();
   };
 
+  const view = activeConversation ? threadView(threadLoad, activeConversation.id, messages.length) : 'loading';
   const title = (activeConversation?.details.title || '').trim();
   const nameColor = activeConversation?.details.color;
 
@@ -944,6 +962,7 @@ export default function Home() {
 
             <div className="messages-wrap">
             <div className="messages">
+              <ThreadState view={view} agentName={activeConversation.details.name} />
               {messages.map((msg) => {
                 const mine = msg.sender_type === 'user';
                 const shown = messagePicture(stripStoredPrefix(msg.content));

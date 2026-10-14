@@ -665,6 +665,38 @@ button.thread-name {
   min-height: 0;
 }
 
+/* NOT-454: a zero-message thread settles just above the composer it points to. */
+.thread-empty {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 4px;
+  padding-bottom: 8px;
+}
+
+.thread-empty-title,
+.thread-empty-hint,
+.thread-note {
+  margin: 0;
+  font-family: var(--chrome);
+}
+
+.thread-empty-title {
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.thread-empty-hint,
+.thread-note {
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.thread-note-error {
+  color: var(--ink);
+}
+
 .msg-you {
   align-self: flex-end;
   max-width: 80%;
