@@ -35,6 +35,7 @@
     "seed:design-fixture": "node scripts/seed-design-fixture.js",
     "test:bot-runtime-ui": "node test-bot-runtime-ui.js",
     "test:brand-hierarchy": "node test-brand-hierarchy.js",
+    "test:text-contrast": "node test-text-contrast.js",
     "test:engine-store": "node test-engine-store.js",
     "test:conversation-intake": "node test-conversation-intake.js",
     "test:attempt-adapter": "node test-attempt-adapter.js",
