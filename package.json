@@ -22,6 +22,7 @@
     "test:wake-contract": "node test-wake-contract.js",
     "test:agent-loop-extras": "node test-agent-loop-extras.js",
     "test:unread": "node test-unread.js",
+    "test:roster-a11y": "node test-roster-a11y.js",
     "test:thread-actions": "node test-thread-actions.js",
     "test:cos-birth": "node test-cos-birth.js",
     "test:ask-and-wait": "node test-ask-and-wait.js",

@@ -561,9 +561,13 @@ export default function Home() {
     setRowMenu({ bot, x: rect.left, y: rect.bottom + 4, returnTo: anchor });
   };
 
-  const focusRow = (id: string) => {
+  // The row may not be rendered yet (rename input still mounted, unhide not
+  // committed), so retry for a few frames until its open button exists.
+  const focusRow = (id: string, frames = 30) => {
     requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(`[data-open-bot="${id}"]`)?.focus();
+      const row = document.querySelector<HTMLElement>(`[data-open-bot="${id}"]`);
+      if (row) row.focus();
+      else if (frames > 0) focusRow(id, frames - 1);
     });
   };
 
