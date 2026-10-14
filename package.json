@@ -30,6 +30,7 @@
     "test:group-semantics": "node test-group-semantics.js",
     "test:command-runs": "node test-command-runs.js",
     "test:parity-small": "node test-parity-small.js",
+    "test:empty-thread": "node test-empty-thread.js",
     "test:bot-deletion": "node test-bot-deletion.js",
     "test:agent-names": "node test-agent-names.js",
     "seed:design-fixture": "node scripts/seed-design-fixture.js",
