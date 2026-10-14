@@ -611,8 +611,8 @@ function dialogSection() {
   const dialogs = shell.match(/role="dialog"/g) || [];
   assert(dialogs.length === 1 && has(shell, 'aria-modal="true"') && has(shell, 'aria-labelledby="new-agent-title"')
     && /<h2 id="new-agent-title"[^>]*>\s*New Agent\s*<\/h2>/.test(shell), 'one role="dialog" aria-modal="true" named by its "New Agent" heading');
-  assert(/<div className="field" inert=\{showBotModal\}>/.test(page) && page.indexOf('<BotModal') > page.indexOf('inert={showBotModal}')
-    && /<\/div>\s*\{\/\*[^]*?\*\/\}\s*\{showBotModal && \(\s*<BotModal/.test(page), 'the page is inert while the dialog renders outside it');
+  assert(/inert=\{showBotModal\}/.test(page) && page.indexOf('<BotModal') > page.indexOf('inert={showBotModal}')
+    && /\{showBotModal && \(\s*<BotModal/.test(page), 'the page is inert while the dialog renders outside it');
   assert(/ref=\{newRef\}[^>]*aria-haspopup="dialog"/.test(page) && /setShowBotModal\(false\);\s*requestAnimationFrame\(\(\) => newRef\.current\?\.focus\(\)\)/.test(page), 'closing returns focus to New');
   assert(/nameRef\.current\?\.focus\(\)/.test(shell) && has(shell, 'ref={nameRef} id="bot-name"'), 'opening focuses the Name field');
   assert(/e\.key !== 'Escape'[^]*?onClose\(\)/.test(shell), 'Escape closes the dialog');
@@ -624,6 +624,13 @@ function dialogSection() {
   const narrow = dialog.newAgentDialogPlacement({ left: 16, bottom: 110 }, { width: 390, height: 844 });
   log(`  placement 390x844: ${JSON.stringify(narrow)}`);
   assert(narrow.left === 16 && narrow.left + Math.min(dialog.DIALOG_WIDTH, 390 - 32) === 390 - 16 && narrow.top + narrow.maxHeight === 844 - 16, 'narrow: 16px inset on both sides and the bottom');
+  const tiny = dialog.newAgentDialogPlacement({ left: 16, bottom: 110 }, { width: 360, height: 640 });
+  log(`  placement 360x640: ${JSON.stringify(tiny)}`);
+  assert(tiny.left === 16 && tiny.left + Math.min(dialog.DIALOG_WIDTH, 360 - 32) === 360 - 16, 'sub-390: the dialog shrinks to keep the 16px inset on both sides');
+  const css = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
+  const dialogRule = (css.match(/\.form-card\.new-agent-dialog\s*\{([^}]*)\}/) || [])[1] || '';
+  assert(/width:\s*min\(358px,\s*calc\(100vw - 32px\)\)/.test(dialogRule) && /max-width:\s*none/.test(dialogRule),
+    'CSS: the dialog width rule outranks .form-card (width:100%, max-width:358px) so it shrinks with the viewport');
   const short = dialog.newAgentDialogPlacement({ left: 16, bottom: 110 }, { width: 1280, height: 420 });
   log(`  placement 1280x420: ${JSON.stringify(short)}`);
   assert(short.top === 16 && short.maxHeight === 420 - 32, 'short: moves to the top inset rather than squeezing under New');

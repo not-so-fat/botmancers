@@ -831,11 +831,14 @@ button.thread-name {
   padding: 0;
 }
 
-.new-agent-dialog {
+.form-card.new-agent-dialog {
   position: fixed;
   top: 16px;
   left: 16px;
+  /* Beats the later .form-card width:100% / max-width:358px, which under
+     position:fixed would size to the full viewport and break the inset. */
   width: min(358px, calc(100vw - 32px));
+  max-width: none;
   max-height: calc(100dvh - 32px);
   display: flex;
   flex-direction: column;

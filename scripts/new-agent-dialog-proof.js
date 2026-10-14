@@ -32,6 +32,7 @@ const INSET = 16;
 const VIEWPORTS = [
   { name: 'desktop-1280x720', width: 1280, height: 720, mobile: false, anchored: true },
   { name: 'narrow-390x844', width: 390, height: 844, mobile: true, anchored: true },
+  { name: 'narrow-360x640', width: 360, height: 640, mobile: true, anchored: true },
   { name: 'short-1280x420', width: 1280, height: 420, mobile: false, anchored: false },
 ];
 
