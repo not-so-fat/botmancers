@@ -263,7 +263,8 @@ rejected (`untracked_lineage`). Every Work Request records its root principal.
 - `implementation` and `revision` Wakes require a durable owner grant for the
   exact (caller Agent, target Agent) pair. Without one, the Wake and its Work
   Request are `blocked` with `grant_required`, and the source conversation offers
-  the owner **Allow** (create the pair grant and queue the request) or **Deny**
+  the owner **Allow** (persist the pair grant and re-evaluate availability,
+  queuing the request only when the target can launch) or **Deny**
   (cancel this request; the coordinator is told no work ran).
 - An Agent the owner messages directly may wake itself for `implementation`
   without a grant. API-rooted and Wake-rooted self-wakes need a grant.
@@ -295,9 +296,13 @@ Concurrency waits are not denials. Envelope `limits` may only narrow these value
 
 A refusal caused by a known principal (including an Agent with untracked lineage)
 is durable and visible: the Wake row keeps its reason code, the source conversation
-shows a `wake_rejected` or `wake_blocked` event (never a `request_*` lifecycle for
-work that did not start), and the coordinator, when there is a parent request to
-continue, receives one continuation saying no work ran. A refusal of an unknown
+shows a `wake_rejected` or `wake_blocked` event, and the coordinator, when there is
+a parent request to continue, receives one continuation saying no work ran. A
+rejected Wake creates no Work Request, so it never projects any `request_*` event.
+While blocked, a Wake's Work Request may project only `request_cancelled` (for
+example, owner Deny, `grant_denied`); work that did not start never projects an
+event implying execution or an outcome (`request_running`, `request_completed`,
+`request_failed`, or result text). A refusal of an unknown
 principal (missing or failed authentication, foreign origin, non-Agent sender)
 returns an error and writes nothing.
 

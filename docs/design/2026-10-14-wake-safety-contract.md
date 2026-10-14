@@ -244,8 +244,10 @@ untracked lineage) are always durable, except HTTP-level authorization refusals 
 known principal (`owner_required`), which leave state unchanged.
 
 `wake_rejected` is a new conversation event kind projected from the Wake row, not
-from a Work Request, so a refused Wake never appears with `request_*` lifecycle
-text. Existing `limit_exceeded` rows remain readable and project as
+from a Work Request, so a rejected Wake never appears with `request_*` lifecycle
+text. A blocked Wake's Work Request may project only `request_cancelled` (owner
+Deny); unstarted work never projects `request_running`, `request_completed`,
+`request_failed`, or result events. Existing `limit_exceeded` rows remain readable and project as
 `wake_rejected`.
 
 Machine-checkable cases for every row above are in the
