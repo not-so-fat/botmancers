@@ -5,6 +5,11 @@
   --card: #1a2118;
   --hairline: #3a4436;
   --ink: #d5d0c3;
+  /* NOT-453: explicit secondary/tertiary text tokens (no opacity). Each
+     reaches >=4.5:1 on --field, --composer and --card; see
+     test-text-contrast.js. */
+  --ink-muted: #9d9c90;
+  --ink-faint: #8e8e82;
   --accent: #8b9a4a;
   --ink-on-accent: #0e120c;
   --composer: #141a12;
@@ -356,8 +361,7 @@ textarea {
   font-family: system-ui, sans-serif;
   font-size: 12px;
   line-height: 1.3;
-  color: #D5D0C3;
-  opacity: 0.5;
+  color: var(--ink-faint);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -372,8 +376,7 @@ textarea {
   font-family: system-ui, sans-serif;
   font-size: 12px;
   line-height: 1.3;
-  color: #D5D0C3;
-  opacity: 0.5;
+  color: var(--ink-faint);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -432,8 +435,7 @@ textarea {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.3;
-  color: var(--ink);
-  opacity: 0.7;
+  color: var(--ink-muted);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -629,8 +631,7 @@ button.thread-name {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.3;
-  color: var(--ink);
-  opacity: 0.7;
+  color: var(--ink-muted);
 }
 
 .thread {
@@ -780,8 +781,8 @@ button.thread-name {
 }
 
 .composer textarea::placeholder {
-  color: var(--ink);
-  opacity: 0.5;
+  color: var(--ink-faint);
+  opacity: 1;
 }
 
 .mention-list {
@@ -845,6 +846,11 @@ button.thread-name {
   border: 0;
   padding: 0;
   cursor: pointer;
+}
+
+/* NOT-453: the unselected kind is a quieter, still-readable option. */
+.kind-word[aria-pressed="false"] {
+  color: var(--ink-faint);
 }
 
 .group-error {
@@ -949,8 +955,7 @@ button.thread-name {
   font-family: var(--chrome);
   font-size: 12px;
   line-height: 1.3;
-  color: var(--ink);
-  opacity: 0.5;
+  color: var(--ink-faint);
   overflow-wrap: anywhere;
 }
 
@@ -1318,13 +1323,11 @@ button.thread-name {
 }
 
 .cfg-muted {
-  color: var(--ink);
-  opacity: 0.7;
+  color: var(--ink-muted);
 }
 
 .cfg-faint {
-  color: var(--ink);
-  opacity: 0.5;
+  color: var(--ink-faint);
 }
 
 .cfg-link {
@@ -1462,15 +1465,14 @@ button.cfg-link:hover {
 }
 
 .cfg-chevron {
-  color: var(--ink);
-  opacity: 0.5;
+  color: var(--ink-faint);
   background: none;
   border: 0;
   cursor: pointer;
 }
 
 .cfg-chevron:hover {
-  opacity: 1;
+  color: var(--ink);
 }
 
 /* NOT-431: composable outline bot avatars (transparent, stroke-only SVG). */
@@ -1616,11 +1618,11 @@ button.avatar-pic {
 
 .delete-label {
   margin-bottom: 4px;
-  opacity: 0.7;
+  color: var(--ink-muted);
 }
 
 .delete-keeps {
-  opacity: 0.7;
+  color: var(--ink-muted);
 }
 
 .delete-error,
@@ -1711,7 +1713,7 @@ button.avatar-pic {
   margin-left: auto;
   font-family: var(--mono);
   font-size: 12px;
-  opacity: 0.7;
+  color: var(--ink-muted);
 }
 
 .manage-list {
@@ -1739,7 +1741,7 @@ button.avatar-pic {
 
 .manage-row.is-blocked .manage-name,
 .manage-row.is-blocked .manage-meta {
-  opacity: 0.55;
+  color: var(--ink-faint);
 }
 
 .manage-copy {
@@ -1761,7 +1763,7 @@ button.avatar-pic {
   border: 1px solid var(--hairline);
   border-radius: 6px;
   padding: 0 4px;
-  opacity: 0.8;
+  color: var(--ink-muted);
 }
 
 .manage-meta {
@@ -1780,7 +1782,7 @@ button.avatar-pic {
 }
 
 .manage-meta dt {
-  opacity: 0.6;
+  color: var(--ink-faint);
 }
 
 .manage-meta dd {

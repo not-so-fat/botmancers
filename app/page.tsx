@@ -1625,10 +1625,10 @@ function BotModal({ bots, deckState, onRetryDecks, onClose, onCreated }: {
       <div className="new-forms">
         <div className="form-card">
         <div className="kind-row">
-          <button type="button" className="kind-word" aria-pressed={kind === 'bot'} onClick={() => setKind('bot')} style={{ opacity: kind === 'bot' ? 1 : 0.45 }}>
+          <button type="button" className="kind-word" aria-pressed={kind === 'bot'} onClick={() => setKind('bot')}>
             New Agent
           </button>
-          <button type="button" className="kind-word" aria-pressed={kind === 'group'} onClick={() => setKind('group')} style={{ opacity: kind === 'group' ? 1 : 0.45 }}>
+          <button type="button" className="kind-word" aria-pressed={kind === 'group'} onClick={() => setKind('group')}>
             New Group
           </button>
         </div>
