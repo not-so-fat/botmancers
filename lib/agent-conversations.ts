@@ -25,7 +25,15 @@
 // writable only through the UI routes, whose agent loop owns their turns.
 import { createHash, randomUUID } from 'crypto';
 import db, { bots, engine, type Bot, type Principal, type PrincipalKind } from './db';
-import { DispatchFailure, agentForDispatch, dispatchToAgent, type DispatchHistoryEntry } from './agent-dispatch';
+import {
+  DispatchFailure,
+  agentForDispatch,
+  dispatchFailureFor,
+  prepareDispatch,
+  type DispatchHistoryEntry,
+  type PreparedDispatch,
+} from './agent-dispatch';
+import { beginAttempt, runAttempt, type PreparedAttempt } from './attempt-executor';
 import { EngineStoreError, type EngineEvent, type WorkRequest, type WorkRequestState } from './engine-store';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 
@@ -317,8 +325,10 @@ function failRequest(requestId: string, attemptId: string | null, code: string, 
 
 // One read-only conversation turn for a queued canonical request: claim
 // it (queued -> running) with one launch Attempt, run the selected agent
-// through the existing dispatch adapter, then project the reply into the
-// source conversation and complete, or fail with a typed code.
+// through its single-Attempt adapter (NOT-467: ./attempt-executor records
+// the runtime provenance), then project the reply into the source
+// conversation and complete, or fail with a typed code. The adapter never
+// writes conversation messages; the projection below does.
 async function runDispatch(requestId: string): Promise<void> {
   const request = engine.getWorkRequest(requestId);
   if (!request || request.state !== 'queued') return;
@@ -330,45 +340,54 @@ async function runDispatch(requestId: string): Promise<void> {
   // NOT-456: the attempt adapter records the dispatched agent identity
   // (hermes|cursor|claude|codex|muse), never Agent Deck.
   const agent = agentForDispatch(bot);
-  let attemptId: string;
+  let prepared: PreparedDispatch | null = null;
+  let unprepared: DispatchFailure | null = null;
   try {
-    attemptId = engine.transaction(() => {
+    prepared = prepareDispatch({ bot, history: historyFor(request, bot), toolProfile: request.tool_profile });
+  } catch (error) {
+    unprepared = error instanceof DispatchFailure
+      ? error
+      : new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
+  }
+  const snapshot = { agent, agent_id: bot.id, execution_kind: request.execution_kind, tool_profile: request.tool_profile };
+  let started: PreparedAttempt | string;
+  try {
+    started = engine.transaction(() => {
       engine.transitionWorkRequest(requestId, { from: 'queued', to: 'running', expectedVersion: request.version, data: { agent } });
+      if (prepared) {
+        return beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input: prepared.input, snapshot });
+      }
       return engine.createAttempt(requestId, {
         kind: 'launch',
         adapter: agent,
         toolProfile: request.tool_profile,
-        launchSnapshot: { agent, agent_id: bot.id, execution_kind: request.execution_kind, tool_profile: request.tool_profile },
+        launchSnapshot: snapshot,
       }).id;
     });
   } catch (error) {
     if (error instanceof EngineStoreError && error.code === 'stale_state') return;
     throw error;
   }
-
-  let reply: string;
-  try {
-    reply = await dispatchToAgent(
-      { bot, history: historyFor(request, bot) },
-      { onStarted: () => { engine.appendEvent(requestId, { type: 'runtime_started', attemptId }); } }
-    );
-  } catch (error) {
-    if (error instanceof DispatchFailure) {
-      failRequest(requestId, attemptId, error.code, error.message);
-    } else {
-      failRequest(requestId, attemptId, 'runtime_failed', 'The agent runtime did not complete the turn.');
-    }
+  if (!prepared || typeof started === 'string') {
+    const failure = unprepared ?? new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
+    failRequest(requestId, typeof started === 'string' ? started : started.attempt.id, failure.code, failure.message);
     return;
   }
 
-  engine.transaction(() => {
-    const now = Date.now();
-    const replyId = randomUUID();
-    db.prepare(
-      'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(replyId, request.source_conversation_id, 'bot', bot.id, 'bot', requestId, reply, now);
-    engine.finishAttempt(attemptId, { outcome: 'succeeded', now });
-    engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: { reply_message_id: replyId }, now });
+  await runAttempt(engine, started, prepared.adapter, {
+    project: result => {
+      const now = Date.now();
+      if (result.status !== 'completed' || result.output === null) {
+        const failure = dispatchFailureFor(result);
+        engine.transitionWorkRequest(requestId, { from: 'running', to: 'failed', errorCode: failure.code, errorMessage: failure.message, now });
+        return;
+      }
+      const replyId = randomUUID();
+      db.prepare(
+        'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(replyId, request.source_conversation_id, 'bot', bot.id, 'bot', requestId, result.output, now);
+      engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: { reply_message_id: replyId }, now });
+    },
   });
 }
 
@@ -401,7 +420,7 @@ function apiEventType(event: EngineEvent): string | null {
     if (to === 'failed' || to === 'cancelled') return 'failed';
     return to ?? null;
   }
-  if (['attempt_started', 'attempt_finished', 'session_bound', 'backfilled'].includes(event.type)) return null;
+  if (['attempt_started', 'attempt_finished', 'session_bound', 'backfilled', 'runtime_progress'].includes(event.type)) return null;
   return event.type;
 }
 

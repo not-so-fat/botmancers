@@ -97,7 +97,7 @@ function runFresh() {
   ]);
   expectColumns('work_attempts', [
     'id', 'request_id', 'attempt_number', 'kind', 'adapter', 'tool_profile', 'launch_snapshot', 'launch_snapshot_hash',
-    'resumed_session_binding_id', 'external_run_id', 'external_session_id', 'outcome', 'error_category',
+    'resumed_session_binding_id', 'external_run_id', 'external_session_id', 'outcome', 'output', 'error_category',
     'error_message', 'artifacts', 'started_at', 'finished_at',
   ]);
   expectColumns('session_bindings', [
@@ -129,7 +129,7 @@ function runFresh() {
   assert(hasUnique('work_attempts', 'request_id', true), 'work_attempts: at most one open attempt per request (partial unique)');
   assert(hasUnique('session_bindings', 'agent_id,adapter,expr,expr', true), 'session_bindings: one active binding per scope (partial unique)');
   const migrations = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
-  assert(migrations.map(m => m.version).join(',') === '1,2,3,4,5' && store.ENGINE_SCHEMA_VERSION === 5, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
+  assert(migrations.map(m => m.version).join(',') === '1,2,3,4,5,6' && store.ENGINE_SCHEMA_VERSION === 6, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
   const edges = sqlite.prepare('SELECT from_state || \'>\' || to_state AS e FROM work_request_transitions').all().map(row => row.e);
   assert(edges.includes('queued>running') && !edges.includes('completed>running'), 'transition table seeded from WORK_REQUEST_TRANSITIONS');
 
