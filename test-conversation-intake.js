@@ -269,7 +269,7 @@ async function main() {
     const apiLive = await apiPost(service, hermy.id, { content: 'hello from the API', idempotencyKey: 'api-live', wait: true });
     const apiLiveDelta = delta(before, counts());
     log(`  API live -> ${apiLive.status} state=${apiLive.json.state} events=${apiLive.json.events.map(e => e.type).join('>')} delta=${JSON.stringify(apiLiveDelta)}`);
-    assert(apiLive.json.state === 'completed' && apiLive.json.reply && apiLive.json.reply.content === 'hermes reply to hello from the API', 'API request completes through the canonical dispatcher');
+    assert(apiLive.json.state === 'completed' && apiLive.json.reply && apiLive.json.reply.content === 'hermes reply to [From service:ci-pipeline] hello from the API', 'API request completes through the canonical dispatcher');
     assert(apiLiveDelta.agent_requests === 0 && apiLiveDelta.agent_request_events === 0 && apiLiveDelta.processing_queue === 0, 'API submission writes no agent_requests or processing_queue rows');
     assert(apiLiveDelta.work_requests === 1 && apiLiveDelta.work_attempts === 1 && workRequest(apiLive.json.requestId).state === 'completed', 'API lifecycle lives on one Work Request with one Attempt');
     assert(raw.prepare('SELECT COUNT(*) AS n FROM agent_requests').get().n === 0, 'no agent_requests rows exist after every UI and API submission in this run');
