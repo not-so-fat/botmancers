@@ -26,6 +26,9 @@ import { deletedStatusLine, type DeleteAgentRef } from '@/lib/bot-deletion';
 import { DIALOG_FOCUSABLE, newAgentDialogPlacement, wrapFocusTarget, type DialogPlacement } from '@/lib/new-agent-dialog';
 import ThreadState from '@/app/components/ThreadState';
 import { threadView, type ThreadLoad } from '@/lib/thread-state';
+import RuntimeFailureNotice from '@/app/components/RuntimeFailureNotice';
+import { classifyRuntimeFailure } from '@/lib/runtime-failure';
+import { latestLine } from '@/lib/message-preview';
 
 interface Bot {
   id: string;
@@ -91,15 +94,6 @@ function computerPageHtml(list: Message[]): string | null {
 
 function workWord(working: boolean) {
   return working ? 'Working' : 'Not working';
-}
-
-function latestLine(content?: string) {
-  if (!content) return '';
-  const run = parseRun(content);
-  if (run) return runLine(run);
-  const event = deckEventDisplay(content);
-  if (event) return `${event.label} ${event.detail}`.replace(/\s+/g, ' ').trim();
-  return content.replace(/\s+/g, ' ').trim();
 }
 
 function lifeWord(lastSeen: number | null | undefined, serverNow: number, fetchedAt: number, now: number) {
@@ -968,6 +962,14 @@ export default function Home() {
               {computerOpen ? null : threadNote}
               {messages.map((msg) => {
                 const mine = msg.sender_type === 'user';
+                const failure = mine ? null : classifyRuntimeFailure(stripStoredPrefix(msg.content));
+                if (failure) {
+                  return (
+                    <div key={msg.id} className="msg-status">
+                      <RuntimeFailureNotice failure={failure} />
+                    </div>
+                  );
+                }
                 const shown = messagePicture(stripStoredPrefix(msg.content));
                 const picture = shown.images.map(src => (
                   <img key={src.slice(0, 48)} src={src} alt="" style={{ display: 'block', width: 64, height: 64 }} />
