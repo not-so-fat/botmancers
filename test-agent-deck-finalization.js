@@ -17,6 +17,7 @@ for (const suffix of ['', '-shm', '-wal']) {
 }
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
+process.env.HERMES_API_SERVER_KEY = 'fixture-hermes-key';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
@@ -24,6 +25,8 @@ const db = jiti('./lib/db.ts');
 const finalization = jiti('./lib/agent-deck-finalization.ts');
 const decisions = jiti('./lib/finalize-decision.ts');
 const deckApi = jiti('./lib/agent-deck-api.ts');
+const agentConversations = jiti('./lib/agent-conversations.ts');
+const dispatch = jiti('./lib/agent-dispatch.ts');
 const { createFakeAgentDeck, sha } = require('./test-support/fake-agent-deck-api.js');
 const raw = db.default;
 const { bots, conversations, engine, messages, projector } = db;
@@ -37,14 +40,17 @@ function assert(condition, label) {
 function block(value) {
   return `\`\`\`botmancers-finalize\n${JSON.stringify({ version: 1, ...value })}\n\`\`\``;
 }
+function wake(value) {
+  return `\`\`\`botmancers-wake\n${JSON.stringify({ version: 1, ...value })}\n\`\`\``;
+}
 
 const fake = createFakeAgentDeck({ token: 'adg_NOT_487_fixture_bearer_never_persist' });
 process.env.AGENT_DECK_RUN_TOKEN = fake.token;
 deckApi.setAgentDeckApiFetch(fake.fetch);
 
 const coordinator = bots.create({ name: 'Coordinator 487', title: 'Coordinator', description: '', agent: 'hermes', deck_id: 'deck-coord' });
-const developer = bots.create({ name: 'Developer 487', title: 'Developer', description: '', agent: 'codex', deck_id: 'deck-dev' });
-const reviewer = bots.create({ name: 'Reviewer 487', title: 'Reviewer', description: '', agent: 'claude', deck_id: 'deck-review' });
+const developer = bots.create({ name: 'Developer 487', title: 'Developer', description: '', agent: 'codex', deck_id: 'deck-dev', working_directory: os.tmpdir() });
+const reviewer = bots.create({ name: 'Reviewer 487', title: 'Reviewer', description: '', agent: 'claude', deck_id: 'deck-review', working_directory: os.tmpdir() });
 const other = bots.create({ name: 'Other 487', title: 'Other', description: '', agent: 'cursor', deck_id: 'deck-other' });
 const conversation = conversations.getByBotId(coordinator.id);
 let clock = 1800000000000;
@@ -212,6 +218,41 @@ async function main() {
     && JSON.stringify(retryRequests[0].body) === JSON.stringify(retryRequests[1].body), 'retry repeats the exact body and idempotency key');
   assert(fake.commits.filter(commit => commit.runId === retryChain.run.runId).length === 1, 'lost-response retry creates one logical commit');
 
+  const optionalChain = await makeChain('optional-evidence');
+  const optionalId = finalization.recordFinalizeDecisions(source(block(decisionFor(optionalChain))), optionalChain.decisionRequest)[0].finalizationId;
+  let omitOptionalEvidence = true;
+  deckApi.setAgentDeckApiFetch(async (url, init) => {
+    const response = await fake.fetch(url, init);
+    if (!omitOptionalEvidence || init.method !== 'POST' || !url.endsWith('/finalize')) return response;
+    omitOptionalEvidence = false;
+    const payload = await response.json();
+    delete payload.data.parent;
+    delete payload.data.fileCount;
+    delete payload.data.reviewId;
+    return { status: response.status, json: async () => payload };
+  });
+  const optionalCommitted = await finalization.runFinalization(optionalId);
+  assert(optionalCommitted.state === 'committed' && optionalCommitted.parent_commit === optionalChain.run.baseCommit
+    && optionalCommitted.file_count === candidateFiles.length, 'a contract-minimal commit response is accepted and completed from persisted evidence');
+
+  const malformedChain = await makeChain('malformed-response');
+  const malformedId = finalization.recordFinalizeDecisions(source(block(decisionFor(malformedChain))), malformedChain.decisionRequest)[0].finalizationId;
+  let garbleCommittedResponse = true;
+  deckApi.setAgentDeckApiFetch(async (url, init) => {
+    if (garbleCommittedResponse && init.method === 'POST' && url.endsWith('/finalize')) {
+      garbleCommittedResponse = false;
+      await fake.fetch(url, init);
+      return { status: 200, json: async () => ({ success: true, data: { finalizationState: 'finalized' } }) };
+    }
+    return fake.fetch(url, init);
+  });
+  const malformedPending = await finalization.runFinalization(malformedId);
+  deckApi.setAgentDeckApiFetch(fake.fetch);
+  const malformedRecovered = await finalization.runFinalization(malformedId);
+  assert(malformedPending.state === 'preparing' && malformedRecovered.state === 'committed'
+    && fake.commits.filter(commit => commit.runId === malformedChain.run.runId).length === 1,
+  'an invalid post-submit response remains retryable and reconciles to one commit');
+
   const changedChain = await makeChain('changed');
   const changedId = finalization.recordFinalizeDecisions(source(block(decisionFor(changedChain))), changedChain.decisionRequest)[0].finalizationId;
   changedChain.run.files = [...candidateFiles, { path: 'unexpected.txt', sha256: sha('unexpected'), mode: '100644' }];
@@ -232,6 +273,70 @@ async function main() {
   fake.onFinalize = null;
   assert(canceled.state === 'canceled', 'Agent Deck cancellation persists a canceled terminal outcome');
 
+  console.log('\nCoordinator-led API loop and finalization');
+  fake.onStart = body => body.tools === 'edit'
+    ? { result: 'Implementation complete.', files: candidateFiles }
+    : { result: 'Readonly review accepted the exact candidate manifest.' };
+  let coordinatorTurn = 0;
+  const coordinatorInputs = [];
+  dispatch.setAgentDispatchHermesFetch(async (_url, init) => {
+    coordinatorTurn += 1;
+    coordinatorInputs.push(JSON.parse(init.body));
+    let content;
+    if (coordinatorTurn === 1) {
+      content = wake({ target: developer.name, executionKind: 'implementation', objective: 'Implement the end-to-end finalization fixture.' });
+    } else if (coordinatorTurn === 2) {
+      const implementation = raw.prepare("SELECT * FROM work_requests WHERE execution_kind = 'implementation' ORDER BY rowid DESC LIMIT 1").get();
+      content = wake({ target: reviewer.name, executionKind: 'review', objective: 'Review the exact candidate manifest.', contextWorkRequests: [implementation.id] });
+    } else if (coordinatorTurn === 3) {
+      const implementation = raw.prepare("SELECT * FROM work_requests WHERE execution_kind = 'implementation' ORDER BY rowid DESC LIMIT 1").get();
+      const review = raw.prepare("SELECT * FROM work_requests WHERE execution_kind = 'review' ORDER BY rowid DESC LIMIT 1").get();
+      const implementationAttempt = raw.prepare('SELECT id FROM work_attempts WHERE request_id = ? ORDER BY attempt_number DESC LIMIT 1').get(implementation.id);
+      const reviewAttempt = raw.prepare('SELECT id FROM work_attempts WHERE request_id = ? ORDER BY attempt_number DESC LIMIT 1').get(review.id);
+      content = block({ decision: 'accept', implementationAttemptId: implementationAttempt.id, reviewAttemptId: reviewAttempt.id, commitMessage: 'Finalize coordinator loop fixture' });
+    } else {
+      content = 'Coordinator received the committed finalization evidence.';
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+  });
+  const accepted = agentConversations.acceptAgentMessage(
+    { kind: 'person', id: 'fixture-owner' },
+    { agentId: coordinator.id, content: 'Implement, review, and finalize the fixture.', idempotencyKey: 'not-487-e2e-loop' }
+  );
+  await accepted.dispatched;
+  await agentConversations.waitForAgentDispatchIdle();
+  const loopRequests = raw.prepare('SELECT * FROM work_requests WHERE source_conversation_id = ? ORDER BY created_at, rowid').all(accepted.accepted.conversationId);
+  const loopKinds = loopRequests.map(row => row.execution_kind);
+  const loopImplementation = loopRequests.find(row => row.execution_kind === 'implementation');
+  const loopReview = loopRequests.find(row => row.execution_kind === 'review');
+  const loopAttempt = raw.prepare('SELECT * FROM work_attempts WHERE request_id = ?').get(loopImplementation.id);
+  const loopManifest = finalization.getCandidateManifest(loopAttempt.id);
+  const loopFinalization = finalization.listFinalizationsForConversation(accepted.accepted.conversationId)[0];
+  if (!loopManifest || !loopFinalization) {
+    console.log('  DIAGNOSTIC:', JSON.stringify({
+      conversationId: accepted.accepted.conversationId,
+      implementation: { id: loopImplementation?.id, state: loopImplementation?.state, error: loopImplementation?.error_code },
+      review: { id: loopReview?.id, state: loopReview?.state, error: loopReview?.error_code },
+      attempt: loopAttempt && { id: loopAttempt.id, outcome: loopAttempt.outcome, run: loopAttempt.external_run_id },
+      manifest: loopManifest ?? null,
+      finalization: loopFinalization ?? null,
+      coordinatorTurn,
+    }));
+  }
+  assert(JSON.stringify(loopKinds) === JSON.stringify(['conversation', 'implementation', 'conversation', 'review', 'conversation', 'conversation']),
+    'real runTurn path alternates coordinator, implementation, review, acceptance, and finalization continuation');
+  assert(loopManifest && loopManifest.external_run_id === loopAttempt.external_run_id && loopManifest.files === JSON.stringify(candidateFiles),
+    'runTurn records the prepared baseline and exact terminal candidate manifest');
+  assert(loopFinalization && loopFinalization.state === 'committed' && loopFinalization.review_request_id === loopReview.id,
+    'coordinator acceptance flows through startFinalization/runFinalization to one committed outcome');
+  assert(loopFinalization && coordinatorTurn === 4 && JSON.stringify(coordinatorInputs[3]).includes(loopFinalization.commit_id)
+    && JSON.stringify(coordinatorInputs[3]).includes(loopFinalization.tree_id)
+    && JSON.stringify(coordinatorInputs[3]).includes(loopFinalization.result_manifest_digest),
+    'continueAfterFinalization returns exact commit, tree, and manifest evidence to the coordinator conversation');
+  assert(fake.commits.filter(commit => commit.runId === loopAttempt.external_run_id).length === 1,
+    'the coordinator-led loop creates exactly one logical commit');
+  dispatch.setAgentDispatchHermesFetch(null);
+
   const kinds = projector.listConversationEvents(conversation.id).map(event => event.kind);
   for (const kind of ['artifact', 'finalization_preparing', 'finalization_committed', 'finalization_blocked', 'finalization_failed', 'finalization_canceled', 'finalization_rejected']) {
     assert(kinds.includes(kind), `${kind} projects into the originating conversation`);
@@ -249,6 +354,7 @@ async function main() {
 
   deckApi.setAgentDeckApiFetch(null);
   delete process.env.AGENT_DECK_RUN_TOKEN;
+  delete process.env.HERMES_API_SERVER_KEY;
   for (const suffix of ['', '-shm', '-wal']) {
     try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* cleanup */ }
   }

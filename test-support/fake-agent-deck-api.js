@@ -15,6 +15,8 @@
 // counts logical commits.
 'use strict';
 
+/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS fixture consumed by standalone Node tests. */
+
 const http = require('http');
 const { createHash } = require('crypto');
 

@@ -89,7 +89,6 @@ interface ObservedRun {
   state: AgentDeckRunState;
   result: string | null;
   resultMismatch: string | null;
-  errorMessage: string | null;
   sessionId: string | null;
 }
 
@@ -97,7 +96,7 @@ interface ObservedRun {
 // terminal state read alongside a page means that page holds the terminal
 // event (Agent Deck docs/AGENT_RUN_API.md, Events).
 async function observeRun(runId: string): Promise<ObservedRun> {
-  const observed: ObservedRun = { state: 'starting', result: null, resultMismatch: null, errorMessage: null, sessionId: null };
+  const observed: ObservedRun = { state: 'starting', result: null, resultMismatch: null, sessionId: null };
   let cursor: string | null = null;
   for (;;) {
     const page = await getAgentDeckRunEvents(runId, cursor);
@@ -111,8 +110,6 @@ async function observeRun(runId: string): Promise<ObservedRun> {
           observed.result = null;
           observed.resultMismatch = event.result === null ? 'null' : Array.isArray(event.result) ? 'array' : event.result === '' ? 'empty string' : typeof event.result;
         }
-      } else if (event.type === 'error') {
-        observed.errorMessage = typeof event.message === 'string' && event.message ? event.message : 'unknown run error';
       }
     }
     observed.state = page.state;
@@ -258,7 +255,9 @@ export function createAgentDeckApiAttemptAdapter(): AttemptAdapter {
         const evidence = { ...ids, externalSessionId: sessionId, ...(finalization ? { finalization } : {}) };
         if (observed.state === 'canceled') return failed(attemptFailure('cancelled', `Agent Deck run ${runId} was canceled.`), evidence);
         if (observed.state !== 'ended') {
-          return failed(attemptFailure('runtime_failed', `Agent Deck run ${runId} ${observed.state}${observed.errorMessage ? `: ${observed.errorMessage.slice(0, 300)}` : ''}`), evidence);
+          // Agent Deck-authored event prose is not durable Botmancers
+          // evidence: it can contain model output, paths, or credentials.
+          return failed(attemptFailure('runtime_failed', `Agent Deck run ${runId} ended in state ${observed.state}.`), evidence);
         }
         if (observed.result === null) {
           return failed(attemptFailure(

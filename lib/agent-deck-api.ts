@@ -115,10 +115,10 @@ export interface AgentDeckFinalizeResult {
   finalizationState: 'finalized';
   commit: string;
   tree: string;
-  parent: string;
+  parent?: string;
   manifestDigest: string;
-  fileCount: number;
-  reviewId: string;
+  fileCount?: number;
+  reviewId?: string;
 }
 
 export interface StartRunBody {
@@ -346,9 +346,9 @@ export async function finalizeAgentDeckRun(runId: string, body: FinalizeRequestB
     finalizationState: 'finalized',
     commit: data.commit,
     tree: data.tree,
-    parent: typeof data.parent === 'string' ? data.parent : '',
+    ...(typeof data.parent === 'string' && GIT_OID.test(data.parent) ? { parent: data.parent } : {}),
     manifestDigest: data.manifestDigest,
-    fileCount: typeof data.fileCount === 'number' ? data.fileCount : body.files.length,
-    reviewId: typeof data.reviewId === 'string' ? data.reviewId : body.reviewId,
+    ...(typeof data.fileCount === 'number' ? { fileCount: data.fileCount } : {}),
+    ...(typeof data.reviewId === 'string' ? { reviewId: data.reviewId } : {}),
   };
 }

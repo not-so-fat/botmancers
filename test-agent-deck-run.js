@@ -383,6 +383,12 @@ async function main() {
   }));
   const rejectedApi = await canonical.run(input('rejected-api', 'readonly'));
   assert(rejectedApi.failure.code === 'agent_deck_rejected' && !JSON.stringify(rejectedApi).includes(secret), 'Agent Deck-authored rejection text cannot echo the bearer into Attempt state');
+  deckApi.setAgentDeckApiFetch(fakeApi.fetch);
+  const eventSecret = 'agent_deck_event_prose_must_not_persist';
+  fakeApi.onStart = () => ({ state: 'error', errorMessage: eventSecret });
+  const erroredRun = await canonical.run(input('error-event-prose', 'readonly'));
+  assert(erroredRun.status === 'failed' && erroredRun.failure.code === null && !JSON.stringify(erroredRun).includes(eventSecret),
+    'Agent Deck error-event prose is not copied into durable Attempt failure evidence');
   assert(recorded.length === cliCallsBeforeApi, 'API authentication and availability failures never fall back to the CLI');
   deckApi.setAgentDeckApiFetch(null);
   deckAttempt.setAgentDeckApiPollIntervalForTests(null);

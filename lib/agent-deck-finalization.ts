@@ -469,15 +469,19 @@ function finish(row: FinalizationRow, state: Exclude<FinalizationState, 'prepari
   });
 }
 
-function failureFields(error: unknown): { state: Exclude<FinalizationState, 'preparing' | 'committed'> | null; reasonCode: string; reason: string } {
+function failureFields(error: unknown, submitted = false): { state: Exclude<FinalizationState, 'preparing' | 'committed'> | null; reasonCode: string; reason: string } {
   if (!(error instanceof AgentDeckApiError)) {
-    return { state: 'failed', reasonCode: 'finalization_failed', reason: 'The finalization could not be completed.' };
+    return { state: submitted ? null : 'failed', reasonCode: 'finalization_failed', reason: 'The finalization outcome is unknown; retrying with the same idempotency key is safe.' };
   }
   if (error.code === 'agent_deck_unreachable') return { state: null, reasonCode: error.code, reason: error.message };
+  if (submitted && error.code === 'agent_deck_invalid_response') return { state: null, reasonCode: error.code, reason: error.message };
   if (error.code !== 'agent_deck_rejected') return { state: 'failed', reasonCode: error.code, reason: error.message };
   const deckCode = error.deckCode ?? '';
   if (deckCode === 'FINALIZATION_CANCELED') return { state: 'canceled', reasonCode: deckCode.toLowerCase(), reason: error.message };
   if (BLOCKED_CODES.has(deckCode)) return { state: 'blocked', reasonCode: deckCode.toLowerCase(), reason: error.message };
+  if (submitted && (!deckCode || (error.status !== null && error.status >= 500))) {
+    return { state: null, reasonCode: deckCode ? deckCode.toLowerCase() : 'finalization_failed', reason: 'The finalization outcome is unknown; retrying with the same idempotency key is safe.' };
+  }
   return { state: 'failed', reasonCode: deckCode ? deckCode.toLowerCase() : 'finalization_failed', reason: error.message };
 }
 
@@ -528,8 +532,10 @@ export async function runFinalization(id: string): Promise<FinalizationRow | und
   }
   try {
     const result = await finalizeAgentDeckRun(row.external_run_id, body, row.idempotency_key);
-    if (result.manifestDigest !== manifest.manifest_digest || result.fileCount !== manifest.file_count
-      || result.reviewId !== row.review_request_id || result.parent !== manifest.base_commit) {
+    if (result.manifestDigest !== manifest.manifest_digest
+      || (result.fileCount !== undefined && result.fileCount !== manifest.file_count)
+      || (result.reviewId !== undefined && result.reviewId !== row.review_request_id)
+      || (result.parent !== undefined && result.parent !== manifest.base_commit)) {
       return finish(row, 'failed', {
         reasonCode: 'agent_deck_invalid_response',
         reason: 'Agent Deck returned commit evidence that does not match the persisted finalization request.',
@@ -538,12 +544,12 @@ export async function runFinalization(id: string): Promise<FinalizationRow | und
     return finish(row, 'committed', {
       commit: result.commit,
       tree: result.tree,
-      parent: result.parent,
+      parent: result.parent ?? manifest.base_commit,
       manifestDigest: result.manifestDigest,
-      fileCount: result.fileCount,
+      fileCount: result.fileCount ?? manifest.file_count,
     }, now());
   } catch (error) {
-    const failure = failureFields(error);
+    const failure = failureFields(error, true);
     if (!failure.state) return retryPending(row, failure.reasonCode, failure.reason, now());
     return finish(row, failure.state, { reasonCode: failure.reasonCode, reason: failure.reason }, now());
   }
