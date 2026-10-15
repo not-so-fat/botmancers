@@ -282,7 +282,7 @@ function decisionTable() {
     && config.leaseMs === lib.DEFAULT_DISPATCH_CONFIG.leaseMs && config.heartbeatMs === 250,
   'concurrency config: positive integers apply, invalid values fall back to deterministic defaults');
   const defaults = lib.dispatchConfigFromEnv({});
-  assert(JSON.stringify(defaults) === JSON.stringify({ maxGlobal: 4, maxPerTarget: 1, leaseMs: 60000, heartbeatMs: 15000, deferMs: 5000 }), 'deterministic defaults: global 4, per target 1, lease 60s, heartbeat 15s, defer 5s');
+  assert(JSON.stringify(defaults) === JSON.stringify({ maxGlobal: 4, maxPerTarget: 1, leaseMs: 60000, heartbeatMs: 15000, deferMs: 5000, cancelGraceMs: 30000 }), 'deterministic defaults: global 4, per target 1, lease 60s, heartbeat 15s, defer 5s, cancel grace 30s');
 }
 
 // ---------------------------------------------------------------------

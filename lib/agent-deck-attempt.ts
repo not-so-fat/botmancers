@@ -258,14 +258,19 @@ async function followRun(runId: string, input: AttemptFollowInput, onEvent: Atte
       stop.promise.then(interrupted => ({ interrupted })),
     ]);
     if ('interrupted' in settled) {
-      try { await cancelAgentDeckRun(runId); } catch { /* reported by the interruption below */ }
-      return failed(settled.interrupted, ids);
+      // Only an accepted cancel stops the run; a refused or unreachable
+      // cancel is reported so the Attempt is recorded abandoned.
+      let externalCancel: 'requested' | 'failed' = 'requested';
+      try { await cancelAgentDeckRun(runId); } catch { externalCancel = 'failed'; }
+      return failed(settled.interrupted, { ...ids, externalCancel });
     }
     if ('error' in settled) {
       // Stop the run we can no longer observe rather than let it edit
-      // unwatched; failure to reach the API is reported as is.
-      try { await cancelAgentDeckRun(runId); } catch { /* unreachable */ }
-      return failed(failureOf(settled.error, 'runtime_failed'), ids);
+      // unwatched. A refused or unreachable cancel is reported: the run
+      // may continue, so the Attempt is recorded abandoned, not failed.
+      let externalCancel: 'requested' | 'failed' = 'requested';
+      try { await cancelAgentDeckRun(runId); } catch { externalCancel = 'failed'; }
+      return failed(failureOf(settled.error, 'runtime_failed'), { ...ids, externalCancel });
     }
     const { observed } = settled;
     let status: AgentDeckRunStatus | null = null;
@@ -347,12 +352,21 @@ export const agentDeckApiReconciler: AttemptReconciler = {
     } catch { /* reported as no baseline below */ }
     return finalizationEvidence(runId, status);
   },
+  async cancel(runId) {
+    try {
+      await cancelAgentDeckRun(runId);
+      return 'requested';
+    } catch {
+      return 'failed';
+    }
+  },
 };
 
 export function createAgentDeckApiAttemptAdapter(): AttemptAdapter {
   return {
     name: NAME,
     reconciler: agentDeckApiReconciler,
+    externalCancel: true,
     launchIntent(input) {
       const start = startBodyFor(input);
       if (!start.ok) return null;

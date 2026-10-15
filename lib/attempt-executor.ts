@@ -134,6 +134,29 @@ export function recordAttemptResult(store: EngineStore, attemptId: string, resul
   });
 }
 
+// NOT-473: a result that arrives after its Attempt was already finished
+// (abandoned by cancellation, a deadline, or a superseding retry) is kept
+// as evidence on the request's event log and changes nothing else: the
+// Attempt stays as it was finished and the request is never promoted.
+export function recordLateResult(store: EngineStore, attempt: WorkAttempt, result: AttemptResult, now: number = Date.now()): void {
+  const request = store.getWorkRequest(attempt.request_id);
+  store.appendEvent(attempt.request_id, {
+    type: 'late_result_recorded',
+    attemptId: attempt.id,
+    data: {
+      attempt_number: attempt.attempt_number,
+      attempt_outcome: attempt.outcome,
+      result_status: result.status,
+      result_outcome: outcomeForResult(result),
+      error_category: result.failure?.category ?? null,
+      external_run_id: result.externalRunId,
+      output: result.output,
+      request_state: request?.state ?? null,
+    },
+    now,
+  });
+}
+
 export interface RunAttemptOptions<T> {
   // Runs in the transaction that finishes the Attempt.
   project?: (result: AttemptResult, attempt: WorkAttempt) => T;
@@ -145,16 +168,37 @@ export interface RunAttemptOptions<T> {
   fence?: () => boolean;
 }
 
+// NOT-473: an Attempt that ended because this process stopped waiting for
+// it (cancellation signal or deadline) without stopping the external run:
+// the transport cannot stop it, or its cancel request failed. The run may
+// continue; the caller records what the runtime was told (external_cancel).
+export interface LocallyAbandonedAttempt {
+  requestId: string;
+  attemptId: string;
+  externalRunId: string | null;
+  transport: string;
+  // observation_lost: this process lost sight of the run and could not
+  // stop it.
+  reason: 'cancelled' | 'timed_out' | 'observation_lost';
+  // 'failed': the transport asked the runtime to stop the run and was
+  // refused or could not reach it. null: the transport cannot ask.
+  externalCancel: 'failed' | null;
+}
+
+type RunAttemptResult<T> = { attempt: WorkAttempt; result: AttemptResult; projected: T | undefined; late: boolean; abandoned: LocallyAbandonedAttempt | null };
+
 export async function runAttempt<T = undefined>(
   store: EngineStore,
   prepared: PreparedAttempt,
   adapter: AttemptAdapter,
   options: RunAttemptOptions<T> = {}
-): Promise<{ attempt: WorkAttempt; result: AttemptResult; projected: T | undefined }> {
+): Promise<RunAttemptResult<T>> {
   let result: AttemptResult;
   let fenced = false;
+  let launched = false;
   try {
     result = await adapter.run(prepared.input, event => {
+      if (event.type === 'started') launched = true;
       if (fenced || !recordEvent(store, prepared.attempt, event, options.fence)) {
         fenced = true;
         return;
@@ -178,17 +222,78 @@ export async function runAttempt<T = undefined>(
     };
   }
   return store.transaction(() => {
-    const attempt = recordAttemptResult(store, prepared.attempt.id, result);
+    const current = store.getAttempt(prepared.attempt.id);
+    if (current && current.finished_at !== null) {
+      recordLateResult(store, current, result);
+      return { attempt: current, result, projected: undefined, late: true, abandoned: null };
+    }
+    const abandoned = launched ? abandonedLocally(prepared.attempt, adapter, prepared.input.signal ?? null, result) : null;
+    const attempt = abandoned ? recordAbandonedResult(store, abandoned, result) : recordAttemptResult(store, prepared.attempt.id, result);
     const projected = options.project ? options.project(result, attempt) : undefined;
-    return { attempt, result, projected };
+    return { attempt, result, projected, late: false, abandoned };
   });
+}
+
+// A launched Attempt that returned cancelled or timed out was interrupted
+// locally (its signal, its deadline, or the transport's own wait limit).
+// Unless the transport stops the external run on that signal
+// (adapter.externalCancel) and the runtime accepted the cancel, only this
+// process's wait ended.
+export function abandonedLocally(
+  attempt: WorkAttempt,
+  adapter: Pick<AttemptAdapter, 'name' | 'externalCancel'>,
+  signal: AbortSignal | null,
+  result: AttemptResult,
+): LocallyAbandonedAttempt | null {
+  if (result.status !== 'failed') return null;
+  const category = result.failure?.category;
+  const cancelFailed = result.externalCancel === 'failed';
+  const base = { requestId: attempt.request_id, attemptId: attempt.id, externalRunId: result.externalRunId, transport: adapter.name };
+  if (category !== 'cancelled' && category !== 'timed_out') {
+    // Any other failure whose cleanup cancel failed left the run going.
+    return cancelFailed ? { ...base, reason: 'observation_lost', externalCancel: 'failed' } : null;
+  }
+  if (category === 'cancelled' && !signal?.aborted) return null;
+  if (adapter.externalCancel && !cancelFailed) return null;
+  return { ...base, reason: category, externalCancel: cancelFailed ? 'failed' : null };
+}
+
+// Finished the way enforcement abandons an Attempt (lib/work-request-
+// control): the same outcome, category 'abandoned', and an
+// attempt_abandoned record saying the run was not stopped.
+export function recordAbandonedResult(store: EngineStore, abandoned: LocallyAbandonedAttempt, result: AttemptResult): WorkAttempt {
+  const notStopped = abandoned.externalCancel === 'failed'
+    ? 'The runtime did not accept the cancel request'
+    : 'The runtime cannot stop the run';
+  const attempt = store.finishAttempt(abandoned.attemptId, {
+    outcome: outcomeForResult(result),
+    errorCategory: 'abandoned',
+    errorMessage: `${result.failure?.message ?? 'The attempt was interrupted.'} ${notStopped}; it may continue and a later result is not awaited.`.slice(0, 500),
+    artifacts: result.artifacts,
+    ...(result.externalRunId ? { externalRunId: result.externalRunId } : {}),
+    ...(result.externalSessionId ? { externalSessionId: result.externalSessionId } : {}),
+    now: result.finishedAt,
+  });
+  // The run id may have been recorded from a 'started' event only.
+  abandoned.externalRunId = attempt.external_run_id;
+  store.appendEvent(abandoned.requestId, {
+    type: 'attempt_abandoned',
+    attemptId: abandoned.attemptId,
+    data: {
+      reason: abandoned.reason, attempt_number: attempt.attempt_number, external_run_id: attempt.external_run_id,
+      transport: abandoned.transport, local_only: true, error_code: result.failure?.code ?? null,
+      external_cancel: abandoned.externalCancel,
+    },
+    now: result.finishedAt,
+  });
+  return attempt;
 }
 
 export async function executeAttempt<T = undefined>(
   store: EngineStore,
   requestId: string,
   options: BeginAttemptOptions & RunAttemptOptions<T>
-): Promise<{ attempt: WorkAttempt; result: AttemptResult; projected: T | undefined }> {
+): Promise<RunAttemptResult<T>> {
   const prepared = beginAttempt(store, requestId, options);
   return runAttempt(store, prepared, options.adapter, options);
 }

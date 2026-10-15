@@ -33,6 +33,13 @@
 // run/attempt/review linkage and public commit/tree/manifest identifiers.
 // A decision that authorizes nothing projects as finalization_rejected on
 // the coordinator request that carried it.
+//
+// NOT-473: request control projects as its own kinds: cancel requested
+// (the durable intent), cancelled, timed out (failed with reason
+// timed_out), retry scheduled (queued again under the bounded policy, or by
+// an operator), and retries exhausted (failed with reason
+// retries_exhausted). Abandoned Attempts, external cancel answers, and late
+// results stay internal evidence.
 import type Database from 'better-sqlite3';
 import type { EngineEvent, WorkAttempt, WorkRequest, WorkRequestState } from './engine-store';
 
@@ -54,7 +61,11 @@ export type ConversationEventKind =
   | 'finalization_blocked'
   | 'finalization_failed'
   | 'finalization_canceled'
-  | 'finalization_rejected';
+  | 'finalization_rejected'
+  | 'request_cancel_requested'
+  | 'request_timed_out'
+  | 'request_retry_scheduled'
+  | 'request_retries_exhausted';
 
 export const CONVERSATION_EVENT_KINDS: ConversationEventKind[] = [
   'wake_accepted', 'wake_blocked', 'request_queued', 'request_blocked', 'request_running',
@@ -62,6 +73,7 @@ export const CONVERSATION_EVENT_KINDS: ConversationEventKind[] = [
   'question', 'result', 'artifact',
   'finalization_preparing', 'finalization_committed', 'finalization_blocked',
   'finalization_failed', 'finalization_canceled', 'finalization_rejected',
+  'request_cancel_requested', 'request_timed_out', 'request_retry_scheduled', 'request_retries_exhausted',
 ];
 
 export interface ConversationEventRow {
@@ -189,6 +201,21 @@ export function createConversationProjector(db: Db) {
             }
             return [{ kind: 'request_blocked', attemptId: null, text: withReason('Blocked', reason), data: { from, reason } }];
           case 'queued':
+            if (reason === 'retry_scheduled') {
+              const attempts = typeof data.attempt_count === 'number' ? data.attempt_count : null;
+              const max = typeof data.max_attempts === 'number' ? data.max_attempts : null;
+              return [{
+                kind: 'request_retry_scheduled', attemptId: before.lastFinished?.attemptId ?? null,
+                text: data.manual === true
+                  ? `Retry requested${attempts !== null && max !== null ? ` (Attempt ${attempts + 1} of ${max})` : ''}`
+                  : `Retry scheduled${attempts !== null && max !== null ? ` (Attempt ${attempts + 1} of ${max})` : ''}${typeof data.delay_ms === 'number' ? ` in ${data.delay_ms} ms` : ''}`,
+                data: {
+                  from, reason, manual: data.manual === true, attempt_count: attempts, max_attempts: max,
+                  next_eligible_at: data.next_eligible_at ?? null, delay_ms: data.delay_ms ?? null,
+                  category: data.category ?? null, outcome: before.lastFinished?.outcome ?? null,
+                },
+              }];
+            }
             return [{ kind: 'request_queued', attemptId: null, text: withReason('Queued again', reason), data: { from, reason } }];
           case 'running':
             return [{ kind: 'request_running', attemptId: null, text: 'Running', data: { phase: 'dispatched', from } }];
@@ -218,10 +245,30 @@ export function createConversationProjector(db: Db) {
             const finished = before.lastFinished;
             const code = request.error_code ?? str(data.error_code);
             const message = request.error_message;
+            if (to === 'failed' && reason === 'timed_out') {
+              return [{
+                kind: 'request_timed_out', attemptId: finished?.attemptId ?? null,
+                text: 'Timed out: the request passed its deadline',
+                data: { success: false, error_code: code, reason, deadline_at: data.deadline_at ?? null, from, outcome: finished?.outcome ?? null },
+              }];
+            }
+            if (to === 'failed' && reason === 'retries_exhausted') {
+              return [{
+                kind: 'request_retries_exhausted', attemptId: finished?.attemptId ?? null,
+                text: withReason(`Retries exhausted after ${data.attempt_count ?? '?'} of ${data.max_attempts ?? '?'} Attempts`, message ?? code),
+                data: {
+                  success: false, error_code: code, error_message: message, reason,
+                  attempt_count: data.attempt_count ?? null, max_attempts: data.max_attempts ?? null, outcome: finished?.outcome ?? null,
+                },
+              }];
+            }
             return [{
               kind: to === 'failed' ? 'request_failed' : 'request_cancelled',
               attemptId: finished?.attemptId ?? null,
-              text: to === 'failed' ? withReason('Failed', message ?? code) : withReason('Cancelled', reason ?? message),
+              text: to === 'failed'
+                ? withReason('Failed', message ?? code)
+                // A cancellation command names its own reason (set once).
+                : reason === 'cancel_requested' ? withReason('Cancelled', request.cancel_reason) : withReason('Cancelled', reason ?? message),
               data: { success: false, error_code: code, error_message: message, reason, outcome: finished?.outcome ?? null },
             }];
           }
@@ -236,6 +283,14 @@ export function createConversationProjector(db: Db) {
           kind: 'request_running', attemptId: event.attempt_id,
           text: adapter ? `Running on ${adapter}` : 'Running',
           data: { phase: 'runtime_started', adapter, external_run_id: str(data.external_run_id), success: false },
+        }];
+      }
+      case 'cancel_requested': {
+        const reason = str(data.reason);
+        return [{
+          kind: 'request_cancel_requested', attemptId: null,
+          text: withReason('Cancel requested', reason),
+          data: { by: str(data.by), reason, state: str(data.state) },
         }];
       }
       case 'question': {

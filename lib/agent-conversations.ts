@@ -18,7 +18,9 @@
 // Idempotency: (principal kind, principal id, idempotency key) is unique.
 // An exact retry returns the original request; the same key with a
 // different payload fails with idempotency_conflict and writes nothing.
-// No retry policy runs here: a failed request stays failed.
+// NOT-473: a failed Attempt is retried only under the request's stored
+// bounded retry policy (one Attempt by default, so a failed request stays
+// failed); cancellation and deadlines go through lib/work-request-control.
 //
 // Existing UI threads ('bot'/'group' conversations) are readable here
 // through the compatibility participants bound in ./db; they stay
@@ -34,8 +36,9 @@ import {
   type DispatchHistoryEntry,
   type PreparedDispatch,
 } from './agent-dispatch';
-import { beginAttempt, recordAttemptResult, runAttempt, type PreparedAttempt } from './attempt-executor';
-import { EngineStoreError, type EngineEvent, type WorkAttempt, type WorkRequest, type WorkRequestState } from './engine-store';
+import { abandonedLocally, beginAttempt, recordAbandonedResult, recordAttemptResult, recordLateResult, runAttempt, type LocallyAbandonedAttempt, type PreparedAttempt } from './attempt-executor';
+import { EngineStoreError, TERMINAL_STATES, type EngineEvent, type WorkAttempt, type WorkRequest, type WorkRequestState } from './engine-store';
+import { ControlError, type AbandonedAttempt, type CancelResult, type ControlActor, type ControlAuthorizer, type EnforcedRequest, type RetryResult } from './work-request-control';
 import type { AttemptEvent, AttemptResult, RunObservation } from './attempt-adapter';
 import {
   LeaseLostError,
@@ -426,6 +429,9 @@ function drainDeferred(): void {
 async function runTurn(requestId: string): Promise<boolean> {
   const request = engine.getWorkRequest(requestId);
   if (!request || request.state !== 'queued') return false;
+  // NOT-473: a retry in its backoff is not claimable yet (the claim
+  // refuses it too; this only skips preparing a launch for nothing).
+  if (request.next_eligible_at !== null && dispatcher.now() < request.next_eligible_at) return false;
   const bot = bots.getById(request.target_agent_id);
   if (!bot) {
     failRequest(requestId, null, 'agent_unavailable', 'The agent is no longer registered.');
@@ -480,12 +486,19 @@ async function runTurn(requestId: string): Promise<boolean> {
   }
   const snapshot = { agent, agent_id: bot.id, execution_kind: policy.execution_kind, tool_profile: policy.tool_profile, policy_rule: policy.rule };
   let started: { lease: DispatchLease; attempt: PreparedAttempt | string } | null;
+  // NOT-473: the Attempt's cancellation signal and deadline. The deadline
+  // (its own timeout or the request deadline, whichever is first) is
+  // recorded in the launch snapshot and passed to the adapter.
+  const controller = new AbortController();
   try {
     started = engine.transaction(() => {
       const claim = dispatcher.claim(requestId, { expectedVersion: request.version, data: { agent } });
       if (!claim.ok) return null;
       if (prepared) {
-        const attempt = beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input: prepared.input, snapshot });
+        const startedAt = dispatcher.now();
+        const deadlineAt = dispatcher.control.attemptDeadlineFor(claim.request, startedAt);
+        const input = { ...prepared.input, deadlineAt, signal: controller.signal };
+        const attempt = beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input, snapshot, now: startedAt });
         dispatcher.recordLaunchIntent(claim.lease, attempt.attempt.id, prepared.adapter.name, prepared.adapter.launchIntent?.(attempt.input) ?? null);
         return { lease: claim.lease, attempt };
       }
@@ -517,10 +530,11 @@ async function runTurn(requestId: string): Promise<boolean> {
   }
 
   const attemptId = started.attempt.attempt.id;
+  localWork.set(requestId, { attemptId, controller });
   await withHeartbeat(lease, async () => {
     dispatchFault('before_launch', requestId);
     try {
-      await runAttempt(engine, started.attempt as PreparedAttempt, prepared.adapter, {
+      const ran = await runAttempt(engine, started.attempt as PreparedAttempt, prepared.adapter, {
         // A worker whose lease was taken over writes no runtime events or
         // external ids: the new owner reconciles the run.
         fence: () => dispatcher.holds(lease),
@@ -531,11 +545,81 @@ async function runTurn(requestId: string): Promise<boolean> {
         },
         project: (result, attempt) => commitTurn(lease, request, attempt, result),
       });
+      if (ran.abandoned) await recordExternalCancel(ran.abandoned, { localSignalled: true, launched: true });
+      if (ran.projected?.retryAt != null) scheduleRetry(requestId, ran.projected.retryAt);
     } catch (error) {
       handleUncommitted(lease, attemptId, error);
     }
-  });
+  }, controller);
+  if (localWork.get(requestId)?.attemptId === attemptId) localWork.delete(requestId);
   return true;
+}
+
+// NOT-473: Attempts this process is running, by request, with the signal
+// that stops them (cancellation, or an Attempt abandoned by enforcement).
+const localWork = new Map<string, { attemptId: string; controller: AbortController }>();
+
+// Starts a scheduled retry once its backoff ends. The durable
+// next_eligible_at is authoritative: a sweep also starts eligible retries,
+// so a retry survives a restart and this timer is only a shortcut.
+function scheduleRetry(requestId: string, at: number): void {
+  const timer = setTimeout(() => { void startAgentDispatch(requestId); }, Math.max(0, at - dispatcher.now()));
+  if (timer.unref) timer.unref();
+}
+
+// Queued retries whose backoff has ended, oldest first.
+function eligibleRetryIds(): string[] {
+  return (db.prepare(`
+    SELECT id FROM work_requests
+    WHERE state = 'queued' AND legacy_agent_request_id IS NULL AND next_eligible_at IS NOT NULL AND next_eligible_at <= ?
+    ORDER BY next_eligible_at ASC, id ASC
+  `).all(dispatcher.now()) as { id: string }[]).map(row => row.id);
+}
+
+// After an Attempt was abandoned: stop this process's wait for it, then
+// ask the runtime to stop the run where the transport supports it. The
+// result is recorded as is; Botmancers never claims a hard stop it did
+// not get.
+async function stopAbandoned(abandoned: AbandonedAttempt): Promise<void> {
+  const local = localWork.get(abandoned.requestId);
+  if (local && local.attemptId === abandoned.attemptId) {
+    local.controller.abort();
+    // The abandoned worker may never return (a stalled runtime). Keep
+    // waiting for it under its own key so a retry of the request can
+    // start now instead of joining it.
+    const running = inFlight.get(abandoned.requestId);
+    if (running) {
+      const key = `abandoned:${abandoned.attemptId}`;
+      inFlight.delete(abandoned.requestId);
+      inFlight.set(key, running);
+      void running.finally(() => { if (inFlight.get(key) === running) inFlight.delete(key); });
+    }
+  }
+  await recordExternalCancel(abandoned, { localSignalled: !!local && local.attemptId === abandoned.attemptId, launched: abandoned.launched });
+}
+
+// Asks the runtime to stop an abandoned run where its transport can, and
+// records the answer. launched: the Attempt is known to have started a
+// run even without a run id (a transport like Hermes has none), so a
+// missing id means the run cannot be addressed, not that none exists.
+async function recordExternalCancel(
+  abandoned: Pick<AbandonedAttempt, 'requestId' | 'attemptId' | 'externalRunId' | 'transport'>
+    & { reason: AbandonedAttempt['reason'] | LocallyAbandonedAttempt['reason']; externalCancel?: 'failed' | null },
+  options: { localSignalled: boolean; launched: boolean },
+): Promise<void> {
+  const reconciler = abandoned.transport ? adapterForTransport(abandoned.transport)?.reconciler ?? null : null;
+  let status: 'requested' | 'failed' | 'unsupported' | 'not_launched';
+  // The transport already asked the runtime to stop the run and failed.
+  if (abandoned.externalCancel === 'failed') status = 'failed';
+  else if (!abandoned.externalRunId) status = options.launched ? 'unsupported' : 'not_launched';
+  else if (!reconciler?.cancel) status = 'unsupported';
+  else status = await reconciler.cancel(abandoned.externalRunId);
+  engine.appendEvent(abandoned.requestId, {
+    type: 'external_cancel',
+    attemptId: abandoned.attemptId,
+    data: { status, reason: abandoned.reason, external_run_id: abandoned.externalRunId, transport: abandoned.transport, local_signalled: options.localSignalled },
+    now: dispatcher.now(),
+  });
 }
 
 // Fenced: dropped once the lease is no longer held.
@@ -549,9 +633,15 @@ function recordBaselineEvent(lease: DispatchLease, attemptId: string, event: Att
   }
 }
 
-async function withHeartbeat<T>(lease: DispatchLease, fn: () => Promise<T>): Promise<T> {
+async function withHeartbeat<T>(lease: DispatchLease, fn: () => Promise<T>, controller?: AbortController): Promise<T> {
   const timer = setInterval(() => {
-    try { dispatcher.heartbeat(lease); } catch (error) { console.error('Dispatch heartbeat failed:', error); }
+    try {
+      dispatcher.heartbeat(lease);
+      // NOT-473: a cancellation requested from any process (or a request
+      // another worker already ended) stops this worker's Attempt.
+      const current = engine.getWorkRequest(lease.requestId);
+      if (controller && current && (current.cancel_requested_at !== null || TERMINAL_STATES.includes(current.state))) controller.abort();
+    } catch (error) { console.error('Dispatch heartbeat failed:', error); }
   }, dispatcher.config.heartbeatMs);
   if (timer.unref) timer.unref();
   try {
@@ -563,7 +653,7 @@ async function withHeartbeat<T>(lease: DispatchLease, fn: () => Promise<T>): Pro
 
 // A commit that did not happen: the lease moved to another worker (which
 // reconciles the same run), or the run may still be live (DeferCommit).
-function handleUncommitted(lease: DispatchLease, attemptId: string, error: unknown): void {
+function handleUncommitted(lease: DispatchLease, attemptId: string | null, error: unknown): void {
   if (error instanceof LeaseLostError) return;
   if (error instanceof DeferCommit) {
     try {
@@ -580,7 +670,13 @@ function handleUncommitted(lease: DispatchLease, attemptId: string, error: unkno
 // finishes the Attempt and fenced by the lease: project the reply into the
 // source conversation and complete, or fail with a typed code, then
 // release the lease. Shared by a live run and a reattached one.
-function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAttempt, result: AttemptResult): void {
+//
+// NOT-473: a cancellation intent or a passed request deadline decides
+// before the result does: the request ends cancelled or timed out and a
+// successful result is kept as evidence only. A failure is settled under
+// the request's bounded retry policy (retry scheduled, exhausted, operator
+// attention, or failed); retryAt names a scheduled retry.
+function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAttempt, result: AttemptResult): { retryAt: number | null } {
   dispatchFault('before_terminal_commit', request.id);
   dispatcher.assertHeld(lease);
   if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable' && attempt.external_run_id) {
@@ -590,13 +686,40 @@ function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAtt
     throw new DeferCommit('launch_unconfirmed');
   }
   const requestId = request.id;
-  const now = Date.now();
+  const now = dispatcher.now();
   recordPreparedEvidence(request, attempt, result, now);
+  const current = engine.getWorkRequest(requestId) ?? request;
+  const cancelled = current.cancel_requested_at !== null;
+  if (cancelled || (current.deadline_at !== null && now >= current.deadline_at)) {
+    if (cancelled) {
+      engine.transitionWorkRequest(requestId, {
+        from: 'running', to: 'cancelled', reason: 'cancel_requested', errorCode: 'cancelled',
+        errorMessage: current.cancel_reason ?? 'The request was cancelled.', data: { attempt_outcome: attempt.outcome }, now,
+      });
+    } else {
+      engine.transitionWorkRequest(requestId, {
+        from: 'running', to: 'failed', reason: 'timed_out', errorCode: 'timed_out', errorMessage: 'The request passed its deadline.',
+        data: { deadline_at: current.deadline_at, attempt_outcome: attempt.outcome }, now,
+      });
+    }
+    if (result.status === 'completed') recordLateResult(engine, attempt, result, now);
+    dispatcher.release(lease, cancelled ? 'cancelled' : 'timed_out');
+    return { retryAt: null };
+  }
   if (result.status !== 'completed' || result.output === null) {
     const failure = dispatchFailureFor(result);
-    engine.transitionWorkRequest(requestId, { from: 'running', to: 'failed', errorCode: failure.code, errorMessage: failure.message, now });
-    dispatcher.release(lease, 'failed');
-    return;
+    // A run the runtime would not stop may still be working: never
+    // retried automatically (a second Attempt would race it); an operator
+    // decides.
+    const settled = dispatcher.control.settleFailure(requestId, {
+      category: result.status === 'completed' ? 'result_contract' : result.failure?.category ?? 'runtime_failed',
+      code: result.failure?.code ?? null,
+      errorCode: failure.code,
+      errorMessage: failure.message,
+      ...(result.externalCancel === 'failed' ? { attention: 'external_cancel_failed' } : {}),
+    }, now);
+    dispatcher.release(lease, settled.outcome);
+    return { retryAt: settled.decision.action === 'retry' ? settled.decision.nextEligibleAt : null };
   }
   const replyId = randomUUID();
   db.prepare(
@@ -610,6 +733,7 @@ function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAtt
   }
   engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: { reply_message_id: replyId }, now });
   dispatcher.release(lease, 'completed');
+  return { retryAt: null };
 }
 
 function observationData(observation: RunObservation | null): Record<string, unknown> | null {
@@ -625,100 +749,130 @@ function observationData(observation: RunObservation | null): Record<string, unk
 // NOT-469: reconciles one taken-over request from its persisted Attempt and
 // public runtime evidence, through the accepted NOT-468 decision table
 // (lib/dispatcher). Never relaunches an ambiguous run.
+//
+// NOT-473: a cancellation intent or a passed deadline wins at every
+// boundary, not only on entry: each reconciliation write (and each step
+// after runtime I/O) runs under controlled(), which in the same
+// transaction asserts the lease and re-runs forced enforcement. When
+// enforcement ends the request, nothing more is decided here: the
+// abandoned run is stopped where the runtime can stop it.
 async function reconcileRequest(lease: DispatchLease): Promise<void> {
   const request = engine.getWorkRequest(lease.requestId);
   if (!request || request.state !== 'running') {
     dispatcher.release(lease, 'stale');
     return;
   }
-  const attempt = engine.listAttempts(request.id).find(row => row.finished_at === null);
-  if (!attempt) {
-    // A running request with no open Attempt never launched under it.
-    engine.transaction(() => {
+  const controlled = async <T>(write: () => T, won?: () => void): Promise<{ won: true } | { won: false; value: T }> => {
+    const outcome = engine.transaction((): { enforced: EnforcedRequest } | { value: T } => {
       dispatcher.assertHeld(lease);
-      engine.transitionWorkRequest(request.id, {
-        from: 'running', to: 'failed', reason: 'retryable', errorCode: 'interrupted',
-        errorMessage: 'The request was interrupted before its Attempt was recorded.',
-      });
-      dispatcher.release(lease, 'interrupted');
+      const enforced = dispatcher.control.enforceRequest(request.id, dispatcher.now(), { force: true });
+      if (enforced) {
+        won?.();
+        return { enforced };
+      }
+      return { value: write() };
     });
-    return;
-  }
-  let snapshot: Record<string, unknown> = {};
-  try { snapshot = JSON.parse(attempt.launch_snapshot) as Record<string, unknown>; } catch { /* no transport: unobservable */ }
-  const adapter = typeof snapshot.transport === 'string' ? adapterForTransport(snapshot.transport) : null;
-  const reconciler = adapter?.reconciler ?? null;
-  const decided = (phase: 'launch' | 'run', decision: ReconcileDecision, observation: RunObservation | null, runId: string | null) => {
-    engine.transaction(() => {
-      dispatcher.assertHeld(lease);
+    if ('enforced' in outcome) {
+      if (outcome.enforced.abandoned) await stopAbandoned(outcome.enforced.abandoned);
+      return { won: true };
+    }
+    return { won: false, value: outcome.value };
+  };
+  let openAttemptId: string | null = null;
+  try {
+    // A request whose cancellation was requested (its worker is gone:
+    // this sweep took the lease over) or whose deadline passed is not
+    // reconciled into a result: its Attempt is abandoned.
+    if ((await controlled(() => undefined)).won) return;
+    const attempt = engine.listAttempts(request.id).find(row => row.finished_at === null);
+    if (!attempt) {
+      // A running request with no open Attempt never launched under it.
+      engine.transaction(() => {
+        dispatcher.assertHeld(lease);
+        engine.transitionWorkRequest(request.id, {
+          from: 'running', to: 'failed', reason: 'retryable', errorCode: 'interrupted',
+          errorMessage: 'The request was interrupted before its Attempt was recorded.',
+        });
+        dispatcher.release(lease, 'interrupted');
+      });
+      return;
+    }
+    openAttemptId = attempt.id;
+    let snapshot: Record<string, unknown> = {};
+    try { snapshot = JSON.parse(attempt.launch_snapshot) as Record<string, unknown>; } catch { /* no transport: unobservable */ }
+    const adapter = typeof snapshot.transport === 'string' ? adapterForTransport(snapshot.transport) : null;
+    const reconciler = adapter?.reconciler ?? null;
+    const decidedEvent = (phase: 'launch' | 'run', decision: ReconcileDecision, observation: RunObservation | null, runId: string | null) => {
       engine.appendEvent(request.id, {
         type: 'reconcile_decided', attemptId: attempt.id,
         data: { phase, ...decision, external_run_id: runId, observation: observationData(observation) },
       });
-    });
-  };
+    };
+    const decided = async (phase: 'launch' | 'run', decision: ReconcileDecision, observation: RunObservation | null, runId: string | null) =>
+      !(await controlled(() => decidedEvent(phase, decision, observation, runId))).won;
 
-  let runId = attempt.external_run_id;
-  let decision: ReconcileDecision;
-  let observation: RunObservation | null = null;
-  if (!runId) {
-    const intent = dispatcher.launchIntent(attempt.id);
-    decision = decideWithoutRunId({ reconcilable: !!reconciler, intent, currentGrantFingerprint: reconciler?.currentGrantFingerprint() ?? null });
-    if (decision.action === 'repost' && reconciler && intent?.body && intent.idempotency_key) {
-      // The decision to re-POST is durable before the POST; its answer
-      // is recorded as a second decision below.
-      decided('launch', decision, null, null);
-      observation = await reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
-      decision = decideRepostResult(observation);
-      if (observation.kind === 'accepted') {
-        const accepted = observation.runId;
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
-          engine.recordAttemptExternalIds(attempt.id, { externalRunId: accepted });
-          engine.appendEvent(request.id, {
-            type: 'runtime_started', attemptId: attempt.id,
-            data: { adapter: adapter?.name ?? null, external_run_id: accepted, recovered: true },
-          });
-        });
-        runId = accepted;
+    let runId = attempt.external_run_id;
+    let decision: ReconcileDecision;
+    let observation: RunObservation | null = null;
+    if (!runId) {
+      const intent = dispatcher.launchIntent(attempt.id);
+      decision = decideWithoutRunId({ reconcilable: !!reconciler, intent, currentGrantFingerprint: reconciler?.currentGrantFingerprint() ?? null });
+      if (decision.action === 'repost' && reconciler && intent?.body && intent.idempotency_key) {
+        // The decision to re-POST is durable before the POST; its answer
+        // is recorded as a second decision below. Nothing is POSTed once
+        // the request was cancelled or passed its deadline.
+        if (!(await decided('launch', decision, null, null))) return;
+        observation = await reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
+        decision = decideRepostResult(observation);
+        if (observation.kind === 'accepted') {
+          const accepted = observation.runId;
+          // The accepted run id is persisted before any control decision,
+          // so a cancellation or deadline can address the run it names.
+          const late = acceptRepostedRun(lease, request.id, attempt.id, accepted, adapter?.name ?? null);
+          if (late) {
+            await recordExternalCancel(late, { localSignalled: false, launched: true });
+            return;
+          }
+          runId = accepted;
+        }
       }
+      if (!(await decided('launch', decision, observation, runId))) return;
+    } else if (!reconciler) {
+      decision = { action: 'interrupted', reason: 'runtime_unobservable' };
+      if (!(await decided('run', decision, null, runId))) return;
+    } else {
+      observation = await reconciler.inspect(runId);
+      decision = decideWithRunId(observation);
+      if (!(await decided('run', decision, observation, runId))) return;
     }
-    decided('launch', decision, observation, runId);
-  } else if (!reconciler) {
-    decision = { action: 'interrupted', reason: 'runtime_unobservable' };
-    decided('run', decision, null, runId);
-  } else {
-    observation = await reconciler.inspect(runId);
-    decision = decideWithRunId(observation);
-    decided('run', decision, observation, runId);
-  }
 
-  const prepare = snapshot.prepare_finalization === true;
-  try {
+    const prepare = snapshot.prepare_finalization === true;
     switch (decision.action) {
       case 'defer':
-        dispatcher.defer(lease, decision.reason, attempt.id);
+        await controlled(() => dispatcher.defer(lease, decision.reason, attempt.id));
         return;
       case 'attention':
-        dispatcher.setAttention(lease, { attemptId: attempt.id, reason: decision.reason, detail: observation ? JSON.stringify(observationData(observation)) : null });
+        await controlled(() => dispatcher.setAttention(lease, {
+          attemptId: attempt.id, reason: decision.reason, detail: observation ? JSON.stringify(observationData(observation)) : null,
+        }));
         return;
       case 'interrupted_attention': {
         // Keep what the dead run left for the operator, then end the
         // Attempt interrupted and stop automation (never auto-retry).
         const evidence = prepare && reconciler && runId ? await reconciler.evidence(runId) : null;
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
-          const finished = engine.finishAttempt(attempt.id, {
+        const keepEvidence = (finished: WorkAttempt | null | undefined) => {
+          if (evidence && finished) recordPreparedEvidence(request, finished, { finalization: evidence } as AttemptResult);
+        };
+        await controlled(() => {
+          keepEvidence(engine.finishAttempt(attempt.id, {
             outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: `Agent Deck run ${runId} died.`,
-          });
-          if (evidence) recordPreparedEvidence(request, finished, { finalization: evidence } as AttemptResult);
+          }));
           dispatcher.setAttention(lease, { attemptId: attempt.id, reason: decision.reason });
-        });
+        }, () => keepEvidence(engine.getAttempt(attempt.id)));
         return;
       }
       case 'fail':
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
+        await controlled(() => {
           engine.finishAttempt(attempt.id, { outcome: 'failed', errorCategory: decision.category, errorMessage: `Agent Deck refused the launch (${decision.code}).` });
           engine.transitionWorkRequest(request.id, {
             from: 'running', to: 'failed', reason: 'retryable', errorCode: 'runtime_failed', errorMessage: 'The agent runtime did not start the turn.',
@@ -727,8 +881,7 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
         });
         return;
       case 'interrupted':
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
+        await controlled(() => {
           engine.finishAttempt(attempt.id, {
             outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: 'The runtime cannot be observed after a restart; the outcome is unknown.',
           });
@@ -749,22 +902,70 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
     const binding = bindingId
       ? db.prepare('SELECT external_session_id FROM session_bindings WHERE id = ?').get(bindingId) as { external_session_id: string } | undefined
       : undefined;
+    const controller = new AbortController();
+    // Registered with the last control check, so a cancel command from
+    // here on signals the follow.
+    if ((await controlled(() => localWork.set(request.id, { attemptId: attempt.id, controller }))).won) return;
     await withHeartbeat(lease, async () => {
       const result = await reconciler.follow(followRunId, {
         resumeSessionId: binding?.external_session_id ?? null,
         prepareFinalization: prepare,
         deadlineAt: typeof snapshot.deadline_at === 'number' ? snapshot.deadline_at : null,
+        signal: controller.signal,
       }, event => recordBaselineEvent(lease, attempt.id, event));
-      engine.transaction(() => {
+      let abandoned: LocallyAbandonedAttempt | null = null;
+      const committed = engine.transaction(() => {
+        // Abandoned meanwhile (cancellation or a deadline): evidence only.
+        const current = engine.getAttempt(attempt.id);
+        if (current && current.finished_at !== null) {
+          recordLateResult(engine, current, result, dispatcher.now());
+          return { retryAt: null };
+        }
         dispatcher.assertHeld(lease);
         if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable') throw new DeferCommit('unreachable');
-        const finished = recordAttemptResult(engine, attempt.id, result);
-        commitTurn(lease, request, finished, result);
+        // A followed run whose cancel the runtime did not accept was only
+        // abandoned, exactly as in runAttempt.
+        abandoned = adapter ? abandonedLocally(attempt, adapter, controller.signal, result) : null;
+        const finished = abandoned ? recordAbandonedResult(engine, abandoned, result) : recordAttemptResult(engine, attempt.id, result);
+        return commitTurn(lease, request, finished, result);
       });
+      if (abandoned) await recordExternalCancel(abandoned, { localSignalled: true, launched: true });
+      if (committed.retryAt !== null) scheduleRetry(request.id, committed.retryAt);
+    }, controller).finally(() => {
+      if (localWork.get(request.id)?.attemptId === attempt.id) localWork.delete(request.id);
     });
   } catch (error) {
-    handleUncommitted(lease, attempt.id, error);
+    handleUncommitted(lease, openAttemptId, error);
   }
+}
+
+// Persists the run id a reconcile re-POST was answered with. When the
+// Attempt was abandoned while the POST was in flight (a deadline enforced
+// by another sweep), the run is recorded on it as evidence and returned so
+// the caller asks the runtime to stop it; otherwise null.
+function acceptRepostedRun(lease: DispatchLease, requestId: string, attemptId: string, runId: string, adapterName: string | null): AbandonedAttempt | null {
+  return engine.transaction((): AbandonedAttempt | null => {
+    const current = engine.getAttempt(attemptId);
+    if (!current) return null;
+    if (current.finished_at === null) {
+      dispatcher.assertHeld(lease);
+      engine.recordAttemptExternalIds(attemptId, { externalRunId: runId });
+      engine.appendEvent(requestId, {
+        type: 'runtime_started', attemptId,
+        data: { adapter: adapterName, external_run_id: runId, recovered: true },
+      });
+      return null;
+    }
+    db.prepare('UPDATE work_attempts SET external_run_id = ? WHERE id = ? AND external_run_id IS NULL').run(runId, attemptId);
+    engine.appendEvent(requestId, {
+      type: 'runtime_started', attemptId,
+      data: { adapter: adapterName, external_run_id: runId, recovered: true, after_abandon: true },
+    });
+    const reason = current.outcome === 'timed_out' ? 'timed_out' : current.outcome === 'cancelled' ? 'cancelled' : 'retried';
+    let transport: string | null = null;
+    try { const snapshot = JSON.parse(current.launch_snapshot) as { transport?: unknown }; transport = typeof snapshot.transport === 'string' ? snapshot.transport : null; } catch { /* none */ }
+    return { requestId, attemptId, externalRunId: runId, transport, reason, launched: true };
+  });
 }
 
 // NOT-469: one recovery sweep. Takes over expired leases, leases of
@@ -773,6 +974,13 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
 // periodically; safe to run from several workers at once.
 export function sweepDispatch(): Promise<void> {
   const tasks: Promise<void>[] = [];
+  // NOT-473: deadlines and overdue cancellations first, so nothing past
+  // them is reconciled or launched.
+  for (const enforced of dispatcher.control.enforceDue()) {
+    tasks.push((enforced.abandoned ? stopAbandoned(enforced.abandoned) : Promise.resolve())
+      .then(() => afterRequest(enforced.requestId, true))
+      .catch(error => { console.error('Request enforcement follow-up failed:', error); }));
+  }
   for (const item of dispatcher.recoverable()) {
     const key = `reconcile:${item.requestId}`;
     if (inFlight.has(key) || inFlight.has(item.requestId)) continue;
@@ -790,7 +998,68 @@ export function sweepDispatch(): Promise<void> {
     tasks.push(promise);
   }
   drainDeferred();
+  for (const id of eligibleRetryIds()) if (!inFlight.has(id)) void startAgentDispatch(id);
   return Promise.all(tasks).then(() => undefined);
+}
+
+// ---------------------------------------------------------------------
+// NOT-473: cancel and retry commands (lib/work-request-control). The
+// decision commits first; then this process's worker is signalled, the
+// runtime is asked to stop an abandoned run where it can, and loop
+// follow-ups run for a request that ended.
+
+export interface RequestCommandOptions {
+  actor?: ControlActor;
+  reason?: string | null;
+  authorize?: ControlAuthorizer;
+}
+
+export async function cancelWorkRequest(requestId: string, options: RequestCommandOptions = {}): Promise<CancelResult> {
+  const result = dispatcher.control.cancel(requestId, options);
+  if (result.outcome === 'cancel_requested' && !result.replayed) {
+    // The worker ends the request cancelled once its Attempt returns.
+    localWork.get(requestId)?.controller.abort();
+  }
+  if (result.abandoned) await stopAbandoned(result.abandoned);
+  if (result.outcome === 'cancelled' && !result.replayed) afterRequest(requestId, true);
+  return result;
+}
+
+export async function retryWorkRequest(requestId: string, options: RequestCommandOptions = {}): Promise<RetryResult> {
+  const result = dispatcher.control.retry(requestId, options);
+  if (result.abandoned) await stopAbandoned(result.abandoned);
+  if (result.outcome === 'retry_scheduled') void startAgentDispatch(requestId);
+  return result;
+}
+
+// Default authorization of the principal-facing commands: a participant
+// of the request's source conversation, as for reading it.
+const participantMayControl: ControlAuthorizer = (actor, request) =>
+  isPrincipalKind(actor.kind) && isParticipant(request.source_conversation_id, { kind: actor.kind, id: actor.id });
+
+function controlError(error: unknown): never {
+  if (error instanceof ControlError) {
+    throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
+  }
+  throw error;
+}
+
+export async function cancelAgentRequest(principal: Principal, requestId: string, reason: string | null = null): Promise<CancelResult> {
+  assertKnownPrincipal(principal);
+  try {
+    return await cancelWorkRequest(requestId, { actor: principal, reason, authorize: participantMayControl });
+  } catch (error) {
+    return controlError(error);
+  }
+}
+
+export async function retryAgentRequest(principal: Principal, requestId: string): Promise<RetryResult> {
+  assertKnownPrincipal(principal);
+  try {
+    return await retryWorkRequest(requestId, { actor: principal, authorize: participantMayControl });
+  } catch (error) {
+    return controlError(error);
+  }
 }
 
 const inFlight = new Map<string, Promise<void>>();
@@ -800,12 +1069,12 @@ const inFlight = new Map<string, Promise<void>>();
 export function startAgentDispatch(requestId: string): Promise<void> {
   const running = inFlight.get(requestId);
   if (running) return running;
-  const promise = runDispatch(requestId)
+  const promise: Promise<void> = runDispatch(requestId)
     .catch(error => {
       console.error('Agent dispatch failed unexpectedly:', error);
     })
     .finally(() => {
-      inFlight.delete(requestId);
+      if (inFlight.get(requestId) === promise) inFlight.delete(requestId);
     });
   inFlight.set(requestId, promise);
   return promise;
@@ -862,6 +1131,8 @@ const INTERNAL_EVENT_TYPES = [
   // NOT-469 dispatcher bookkeeping.
   'dispatch_claimed', 'dispatch_released', 'dispatch_deferred', 'dispatch_lease_taken_over', 'launch_intent_recorded',
   'reconcile_decided', 'reconcile_deferred', 'attention_set',
+  // NOT-473 evidence of abandoned Attempts.
+  'attempt_abandoned', 'external_cancel', 'late_result_recorded',
 ];
 
 function apiEventType(event: EngineEvent): string | null {

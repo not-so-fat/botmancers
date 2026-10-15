@@ -24,6 +24,8 @@ import { createHash, randomUUID } from 'crypto';
 import os from 'os';
 import type { EngineStore, WorkRequest } from './engine-store';
 import type { AttemptLaunchIntent, RunObservation } from './attempt-adapter';
+import { storedRetryPolicy } from './request-policy';
+import { createRequestControl } from './work-request-control';
 
 type Db = Database.Database;
 
@@ -38,6 +40,9 @@ export interface DispatchConfig {
   heartbeatMs: number;
   // Retry delay of a deferred reconcile (Agent Deck unreachable).
   deferMs: number;
+  // NOT-473: a running request whose cancellation was requested this long
+  // ago is abandoned even while its worker still holds a live lease.
+  cancelGraceMs: number;
 }
 
 // Deterministic defaults. One run per Agent at a time keeps two edit runs
@@ -48,6 +53,7 @@ export const DEFAULT_DISPATCH_CONFIG: Readonly<DispatchConfig> = Object.freeze({
   leaseMs: 60_000,
   heartbeatMs: 15_000,
   deferMs: 5_000,
+  cancelGraceMs: 30_000,
 });
 
 export const DISPATCH_CONFIG_ENV: Record<keyof DispatchConfig, string> = {
@@ -56,6 +62,7 @@ export const DISPATCH_CONFIG_ENV: Record<keyof DispatchConfig, string> = {
   leaseMs: 'BOTMANCERS_DISPATCH_LEASE_MS',
   heartbeatMs: 'BOTMANCERS_DISPATCH_HEARTBEAT_MS',
   deferMs: 'BOTMANCERS_DISPATCH_DEFER_MS',
+  cancelGraceMs: 'BOTMANCERS_DISPATCH_CANCEL_GRACE_MS',
 };
 
 // A value that is not a positive integer falls back to its default, so a
@@ -78,7 +85,10 @@ export interface DispatchLease {
   expiresAt: number;
 }
 
-export type ClaimRefusal = 'not_queued' | 'attention' | 'global_limit' | 'target_limit';
+// NOT-473: 'not_eligible' is a retry still in its backoff, 'timed_out' a
+// request past its deadline (failed timed_out by the refused claim), and
+// 'exhausted' a request with no Attempt left in its bounded budget.
+export type ClaimRefusal = 'not_queued' | 'attention' | 'global_limit' | 'target_limit' | 'not_eligible' | 'timed_out' | 'exhausted';
 
 export type ClaimResult =
   | { ok: true; lease: DispatchLease; request: WorkRequest }
@@ -167,6 +177,7 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
   const owner = options.owner ?? newDispatchOwner();
   const config: DispatchConfig = { ...dispatchConfigFromEnv(), ...(options.config ?? {}) };
   const now = options.now ?? Date.now;
+  const control = createRequestControl(db, store, { now, cancelGraceMs: config.cancelGraceMs });
 
   const countAll = db.prepare('SELECT COUNT(*) AS n FROM dispatch_leases');
   const countTarget = db.prepare('SELECT COUNT(*) AS n FROM dispatch_leases WHERE target_agent_id = ?');
@@ -195,6 +206,10 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
   const dispatcher = {
     owner,
     config,
+    // The dispatcher's clock (injectable for fake-clock tests) and the
+    // request control commands bound to it (lib/work-request-control).
+    now,
+    control,
 
     // Claims one queued request: the lifecycle compare-and-set, the lease,
     // and the claim event commit together. Callers create the Attempt and
@@ -207,12 +222,31 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
         if (claimOptions.expectedVersion !== undefined && request.version !== claimOptions.expectedVersion) {
           return { ok: false, reason: 'not_queued' };
         }
+        const at = now();
+        // NOT-473: nothing launches after the deadline; the refused claim
+        // records the timeout itself.
+        if (request.deadline_at !== null && at >= request.deadline_at) {
+          control.timeOut(requestId, at);
+          return { ok: false, reason: 'timed_out' };
+        }
+        if (request.next_eligible_at !== null && at < request.next_eligible_at) return { ok: false, reason: 'not_eligible' };
         if (openAttention.get(requestId)) return { ok: false, reason: 'attention' };
+        // Defense in depth: the budget is checked where Attempts start, so
+        // no path can launch past it.
+        const policy = storedRetryPolicy(request.retry_policy);
+        const used = control.attemptsUsed(request);
+        if (used >= policy.max_attempts) {
+          store.transitionWorkRequest(requestId, {
+            from: 'queued', to: 'failed', reason: 'retries_exhausted', expectedVersion: request.version,
+            errorCode: 'retries_exhausted', errorMessage: 'No Attempt is left in the retry budget.',
+            data: { attempt_count: used, max_attempts: policy.max_attempts }, now: at,
+          });
+          return { ok: false, reason: 'exhausted' };
+        }
         const global = (countAll.get() as { n: number }).n;
         const target = (countTarget.get(request.target_agent_id) as { n: number }).n;
         if (global >= config.maxGlobal) return deferClaim(request, 'global_limit', { global, target });
         if (target >= config.maxPerTarget) return deferClaim(request, 'target_limit', { global, target });
-        const at = now();
         const lease: DispatchLease = { requestId, owner, token: randomUUID(), expiresAt: at + config.leaseMs };
         db.prepare(`
           INSERT INTO dispatch_leases (request_id, target_agent_id, owner, token, acquired_at, heartbeat_at, expires_at)
@@ -220,9 +254,13 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
         `).run(requestId, request.target_agent_id, owner, lease.token, at, at, lease.expiresAt);
         store.appendEvent(requestId, {
           type: 'dispatch_claimed',
-          data: { owner, lease_expires_at: lease.expiresAt, active_global: global + 1, active_target: target + 1 },
+          data: {
+            owner, lease_expires_at: lease.expiresAt, active_global: global + 1, active_target: target + 1,
+            attempt_number: used + 1, max_attempts: policy.max_attempts,
+          },
           now: at,
         });
+        db.prepare('UPDATE work_requests SET attempt_count = ?, next_eligible_at = NULL WHERE id = ?').run(used + 1, requestId);
         const running = store.transitionWorkRequest(requestId, {
           from: 'queued', to: 'running', expectedVersion: request.version, data: claimOptions.data, now: at,
         });
@@ -234,9 +272,11 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
     // canonical requests when omitted). A target at its limit is skipped;
     // the global limit stops the scan.
     claimNext(candidates?: string[]): ClaimResult {
-      const ids = candidates ?? (db.prepare(
-        "SELECT id FROM work_requests WHERE state = 'queued' AND legacy_agent_request_id IS NULL ORDER BY created_at ASC, id ASC"
-      ).all() as { id: string }[]).map(row => row.id);
+      const ids = candidates ?? (db.prepare(`
+        SELECT id FROM work_requests WHERE state = 'queued' AND legacy_agent_request_id IS NULL
+          AND (next_eligible_at IS NULL OR next_eligible_at <= ?)
+        ORDER BY created_at ASC, id ASC
+      `).all(now()) as { id: string }[]).map(row => row.id);
       let refusal: ClaimRefusal = 'not_queued';
       for (const id of ids) {
         const claimed = dispatcher.claim(id);
