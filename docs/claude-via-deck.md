@@ -1,5 +1,9 @@
 # Claude-via-deck delegation (Claude Agent SDK sessions)
 
+> **Historical runbook — NOT-395 era (October 2026).** Kept as decision history
+> for the Agent Deck adapter. For the current architecture see the
+> authoritative [core-engine design](core-engine.md).
+
 Template runbook for delegating a task to a headless Claude session wired to an
 agent-deck deck, proven on the owner's logged-in subscription. A later adapter
 (NOT-395) will be built from this runbook; no adapter is built here.

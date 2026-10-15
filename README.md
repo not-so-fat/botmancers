@@ -10,52 +10,52 @@ with; it is not an agent or a runtime. Hermes turns run on the persistent
 Hermes gateway; the coding agents launch through `agent-deck run`. A bot
 without a selected Agent Deck stays readable but cannot launch.
 
-When asked to implement and review a change, the bot hands implementation to
-the configured coding agent, hands its result to a reviewer agent, resumes the
-original coding session with the review, and returns the revised result in the
-same conversation. The user does not copy prompts or session identifiers and
-does not configure a workflow form.
+When asked to implement and review a change, a coordinator Agent such as Tank
+wakes a developer Agent, evaluates the result, wakes a separate reviewer, and
+can wake the developer again to revise in its original coding session. Every
+result returns to the same conversation. The user does not copy prompts or
+session identifiers and does not configure a workflow form.
 
 The roster and per-bot configuration page show `Agent: <agent> · Agent Deck:
-<deck>`. Availability lists only agents with a real, available launch path. The thread shows the handoff, launched run/session, review, resume,
-final result, and failure as conversational events.
+<deck>`. Availability lists only agents with a real, available launch path.
+The thread shows Wakes, Work Request status, results, and failures as
+conversation events.
 
 The embedded example model loop has been removed. It is not part of the
 Botmancers execution architecture and has no replacement generic-model role.
 
-This remains a product hypothesis grounded in the owner's repeated manual
-workflow. The first proof is repeat use of the complete
-implementation → review → resumed-implementation loop from the conversation
-the developer already uses.
+## Architecture
 
-See the authoritative [core-engine design](<docs/core-engine.md>) for the current
-product and architecture contract. Earlier design documents are retained only as
-dated history.
+[`docs/core-engine.md`](docs/core-engine.md) is the only current product and
+architecture contract: conversations, Wakes, Work Requests, Attempts, Session
+Bindings, the safety policy, the persistent schema, and the remaining
+convergence work. Other documents under `docs/` are dated history or evidence
+and are labeled as such. The acceptance suite is described in
+[`docs/acceptance-harness.md`](docs/acceptance-harness.md).
 
 ## Current status
 
-The current application is an early compatibility shell. It can:
+The application can:
 
 - create, open, mention, and delete individual agents (legacy group data
   stays stored and reachable through `/api/groups`, but the UI shows agents
   only);
-- converse through the persistent Hermes runtime;
-- route `@bot` and legacy `WAKE` handoffs;
+- accept UI and `/api/v0` messages through one conversation intake that
+  records durable Work Requests;
+- converse through the persistent Hermes runtime and launch coding agents
+  through `agent-deck run`;
+- route coordinator Wakes with grants, depth, budget, and concurrency limits,
+  return results to the coordinator, and recover running work after a restart;
 - show a dark roster-and-thread UI with unread tracking;
 - draft outbound message proposals, gate actions behind Approve/Deny
   approval requests, and write file artifacts from chat;
 - run taught one-shots and recurring routines, and park a turn on one
   ask-and-wait question;
 - import bot identity from the Grok marketplace boundary;
-- persist state in SQLite;
-- store the first proposed bot-definition, session, task, and lifecycle-event
-  model.
+- persist state in SQLite.
 
-The next milestone is one evidence-producing personal-agent -> builder ->
-reviewer -> resumed-builder slice using one real execution path and the simplest
-return transport. Wider cloud/local runners, provider adapters, and optional
-Huddo-style transport come only after that slice tests the stable boundaries.
-The UI must not present an adapter as available until its launch path is real.
+Web UI turns still run through a transitional agent loop. See "Current code
+and convergence" in `docs/core-engine.md`.
 
 ## Run the app
 

@@ -323,30 +323,51 @@ returns an error and writes nothing.
 ## Current code and convergence
 
 The current Agent identity plus Agent Deck model is directionally consistent with
-this product. The following behaviors are transitional inconsistencies, not product
-requirements:
+this product. One transitional inconsistency remains, and it is not a product
+requirement:
 
-- the web UI and `/api/v0` use different queue and lifecycle models;
-- implementation and revision launches currently inherit read-only tools;
-- delegation-chain continuity is held in process memory;
-- grants and complete provenance are incomplete;
-- UI routes trust any caller as the owner and the server listens on every
-  interface;
-- Wake depth counts continuations, limits use placeholder values, and canonical
-  dispatch has no global or per-target concurrency bound.
+- Web UI turns still execute through the legacy agent loop (`lib/agent.ts`) over
+  the `processing_queue` table. UI messages are accepted through the shared
+  conversation intake and create canonical Work Requests, and a UI turn to a
+  coding Agent dispatches its Work Request as one read-only Attempt through the
+  canonical dispatcher. Hermes UI turns, though, run inside the loop together
+  with the UI-only features it hosts: drafts, approvals, ask-and-wait,
+  one-shots and routines, file artifacts, Agent birth, and commands. The loop's
+  legacy `WAKE` handoffs keep Stop, depth, and budget state in a per-process
+  delegation-chain map that a restart loses. `/api/v0` and every Wake-created
+  request use only the canonical engine.
+
+Retiring that loop needs the canonical engine to host those UI features first.
+That is new engine behavior, so it is migration work for a later ticket, not
+cleanup.
+
+Resolved since this contract was written:
+
+- NOT-465: UI and `/api/v0` messages share one conversation intake, and the
+  pre-NOT-465 `agent_requests` dispatcher is gone.
+- NOT-469: one leased dispatcher with restart reconciliation, and global and
+  per-target concurrency bounds.
+- NOT-471: implementation and revision Wakes launch with edit authority, and
+  everything else stays read-only.
+- NOT-472: canonical requests no longer reach the composite review path.
+  Wake-created requests return to their coordinator through one read-only
+  continuation turn (`lib/coordinator-loop.ts`), reviews must target an Agent
+  other than the developer, and revisions resume the implementation's Session
+  Binding.
+- NOT-475: Wake grants, depth, root budget, and the loopback owner boundary are
+  enforced.
+- NOT-477: the composite implement/review/resume helper is deleted. The
+  `agent_requests` lifecycle is migrated into the canonical tables and archived
+  (see [Persistent schema](#persistent-schema)).
 
 Since NOT-473, Work Requests carry a durable cancellation intent, an absolute
 deadline, and a bounded retry policy fixed at intake (`lib/request-policy.ts`,
 `lib/work-request-control.ts`). Cancel and retry are idempotent transactional
-commands; a request past its deadline is failed with reason `timed_out` and never
-launched; retryable failures retry within the policy's attempt budget with
-deterministic backoff. Where a runtime cannot stop an external run, the Attempt is
-abandoned and recorded as such, and any later result is kept as evidence only.
-
-Since NOT-472, canonical requests no longer reach the composite review path:
-Wake-created requests return to their coordinator through one read-only
-continuation turn (`lib/coordinator-loop.ts`), reviews must target an Agent other
-than the developer, and revisions resume the implementation's Session Binding.
+commands. A request past its deadline fails with reason `timed_out` and never
+launches, and a retryable failure retries within the policy's Attempt budget
+with deterministic backoff. When a runtime cannot stop an external run, the
+Attempt is abandoned and recorded as such, and any later result is kept as
+evidence only.
 
 Convergence should preserve existing working adapters while moving orchestration
 above them:
@@ -357,7 +378,37 @@ above them:
 | `lib/agent.ts` | Compatibility facade, then removal after callers use the engine |
 | `lib/agent-dispatch.ts` | Runtime adapter selection, not workflow policy |
 | `lib/agent-deck-run.ts` | Agent Deck transport and session resume |
-| SQLite queue tables | One Work Request, Attempt, and event model |
+| `processing_queue` | Removed with the legacy UI loop; the canonical Work Request store replaces it |
+
+### Persistent schema
+
+All tables are SQLite tables in one database. The engine's tables are versioned by
+`schema_migrations` (`lib/engine-store.ts`).
+
+| Tables | Role |
+| --- | --- |
+| `work_requests`, `work_request_transitions`, `work_attempts`, `session_bindings`, `engine_events` | Canonical Work Requests and their transitions, immutable Attempts, opaque Session Bindings, and the per-request event log |
+| `conversation_intakes` | One row per accepted message, keyed by the requester's idempotency key |
+| `wakes`, `wake_grants`, `wake_safety_decisions`, `terminal_followups` | Wakes, owner grants, safety decisions, and coordinator follow-ups |
+| `dispatch_leases`, `dispatch_attention`, `attempt_launch_intents` | Leased dispatch and restart reconciliation |
+| `attempt_finalization_baselines`, `candidate_manifests`, `finalizations` | Reviewed Git finalization |
+| `conversation_events`, `conversation_projection_cursors` | Typed projection of engine events into conversations |
+| `conversations`, `messages`, `conversation_participants` | Conversations and their ordered history |
+| `processing_queue` | Transitional: the legacy UI loop's queue (see above) |
+| `legacy_agent_requests_archive`, `legacy_agent_request_events_archive` | Evidence only. Every pre-NOT-465 `agent_requests` row, verbatim. Nothing reads or writes these tables. They exist only in databases that had the legacy tables |
+
+Migration 14 (`retire_legacy_agent_requests`) copies each mappable legacy
+request into `work_requests` and keeps its original id in
+`legacy_agent_request_id`, so `/api/v0` still serves that id:
+
+- Completed and failed requests keep their outcome.
+- Accepted or dispatched requests that could never finish become `failed` with
+  `legacy_interrupted`.
+- Old idempotency keys replay through `conversation_intakes` when the stored
+  payload hash verifies.
+
+Rows that cannot be mapped without guessing stay in the archive only: a missing
+conversation, Agent, or accepted message, or a key already held elsewhere.
 
 ## Scope now
 

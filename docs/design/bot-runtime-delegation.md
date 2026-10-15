@@ -3,6 +3,10 @@
 > **Historical — October 11, 2026.** This dual-runtime design is superseded by
 > the authoritative [core-engine design](../core-engine.md). Do not implement
 > its Chat/Code split as current product behavior.
+>
+> NOT-477: `delegateCodingViaDeck` and `DECK_REVIEW_FOCUS_DEFAULT`, which this
+> spec cites, were removed. Stored threads keep their `[Deck ...]` lines, and
+> the UI still renders them.
 
 Ticket: NOT-436. Owner: Atelier. Next: operator inspection approval, then build ticket.
 Status: spec only. No React, CSS, API, or database change is made by this ticket.

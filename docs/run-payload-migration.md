@@ -1,5 +1,9 @@
 # [run] payload migration: `html` -> `page` (NOT-419)
 
+> **Migration record — NOT-419.** Explains the `[run]` payload compatibility
+> that `lib/run.ts` still keeps for stored messages. Not an engine contract: see
+> the authoritative [core-engine design](core-engine.md).
+
 ## Decision
 
 Writers emit one field: `page`. The snapshot's computer page payload is the

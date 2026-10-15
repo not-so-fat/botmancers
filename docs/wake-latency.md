@@ -1,5 +1,9 @@
 # Specialist wake latency (click-to-reply)
 
+> **Evidence — NOT-391.** Dated timing measurements, kept as empirical
+> evidence. For the current architecture see the authoritative
+> [core-engine design](core-engine.md).
+
 Status: **MEASURED** — 16 Mac-side timing runs handed over by Botmancer and
 transcribed below (NOT-391, operator step complete).
 

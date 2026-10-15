@@ -8,7 +8,8 @@ Status: historical baseline from the product discussion on October 11, 2026.
 
 This document records the desired product behavior. It deliberately avoids
 choosing databases, protocols, vendors, SDKs, or deployment architecture. Those
-choices belong in [the implementation plan](implementation-plan.md).
+choices belong in the implementation plan (never added to this repository; see
+[core-engine.md](core-engine.md)).
 
 ## Goal
 
