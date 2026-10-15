@@ -61,7 +61,7 @@ function installGuards() {
   }
 }
 
-function createContext(scenarioName) {
+function createContext(scenarioName, options = {}) {
   assertIsolatedEnvironment();
   installGuards();
   // Fixture-only credentials, set in this process only; never a real secret.
@@ -122,8 +122,11 @@ function createContext(scenarioName) {
   }
 
   // ---- controlled runtimes ----------------------------------------------
+  // In-process by default; a restart worker (options.remoteDeck) reaches
+  // the scenario process's fake over loopback HTTP instead, at the server
+  // URL stored in the harness database.
   const fakeDeck = createFakeAgentDeck({ token: process.env.AGENT_DECK_RUN_TOKEN });
-  deckApi.setAgentDeckApiFetch(fakeDeck.fetch);
+  if (!options.remoteDeck) deckApi.setAgentDeckApiFetch(fakeDeck.fetch);
   deckAttempt.setAgentDeckApiPollIntervalForTests(5);
   // Agent Deck scripts by target deck id; default: one successful result.
   const deckScripts = new Map();
@@ -132,9 +135,11 @@ function createContext(scenarioName) {
     return script ? script(body) : { result: `Answered: ${String(body.prompt).slice(-60)}` };
   };
 
-  // Coordinator (Hermes transport) turns: a per-conversation plan of steps,
-  // each (input, request) => reply text.
+  // Coordinator (Hermes transport) turns: a per-Agent script when one is
+  // set, else a per-conversation plan of steps; each (input, request) =>
+  // reply text.
   const plans = new Map();
+  const hermesScripts = new Map();
   const coordinatorLaunches = [];
   let runCounter = 0;
   function scriptedCoordinator() {
@@ -146,8 +151,9 @@ function createContext(scenarioName) {
         const runId = `coordinator-run-${++runCounter}`;
         coordinatorLaunches.push({ input, request, runId });
         onEvent && onEvent({ type: 'started', adapter: 'hermes-gateway', at: Date.now(), externalRunId: runId, externalSessionId: null });
+        const script = hermesScripts.get(request.target_agent_id);
         const plan = plans.get(request.source_conversation_id) || [];
-        const step = plan.shift();
+        const step = script || plan.shift();
         const output = step ? step(input, request) : 'Nothing more to do.';
         const now = Date.now();
         return { status: 'completed', adapter: 'hermes-gateway', externalRunId: runId, externalSessionId: null, output, artifacts: [], startedAt: now, finishedAt: now, failure: null };
@@ -206,9 +212,11 @@ function createContext(scenarioName) {
     host = null;
   }
 
+  const lastEntry = input => input.prompt.history[input.prompt.history.length - 1];
+
   return {
-    REPO_ROOT, jiti, lib, db, raw, service, dispatch, router, safety, engine, projector, bots, conversations, UI_OWNER_PRINCIPAL,
-    fakeDeck, deckScripts, plans, coordinatorLaunches, PERSON, workspace,
+    REPO_ROOT, jiti, lastEntry, lib, db, raw, service, dispatch, router, safety, engine, projector, bots, conversations, UI_OWNER_PRINCIPAL,
+    fakeDeck, deckScripts, plans, hermesScripts, coordinatorLaunches, deckApi, PERSON, workspace,
     check, engineCheck, conversationCheck, isolationCheck, results,
     one, all, requestsIn, attemptsOf, wakesIn, messagesIn, eventTypes, counts, sameCounts, projection, projectedKinds, inOrder,
     agent, block, ask, settle, routeHost, close,
