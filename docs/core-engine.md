@@ -247,7 +247,7 @@ alternatives, and fixtures are in
 | Principal | Authenticated by | Trust |
 | --- | --- | --- |
 | Human owner (`person:local-owner`) | Loopback boundary: server bound to `127.0.0.1`, loopback `Host`, same-origin mutating request | May message, configure, allow/deny/revoke grants, and Stop. This proves "a same-origin page on this machine", not a user identity |
-| Authenticated API principal | The operator-installed `/api/v0` authenticator; none ships, so the API fails closed | May send direct read-only messages. May not decide grants or act as an Agent |
+| Authenticated API principal | The `/api/v0` authenticator: the shipped service-token authenticator when `BOTMANCERS_SERVICE_TOKENS` is configured, or one the operator installs; with neither, the API fails closed | May send direct read-only messages. May not decide grants or act as an Agent |
 | Agent principal (`bot:<agentId>`) | The engine: the message is stored with that registered Agent as sender; lineage is tracked when the engine also dispatched the parent Work Request | Identity is trusted; intent is not, because Agent output can be steered by what it read |
 | Unknown | — | No attributable identity (failed or missing authentication, foreign origin, non-Agent sender offered to the router). Refused before anything is persisted |
 
@@ -370,6 +370,9 @@ Resolved since this contract was written:
   `agent_requests` lifecycle and the UI loop's `processing_queue` are migrated
   into the canonical tables and archived, and the in-memory delegation-chain map
   is replaced by `delegation_chains` (see [Persistent schema](#persistent-schema)).
+- NOT-491: `/api/v0` ships a service-token authenticator, and an MCP bridge at
+  `/api/v0/mcp` lets an external agent start a read-only task with an
+  allowlisted coordinator and poll it ([MCP bridge](mcp-bridge.md)).
 
 Since NOT-473, Work Requests carry a durable cancellation intent, an absolute
 deadline, and a bounded retry policy fixed at intake (`lib/request-policy.ts`,

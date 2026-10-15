@@ -63,12 +63,6 @@ const principalRef = {
   required: ['kind', 'id', 'name'],
   additionalProperties: false,
 };
-const errorShape = {
-  type: 'object',
-  properties: { code: { type: 'string' }, message: { type: 'string' }, fields: { type: 'array', items: { type: 'string' } } },
-  required: ['code', 'message'],
-  additionalProperties: false,
-};
 const statusField = {
   type: 'string',
   enum: TASK_STATUSES,
