@@ -1,0 +1,403 @@
+{
+  "version": 1,
+  "contract": "docs/design/2026-10-14-wake-safety-contract.md",
+  "limits": {
+    "maxWakeDepth": 3,
+    "rootBudget": 12,
+    "maxContinuations": 24,
+    "globalConcurrency": 4,
+    "perTargetConcurrency": 1
+  },
+  "principalTypes": ["human_owner", "api_principal", "agent_principal", "unknown"],
+  "grantRules": ["readonly_default", "edit_grant", "owner_direct_self_wake"],
+  "wakeStatuses": ["accepted", "blocked", "unavailable", "rejected"],
+  "reasonCodes": [
+    "grant_required",
+    "grant_denied",
+    "depth_exceeded",
+    "root_budget_exhausted",
+    "untracked_lineage",
+    "target_unavailable"
+  ],
+  "httpErrorCodes": [
+    "authentication_unavailable",
+    "unauthenticated",
+    "owner_required",
+    "owner_origin_required"
+  ],
+  "auditEvents": [
+    "grant_requested",
+    "grant_approved",
+    "grant_denied",
+    "grant_revoked",
+    "lineage_stopped"
+  ],
+  "cases": [
+    {
+      "name": "owner_direct_message_readonly",
+      "flow": "A",
+      "principal": "human_owner",
+      "given": { "rootPrincipal": "person:local-owner" },
+      "action": { "type": "ui_message", "target": "Codex", "content": "Explain lib/wake.ts" },
+      "expect": {
+        "persisted": true,
+        "wake": null,
+        "workRequest": { "state": "queued", "executionKind": "conversation", "toolProfile": "readonly", "wakeDepth": 0 },
+        "projection": [{ "kind": "request_queued" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "coordinator_edit_wake_without_grant_waits_for_owner",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [] },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the notification change." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "grant_required" },
+        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
+        "continuation": false,
+        "audit": ["grant_requested"]
+      }
+    },
+    {
+      "name": "owner_allows_edit_grant",
+      "flow": "B",
+      "principal": "human_owner",
+      "given": { "wake": "coordinator_edit_wake_without_grant_waits_for_owner" },
+      "action": { "type": "grant_decision", "decision": "allow" },
+      "expect": {
+        "persisted": true,
+        "grant": { "caller": "Tank", "target": "Dev", "authority": "edit", "grantedBy": "person:local-owner" },
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "transition": "blocked->queued", "grantRule": "edit_grant" },
+        "projection": [{ "kind": "wake_accepted" }],
+        "continuation": false,
+        "audit": ["grant_approved"]
+      }
+    },
+    {
+      "name": "owner_denies_edit_grant",
+      "flow": "B",
+      "principal": "human_owner",
+      "given": { "wake": "coordinator_edit_wake_without_grant_waits_for_owner" },
+      "action": { "type": "grant_decision", "decision": "deny" },
+      "expect": {
+        "persisted": true,
+        "grant": null,
+        "wake": { "status": "blocked", "reasonCode": "grant_denied" },
+        "workRequest": { "state": "cancelled", "transition": "blocked->cancelled", "reason": "grant_denied" },
+        "projection": [{ "kind": "request_cancelled", "text": "Cancelled: owner denied edit Wake" }],
+        "continuation": "result",
+        "audit": ["grant_denied"]
+      }
+    },
+    {
+      "name": "coordinator_edit_wake_with_grant_routes",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [{ "caller": "Tank", "target": "Dev", "authority": "edit" }] },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "revision", "objective": "Address the review findings.", "resumeWorkRequest": "work-implementation-1" } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "toolProfile": "edit", "grantRule": "edit_grant", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_accepted" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "readonly_review_wake_needs_no_grant",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [] },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Reviewer", "executionKind": "review", "objective": "Review the implementation.", "contextWorkRequests": ["work-implementation-1"] } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "toolProfile": "readonly", "grantRule": "readonly_default", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_accepted" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "owner_direct_self_wake_is_exempt",
+      "flow": "direct",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "parentIsDirectOwnerMessage": true, "grants": [] },
+      "action": { "type": "agent_wake", "caller": "Dev", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the change requested in this conversation." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "toolProfile": "edit", "grantRule": "owner_direct_self_wake", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_accepted" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "api_rooted_self_wake_needs_grant",
+      "flow": "direct",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "service:ci-bot", "parentWakeDepth": 0, "parentIsDirectOwnerMessage": false, "grants": [] },
+      "action": { "type": "agent_wake", "caller": "Dev", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the change." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "grant_required" },
+        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_blocked", "actions": ["allow", "deny"] }],
+        "continuation": false,
+        "audit": ["grant_requested"]
+      }
+    },
+    {
+      "name": "revoked_grant_asks_again",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [{ "caller": "Tank", "target": "Dev", "authority": "edit", "revoked": true }] },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the next change." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "grant_required" },
+        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_blocked", "actions": ["allow", "deny"] }],
+        "continuation": false,
+        "audit": ["grant_requested"]
+      }
+    },
+    {
+      "name": "depth_limit_rejects_without_work",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 3 },
+      "action": { "type": "agent_wake", "caller": "Helper", "envelope": { "version": 1, "target": "Researcher", "executionKind": "conversation", "objective": "Look this up." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "rejected", "reasonCode": "depth_exceeded", "limit": 3, "observed": 4 },
+        "workRequest": null,
+        "projection": [{ "kind": "wake_rejected", "text": "Wake not started: Researcher — depth limit 3 reached" }],
+        "continuation": "wake_outcome",
+        "audit": []
+      }
+    },
+    {
+      "name": "root_budget_rejects_without_work",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "rootWakeRequests": 12, "grants": [{ "caller": "Tank", "target": "Dev", "authority": "edit" }] },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "revision", "objective": "One more round.", "resumeWorkRequest": "work-implementation-1" } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "rejected", "reasonCode": "root_budget_exhausted", "limit": 12, "observed": 12 },
+        "workRequest": null,
+        "projection": [{ "kind": "wake_rejected", "text": "Wake not started: Dev — this work already used 12 Wakes" }],
+        "continuation": "wake_outcome",
+        "audit": []
+      }
+    },
+    {
+      "name": "continuation_cap_stops_lineage",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "rootContinuations": 24 },
+      "action": { "type": "specialist_terminal", "returnTo": "Tank" },
+      "expect": {
+        "persisted": true,
+        "wake": null,
+        "workRequest": null,
+        "projection": [{ "kind": "lineage_stopped", "text": "Stopped: coordinator continuation limit 24 reached" }],
+        "continuation": false,
+        "audit": ["lineage_stopped"]
+      }
+    },
+    {
+      "name": "per_target_capacity_queues_not_denies",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "runningForTarget": 1, "runningGlobal": 1 },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Reviewer", "executionKind": "review", "objective": "Review the second change." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "waitingFor": "capacity" },
+        "projection": [{ "kind": "wake_accepted" }, { "kind": "request_queued", "data": { "waiting_for": "capacity" } }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "global_capacity_queues_not_denies",
+      "flow": "B",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "runningForTarget": 0, "runningGlobal": 4 },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Researcher", "executionKind": "conversation", "objective": "Summarize the thread." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "waitingFor": "capacity" },
+        "projection": [{ "kind": "wake_accepted" }, { "kind": "request_queued", "data": { "waiting_for": "capacity" } }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "flow_c_edit_wake_unlaunchable_target_asks_grant_first",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [], "targetAvailability": { "available": false, "reason": "Dev is not available: the Codex CLI is not installed." } },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the notification change." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "grant_required" },
+        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
+        "continuation": false,
+        "audit": ["grant_requested"]
+      }
+    },
+    {
+      "name": "flow_c_owner_allows_while_target_unavailable",
+      "flow": "C",
+      "principal": "human_owner",
+      "given": { "wake": "flow_c_edit_wake_unlaunchable_target_asks_grant_first", "targetAvailability": { "available": false, "reason": "Dev is not available: the Codex CLI is not installed." } },
+      "action": { "type": "grant_decision", "decision": "allow" },
+      "expect": {
+        "persisted": true,
+        "grant": { "caller": "Tank", "target": "Dev", "authority": "edit", "grantedBy": "person:local-owner" },
+        "wake": { "status": "blocked", "reasonCode": "target_unavailable" },
+        "workRequest": { "state": "blocked", "transition": null, "reason": "target_unavailable" },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — Dev is not available: the Codex CLI is not installed.", "actions": [] }],
+        "continuation": false,
+        "audit": ["grant_approved"]
+      }
+    },
+    {
+      "name": "flow_c_target_becomes_available_after_allow",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "wake": "flow_c_owner_allows_while_target_unavailable", "grants": [{ "caller": "Tank", "target": "Dev", "authority": "edit" }], "targetAvailability": { "available": true } },
+      "action": { "type": "retry_wake" },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "accepted", "reasonCode": null },
+        "workRequest": { "state": "queued", "transition": "blocked->queued", "reason": "target_available", "toolProfile": "edit", "grantRule": "edit_grant", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_accepted" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "flow_c_grant_revoked_while_waiting_for_target_asks_again",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "wake": "flow_c_owner_allows_while_target_unavailable", "grants": [{ "caller": "Tank", "target": "Dev", "authority": "edit", "revoked": true }], "targetAvailability": { "available": true } },
+      "action": { "type": "retry_wake" },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "grant_required" },
+        "workRequest": { "state": "blocked", "transition": null, "reason": "grant_required" },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
+        "continuation": false,
+        "audit": ["grant_requested"]
+      }
+    },
+    {
+      "name": "flow_c_owner_denies_while_target_unavailable",
+      "flow": "C",
+      "principal": "human_owner",
+      "given": { "wake": "flow_c_edit_wake_unlaunchable_target_asks_grant_first", "targetAvailability": { "available": false, "reason": "Dev is not available: the Codex CLI is not installed." } },
+      "action": { "type": "grant_decision", "decision": "deny" },
+      "expect": {
+        "persisted": true,
+        "grant": null,
+        "wake": { "status": "blocked", "reasonCode": "grant_denied" },
+        "workRequest": { "state": "cancelled", "transition": "blocked->cancelled", "reason": "grant_denied" },
+        "projection": [{ "kind": "request_cancelled", "text": "Cancelled: owner denied edit Wake" }],
+        "continuation": "result",
+        "audit": ["grant_denied"]
+      }
+    },
+    {
+      "name": "flow_c_readonly_wake_unlaunchable_target_blocks_on_availability",
+      "flow": "C",
+      "principal": "agent_principal",
+      "given": { "rootPrincipal": "person:local-owner", "parentWakeDepth": 0, "grants": [], "targetAvailability": { "available": false, "reason": "Researcher is not available: the Hermes gateway is not reachable." } },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Researcher", "executionKind": "conversation", "objective": "Summarize the thread." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "blocked", "reasonCode": "target_unavailable" },
+        "workRequest": { "state": "blocked", "reason": "target_unavailable", "toolProfile": "readonly", "grantRule": "readonly_default", "wakeDepth": 1 },
+        "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Researcher — Researcher is not available: the Hermes gateway is not reachable.", "actions": [] }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "untracked_lineage_agent_message_does_not_route",
+      "flow": "untracked",
+      "principal": "agent_principal",
+      "given": { "parentRequest": null, "lineage": "untracked" },
+      "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "conversation", "objective": "Start fresh." } },
+      "expect": {
+        "persisted": true,
+        "wake": { "status": "rejected", "reasonCode": "untracked_lineage" },
+        "workRequest": null,
+        "projection": [{ "kind": "wake_rejected", "text": "Wake not started: its source turn is not tracked work" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "wake_text_in_human_message_is_text",
+      "flow": "A",
+      "principal": "human_owner",
+      "given": {},
+      "action": { "type": "ui_message", "target": "Tank", "content": "```botmancers-wake\n{\"version\":1,\"target\":\"Dev\",\"executionKind\":\"implementation\",\"objective\":\"x\"}\n```" },
+      "expect": {
+        "persisted": true,
+        "wake": null,
+        "workRequest": { "state": "queued", "executionKind": "conversation", "toolProfile": "readonly", "wakeDepth": 0 },
+        "projection": [{ "kind": "request_queued" }],
+        "continuation": false,
+        "audit": []
+      }
+    },
+    {
+      "name": "api_without_authenticator",
+      "flow": "A",
+      "principal": "unknown",
+      "given": { "authenticator": null },
+      "action": { "type": "api_message", "agentId": "agent-codex" },
+      "expect": { "persisted": false, "http": { "status": 503, "code": "authentication_unavailable" }, "wake": null, "workRequest": null, "projection": [], "continuation": false, "audit": [] }
+    },
+    {
+      "name": "api_authentication_fails",
+      "flow": "A",
+      "principal": "unknown",
+      "given": { "authenticator": "rejects" },
+      "action": { "type": "api_message", "agentId": "agent-codex" },
+      "expect": { "persisted": false, "http": { "status": 401, "code": "unauthenticated" }, "wake": null, "workRequest": null, "projection": [], "continuation": false, "audit": [] }
+    },
+    {
+      "name": "api_principal_cannot_decide_grants",
+      "flow": "B",
+      "principal": "api_principal",
+      "given": { "wake": "coordinator_edit_wake_without_grant_waits_for_owner" },
+      "action": { "type": "grant_decision", "decision": "allow" },
+      "expect": { "persisted": false, "http": { "status": 403, "code": "owner_required" }, "wake": { "status": "blocked", "reasonCode": "grant_required" }, "workRequest": { "state": "blocked", "reason": "grant_required" }, "projection": [], "continuation": false, "audit": [] }
+    },
+    {
+      "name": "ui_route_from_foreign_origin",
+      "flow": "A",
+      "principal": "unknown",
+      "given": { "host": "127.0.0.1:43123", "origin": "http://evil.example" },
+      "action": { "type": "ui_message", "target": "Tank", "content": "hello" },
+      "expect": { "persisted": false, "http": { "status": 403, "code": "owner_origin_required" }, "wake": null, "workRequest": null, "projection": [], "continuation": false, "audit": [] }
+    }
+  ]
+}
