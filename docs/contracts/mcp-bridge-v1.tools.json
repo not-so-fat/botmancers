@@ -1,0 +1,542 @@
+{
+  "contract": "botmancers.mcp.v1",
+  "tools": [
+    {
+      "name": "botmancers_start_task",
+      "title": "Start a Botmancers task",
+      "description": "Send one objective to an allowlisted Botmancers coordinator Agent as a new conversation. The coordinator answers read-only; any implementation or review it decides on runs only under the Botmancers owner's grants. Returns durable request_id and conversation_id to poll. Retrying with the same idempotency_key and objective returns the original ids.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinator": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Name of an allowlisted coordinator Agent (see botmancers_health)."
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000,
+            "description": "What the coordinator should achieve, in plain language."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "description": "Caller-chosen key for this task. Reuse it to retry safely; reusing it for a different objective or coordinator is a conflict."
+          }
+        },
+        "required": [
+          "coordinator",
+          "objective",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v1"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "coordinator": {
+            "type": "object",
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "description": "pending (accepted, not started) | running | succeeded | failed | cancelled. The last three are terminal."
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contract",
+          "request_id",
+          "conversation_id",
+          "coordinator",
+          "status",
+          "replayed"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v1"
+      }
+    },
+    {
+      "name": "botmancers_get_request",
+      "title": "Get a Botmancers task request",
+      "description": "Poll the status of a request returned by botmancers_start_task. When terminal, result or failure is set.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "request_id returned by botmancers_start_task."
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v1"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "coordinator": {
+            "type": "object",
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "description": "pending (accepted, not started) | running | succeeded | failed | cancelled. The last three are terminal."
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "message_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id",
+              "content"
+            ],
+            "additionalProperties": false
+          },
+          "failure": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Epoch milliseconds."
+          },
+          "updated_at": {
+            "type": "integer",
+            "description": "Epoch milliseconds."
+          }
+        },
+        "required": [
+          "contract",
+          "request_id",
+          "conversation_id",
+          "coordinator",
+          "status",
+          "terminal",
+          "result",
+          "failure",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v1"
+      }
+    },
+    {
+      "name": "botmancers_get_conversation",
+      "title": "Get a Botmancers task conversation",
+      "description": "Read the conversation a task opened: ordered messages from the coordinator and any Agents it woke, and lifecycle events. status is active while any request in it is still open.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "conversation_id returned by botmancers_start_task."
+          }
+        },
+        "required": [
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v1"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "idle"
+            ]
+          },
+          "open_request_count": {
+            "type": "integer"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "person",
+                      "bot",
+                      "service"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id",
+                  "name"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "person",
+                    "bot",
+                    "service"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "name"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer"
+                },
+                "message_id": {
+                  "type": "string"
+                },
+                "sender": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "person",
+                        "bot",
+                        "service"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id",
+                    "name"
+                  ],
+                  "additionalProperties": false
+                },
+                "content": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "seq",
+                "message_id",
+                "sender",
+                "content",
+                "request_id",
+                "created_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "wake_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "seq",
+                "kind",
+                "request_id",
+                "wake_id",
+                "text",
+                "created_at"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "contract",
+          "conversation_id",
+          "status",
+          "open_request_count",
+          "origin",
+          "participants",
+          "messages",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v1"
+      }
+    },
+    {
+      "name": "botmancers_health",
+      "title": "Botmancers bridge health",
+      "description": "Confirm the bridge is reachable and authenticated, and list the coordinators this caller may start tasks with.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v1"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "principal": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "coordinators": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "available"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "contract",
+          "status",
+          "principal",
+          "coordinators"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v1"
+      }
+    }
+  ]
+}

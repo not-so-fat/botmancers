@@ -54,7 +54,8 @@
     "test:execution-policy": "node test-execution-policy.js",
     "test:dispatcher": "node test-dispatcher.js",
     "test:request-control": "node test-request-control.js",
-    "test:ui-turn-restart": "node test-ui-turn-restart.js"
+    "test:ui-turn-restart": "node test-ui-turn-restart.js",
+    "test:mcp-bridge": "node test-mcp-bridge.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
