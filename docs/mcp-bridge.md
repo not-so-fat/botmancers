@@ -103,6 +103,20 @@ does not exist.
    To reach it from another machine, put a TLS-terminating tunnel or reverse
    proxy in front, and pass the `Authorization` header through unchanged.
 
+   As a DNS-rebinding guard, the endpoint refuses (403, before
+   authentication) any request whose `Host` is not a loopback host or an
+   exact entry of `BOTMANCERS_MCP_ALLOWED_HOSTS`, and any request carrying an
+   `Origin` other than `http://<loopback Host>` or an exact entry of
+   `BOTMANCERS_MCP_ALLOWED_ORIGINS`. Either have the proxy rewrite `Host` to
+   `127.0.0.1:43123`, or list its public name:
+
+   ```sh
+   BOTMANCERS_MCP_ALLOWED_HOSTS="mcp.example.com"            # comma-separated host[:port]
+   BOTMANCERS_MCP_ALLOWED_ORIGINS="https://mcp.example.com"  # only for browser-based clients
+   ```
+
+   Request bodies over 256 KiB are refused with 413.
+
 4. **Check the setup.** Call `botmancers_health`. It should return
    `status: "ok"`, your service id, and each coordinator with
    `available: true`.

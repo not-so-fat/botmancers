@@ -6,27 +6,69 @@
 // and DELETE are 405). Every POST is authenticated by the /api/v0
 // authenticator (./agent-api) before its body is read; a failure is
 // answered with the /api/v0 error envelope and writes nothing. Only service
-// principals may use the bridge. A browser Origin other than the request's
-// own is refused (DNS-rebinding guard).
+// principals may use the bridge.
+//
+// DNS-rebinding guard (checked first, before authentication): the Host
+// header must be a loopback host (any port) or an exact entry of
+// BOTMANCERS_MCP_ALLOWED_HOSTS, and an Origin header, when present, must be
+// exactly http://<that loopback Host> or an exact entry of
+// BOTMANCERS_MCP_ALLOWED_ORIGINS. Neither is compared with the request's own
+// authority, which a rebound request controls.
 import type { Principal } from './db';
 import { AgentApiError } from './agent-conversations';
 import { authenticate } from './agent-api';
+import { isLoopbackHost } from './owner-boundary';
 import { JSON_RPC, MCP_PROTOCOL_VERSIONS, handleMcpMessage, jsonRpcError } from './mcp-bridge';
 
 const MAX_BODY_BYTES = 256 * 1024;
+
+export const MCP_ALLOWED_HOSTS_ENV = 'BOTMANCERS_MCP_ALLOWED_HOSTS';
+export const MCP_ALLOWED_ORIGINS_ENV = 'BOTMANCERS_MCP_ALLOWED_ORIGINS';
 
 function envelope(status: number, code: string, message: string, headers: Record<string, string> = {}): Response {
   return Response.json({ error: { code, message } }, { status, headers });
 }
 
-function originAllowed(request: Request): boolean {
-  const origin = request.headers.get('origin');
-  if (!origin) return true;
-  try {
-    return new URL(origin).host === new URL(request.url).host;
-  } catch {
-    return false;
+function listEnv(name: string): string[] {
+  return (process.env[name] ?? '').split(',').map(entry => entry.trim().toLowerCase()).filter(Boolean);
+}
+
+// Null when Host and Origin are trusted, else the refusal.
+function rebindingRefusal(request: Request): Response | null {
+  const host = (request.headers.get('host') ?? '').trim().toLowerCase();
+  if (!host || !(isLoopbackHost(host) || listEnv(MCP_ALLOWED_HOSTS_ENV).includes(host))) {
+    return envelope(403, 'host_not_allowed', 'The request did not arrive on a trusted host.');
   }
+  const origin = request.headers.get('origin');
+  if (origin === null) return null;
+  const normalized = origin.trim().toLowerCase();
+  if (isLoopbackHost(host) && normalized === `http://${host}`) return null;
+  if (listEnv(MCP_ALLOWED_ORIGINS_ENV).includes(normalized)) return null;
+  return envelope(403, 'origin_not_allowed', 'Cross-origin requests are not accepted.');
+}
+
+class BodyTooLarge extends Error {}
+
+// Reads the body, refusing it as soon as it exceeds MAX_BODY_BYTES (by
+// Content-Length up front, then incrementally) so it is never buffered whole.
+async function readBody(request: Request): Promise<string> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && !(/^\d+$/.test(declared.trim()) && Number(declared) <= MAX_BODY_BYTES)) throw new BodyTooLarge();
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new BodyTooLarge();
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function acceptsJson(request: Request): boolean {
@@ -35,7 +77,8 @@ function acceptsJson(request: Request): boolean {
 }
 
 export async function handleMcpPost(request: Request): Promise<Response> {
-  if (!originAllowed(request)) return envelope(403, 'origin_not_allowed', 'Cross-origin requests are not accepted.');
+  const refusal = rebindingRefusal(request);
+  if (refusal) return refusal;
   let principal: Principal;
   try {
     principal = await authenticate(request);
@@ -55,8 +98,13 @@ export async function handleMcpPost(request: Request): Promise<Response> {
   }
   if (!acceptsJson(request)) return envelope(406, 'not_acceptable', 'This server answers with application/json.');
 
-  const text = await request.text();
-  if (Buffer.byteLength(text, 'utf8') > MAX_BODY_BYTES) return envelope(413, 'payload_too_large', 'The message is too large.');
+  let text: string;
+  try {
+    text = await readBody(request);
+  } catch (error) {
+    if (error instanceof BodyTooLarge) return envelope(413, 'payload_too_large', 'The message is too large.');
+    throw error;
+  }
   let message: unknown;
   try {
     message = JSON.parse(text);

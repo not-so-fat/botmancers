@@ -21,6 +21,7 @@
 'use strict';
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 const { createHash } = require('crypto');
@@ -135,6 +136,28 @@ async function child() {
     try { json = JSON.parse(text); } catch { /* empty */ }
     return { status: response.status, headers: response.headers, json, text };
   }
+  // node:http, because fetch cannot set Host; chunked omits Content-Length.
+  function rawPost(body, headers, { chunked = false } = {}) {
+    return new Promise((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1', port: host.port, path: '/api/v0/mcp', method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json', ...(chunked ? {} : { 'content-length': Buffer.byteLength(body) }), ...headers },
+      }, res => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { text += chunk; });
+        res.on('end', () => {
+          let json = null;
+          try { json = JSON.parse(text); } catch { /* empty */ }
+          resolve({ status: res.statusCode, json, text });
+        });
+      });
+      req.on('error', reject);
+      if (chunked) for (let i = 0; i < body.length; i += 16 * 1024) req.write(body.slice(i, i + 16 * 1024));
+      else req.write(body);
+      req.end();
+    });
+  }
   const rpc = (method, params, options) => post({ jsonrpc: '2.0', id: ++rpcId, method, params }, options);
   const call = async (name, args, options) => {
     const res = await rpc('tools/call', { name, arguments: args }, { headers: { 'mcp-protocol-version': '2025-06-18' }, ...options });
@@ -172,6 +195,39 @@ async function child() {
     }
     const crossOrigin = await call('botmancers_start_task', startArgs, { headers: { origin: 'http://evil.invalid' } });
     check(crossOrigin.status === 403 && crossOrigin.json.error.code === 'origin_not_allowed', 'cross-origin browser request -> 403 origin_not_allowed');
+
+    // DNS rebinding: Host and Origin both attacker-controlled, valid token.
+    const startBody = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'botmancers_start_task', arguments: startArgs } });
+    const loopbackHost = `127.0.0.1:${host.port}`;
+    const rebinding = [
+      ['rebound Host and Origin', { host: `evil.example:${host.port}`, origin: `http://evil.example:${host.port}` }, 'host_not_allowed'],
+      ['rebound Host, no Origin', { host: 'evil.example' }, 'host_not_allowed'],
+      ['loopback Host, https Origin (scheme mismatch)', { host: loopbackHost, origin: `https://${loopbackHost}` }, 'origin_not_allowed'],
+      ['loopback Host, other loopback port Origin', { host: loopbackHost, origin: 'http://127.0.0.1:1' }, 'origin_not_allowed'],
+      ['loopback Host, Origin: null', { host: loopbackHost, origin: 'null' }, 'origin_not_allowed'],
+    ];
+    for (const [label, headers, code] of rebinding) {
+      const res = await rawPost(startBody, { authorization: `Bearer ${TOKEN}`, ...headers });
+      check(res.status === 403 && res.json && res.json.error.code === code, `${label} -> 403 ${code} (got ${res.status} ${res.text})`);
+    }
+    const sameOrigin = await rpc('tools/list', {}, { headers: { origin: host.origin } });
+    check(sameOrigin.status === 200, 'loopback Host with its exact http Origin is accepted');
+    process.env.BOTMANCERS_MCP_ALLOWED_HOSTS = 'mcp.example.test';
+    process.env.BOTMANCERS_MCP_ALLOWED_ORIGINS = 'https://mcp.example.test';
+    const listBody = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    const deployed = await rawPost(listBody, { authorization: `Bearer ${TOKEN}`, host: 'mcp.example.test', origin: 'https://mcp.example.test' });
+    check(deployed.status === 200, 'an allowlisted deployment Host and Origin are accepted');
+    const deployedWrongScheme = await rawPost(listBody, { authorization: `Bearer ${TOKEN}`, host: 'mcp.example.test', origin: 'http://mcp.example.test' });
+    check(deployedWrongScheme.status === 403 && deployedWrongScheme.json.error.code === 'origin_not_allowed', 'an allowlisted Host with a non-allowlisted Origin scheme -> 403');
+    delete process.env.BOTMANCERS_MCP_ALLOWED_HOSTS;
+    delete process.env.BOTMANCERS_MCP_ALLOWED_ORIGINS;
+
+    // Body cap: declared and streamed (chunked) oversize bodies.
+    const oversized = JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'botmancers_start_task', arguments: { ...startArgs, objective: 'x'.repeat(300 * 1024) } } });
+    const declaredTooLarge = await rawPost(oversized, { authorization: `Bearer ${TOKEN}`, host: loopbackHost });
+    check(declaredTooLarge.status === 413 && declaredTooLarge.json.error.code === 'payload_too_large', 'Content-Length over 256 KiB -> 413 payload_too_large');
+    const chunkedTooLarge = await rawPost(oversized, { authorization: `Bearer ${TOKEN}`, host: loopbackHost }, { chunked: true });
+    check(chunkedTooLarge.status === 413 && chunkedTooLarge.json.error.code === 'payload_too_large', 'chunked body over 256 KiB -> 413 payload_too_large');
     const restBad = await fetch(`${host.origin}/api/v0/agents/${tank.id}/messages`, {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer nope' }, body: JSON.stringify({ content: 'hi', idempotencyKey: 'rest-1' }),
     });
