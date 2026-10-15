@@ -399,13 +399,13 @@ All tables are SQLite tables in one database. The engine's tables are versioned 
 | --- | --- |
 | `work_requests`, `work_request_transitions`, `work_attempts`, `session_bindings`, `engine_events` | Canonical Work Requests and their transitions, immutable Attempts, opaque Session Bindings, and the per-request event log |
 | `conversation_intakes` | One row per accepted message, keyed by the requester's idempotency key |
-| `wakes`, `wake_grants`, `wake_safety_decisions`, `terminal_followups` | Wakes, owner grants, safety decisions, and coordinator follow-ups |
+| `wakes`, `wake_grants`, `wake_safety_decisions`, `terminal_followups` | Wakes, owner grants, safety decisions, and coordinator follow-ups. A follow-up is written only with the terminal transition of a dispatcher-owned request; UI turn executor requests (`ui_message`, `ui_continuation`) never get one, because the executor routes its own replies |
 | `dispatch_leases`, `dispatch_attention`, `attempt_launch_intents` | Leased dispatch and restart reconciliation |
 | `attempt_finalization_baselines`, `candidate_manifests`, `finalizations` | Reviewed Git finalization |
 | `conversation_events`, `conversation_projection_cursors` | Typed projection of engine events into conversations |
 | `conversations`, `messages`, `conversation_participants` | Conversations and their ordered history |
 | `delegation_chains` | Delegation accounting for UI thread turns: handoffs, delegated turns, Stop, and caller frames per user message |
-| `legacy_agent_requests_archive`, `legacy_agent_request_events_archive` | Evidence only. Every pre-NOT-465 `agent_requests` row, verbatim. Nothing reads or writes these tables. They exist only in databases that had the legacy tables |
+| `legacy_agent_requests_archive`, `legacy_agent_request_events_archive` | Evidence only. Every pre-NOT-465 `agent_requests` row and its events, verbatim. Nothing reads them except conversation deletion, which removes the conversation's rows (and their events). They exist only in databases that had the legacy tables |
 | `legacy_processing_queue_archive` | Evidence only. Every `processing_queue` row, verbatim. Nothing reads it except conversation and Agent deletion, which remove their rows. It exists only in databases that had the queue |
 
 Migration 14 (`retire_legacy_agent_requests`) copies each mappable legacy

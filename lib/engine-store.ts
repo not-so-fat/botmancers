@@ -2193,7 +2193,11 @@ export function createEngineStore(db: Db) {
           reason: input.reason ?? null,
           ...(input.errorCode ? { error_code: input.errorCode } : {}),
         }, null, now);
-        if (terminal && current.legacy_agent_request_id === null) {
+        // Only a dispatcher-owned request gets a coordinator follow-up. The
+        // UI turn executor interprets its own replies (and their Wakes)
+        // before it terminalizes the turn, so a follow-up there would route
+        // the same reply a second time after a restart.
+        if (terminal && current.legacy_agent_request_id === null && current.executor === 'dispatcher') {
           db.prepare('INSERT OR IGNORE INTO terminal_followups (request_id, created_at) VALUES (?, ?)').run(id, now);
         }
         return requireRequest(id);

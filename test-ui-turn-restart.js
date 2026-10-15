@@ -9,7 +9,10 @@
 //            to Helper. The handoff turn, the caller frame, the handoff
 //            count, and the delegated-turn count are durable. A second
 //            turn is left running (the process "dies" mid-turn).
-//   phase 2  restart: the interrupted turn fails (ui_turn_interrupted)
+//   phase 2  restart: the production startup recovery sequence (UI
+//            interruption recovery, then recoverCoordinatorLoops) runs
+//            twice and routes the completed UI WAKE no second time; the
+//            interrupted turn fails (ui_turn_interrupted)
 //            and is not re-run; Helper's queued turn runs and its reply
 //            returns to Origin through the durable caller frame (one
 //            report-back turn, parented to Helper's turn). Stop is then
@@ -54,6 +57,7 @@ function load() {
     db: jiti('./lib/db.ts'),
     agent: jiti('./lib/agent.ts'),
     ui: jiti('./lib/ui-turns.ts'),
+    conversations: jiti('./lib/agent-conversations.ts'),
   };
 }
 
@@ -66,6 +70,32 @@ function stubFor(agent) {
     if (ctx.botName === 'Helper') return 'HELPER RESULT: the plan has three steps.';
     return 'No response';
   });
+}
+
+// What production startup runs (lib/agent.ts, AUTO_PROCESS) before the
+// executor picks anything: UI interruption recovery, then coordinator
+// follow-up recovery.
+async function startupRecovery(ui, conversations) {
+  const failed = ui.uiTurns.recoverInterrupted();
+  await conversations.recoverCoordinatorLoops();
+  return failed;
+}
+
+// A completed UI WAKE is routed once, by the UI executor: one handoff turn
+// for Helper, no canonical Wake or dispatcher request, and no open
+// coordinator follow-up for any UI-owned request.
+function assertWakeRoutedOnce(raw, ids, label) {
+  const handoffs = raw.prepare(
+    "SELECT COUNT(*) AS n FROM work_requests WHERE source_conversation_id = ? AND target_agent_id = ? AND intent = 'handoff'"
+  ).get(ids.conv, ids.helper).n;
+  const wakes = raw.prepare('SELECT COUNT(*) AS n FROM wakes WHERE source_conversation_id = ?').get(ids.conv).n;
+  const dispatched = raw.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE source_conversation_id = ? AND executor = 'dispatcher'").get(ids.conv).n;
+  const open = raw.prepare(`
+    SELECT COUNT(*) AS n FROM terminal_followups f JOIN work_requests w ON w.id = f.request_id
+    WHERE w.executor IN ('ui_message', 'ui_continuation') AND f.done_at IS NULL
+  `).get().n;
+  assert(handoffs === 1 && wakes === 0 && dispatched === 0 && open === 0,
+    `${label}: Origin's WAKE routed once (handoffs ${handoffs}, wakes ${wakes}, dispatcher requests ${dispatched}, open UI follow-ups ${open})`);
 }
 
 function turnRows(raw, conversationId) {
@@ -103,13 +133,16 @@ async function phase1() {
 }
 
 async function phase2(ids) {
-  const { db, agent, ui } = load();
+  const { db, agent, ui, conversations } = load();
   const { messages, engine } = db;
   stubFor(agent);
   const raw = db.default;
   assert(engine.getWorkRequest(ids.inflight).state === 'running', 'after restart: the in-flight turn is still running in the database');
-  // What startup does (AUTO_PROCESS) before the executor runs anything.
-  assert(ui.uiTurns.recoverInterrupted() === 1, 'startup reconciliation fails exactly the one interrupted UI turn');
+  assertWakeRoutedOnce(raw, ids, 'before startup recovery');
+  assert(await startupRecovery(ui, conversations) === 1, 'startup reconciliation fails exactly the one interrupted UI turn');
+  assertWakeRoutedOnce(raw, ids, 'after startup recovery');
+  assert(await startupRecovery(ui, conversations) === 0, 'a repeated startup recovery fails nothing more');
+  assertWakeRoutedOnce(raw, ids, 'after a repeated startup recovery');
   const interrupted = engine.getWorkRequest(ids.inflight);
   assert(interrupted.state === 'failed' && interrupted.error_code === 'ui_turn_interrupted', 'the interrupted turn is failed (ui_turn_interrupted), not re-run');
 
@@ -135,10 +168,12 @@ async function phase2(ids) {
 }
 
 async function phase3(ids) {
-  const { db, agent, ui } = load();
+  const { db, agent, ui, conversations } = load();
   const { messages, engine } = db;
   stubFor(agent);
   const raw = db.default;
+  await startupRecovery(ui, conversations);
+  assertWakeRoutedOnce(raw, ids, 'after the second restart');
   assert(agent.getDelegationState(ids.conv).stopped === true, 'after restart: Stop still holds');
   const before = messages.getByConversation(ids.conv).length;
   const again = ui.uiTurns.enqueue(ids.conv, ids.origin, { reason: 'tick' });
@@ -162,6 +197,8 @@ async function phase3(ids) {
   const after = messages.getByConversation(ids.conv);
   assert(after.length === spent + 1 && after[after.length - 1].content === agent.DELEGATION_BUDGET_REASON, 'a durable budget count refuses the next turn with the budget reason');
   assert(ui.uiTurns.countPending(ids.conv) === 0, 'nothing is left queued');
+  await startupRecovery(ui, conversations);
+  assertWakeRoutedOnce(raw, ids, 'after every turn and a final startup recovery');
 }
 
 async function runChild(phase, ids) {
