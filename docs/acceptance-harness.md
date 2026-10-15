@@ -73,10 +73,10 @@ working tree. It never assumes a developer server on port 43123.
 The runner takes a snapshot of the configured production paths before and after
 the run: `./botmancers.db*`, `./files`, `~/.botmancers`, and any explicitly set
 `BOTMANCERS_DB_PATH` (with its `-wal`/`-shm`) or `BOTMANCERS_FILES_ROOT`,
-wherever it lives. Directories are walked to any depth, and each file is
-recorded by size, mtime, ctime, and a content digest (files over 64 MB by
-metadata only). It also records this repository's `git status`. The run fails
-if anything changed.
+wherever it lives. Directories are walked to any depth, and each entry is
+recorded by metadata only (inode, size, mtime, and ctime, which any write
+advances, even a same-size rewrite). File contents are never opened. It also
+records this repository's `git status`. The run fails if anything changed.
 
 ## Scenarios
 

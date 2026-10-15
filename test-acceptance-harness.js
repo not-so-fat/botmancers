@@ -312,6 +312,17 @@ async function main() {
   fs.utimesSync(deepFile, atime, mtime);
   const deepChanges = harnessLib.diffSnapshots(deepBefore, harnessLib.snapshotProductionState([deepRoot]));
   assert(deepChanges.length === 1 && deepChanges[0].startsWith(deepFile), `a same-size rewrite of a file seven levels deep, with its mtime restored, is detected (${deepChanges.length} change(s))`);
+  const opened = [];
+  const spied = ['openSync', 'readFileSync', 'createReadStream', 'open', 'readFile'];
+  const originals = Object.fromEntries(spied.map(name => [name, fs[name]]));
+  for (const name of spied) fs[name] = (file, ...rest) => { opened.push(`${name}(${file})`); return originals[name](file, ...rest); };
+  try {
+    harnessLib.snapshotProductionState([deepRoot]);
+    harnessLib.snapshotProductionState();
+  } finally {
+    Object.assign(fs, originals);
+  }
+  assert(opened.length === 0, `the snapshot reads metadata only and never opens a file${opened.length ? `: ${opened.slice(0, 3).join(', ')}` : ''}`);
 
   // ===================================================================
   console.log('\nProduction Botmancers state and this working tree');

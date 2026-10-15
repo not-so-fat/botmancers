@@ -19,7 +19,6 @@
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
 
-const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -48,31 +47,24 @@ function productionPaths(env = process.env) {
   return [...new Set(paths)];
 }
 
-// Files up to this size are fingerprinted by content as well.
-const HASH_LIMIT = 64 * 1024 * 1024;
-
-function fileDigest(file, size) {
-  if (size > HASH_LIMIT) return 'unhashed';
-  try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); } catch (error) { return `unreadable:${error.code}`; }
-}
-
-// Every path recursively, at any depth: existence, size, mtime, ctime (which
-// a write always advances), and a content digest for files, plus the
-// repository's Git status. A before/after pair must be equal.
+// Every path recursively, at any depth, by metadata only: existence, inode,
+// size, mtime, and ctime (which any write advances, even a same-size rewrite
+// with a restored mtime), plus the repository's Git status. File contents are
+// never opened. A before/after pair must be equal.
 function snapshotProductionState(paths = productionPaths()) {
   const entries = {};
   const visit = file => {
     let stat;
     try { stat = fs.lstatSync(file); } catch { entries[file] = 'absent'; return; }
     if (stat.isDirectory()) {
-      entries[file] = `dir:${stat.mtimeMs}:${stat.ctimeMs}`;
+      entries[file] = `dir:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}`;
       let names = [];
       try { names = fs.readdirSync(file).sort(); } catch (error) { entries[file] += `:unreadable:${error.code}`; }
       for (const name of names) visit(path.join(file, name));
     } else if (stat.isSymbolicLink()) {
       entries[file] = `link:${fs.readlinkSync(file)}:${stat.ctimeMs}`;
     } else {
-      entries[file] = `file:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${fileDigest(file, stat.size)}`;
+      entries[file] = `file:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     }
   };
   for (const file of paths) visit(file);
