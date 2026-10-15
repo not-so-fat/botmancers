@@ -6,9 +6,14 @@
 // state transitions are compare-and-set, reject invalid/stale moves, and
 // roll back without partial writes; per-request event sequences are
 // unique and contiguous; attempts keep launch snapshots and opaque
-// external ids verbatim. A child process opens a populated legacy
-// database and checks history is preserved and terminal agent_requests
-// are backfilled once. Self-contained: isolated SQLite files, no network.
+// external ids verbatim. A child process upgrades a populated legacy
+// database (pre-NOT-463 tables, then the last pre-NOT-477 engine schema
+// with live canonical records) and reconciles every record before and
+// after: conversations, messages, queue rows, canonical requests,
+// attempts, session bindings, and events are unchanged, every
+// agent_requests row is either copied with its outcome or kept in the
+// archive for a named reason, and the archive holds every original row
+// verbatim (NOT-477). Self-contained: isolated SQLite files, no network.
 'use strict';
 
 const fs = require('fs');
@@ -80,8 +85,9 @@ function runFresh() {
   for (const name of ['work_requests', 'work_attempts', 'session_bindings', 'engine_events', 'schema_migrations']) {
     assert(tables.has(name), `table ${name} exists`);
   }
-  for (const name of ['processing_queue', 'agent_requests', 'agent_request_events']) {
-    assert(tables.has(name), `legacy table ${name} is kept`);
+  assert(tables.has('processing_queue'), 'the UI loop table processing_queue exists');
+  for (const name of ['agent_requests', 'agent_request_events', 'legacy_agent_requests_archive', 'legacy_agent_request_events_archive']) {
+    assert(!tables.has(name), `NOT-477: a fresh database has no ${name} table`);
   }
   const columns = table => new Set(sqlite.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
   const expectColumns = (table, names) => {
@@ -129,7 +135,7 @@ function runFresh() {
   assert(hasUnique('work_attempts', 'request_id', true), 'work_attempts: at most one open attempt per request (partial unique)');
   assert(hasUnique('session_bindings', 'agent_id,adapter,expr,expr', true), 'session_bindings: one active binding per scope (partial unique)');
   const migrations = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
-  assert(migrations.map(m => m.version).join(',') === '1,2,3,4,5,6,7,8,9,10,11,12,13' && store.ENGINE_SCHEMA_VERSION === 13, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
+  assert(migrations.map(m => m.version).join(',') === '1,2,3,4,5,6,7,8,9,10,11,12,13,14' && store.ENGINE_SCHEMA_VERSION === 14, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
   const edges = sqlite.prepare('SELECT from_state || \'>\' || to_state AS e FROM work_request_transitions').all().map(row => row.e);
   assert(edges.includes('queued>running') && !edges.includes('completed>running'), 'transition table seeded from WORK_REQUEST_TRANSITIONS');
 
@@ -477,6 +483,8 @@ function runFresh() {
 }
 
 function runLegacy() {
+  const { createHash } = require('crypto');
+  const sha = value => createHash('sha256').update(value).digest('hex');
   // A pre-NOT-463 database: legacy bots columns (pre agent/deck
   // migrations), UI and agent conversations, messages, processing_queue,
   // and agent_requests in every legacy state, including rows whose
@@ -504,6 +512,8 @@ function runLegacy() {
   legacy.prepare('INSERT INTO bots VALUES (?, ?, ?, ?, NULL, ?)').run('bot-claude', 'Claude', 't', 'd', t + 1);
   legacy.prepare("INSERT INTO conversations VALUES ('conv-ui', 'bot', 'bot-codex', NULL, ?, NULL, NULL)").run(t);
   legacy.prepare("INSERT INTO conversations VALUES ('conv-api', 'agent', NULL, NULL, ?, 'service', 'svc-1')").run(t + 10);
+  legacy.prepare("INSERT INTO conversation_participants VALUES ('conv-api', 'service', 'svc-1', ?)").run(t + 10);
+  legacy.prepare("INSERT INTO conversation_participants VALUES ('conv-api', 'bot', 'bot-codex', ?)").run(t + 10);
   const msg = legacy.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   msg.run('m-ui-1', 'conv-ui', 'user', null, 'hello from the UI', t + 1, null, null);
   msg.run('m-ui-2', 'conv-ui', 'bot', 'bot-codex', 'hi back', t + 2, null, null);
@@ -514,16 +524,19 @@ function runLegacy() {
   msg.run('m-4', 'conv-api', 'user', 'svc-1', 'In flight', t + 15, 'service', 'req-dispatched');
   msg.run('m-5', 'conv-api', 'user', 'svc-1', 'For a deleted agent', t + 16, 'service', 'req-no-bot');
   legacy.prepare("INSERT INTO processing_queue VALUES ('q-1', 'conv-ui', 'bot-codex', 'completed', ?, ?, ?)").run(t + 1, t + 1, t + 2);
+  // Payload hashes as the pre-NOT-465 API stored them: [agentId,
+  // conversationId ?? null, content]. k-1 named its conversation, k-2 opened
+  // a new one; the other rows carry hashes that verify neither form.
   const req = legacy.prepare(`INSERT INTO agent_requests VALUES (?, 'service', 'svc-1', 'send_message', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  req.run('req-completed', 'k-1', 'hash-1', 'conv-api', 'bot-codex', 'm-1', 'codex', 'completed', 'm-1r', null, null, t + 11, t + 12);
-  req.run('req-failed', 'k-2', 'hash-2', 'conv-api', 'bot-claude', 'm-2', 'claude', 'failed', null, 'runtime_failed', 'The agent runtime did not complete the turn.', t + 13, t + 14);
+  req.run('req-completed', 'k-1', sha(JSON.stringify(['bot-codex', 'conv-api', 'Explain the queue'])), 'conv-api', 'bot-codex', 'm-1', 'codex', 'completed', 'm-1r', null, null, t + 11, t + 12);
+  req.run('req-failed', 'k-2', sha(JSON.stringify(['bot-claude', null, 'Do the thing'])), 'conv-api', 'bot-claude', 'm-2', 'claude', 'failed', null, 'runtime_failed', 'The agent runtime did not complete the turn.', t + 13, t + 14);
   req.run('req-accepted', 'k-3', 'hash-3', 'conv-api', 'bot-codex', 'm-3', null, 'accepted', null, null, null, t + 14, t + 14);
   req.run('req-dispatched', 'k-4', 'hash-4', 'conv-api', 'bot-codex', 'm-4', 'codex', 'dispatched', null, null, null, t + 15, t + 15);
   req.run('req-no-bot', 'k-5', 'hash-5', 'conv-api', 'bot-deleted', 'm-5', 'codex', 'completed', null, null, null, t + 16, t + 17);
   req.run('req-no-conv', 'k-6', 'hash-6', 'conv-deleted', 'bot-codex', 'm-x', 'codex', 'completed', null, null, null, t + 18, t + 19);
   req.run('req-no-msg', 'k-7', 'hash-7', 'conv-api', 'bot-codex', 'm-missing', 'codex', 'completed', null, null, null, t + 20, t + 21);
   // Same principal and key under two legacy operations: legal there,
-  // one identity canonically. The older row wins; the newer stays legacy-only.
+  // one identity canonically. The older row wins; the newer stays archive-only.
   msg.run('m-8a', 'conv-api', 'user', 'svc-1', 'Op A', t + 22, 'service', 'req-op-a');
   msg.run('m-8b', 'conv-api', 'user', 'svc-1', 'Op B', t + 23, 'service', 'req-op-b');
   const reqOp = legacy.prepare(`INSERT INTO agent_requests VALUES (?, 'service', 'svc-1', ?, 'k-8', ?, 'conv-api', 'bot-codex', ?, 'codex', 'completed', NULL, NULL, NULL, ?, ?)`);
@@ -537,18 +550,44 @@ function runLegacy() {
   ev.run('e-5', 'req-failed', 'accepted', null, t + 13);
   ev.run('e-6', 'req-failed', 'failed', '{"code":"runtime_failed"}', t + 14);
   ev.run('e-7', 'req-accepted', 'accepted', null, t + 14);
+  ev.run('e-8', 'req-dispatched', 'accepted', null, t + 15);
+  ev.run('e-9', 'req-dispatched', 'dispatched', '{"agent":"codex"}', t + 15);
+
+  // The last supported legacy database: the previous release's engine
+  // schema (13) on top, with live canonical history (a request that already
+  // holds legacy key k-3, its Attempt, Session Binding, and events).
+  const store = jiti('./lib/engine-store.ts');
+  store.migrateEngineSchema(legacy, { through: 13 });
+  const previous = store.createEngineStore(legacy);
+  const native = previous.createOrGetWorkRequest({
+    sourceConversationId: 'conv-api', sourceEventId: 'm-3', requester: { kind: 'service', id: 'svc-1' },
+    targetAgentId: 'bot-codex', intent: 'Pending', executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: 'k-3', now: t + 50,
+  }).request;
+  previous.transitionWorkRequest(native.id, { from: 'queued', to: 'running', now: t + 51 });
+  const nativeAttempt = previous.createAttempt(native.id, { kind: 'launch', adapter: 'agent-deck', toolProfile: 'readonly', launchSnapshot: { agent: 'codex' }, now: t + 51 });
+  previous.finishAttempt(nativeAttempt.id, { outcome: 'succeeded', externalSessionId: 'ses-native', now: t + 52 });
+  previous.bindSession({ agentId: 'bot-codex', adapter: 'agent-deck', externalSessionId: 'ses-native', conversationId: 'conv-api', requestId: native.id, sourceAttemptId: nativeAttempt.id, now: t + 52 });
+  previous.transitionWorkRequest(native.id, { from: 'running', to: 'completed', result: { reply_message_id: 'm-1r' }, now: t + 53 });
+  assert(legacy.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === 13, 'fixture: the previous release left schema 13');
 
   const snapshotRows = (dbh, sql) => JSON.stringify(dbh.prepare(sql).all());
-  const before = {
-    conversations: snapshotRows(legacy, 'SELECT id, type, bot_id, group_id, created_at FROM conversations ORDER BY id'),
-    messages: snapshotRows(legacy, 'SELECT id, conversation_id, sender_type, sender_id, content, created_at, request_id FROM messages ORDER BY id'),
-    agent_requests: snapshotRows(legacy, 'SELECT * FROM agent_requests ORDER BY id'),
-    agent_request_events: snapshotRows(legacy, 'SELECT * FROM agent_request_events ORDER BY id'),
-    processing_queue: snapshotRows(legacy, 'SELECT id, conversation_id, bot_id, status, created_at, started_at, completed_at FROM processing_queue ORDER BY id'),
+  const KEPT = {
+    conversations: 'SELECT id, type, bot_id, group_id, created_at FROM conversations ORDER BY id',
+    messages: 'SELECT id, conversation_id, sender_type, sender_id, content, created_at, request_id FROM messages ORDER BY id',
+    processing_queue: 'SELECT id, conversation_id, bot_id, status, created_at, started_at, completed_at FROM processing_queue ORDER BY id',
+    work_requests: 'SELECT * FROM work_requests ORDER BY id',
+    work_attempts: 'SELECT * FROM work_attempts ORDER BY id',
+    session_bindings: 'SELECT * FROM session_bindings ORDER BY id',
+    engine_events: 'SELECT * FROM engine_events ORDER BY id',
+    conversation_intakes: 'SELECT * FROM conversation_intakes ORDER BY requester_kind, requester_id, idempotency_key',
   };
+  const before = Object.fromEntries(Object.entries(KEPT).map(([name, sql]) => [name, snapshotRows(legacy, sql)]));
+  const participantsBefore = legacy.prepare('SELECT * FROM conversation_participants').all();
+  const legacyRequests = legacy.prepare('SELECT * FROM agent_requests ORDER BY id').all();
+  const legacyEventsBefore = snapshotRows(legacy, 'SELECT * FROM agent_request_events ORDER BY id');
   legacy.close();
 
-  console.log('Open the legacy database through lib/db.ts');
+  console.log('Open the legacy database through lib/db.ts (migration 14)');
   let db;
   try {
     db = jiti('./lib/db.ts');
@@ -559,73 +598,97 @@ function runLegacy() {
   assert(true, 'legacy database opens');
   const sqlite = db.default;
   const { engine } = db;
-  const store = jiti('./lib/engine-store.ts');
   const count = (sql, ...args) => sqlite.prepare(sql).get(...args).n;
+  const tables = new Set(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(row => row.name));
+  assert(sqlite.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === store.ENGINE_SCHEMA_VERSION, 'migrated to the current schema');
 
-  for (const [name, sql] of Object.entries({
-    conversations: 'SELECT id, type, bot_id, group_id, created_at FROM conversations ORDER BY id',
-    messages: 'SELECT id, conversation_id, sender_type, sender_id, content, created_at, request_id FROM messages ORDER BY id',
-    agent_requests: 'SELECT * FROM agent_requests ORDER BY id',
-    agent_request_events: 'SELECT * FROM agent_request_events ORDER BY id',
-    processing_queue: 'SELECT id, conversation_id, bot_id, status, created_at, started_at, completed_at FROM processing_queue ORDER BY id',
-  })) {
+  console.log('\nRecord-level reconciliation of retained history');
+  const KEPT_AFTER = {
+    ...KEPT,
+    work_requests: 'SELECT * FROM work_requests WHERE legacy_agent_request_id IS NULL ORDER BY id',
+    engine_events: 'SELECT * FROM engine_events WHERE request_id IN (SELECT id FROM work_requests WHERE legacy_agent_request_id IS NULL) ORDER BY id',
+    conversation_intakes: "SELECT * FROM conversation_intakes WHERE NOT EXISTS (SELECT 1 FROM work_requests w WHERE w.legacy_agent_request_id IS NOT NULL AND conversation_intakes.work_request_ids = json_array(w.id)) ORDER BY requester_kind, requester_id, idempotency_key",
+  };
+  for (const [name, sql] of Object.entries(KEPT_AFTER)) {
     assert(snapshotRows(sqlite, sql) === before[name], `${name} rows are unchanged`);
   }
 
-  console.log('\nBackfill of terminal agent_requests');
-  const rows = sqlite.prepare('SELECT * FROM work_requests ORDER BY created_at').all();
-  assert(rows.map(row => row.legacy_agent_request_id).join(',') === 'req-completed,req-failed,req-op-a', 'only mappable terminal requests are backfilled');
-  assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE legacy_agent_request_id = 'req-op-b'") === 0, 'a key collision across legacy operations keeps the oldest row and skips the newer one');
-  const done = rows[0];
-  assert(done.state === 'completed' && JSON.parse(done.result).reply_message_id === 'm-1r' && done.terminal_at === t + 12, 'completed request maps state, result, and terminal time');
-  assert(done.source_conversation_id === 'conv-api' && done.source_event_id === 'm-1' && done.intent === 'Explain the queue', 'source conversation, event, and intent map from the accepted message');
-  assert(done.requester_kind === 'service' && done.requester_id === 'svc-1' && done.target_agent_id === 'bot-codex', 'requester and target map verbatim');
+  const participantKey = row => `${row.conversation_id}|${row.participant_kind}|${row.participant_id}|${row.joined_at}`;
+  const participantsAfter = new Set(sqlite.prepare('SELECT * FROM conversation_participants').all().map(participantKey));
+  assert(participantsBefore.every(row => participantsAfter.has(participantKey(row))), 'every conversation participant is kept (UI threads gain their bound owner)');
+
+  console.log('\nThe agent_requests lifecycle is archived verbatim');
+  assert(!tables.has('agent_requests') && !tables.has('agent_request_events'), 'agent_requests and agent_request_events no longer exist');
+  assert(snapshotRows(sqlite, 'SELECT * FROM legacy_agent_requests_archive ORDER BY id') === JSON.stringify(legacyRequests), 'every agent_requests row is in legacy_agent_requests_archive verbatim');
+  assert(snapshotRows(sqlite, 'SELECT * FROM legacy_agent_request_events_archive ORDER BY id') === legacyEventsBefore, 'every agent_request_events row is in legacy_agent_request_events_archive verbatim');
+
+  console.log('\nEvery legacy request is copied or kept for a named reason');
+  const copied = Object.fromEntries(sqlite.prepare('SELECT * FROM work_requests WHERE legacy_agent_request_id IS NOT NULL').all().map(row => [row.legacy_agent_request_id, row]));
+  const archiveOnly = {
+    'req-no-bot': 'target agent is gone',
+    'req-no-conv': 'conversation is gone',
+    'req-no-msg': 'accepted message is gone',
+    'req-op-b': 'key already claimed by an older row of another operation',
+    'req-accepted': 'key already held by a canonical request',
+  };
+  for (const row of legacyRequests) {
+    const reason = archiveOnly[row.id];
+    assert(reason ? !copied[row.id] : !!copied[row.id], `${row.id}: ${reason ? `archive only (${reason})` : 'copied into work_requests'}`);
+  }
+  assert(Object.keys(copied).sort().join(',') === 'req-completed,req-dispatched,req-failed,req-op-a', 'no unexpected request is copied');
+  for (const row of legacyRequests.filter(r => copied[r.id] && (r.state === 'completed' || r.state === 'failed'))) {
+    const work = copied[row.id];
+    const result = work.result ? JSON.parse(work.result) : null;
+    assert(work.state === row.state && (result ? result.reply_message_id : null) === row.reply_message_id
+      && work.error_code === row.failure_code && work.error_message === row.failure_message && work.terminal_at === row.updated_at,
+    `${row.id}: terminal outcome (${row.state}) carried over exactly`);
+    assert(work.source_conversation_id === row.conversation_id && work.source_event_id === row.accepted_message_id
+      && work.requester_kind === row.principal_kind && work.requester_id === row.principal_id && work.target_agent_id === row.target_bot_id
+      && work.idempotency_key === row.idempotency_key && work.created_at === row.created_at, `${row.id}: identity, source, and key carried over`);
+  }
+  const done = copied['req-completed'];
   const canonicalHash = store.workRequestHash({
     sourceConversationId: 'conv-api', sourceEventId: 'm-1', targetAgentId: 'bot-codex', intent: 'Explain the queue',
     executionKind: 'conversation', toolProfile: 'readonly',
   });
-  assert(done.idempotency_key === 'k-1' && done.request_hash === canonicalHash, 'idempotency key carried over; request hash is the canonical intake hash');
+  assert(done.request_hash === canonicalHash && done.intent === 'Explain the queue', 'request hash is the canonical intake hash; intent is the accepted message');
   assert(done.execution_kind === 'conversation' && done.tool_profile === 'readonly' && done.root_request_id === done.id && done.depth === 0, 'legacy turns map to read-only conversation roots');
   const policy = JSON.parse(done.policy_snapshot);
   assert(policy.source === 'legacy_agent_requests' && policy.legacy_runtime === 'codex' && policy.legacy_operation === 'send_message', 'policy snapshot records legacy provenance');
-  const failed = rows[1];
-  assert(failed.state === 'failed' && failed.error_code === 'runtime_failed' && failed.error_message.startsWith('The agent runtime'), 'failed request maps its error');
   const events = engine.listEvents(done.id);
   assert(events.map(e => `${e.sequence}:${e.type}`).join(',') === '1:accepted,2:dispatched,3:runtime_started,4:completed,5:backfilled', 'legacy events copied in order, then a backfilled marker');
   assert(events[1].data === '{"agent":"codex"}', 'legacy event data copied verbatim');
-  assert(count('SELECT COUNT(*) AS n FROM work_attempts') === 0, 'no attempts are synthesized for legacy rows');
+  const interrupted = copied['req-dispatched'];
+  assert(interrupted.state === 'failed' && interrupted.error_code === store.LEGACY_INTERRUPTED && JSON.parse(interrupted.policy_snapshot).legacy_state === 'dispatched',
+    'a dispatched legacy row that can never finish becomes failed (legacy_interrupted) and keeps its original state');
+  assert(engine.listEvents(interrupted.id).map(e => e.type).join(',') === 'accepted,dispatched,state_changed,backfilled', 'the interruption is an explicit event after the copied history');
+  assert(count('SELECT COUNT(*) AS n FROM work_attempts WHERE request_id IN (SELECT id FROM work_requests WHERE legacy_agent_request_id IS NOT NULL)') === 0, 'no attempts are synthesized for legacy rows');
 
-  console.log('\nBackfill is idempotent and picks up rows that finish later');
+  console.log('\nThe /api/v0 surface reads only canonical tables');
+  const api = jiti('./lib/agent-conversations.ts');
+  const svc = { kind: 'service', id: 'svc-1' };
+  const view = api.getAgentRequest(svc, 'req-completed');
+  assert(view.requestId === 'req-completed' && view.state === 'completed' && view.reply && view.reply.messageId === 'm-1r', 'a pre-NOT-465 request id still reads, with its reply');
+  const failedView = api.getAgentRequest(svc, 'req-dispatched');
+  assert(failedView.state === 'failed' && failedView.failure.code === store.LEGACY_INTERRUPTED, 'an interrupted legacy request reads as failed with its reason');
+  let missing = null;
+  try { api.getAgentRequest(svc, 'req-no-bot'); } catch (error) { missing = error.code; }
+  assert(missing === 'request_not_found', 'an archive-only request is not served');
+  const messagesBefore = count('SELECT COUNT(*) AS n FROM messages');
+  const replayed = api.sendAgentMessage(svc, { agentId: 'bot-codex', conversationId: 'conv-api', content: 'Explain the queue', idempotencyKey: 'k-1' });
+  assert(replayed.replayed === true && replayed.requestId === 'req-completed' && replayed.state === 'completed', 'an exact replay of a pre-NOT-465 key (named conversation) replays it');
+  const replayedNew = api.sendAgentMessage(svc, { agentId: 'bot-claude', content: 'Do the thing', idempotencyKey: 'k-2' });
+  assert(replayedNew.replayed === true && replayedNew.requestId === 'req-failed' && replayedNew.state === 'failed', 'an exact replay of a pre-NOT-465 key (new conversation) replays it');
+  let conflict = null;
+  try { api.sendAgentMessage(svc, { agentId: 'bot-codex', conversationId: 'conv-api', content: 'Something else', idempotencyKey: 'k-1' }); } catch (error) { conflict = error.code; }
+  assert(conflict === 'idempotency_conflict', 'the same pre-NOT-465 key with a different payload is a conflict');
+  assert(count('SELECT COUNT(*) AS n FROM messages') === messagesBefore, 'replays and conflicts write no messages');
+
+  console.log('\nReopening is a no-op');
+  const workBefore = snapshotRows(sqlite, 'SELECT * FROM work_requests ORDER BY id');
   store.migrateEngineSchema(new Database(DB_PATH));
-  assert(count('SELECT COUNT(*) AS n FROM work_requests') === 3, 'reopening does not duplicate backfilled rows');
-  sqlite.prepare("UPDATE agent_requests SET state = 'completed', reply_message_id = 'm-x', updated_at = ? WHERE id = 'req-dispatched'").run(t + 30);
-  store.migrateEngineSchema(new Database(DB_PATH));
-  assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE legacy_agent_request_id = 'req-dispatched'") === 1, 'a legacy row that later completes is backfilled on the next open');
+  assert(snapshotRows(sqlite, 'SELECT * FROM work_requests ORDER BY id') === workBefore, 'reopening changes no request');
   assert(count('SELECT COUNT(*) AS n FROM schema_migrations') === store.ENGINE_SCHEMA_VERSION, 'schema migrations applied once');
-
-  console.log('\nBackfilled rows share the canonical idempotency scope');
-  const replayInput = {
-    sourceConversationId: 'conv-api', sourceEventId: 'm-1', requester: { kind: 'service', id: 'svc-1' },
-    targetAgentId: 'bot-codex', intent: 'Explain the queue', executionKind: 'conversation', toolProfile: 'readonly',
-    idempotencyKey: 'k-1',
-  };
-  const eventsBeforeReplay = engine.listEvents(done.id).length;
-  const replay = engine.createOrGetWorkRequest(replayInput);
-  assert(replay.created === false && replay.request.id === done.id, 'an exact replay of a backfilled request returns the backfilled row');
-  assert(engine.listEvents(done.id).length === eventsBeforeReplay, 'replay appends no events');
-  throwsCode(() => engine.createOrGetWorkRequest({ ...replayInput, sourceEventId: 'm-new' }), 'idempotency_conflict', 'a reused legacy key with a different payload is a conflict');
-  assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE idempotency_key = 'k-1'") === 1, 'still one request for the legacy key');
-
-  console.log('\nA canonical request that already holds a legacy key wins');
-  const native = engine.createOrGetWorkRequest({ ...replayInput, sourceEventId: 'm-3', intent: 'Pending', idempotencyKey: 'k-3' }).request;
-  sqlite.prepare("UPDATE agent_requests SET state = 'completed', reply_message_id = 'm-y', updated_at = ? WHERE id = 'req-accepted'").run(t + 40);
-  let reopened = true;
-  try { store.migrateEngineSchema(new Database(DB_PATH)); } catch { reopened = false; }
-  assert(reopened, 'reopening with a colliding legacy row succeeds');
-  assert(count("SELECT COUNT(*) AS n FROM work_requests WHERE legacy_agent_request_id = 'req-accepted'") === 0
-    && count("SELECT COUNT(*) AS n FROM work_requests WHERE idempotency_key = 'k-3'") === 1
-    && engine.getWorkRequest(native.id).legacy_agent_request_id === null, 'the colliding legacy row stays legacy-only');
-  assert(count("SELECT COUNT(*) AS n FROM agent_requests WHERE id IN ('req-op-b', 'req-accepted')") === 2, 'skipped legacy rows are kept');
 
   finish();
 }

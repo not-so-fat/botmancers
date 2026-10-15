@@ -8,7 +8,7 @@
 //     -> record the intake under the requester's idempotency key
 //
 // all in one transaction, then hand the accepted requests to the runtime
-// dispatch seam. Nothing here writes processing_queue or agent_requests;
+// dispatch seam. Nothing here writes processing_queue;
 // the caller's dispatcher decides how accepted work is executed, and tests
 // replace it with setIntakeDispatcher.
 //

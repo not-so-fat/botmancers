@@ -517,48 +517,11 @@ db.exec(`
     PRIMARY KEY (conversation_id, participant_kind, participant_id),
     FOREIGN KEY (conversation_id) REFERENCES conversations(id)
   );
-
-  CREATE TABLE IF NOT EXISTS agent_requests (
-    id TEXT PRIMARY KEY,
-    principal_kind TEXT NOT NULL,
-    principal_id TEXT NOT NULL,
-    operation TEXT NOT NULL,
-    idempotency_key TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
-    target_bot_id TEXT NOT NULL,
-    accepted_message_id TEXT NOT NULL,
-    runtime TEXT,
-    state TEXT NOT NULL,
-    reply_message_id TEXT,
-    failure_code TEXT,
-    failure_message TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-  );
-
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_requests_idempotency
-    ON agent_requests(principal_kind, principal_id, operation, idempotency_key);
-  CREATE INDEX IF NOT EXISTS idx_agent_requests_conversation
-    ON agent_requests(conversation_id, created_at);
-
-  CREATE TABLE IF NOT EXISTS agent_request_events (
-    id TEXT PRIMARY KEY,
-    request_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    data TEXT,
-    created_at INTEGER NOT NULL,
-    FOREIGN KEY (request_id) REFERENCES agent_requests(id)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_agent_request_events_request
-    ON agent_request_events(request_id, created_at);
 `);
 
 // NOT-463: canonical Work Request / Attempt / Session Binding / engine
-// event persistence (lib/engine-store). Versioned migrations run after
-// the legacy tables exist so terminal agent_requests history backfills.
+// event persistence (lib/engine-store). NOT-477: migration 14 copies any
+// pre-NOT-465 agent_requests history into it and archives those tables.
 migrateEngineSchema(db);
 export const engine = createEngineStore(db);
 // NOT-470: typed conversation projection of engine lifecycle events.
@@ -986,11 +949,26 @@ function groupImpacts(selected: Set<string>): DeleteGroupImpact[] {
   });
 }
 
+// NOT-477: deleting a conversation also deletes its archived pre-NOT-465
+// agent_requests rows (archive tables exist only on databases that had
+// them).
+function deleteLegacyArchiveForConversation(conversationId: string): void {
+  const archived = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('legacy_agent_requests_archive', 'legacy_agent_request_events_archive')"
+  ).all() as { name: string }[];
+  const names = new Set(archived.map(row => row.name));
+  if (names.has('legacy_agent_request_events_archive') && names.has('legacy_agent_requests_archive')) {
+    db.prepare('DELETE FROM legacy_agent_request_events_archive WHERE request_id IN (SELECT id FROM legacy_agent_requests_archive WHERE conversation_id = ?)').run(conversationId);
+  }
+  if (names.has('legacy_agent_requests_archive')) {
+    db.prepare('DELETE FROM legacy_agent_requests_archive WHERE conversation_id = ?').run(conversationId);
+  }
+}
+
 function deleteConversationRecords(conversationId: string): void {
   deleteEngineRecordsForConversation(db, conversationId);
   db.prepare('DELETE FROM draft_actions WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)').run(conversationId);
-  db.prepare('DELETE FROM agent_request_events WHERE request_id IN (SELECT id FROM agent_requests WHERE conversation_id = ?)').run(conversationId);
-  db.prepare('DELETE FROM agent_requests WHERE conversation_id = ?').run(conversationId);
+  deleteLegacyArchiveForConversation(conversationId);
   db.prepare('DELETE FROM processing_queue WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM pending_questions WHERE conversation_id = ?').run(conversationId);

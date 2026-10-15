@@ -11,7 +11,7 @@
 // one canonical Work Request, and one intake record; exact and conflicting
 // retries on both surfaces; missing conversation, invalid target, and
 // transaction failures with one normalized category and no partial rows;
-// and no new agent_requests (either surface) or processing_queue (API)
+// and no agent_requests tables (NOT-477) or processing_queue rows (API)
 // lifecycle rows.
 'use strict';
 
@@ -50,7 +50,7 @@ function assert(condition, label) {
   else { failures++; log(`  FAIL: ${label}`); }
 }
 
-const TABLES = ['messages', 'conversations', 'work_requests', 'engine_events', 'conversation_intakes', 'work_attempts', 'processing_queue', 'agent_requests', 'agent_request_events'];
+const TABLES = ['messages', 'conversations', 'work_requests', 'engine_events', 'conversation_intakes', 'work_attempts', 'processing_queue'];
 function counts() {
   const out = {};
   for (const table of TABLES) out[table] = raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
@@ -244,7 +244,7 @@ async function main() {
     assert(retry.status === 200 && retry.json.intake.replayed === false, 'the same key is accepted normally after a rolled-back attempt');
   }
 
-  log('\nAC4 default dispatch: no new agent_requests from either surface, no processing_queue from the API');
+  log('\nAC4 default dispatch: no agent_requests tables, no processing_queue from the API');
   {
     intake.setIntakeDispatcher(null);
     agent.setDelegationChatStub(() => 'ui loop reply');
@@ -259,7 +259,6 @@ async function main() {
     const uiQueued = raw.prepare('SELECT conversation_id, bot_id FROM processing_queue ORDER BY rowid DESC LIMIT 1').get();
     const uiLiveDelta = delta(before, counts());
     log(`  UI live -> ${uiLive.status} delta=${JSON.stringify(uiLiveDelta)}`);
-    assert(uiLiveDelta.agent_requests === 0 && uiLiveDelta.agent_request_events === 0, 'UI submission writes no agent_requests lifecycle rows');
     assert(uiLiveDelta.processing_queue === 1 && uiQueued.conversation_id === direct.id && uiQueued.bot_id === hermy.id, 'the UI agent loop receives exactly one turn, derived from the accepted Work Request');
     await settleUiQueue();
     const uiReplay = await uiPost(direct.id, { content: 'hello from the UI', idempotencyKey: 'ui-live' });
@@ -276,9 +275,9 @@ async function main() {
     const apiLiveDelta = delta(before, counts());
     log(`  API live -> ${apiLive.status} state=${apiLive.json.state} events=${apiLive.json.events.map(e => e.type).join('>')} delta=${JSON.stringify(apiLiveDelta)}`);
     assert(apiLive.json.state === 'completed' && apiLive.json.reply && apiLive.json.reply.content === 'hermes reply to [From service:ci-pipeline] hello from the API', 'API request completes through the canonical dispatcher');
-    assert(apiLiveDelta.agent_requests === 0 && apiLiveDelta.agent_request_events === 0 && apiLiveDelta.processing_queue === 0, 'API submission writes no agent_requests or processing_queue rows');
+    assert(apiLiveDelta.processing_queue === 0, 'API submission writes no processing_queue rows');
     assert(apiLiveDelta.work_requests === 1 && apiLiveDelta.work_attempts === 1 && workRequest(apiLive.json.requestId).state === 'completed', 'API lifecycle lives on one Work Request with one Attempt');
-    assert(raw.prepare('SELECT COUNT(*) AS n FROM agent_requests').get().n === 0, 'no agent_requests rows exist after every UI and API submission in this run');
+    assert(raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_requests', 'agent_request_events')").get().n === 0, 'NOT-477: no agent_requests lifecycle tables exist after every UI and API submission in this run');
   }
 
   log('');

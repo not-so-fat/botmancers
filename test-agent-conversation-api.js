@@ -162,7 +162,6 @@ function counts() {
     requests: count('work_requests'),
     events: count('engine_events'),
     intakes: count('conversation_intakes'),
-    legacyRequests: count('agent_requests'),
     conversations: count('conversations'),
     hermesLaunches: hermesCalls.length,
     deckLaunches: deckStarts.length,
@@ -301,10 +300,11 @@ async function main() {
   );
   assert(hermesCalls.every(call => !call.url.includes(HERMES_KEY)), 'Hermes adapter used its own configured credentials');
   // NOT-465: requests are canonical Work Requests; the launch Attempt
-  // records the dispatched agent and agent_requests is never written.
+  // records the dispatched agent. NOT-477: agent_requests no longer exists.
   const dispatchedAgents = raw.prepare("SELECT DISTINCT adapter FROM work_attempts ORDER BY adapter").all().map(row => row.adapter);
   assert(JSON.stringify(dispatchedAgents) === JSON.stringify(['codex', 'hermes']), `requests record the dispatched agent identity, never Agent Deck (got ${dispatchedAgents.join(',')})`);
-  assert(count('agent_requests') === 0 && count('agent_request_events') === 0 && count('processing_queue') === 0, 'API acceptance writes no agent_requests or processing_queue rows');
+  const legacyTables = raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agent_requests', 'agent_request_events')").all();
+  assert(legacyTables.length === 0 && count('processing_queue') === 0, 'API acceptance uses only canonical tables: no agent_requests tables, no processing_queue rows');
 
   // AC2: idempotency.
   log('\nAC2 idempotency');

@@ -12,9 +12,10 @@ import { requestControlDefaultsFromEnv, validateRetryPolicy, type RetryPolicy } 
 
 // NOT-463: canonical core-engine persistence (docs/core-engine.md). One
 // Work Request store, immutable Attempts, opaque Session Bindings, and an
-// append-only per-request engine event log. Legacy processing_queue and
-// agent_requests stay in place and readable. NOT-465: UI and /api/v0
+// append-only per-request engine event log. NOT-465: UI and /api/v0
 // message intake create their Work Requests here (lib/conversation-intake).
+// NOT-477: the pre-NOT-465 agent_requests lifecycle is retired; migration 14
+// copies it here and archives its tables (archiveLegacyAgentRequests).
 // NOT-466: Agent Wakes are recorded in wakes and create theirs through
 // lib/wake-router.
 //
@@ -1314,6 +1315,13 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 14,
+    name: 'retire_legacy_agent_requests',
+    up: db => {
+      archiveLegacyAgentRequests(db);
+    },
+  },
 ];
 
 // Migration 13 backfill (contract, Migration). Lineage: an intake root is
@@ -1439,10 +1447,9 @@ function purgeSet(db: Db): Set<string> {
 
 export const ENGINE_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 
-// Applies pending versioned migrations, then the idempotent legacy
-// backfill. Safe to call on every open and from concurrent processes:
-// each step runs in an IMMEDIATE transaction and rechecks its version.
-// `through` stops after that version and skips the backfill; migration
+// Applies pending versioned migrations. Safe to call on every open and
+// from concurrent processes: each step runs in an IMMEDIATE transaction
+// and rechecks its version. `through` stops after that version; migration
 // tests use it to build a database as an older release left it.
 export function migrateEngineSchema(db: Db, options: { through?: number } = {}): void {
   purgeSet(db);
@@ -1463,7 +1470,6 @@ export function migrateEngineSchema(db: Db, options: { through?: number } = {}):
       record.run(migration.version, migration.name, Date.now());
     }).immediate();
   }
-  backfillLegacyAgentRequests(db);
 }
 
 interface LegacyAgentRequestRow {
@@ -1514,97 +1520,173 @@ export function workRequestHash(fields: {
   ]));
 }
 
-// Copies terminal agent_requests history into work_requests. Only rows
-// that map without guessing are copied: a terminal state (completed or
-// failed; accepted/dispatched rows still belong to the legacy dispatcher),
-// an existing source conversation, accepted message, and target agent,
-// and a principal kind the engine knows. Legacy request events are copied
-// in their original order, followed by a 'backfilled' event. No Attempt is
+// NOT-477: retires the pre-NOT-465 agent_requests lifecycle. No code has
+// written it since NOT-465 and no dispatcher advances it, so its rows are
+// final. Every row that maps without guessing is copied into work_requests
+// (an existing source conversation, accepted message, and target agent,
+// and a principal kind the engine knows):
+// - completed and failed rows keep their state, result, and error;
+// - accepted and dispatched rows, which can never finish, become failed
+//   with legacy_interrupted and their original state in the snapshot.
+// Legacy request events are copied in their original order, followed by
+// the interruption (if any) and a 'backfilled' event. No Attempt is
 // synthesized: legacy rows recorded no launch snapshot. Idempotent via
-// legacy_agent_request_id; legacy rows are never modified or deleted.
+// legacy_agent_request_id (an older release backfilled terminal rows on
+// every open).
 //
 // Collision policy: legacy keys are unique per operation, canonical keys
 // per requester only. Rows are visited oldest first (created_at, rowid);
 // the first row to claim a (requester, idempotency key) is copied and any
 // later row with the same identity, from another operation or already
-// held by a canonical request, stays legacy-only. The request hash is the
-// canonical intake hash of the mapped fields (conversation execution,
-// readonly profile, no caller policy), not the legacy payload hash; the
-// legacy operation and runtime are kept in the policy snapshot only.
-export function backfillLegacyAgentRequests(db: Db): number {
-  const hasLegacy = db.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_requests'"
-  ).get();
-  if (!hasLegacy) return 0;
-  return db.transaction((): number => {
-    const rows = db.prepare(`
-      SELECT r.*, m.content AS content FROM agent_requests r
-      JOIN conversations c ON c.id = r.conversation_id
-      JOIN bots b ON b.id = r.target_bot_id
-      JOIN messages m ON m.id = r.accepted_message_id AND m.conversation_id = r.conversation_id
-      WHERE r.state IN ('completed', 'failed')
-        AND r.principal_kind IN ('person', 'bot', 'service')
-        AND NOT EXISTS (SELECT 1 FROM work_requests w WHERE w.legacy_agent_request_id = r.id)
-      ORDER BY r.created_at ASC, r.rowid ASC
-    `).all() as LegacyAgentRequestRow[];
-    const claimed = db.prepare(
-      'SELECT 1 FROM work_requests WHERE requester_kind = ? AND requester_id = ? AND idempotency_key = ?'
+// held by a canonical request, is kept in the archive only. The request
+// hash is the canonical intake hash of the mapped fields (conversation
+// execution, readonly profile, no caller policy), not the legacy payload
+// hash; the legacy operation and runtime are kept in the policy snapshot.
+//
+// A copied send_message row also gets the conversation_intakes row the
+// /api/v0 intake replays from, when its stored payload hash verifies the
+// reconstructed fingerprint, so an exact retry of a pre-NOT-465 key still
+// replays and a different payload still conflicts.
+//
+// Finally the tables are renamed to legacy_agent_requests_archive and
+// legacy_agent_request_events_archive: every original row is kept
+// verbatim, and nothing in the engine reads or writes them. Runs inside
+// migration 14's transaction. Returns the number of copied requests.
+export function archiveLegacyAgentRequests(db: Db): number {
+  const tableExists = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+  if (!tableExists('agent_requests')) return 0;
+  const hasEvents = tableExists('agent_request_events');
+  const rows = db.prepare(`
+    SELECT r.*, m.content AS content FROM agent_requests r
+    JOIN conversations c ON c.id = r.conversation_id
+    JOIN bots b ON b.id = r.target_bot_id
+    JOIN messages m ON m.id = r.accepted_message_id AND m.conversation_id = r.conversation_id
+    WHERE r.state IN ('completed', 'failed', 'accepted', 'dispatched')
+      AND r.principal_kind IN ('person', 'bot', 'service')
+      AND NOT EXISTS (SELECT 1 FROM work_requests w WHERE w.legacy_agent_request_id = r.id)
+    ORDER BY r.created_at ASC, r.rowid ASC
+  `).all() as LegacyAgentRequestRow[];
+  const claimed = db.prepare(
+    'SELECT 1 FROM work_requests WHERE requester_kind = ? AND requester_id = ? AND idempotency_key = ?'
+  );
+  const legacyEvents = hasEvents
+    ? db.prepare('SELECT type, data, created_at FROM agent_request_events WHERE request_id = ? ORDER BY created_at ASC, rowid ASC')
+    : null;
+  const insert = db.prepare(`
+    INSERT INTO work_requests (
+      id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
+      intent, execution_kind, tool_profile, parent_request_id, root_request_id, wake_event_id, depth,
+      idempotency_key, request_hash, policy_snapshot, state, state_reason, result, error_code, error_message,
+      version, legacy_agent_request_id, created_at, updated_at, terminal_at, root_principal_kind, root_principal_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation', 'readonly', NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertEvent = db.prepare(
+    'INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, data, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?)'
+  );
+  const now = Date.now();
+  let copied = 0;
+  for (const row of rows) {
+    if (claimed.get(row.principal_kind, row.principal_id, row.idempotency_key)) continue;
+    const id = randomUUID();
+    const hash = workRequestHash({
+      sourceConversationId: row.conversation_id,
+      sourceEventId: row.accepted_message_id,
+      targetAgentId: row.target_bot_id,
+      intent: row.content,
+      executionKind: 'conversation',
+      toolProfile: 'readonly',
+    });
+    const interrupted = row.state === 'accepted' || row.state === 'dispatched';
+    // Legacy agent API turns ran as conversation turns with the
+    // read-only tool profile (docs/core-engine.md, Current code).
+    const policy = JSON.stringify({
+      tool_profile: 'readonly',
+      source: 'legacy_agent_requests',
+      legacy_operation: row.operation,
+      legacy_runtime: row.runtime,
+      ...(interrupted ? { legacy_state: row.state } : {}),
+    });
+    const terminalAt = interrupted ? Math.max(now, row.updated_at) : row.updated_at;
+    insert.run(
+      id, row.conversation_id, row.accepted_message_id, row.principal_kind, row.principal_id, row.target_bot_id,
+      row.content, id,
+      row.idempotency_key, hash, policy,
+      interrupted ? 'failed' : row.state,
+      interrupted ? LEGACY_INTERRUPTED : null,
+      row.state === 'completed' ? JSON.stringify({ reply_message_id: row.reply_message_id }) : null,
+      interrupted ? LEGACY_INTERRUPTED : row.state === 'failed' ? row.failure_code : null,
+      interrupted ? LEGACY_INTERRUPTED_MESSAGE : row.state === 'failed' ? row.failure_message : null,
+      row.id, row.created_at, terminalAt, terminalAt, row.principal_kind, row.principal_id
     );
-    const legacyEvents = db.prepare(
-      'SELECT type, data, created_at FROM agent_request_events WHERE request_id = ? ORDER BY created_at ASC, rowid ASC'
-    );
-    const insert = db.prepare(`
-      INSERT INTO work_requests (
-        id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
-        intent, execution_kind, tool_profile, parent_request_id, root_request_id, wake_event_id, depth,
-        idempotency_key, request_hash, policy_snapshot, state, state_reason, result, error_code, error_message,
-        version, legacy_agent_request_id, created_at, updated_at, terminal_at, root_principal_kind, root_principal_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation', 'readonly', NULL, ?, NULL, 0, ?, ?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertEvent = db.prepare(
-      'INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, data, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?)'
-    );
-    let copied = 0;
-    for (const row of rows) {
-      if (claimed.get(row.principal_kind, row.principal_id, row.idempotency_key)) continue;
-      const id = randomUUID();
-      const hash = workRequestHash({
-        sourceConversationId: row.conversation_id,
-        sourceEventId: row.accepted_message_id,
-        targetAgentId: row.target_bot_id,
-        intent: row.content,
-        executionKind: 'conversation',
-        toolProfile: 'readonly',
-      });
-      // Legacy agent API turns ran as conversation turns with the
-      // read-only tool profile (docs/core-engine.md, Current code).
-      const policy = JSON.stringify({
-        tool_profile: 'readonly',
-        source: 'legacy_agent_requests',
-        legacy_operation: row.operation,
-        legacy_runtime: row.runtime,
-      });
-      insert.run(
-        id, row.conversation_id, row.accepted_message_id, row.principal_kind, row.principal_id, row.target_bot_id,
-        row.content, id,
-        row.idempotency_key, hash, policy, row.state,
-        row.state === 'completed' ? JSON.stringify({ reply_message_id: row.reply_message_id }) : null,
-        row.state === 'failed' ? row.failure_code : null,
-        row.state === 'failed' ? row.failure_message : null,
-        row.id, row.created_at, row.updated_at, row.updated_at, row.principal_kind, row.principal_id
-      );
-      let sequence = 0;
-      for (const event of legacyEvents.all(row.id) as { type: string; data: string | null; created_at: number }[]) {
-        insertEvent.run(randomUUID(), id, ++sequence, event.type, event.data, event.created_at);
-      }
-      insertEvent.run(
-        randomUUID(), id, ++sequence, 'backfilled',
-        JSON.stringify({ legacy_agent_request_id: row.id }), row.updated_at
-      );
-      copied++;
+    let sequence = 0;
+    for (const event of (legacyEvents?.all(row.id) ?? []) as { type: string; data: string | null; created_at: number }[]) {
+      insertEvent.run(randomUUID(), id, ++sequence, event.type, event.data, event.created_at);
     }
-    return copied;
-  }).immediate();
+    if (interrupted) {
+      insertEvent.run(
+        randomUUID(), id, ++sequence, 'state_changed',
+        JSON.stringify({ from: row.state === 'accepted' ? 'queued' : 'running', to: 'failed', reason: LEGACY_INTERRUPTED }), terminalAt
+      );
+    }
+    insertEvent.run(
+      randomUUID(), id, ++sequence, 'backfilled',
+      JSON.stringify({ legacy_agent_request_id: row.id }), terminalAt
+    );
+    copied++;
+  }
+  seedLegacyIntakes(db);
+  if (tableExists('legacy_agent_requests_archive')) {
+    db.exec('INSERT INTO legacy_agent_requests_archive SELECT * FROM agent_requests; DROP TABLE agent_requests;');
+  } else {
+    db.exec('ALTER TABLE agent_requests RENAME TO legacy_agent_requests_archive');
+  }
+  if (hasEvents) {
+    if (tableExists('legacy_agent_request_events_archive')) {
+      db.exec('INSERT INTO legacy_agent_request_events_archive SELECT * FROM agent_request_events; DROP TABLE agent_request_events;');
+    } else {
+      db.exec('ALTER TABLE agent_request_events RENAME TO legacy_agent_request_events_archive');
+    }
+  }
+  return copied;
+}
+
+export const LEGACY_INTERRUPTED = 'legacy_interrupted';
+const LEGACY_INTERRUPTED_MESSAGE = 'Accepted before NOT-465 by the retired agent_requests dispatcher; it never reached a terminal state.';
+
+// The /api/v0 intake fingerprint is [agentId, conversationId ?? null,
+// content], the same array the legacy payload hash covered. A row whose
+// hash matches neither the supplied-conversation nor the new-conversation
+// form gets no intake row (its key then conflicts rather than replays).
+function seedLegacyIntakes(db: Db): void {
+  const rows = db.prepare(`
+    SELECT w.id AS request_id, r.principal_kind, r.principal_id, r.idempotency_key, r.payload_hash,
+      r.conversation_id, r.target_bot_id, r.accepted_message_id, r.created_at, m.content AS content
+    FROM work_requests w
+    JOIN agent_requests r ON r.id = w.legacy_agent_request_id
+    JOIN messages m ON m.id = r.accepted_message_id
+    WHERE r.operation = 'send_message'
+      AND NOT EXISTS (
+        SELECT 1 FROM conversation_intakes i
+        WHERE i.requester_kind = r.principal_kind AND i.requester_id = r.principal_id AND i.idempotency_key = r.idempotency_key
+      )
+  `).all() as { request_id: string; principal_kind: string; principal_id: string; idempotency_key: string; payload_hash: string;
+    conversation_id: string; target_bot_id: string; accepted_message_id: string; created_at: number; content: string }[];
+  const insert = db.prepare(`
+    INSERT INTO conversation_intakes (
+      requester_kind, requester_id, idempotency_key, request_hash, surface,
+      conversation_id, source_event_id, work_request_ids, created_at
+    ) VALUES (?, ?, ?, ?, 'api', ?, ?, ?, ?)
+  `);
+  for (const row of rows) {
+    const fingerprint = [row.conversation_id, null]
+      .map(conversationId => [row.target_bot_id, conversationId, row.content])
+      .find(candidate => sha256(JSON.stringify(candidate)) === row.payload_hash);
+    if (!fingerprint) continue;
+    insert.run(
+      row.principal_kind, row.principal_id, row.idempotency_key, sha256(JSON.stringify(['api', fingerprint])),
+      row.conversation_id, row.accepted_message_id, JSON.stringify([row.request_id]), row.created_at
+    );
+  }
 }
 
 export interface CreateWorkRequestInput {
