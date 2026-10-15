@@ -6,6 +6,10 @@
 > there is no embedded-loop key run path anymore. This report is kept for
 > history; follow `README.md` for current setup. References below to the old
 > key describe what this report originally measured, not current instructions.
+>
+> For current, isolated acceptance coverage of the conversation/Wake engine
+> run `npm run test:acceptance` (docs/acceptance-harness.md); this report's
+> live-server script is now `npm run test:acceptance:live-server`.
 
 ## Summary
 
