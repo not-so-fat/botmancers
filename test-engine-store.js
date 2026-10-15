@@ -618,6 +618,19 @@ function runLegacy() {
   queueRow.run('q-tick-done', 'conv-ui', 'bot-codex', 'completed', t + 73, t + 73, t + 74, null);
   queueRow.run('q-no-bot', 'conv-ui', 'bot-deleted', 'pending', t + 75, null, null, null);
   queueRow.run('q-no-conv', 'conv-deleted', 'bot-codex', 'pending', t + 76, null, null, null);
+  // Schema 13 committed a UI intake's request (and its intake row) before
+  // the route wrote the queue row: a crash in between left a queued UI
+  // message with no processing_queue row. The equivalent /api/v0 request,
+  // also queued with no queue row, belongs to the dispatcher.
+  const uiCrashed = uiRequest('ui-crashed', 'Accepted, crashed before its queue row', t + 77);
+  legacy.prepare("INSERT INTO conversation_intakes VALUES ('person', 'owner', 'ui:ui-crashed', 'hash-ui-crashed', 'ui', 'conv-ui', 'm-ui-crashed', ?, ?)")
+    .run(JSON.stringify([uiCrashed.id]), t + 77);
+  msg.run('m-api-queued', 'conv-api', 'user', 'svc-1', 'Queued for the dispatcher', t + 78, 'service', null);
+  const apiQueued = schema13Request({
+    conversation: 'conv-api', event: 'm-api-queued', requester: { kind: 'service', id: 'svc-1' }, target: 'bot-codex', intent: 'Queued for the dispatcher', key: 'k-api-queued', at: t + 78,
+  });
+  legacy.prepare("INSERT INTO conversation_intakes VALUES ('service', 'svc-1', 'k-api-queued', 'hash-api-queued', 'api', 'conv-api', 'm-api-queued', ?, ?)")
+    .run(JSON.stringify([apiQueued.id]), t + 78);
   const RECONCILED = [uiDone.id, uiFailed.id, uiPending.id, uiProcessing.id];
   assert(legacy.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === 13, 'fixture: the previous release left schema 13');
 
@@ -714,6 +727,22 @@ function runLegacy() {
   for (const [id, reason] of Object.entries(archiveOnlyQueue)) {
     assert(!sqlite.prepare("SELECT 1 FROM work_requests WHERE json_extract(policy_snapshot, '$.legacy_queue_id') = ?").get(id), `${id}: archive only (${reason})`);
   }
+
+  console.log('\nA UI intake that crashed before its queue row stays a UI turn');
+  const crashed = reconciled(uiCrashed.id);
+  assert(crashed.state === 'queued' && crashed.executor === 'ui_message', 'a queued UI intake request with no queue row is owned by the UI turn executor');
+  const apiPending = reconciled(apiQueued.id);
+  assert(apiPending.state === 'queued' && apiPending.executor === 'dispatcher', 'the equivalent queued /api/v0 request stays dispatcher-owned');
+  const { uiTurns } = jiti('./lib/ui-turns.ts');
+  const uiQueued = sqlite.prepare("SELECT id FROM work_requests WHERE state = 'queued' AND executor IN ('ui_message', 'ui_continuation') ORDER BY created_at, rowid").all().map(row => row.id);
+  assert(uiQueued.includes(uiCrashed.id) && uiTurns.get(uiCrashed.id) && uiTurns.get(uiCrashed.id).kind === 'message',
+    'the UI turn executor recovers it as a message turn');
+  assert(!uiTurns.get(apiQueued.id), 'the UI turn executor never picks up the /api/v0 request');
+  const dispatcherProbe = jiti('./lib/dispatcher.ts').createDispatcher(sqlite, engine);
+  const offered = [];
+  dispatcherProbe.claim = id => { offered.push(id); return { ok: false, reason: 'not_queued' }; };
+  dispatcherProbe.claimNext();
+  assert(!offered.includes(uiCrashed.id) && offered.includes(apiQueued.id), 'the dispatcher never claims the UI turn; it still claims the /api/v0 request');
   assert(sqlite.prepare('SELECT COUNT(*) AS n FROM delegation_chains').get().n === 0, 'no delegation chain is invented (the old chains were process memory)');
 
   console.log('\nEvery legacy request is copied or kept for a named reason');

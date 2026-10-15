@@ -1787,6 +1787,9 @@ interface LegacyQueueRow {
 //   it still runs. Other rows without a request recorded only the loop's
 //   bookkeeping and stay in the archive.
 // - A row whose conversation or Agent is gone stays in the archive only.
+// - A queued UI intake request with no row at all (schema 13 crashed
+//   between committing it and writing its row) also goes to the UI turn
+//   executor, by its intake provenance.
 //
 // Finally processing_queue is renamed to legacy_processing_queue_archive:
 // every original row is kept verbatim and nothing reads or writes it.
@@ -1872,6 +1875,23 @@ export function retireProcessingQueue(db: Db): number {
     event(id, 'backfilled', { legacy_queue_id: row.id }, row.created_at);
     changed++;
   }
+  // Schema 13 committed a UI intake's Work Request before the route wrote
+  // its processing_queue row, so a crash between the two left a queued UI
+  // message request with no row. Its durable intake provenance (UI policy
+  // snapshot, or a UI conversation_intakes row naming it) gives it to the
+  // UI turn executor too. API and Wake requests stay with the dispatcher.
+  changed += db.prepare(`
+    UPDATE work_requests SET executor = 'ui_message'
+    WHERE state = 'queued' AND executor = 'dispatcher' AND legacy_agent_request_id IS NULL
+      AND parent_request_id IS NULL AND wake_event_id IS NULL
+      AND (
+        (json_extract(policy_snapshot, '$.source') = 'conversation_intake' AND json_extract(policy_snapshot, '$.surface') = 'ui')
+        OR EXISTS (
+          SELECT 1 FROM conversation_intakes i, json_each(i.work_request_ids) r
+          WHERE i.surface = 'ui' AND r.value = work_requests.id
+        )
+      )
+  `).run().changes;
   if (tableExists('legacy_processing_queue_archive')) {
     db.exec('INSERT INTO legacy_processing_queue_archive SELECT * FROM processing_queue; DROP TABLE processing_queue;');
   } else {
