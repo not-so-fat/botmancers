@@ -416,18 +416,8 @@ function afterRequest(requestId: string, released: boolean): void {
   if (released) drainDeferred();
 }
 
-// Queued requests whose last event is a capacity deferral, oldest first.
-function deferredRequestIds(): string[] {
-  return (db.prepare(`
-    SELECT w.id FROM work_requests w
-    WHERE w.state = 'queued'
-      AND (SELECT e.type FROM engine_events e WHERE e.request_id = w.id ORDER BY e.sequence DESC LIMIT 1) = 'dispatch_deferred'
-    ORDER BY w.created_at ASC, w.id ASC
-  `).all() as { id: string }[]).map(row => row.id);
-}
-
 function drainDeferred(): void {
-  for (const id of deferredRequestIds()) if (!inFlight.has(id)) void startAgentDispatch(id);
+  for (const id of dispatcher.deferredRequestIds()) if (!inFlight.has(id)) void startAgentDispatch(id);
 }
 
 // Whether this call claimed (and so later released or handed off) a lease.

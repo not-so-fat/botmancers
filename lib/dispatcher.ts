@@ -40,6 +40,9 @@ import { createRequestControl } from './work-request-control';
 
 type Db = Database.Database;
 
+// Audit-only events appended to a request's log by grant decisions.
+const GRANT_AUDIT_EVENT_SQL = "'grant_requested', 'grant_approved', 'grant_denied', 'grant_revoked'";
+
 export interface DispatchConfig {
   // Leases held at once across all targets.
   maxGlobal: number;
@@ -205,7 +208,15 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
   const countAll = db.prepare('SELECT COUNT(*) AS n FROM dispatch_leases');
   const countTarget = db.prepare('SELECT COUNT(*) AS n FROM dispatch_leases WHERE target_agent_id = ?');
   const openAttention = db.prepare('SELECT * FROM dispatch_attention WHERE request_id = ? AND cleared_at IS NULL');
-  const lastEvent = db.prepare('SELECT type, data FROM engine_events WHERE request_id = ? ORDER BY sequence DESC LIMIT 1');
+  // Grant audit events annotate a request without changing where it waits, so
+  // they never decide whether it is still a capacity deferral.
+  const lastEvent = db.prepare(`SELECT type, data FROM engine_events WHERE request_id = ? AND type NOT IN (${GRANT_AUDIT_EVENT_SQL}) ORDER BY sequence DESC LIMIT 1`);
+  const deferredIds = db.prepare(`
+    SELECT w.id FROM work_requests w
+    WHERE w.state = 'queued'
+      AND (SELECT e.type FROM engine_events e WHERE e.request_id = w.id AND e.type NOT IN (${GRANT_AUDIT_EVENT_SQL}) ORDER BY e.sequence DESC LIMIT 1) = 'dispatch_deferred'
+    ORDER BY w.created_at ASC, w.id ASC
+  `);
   const held = db.prepare('SELECT 1 FROM dispatch_leases WHERE request_id = ? AND token = ?');
   const latestDecision = db.prepare('SELECT decision FROM wake_safety_decisions WHERE request_id = ? ORDER BY sequence DESC LIMIT 1');
   const wakeStatus = db.prepare('SELECT status FROM wakes WHERE id = ?');
@@ -512,6 +523,11 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
         });
         return lease;
       });
+    },
+
+    // Queued requests still waiting on capacity, oldest first.
+    deferredRequestIds(): string[] {
+      return (deferredIds.all() as { id: string }[]).map(row => row.id);
     },
 
     leaseOf(requestId: string): { owner: string; token: string; expires_at: number } | undefined {

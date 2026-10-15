@@ -688,6 +688,15 @@ async function runMain() {
     assert(engine.getWorkRequest(queued[4].id).state === 'queued' && eventTypes(queued[4].id).includes('dispatch_deferred'), 'waiting request stays queued with a durable deferral');
     const waitingView = projector.listConversationEvents(conversations.getByBotId(pool[4].id).id).find(v => v.requestId === queued[4].id && v.kind === 'request_queued' && v.data.waiting_for === 'capacity');
     assert(!!waitingView && waitingView.text === 'Queued: waiting for capacity', 'projection shows request_queued waiting for capacity');
+    // A grant audit event appended after the deferral (as a revocation does)
+    // must not hide the waiting request from the drain set.
+    const waitingBefore = worker.deferredRequestIds();
+    assert(waitingBefore.includes(queued[4].id), 'waiting request is in the deferred set');
+    raw.prepare(`
+      INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, data, created_at)
+      SELECT ?, ?, COALESCE(MAX(sequence), 0) + 1, NULL, 'grant_revoked', '{}', ? FROM engine_events WHERE request_id = ?
+    `).run(require('crypto').randomUUID(), queued[4].id, Date.now(), queued[4].id);
+    assert(worker.deferredRequestIds().includes(queued[4].id), 'grant revocation keeps capacity-deferred work in the drain set');
     worker.release(leases.shift(), 'completed');
     const afterRelease = claimAll();
     assert(afterRelease.ok && afterRelease.lease.requestId === queued[4].id, 'a released slot admits the oldest waiting request (P1 second job still waits on its target)');
