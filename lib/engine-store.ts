@@ -1343,15 +1343,37 @@ function backfillWakeSafety(db: Db): void {
       return {};
     }
   };
+  // A lineage resolves only when its whole parent chain exists, has no
+  // cycle, stays within the declared root, and ends at that root.
+  const resolvedChains = new Map<string, boolean>();
+  const chainResolves = (row: Row): boolean => {
+    const known = resolvedChains.get(row.id);
+    if (known !== undefined) return known;
+    const chain: Row[] = [];
+    const seen = new Set<string>();
+    let node: Row | undefined = row;
+    let ok = false;
+    while (node) {
+      if (seen.has(node.id) || node.root_request_id !== row.root_request_id) break;
+      const cached = resolvedChains.get(node.id);
+      if (cached !== undefined) { ok = cached; break; }
+      seen.add(node.id);
+      chain.push(node);
+      if (node.parent_request_id === null) { ok = node.id === row.root_request_id; break; }
+      node = byId.get(node.parent_request_id);
+    }
+    for (const member of chain) resolvedChains.set(member.id, ok);
+    return ok;
+  };
   const depths = new Map<string, number>();
-  const depthOf = (row: Row, seen: Set<string> = new Set()): number => {
+  // Only called for resolved rows, whose chains are finite and acyclic.
+  const depthOf = (row: Row): number => {
     const known = depths.get(row.id);
     if (known !== undefined) return known;
     let depth = 0;
     const parent = row.parent_request_id ? byId.get(row.parent_request_id) : undefined;
-    if (row.parent_request_id && parent && !seen.has(row.id)) {
-      seen.add(row.id);
-      const parentDepth = depthOf(parent, seen);
+    if (parent) {
+      const parentDepth = depthOf(parent);
       const policy = policyOf(row);
       if (row.wake_event_id) depth = parentDepth + 1;
       else if (policy.source === 'coordinator_continuation' && policy.continues === 'result') depth = Math.max(parentDepth - 1, 0);
@@ -1372,7 +1394,7 @@ function backfillWakeSafety(db: Db): void {
   db.exec('DROP TRIGGER trg_work_requests_terminal');
   for (const row of rows) {
     const root = byId.get(row.root_request_id);
-    const resolved = !!root && (row.parent_request_id === null || byId.has(row.parent_request_id));
+    const resolved = !!root && chainResolves(row);
     const depth = resolved ? depthOf(row) : 0;
     const principal = resolved && root ? { kind: root.requester_kind, id: root.requester_id } : { kind: 'unknown', id: 'unknown' };
     update.run(depth, principal.kind, principal.id, row.id);

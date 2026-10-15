@@ -278,9 +278,20 @@ function decisionTable() {
   const config = lib.dispatchConfigFromEnv({
     BOTMANCERS_DISPATCH_MAX_GLOBAL: '7', BOTMANCERS_DISPATCH_MAX_PER_TARGET: '0', BOTMANCERS_DISPATCH_LEASE_MS: 'abc', BOTMANCERS_DISPATCH_HEARTBEAT_MS: '250',
   });
-  assert(config.maxGlobal === 7 && config.maxPerTarget === lib.DEFAULT_DISPATCH_CONFIG.maxPerTarget
+  assert(config.maxGlobal === 4 && config.maxPerTarget === lib.DEFAULT_DISPATCH_CONFIG.maxPerTarget
     && config.leaseMs === lib.DEFAULT_DISPATCH_CONFIG.leaseMs && config.heartbeatMs === 250,
-  'concurrency config: positive integers apply, invalid values fall back to deterministic defaults');
+  'concurrency config: positive integers apply, invalid values fall back to deterministic defaults, global 7 clamps to 4');
+  const overLimit = lib.dispatchConfigFromEnv({ BOTMANCERS_DISPATCH_MAX_GLOBAL: '100', BOTMANCERS_DISPATCH_MAX_PER_TARGET: '100' });
+  assert(overLimit.maxGlobal === 4 && overLimit.maxPerTarget === 1, 'over-limit concurrency config (100/100) clamps to the approved global 4 / per-target 1');
+  const narrowed = lib.dispatchConfigFromEnv({ BOTMANCERS_DISPATCH_MAX_GLOBAL: '2', BOTMANCERS_DISPATCH_MAX_PER_TARGET: '1' });
+  assert(narrowed.maxGlobal === 2 && narrowed.maxPerTarget === 1, 'concurrency config may narrow below the approved maxima');
+  const previousEnv = { g: process.env.BOTMANCERS_DISPATCH_MAX_GLOBAL, t: process.env.BOTMANCERS_DISPATCH_MAX_PER_TARGET };
+  process.env.BOTMANCERS_DISPATCH_MAX_GLOBAL = '100';
+  process.env.BOTMANCERS_DISPATCH_MAX_PER_TARGET = '100';
+  const fromEnv = lib.createDispatcher(raw, engine, { owner: 'env-clamp' });
+  if (previousEnv.g === undefined) delete process.env.BOTMANCERS_DISPATCH_MAX_GLOBAL; else process.env.BOTMANCERS_DISPATCH_MAX_GLOBAL = previousEnv.g;
+  if (previousEnv.t === undefined) delete process.env.BOTMANCERS_DISPATCH_MAX_PER_TARGET; else process.env.BOTMANCERS_DISPATCH_MAX_PER_TARGET = previousEnv.t;
+  assert(fromEnv.config.maxGlobal === 4 && fromEnv.config.maxPerTarget === 1, 'a production dispatcher built from over-limit env runs at global 4 / per-target 1');
   const defaults = lib.dispatchConfigFromEnv({});
   assert(JSON.stringify(defaults) === JSON.stringify({ maxGlobal: 4, maxPerTarget: 1, leaseMs: 60000, heartbeatMs: 15000, deferMs: 5000, cancelGraceMs: 30000 }), 'deterministic defaults: global 4, per target 1, lease 60s, heartbeat 15s, defer 5s, cancel grace 30s');
 }

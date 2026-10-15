@@ -283,6 +283,20 @@ async function runMain() {
     assert(sameOrigin.status === 200 && crossSite.status === 403 && v0.status === 200, 'same-origin loopback passes; cross-site refused; /api/v0 uses its own authenticator');
     assert(boundary.ownerBoundaryRefusal({ method: 'POST', host: '[::1]:43123', origin: 'http://[::1]:43123', secFetchSite: 'same-origin', protocol: 'http:' }) === null
       && boundary.ownerBoundaryRefusal({ method: 'POST', host: '127.0.0.1.evil.example', origin: null, secFetchSite: null, protocol: 'http:' }) !== null, 'IPv6 loopback admitted; look-alike host refused');
+    // Every mutation needs one approved same-origin proof.
+    const mutation = (origin, secFetchSite, method = 'POST') => boundary.ownerBoundaryRefusal({ method, host: '127.0.0.1:43123', origin, secFetchSite, protocol: 'http:' });
+    assert(mutation(null, null) !== null && mutation(null, 'none') !== null && mutation('http://127.0.0.1:43123', 'none') !== null
+      && mutation(null, 'same-site') !== null && mutation('http://127.0.0.1:43123', 'cross-site') !== null,
+    'a mutation with no proof, Sec-Fetch-Site none, or a contradicting header is refused');
+    assert(mutation(null, 'same-origin') === null && mutation('http://127.0.0.1:43123', null) === null && mutation('http://127.0.0.1:43123', 'same-origin') === null
+      && mutation(null, null, 'GET') === null, 'a matching Origin or Sec-Fetch-Site same-origin admits a mutation; reads need no proof');
+    snapshot = counts();
+    const headerless = proxy(new NextRequest(`http://127.0.0.1:43123/api/conversations/${tankConv.id}/messages`, {
+      method: 'POST', headers: { host: '127.0.0.1:43123', 'content-type': 'application/json' }, body: '{"content":"hello"}',
+    }));
+    const typed = proxy(new NextRequest('http://127.0.0.1:43123/api/bots', { method: 'DELETE', headers: { host: '127.0.0.1:43123', 'sec-fetch-site': 'none' } }));
+    assert(headerless.status === 403 && (await headerless.json()).error.code === 'owner_origin_required' && typed.status === 403 && same(counts(), snapshot),
+      'a headerless or Sec-Fetch-Site none loopback mutation is refused 403 owner_origin_required, nothing persisted');
   }
 
   // =====================================================================
@@ -810,6 +824,16 @@ function runLegacy() {
   legacy.exec('DROP TRIGGER trg_work_requests_fk_insert');
   request.run('u1', 'conv-tank', 'm-ask', 'bot', 'bot-dev', 'bot-tank', 'Orphan.', 'conversation', 'readonly', 'gone', 'gone', null, 3, 'orphan-1',
     policy({ source: 'wake', tool_profile: 'readonly' }), 'queued', null, null, t + 50, t + 50, null);
+  // Rows whose immediate parent and declared root exist but whose deeper
+  // chain does not resolve: u2 -> u3 -> (missing), the cycle y1 <-> y2,
+  // and x1 declaring root a1 while its chain ends at r0.
+  const broken = (id, parent, root, at) => request.run(id, 'conv-tank', 'm-tank', 'bot', 'bot-tank', 'bot-dev', `Broken ${id}.`, 'conversation', 'readonly',
+    parent, root, null, 1, `broken-${id}`, policy({ source: 'wake', tool_profile: 'readonly' }), 'cancelled', 'test', null, at, at, at);
+  broken('u3', 'gone', 'r0', t + 51);
+  broken('u2', 'u3', 'r0', t + 52);
+  broken('y1', 'y2', 'r0', t + 53);
+  broken('y2', 'y1', 'r0', t + 54);
+  broken('x1', 'r2', 'a1', t + 55);
   legacy.exec(fk);
   const wake = legacy.prepare(`
     INSERT INTO wakes (id, idempotency_key, source_conversation_id, source_event_id, position, syntax, payload, requester_agent_id, requested_target,
@@ -827,7 +851,7 @@ function runLegacy() {
   const before = legacy.prepare('SELECT * FROM work_requests ORDER BY id').all();
   const version = legacy.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v;
   legacy.close();
-  assert(version === 12 && before.length === 7, 'legacy fixture: schema 12 with seven requests');
+  assert(version === 12 && before.length === 12, 'legacy fixture: schema 12 with twelve requests');
 
   // Upgrade: this release opens the database.
   const db = jiti('./lib/db.ts');
@@ -841,10 +865,12 @@ function runLegacy() {
   const unchanged = ['state', 'policy_snapshot', 'request_hash', 'depth', 'state_reason', 'result', 'version', 'terminal_at'];
   assert(before.every(row => unchanged.every(key => after[row.id][key] === row[key])), 'existing request identity, state, policy, and history are unchanged');
   const depths = Object.fromEntries(Object.values(after).map(row => [row.id, row.wake_depth]));
-  assert(JSON.stringify(depths) === JSON.stringify({ a1: 0, c2: 0, r0: 0, r1: 1, r2: 1, r3: 1, u1: 0 }), `wake depth backfilled from lineage (${JSON.stringify(depths)})`);
+  assert(JSON.stringify(depths) === JSON.stringify({ a1: 0, c2: 0, r0: 0, r1: 1, r2: 1, r3: 1, u1: 0, u2: 0, u3: 0, x1: 0, y1: 0, y2: 0 }), `wake depth backfilled from lineage (${JSON.stringify(depths)})`);
   const principal = id => `${after[id].root_principal_kind}:${after[id].root_principal_id}`;
   assert(['r0', 'r1', 'r2', 'c2', 'r3'].every(id => principal(id) === 'person:local-owner') && principal('a1') === 'service:ci-bot' && principal('u1') === 'unknown:unknown',
     'root principal from the root requester; unresolvable rows are unknown');
+  assert(['u2', 'u3', 'y1', 'y2', 'x1'].every(id => principal(id) === 'unknown:unknown'),
+    'a missing ancestor, a parent cycle, or a chain ending outside the declared root resolves to depth 0 and root principal unknown');
   const migrated = Object.fromEntries(raw.prepare('SELECT * FROM wake_safety_decisions').all().map(row => [row.request_id, row]));
   assert(Object.keys(migrated).sort().join(',') === 'a1,c2,r1,u1', 'only runnable requests (queued, running, waiting) get a migration decision');
   assert(migrated.r1.principal_type === 'agent_principal' && migrated.c2.principal_type === 'engine' && migrated.a1.principal_type === 'api_principal'

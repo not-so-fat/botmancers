@@ -73,8 +73,16 @@ export const DISPATCH_CONFIG_ENV: Record<keyof DispatchConfig, string> = {
   cancelGraceMs: 'BOTMANCERS_DISPATCH_CANCEL_GRACE_MS',
 };
 
+// NOT-475: the approved safety maxima (wake-safety contract, Limits).
+// Configuration may narrow the concurrency limits, never raise them.
+export const MAX_DISPATCH_CONCURRENCY: Readonly<Pick<DispatchConfig, 'maxGlobal' | 'maxPerTarget'>> = Object.freeze({
+  maxGlobal: DEFAULT_DISPATCH_CONFIG.maxGlobal,
+  maxPerTarget: DEFAULT_DISPATCH_CONFIG.maxPerTarget,
+});
+
 // A value that is not a positive integer falls back to its default, so a
-// typo never yields an unbounded or zero-capacity dispatcher.
+// typo never yields an unbounded or zero-capacity dispatcher. Concurrency
+// values above the approved maxima are clamped to them.
 export function dispatchConfigFromEnv(env: Record<string, string | undefined> = process.env): DispatchConfig {
   const config = { ...DEFAULT_DISPATCH_CONFIG };
   for (const key of Object.keys(DISPATCH_CONFIG_ENV) as (keyof DispatchConfig)[]) {
@@ -83,6 +91,8 @@ export function dispatchConfigFromEnv(env: Record<string, string | undefined> = 
     const value = Number(raw.trim());
     if (Number.isSafeInteger(value) && value > 0) config[key] = value;
   }
+  config.maxGlobal = Math.min(config.maxGlobal, MAX_DISPATCH_CONCURRENCY.maxGlobal);
+  config.maxPerTarget = Math.min(config.maxPerTarget, MAX_DISPATCH_CONCURRENCY.maxPerTarget);
   return config;
 }
 

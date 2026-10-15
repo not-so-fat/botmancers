@@ -4,16 +4,14 @@
 //
 //   - Host is 127.0.0.1, localhost, or [::1] (any port), so a DNS-rebound
 //     foreign name never reaches a route;
-//   - a mutating request carrying browser provenance is same-origin: an
-//     Origin header equal to the request's own origin, or Sec-Fetch-Site
-//     same-origin / none.
+//   - every mutating request proves it is same-origin: an Origin header
+//     equal to the request's own origin, or Sec-Fetch-Site: same-origin.
 //
-// A mutating request with neither Origin nor Sec-Fetch-Site comes from a
-// non-browser local client (curl, the integration scripts). Browsers send
-// Origin on every cross-origin POST, so cross-site requests are still
-// refused; a local process could forge both headers anyway, so requiring
-// them would add no protection. /api/v0 has its own authenticator and is
-// outside this boundary. Pure: no database, safe in proxy.ts.
+// A mutating request with neither proof (a headerless local client, or
+// Sec-Fetch-Site: none from a typed URL or bookmark) is refused, and any
+// proof that is present must not contradict the other. Non-browser local
+// clients use /api/v0, which has its own authenticator and is outside this
+// boundary. Pure: no database, safe in proxy.ts.
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -54,12 +52,14 @@ export function ownerBoundaryRefusal(input: OwnerBoundaryInput): string | null {
   if (!isLoopbackHost(input.host)) return 'The request did not arrive on a loopback host.';
   if (SAFE_METHODS.has(input.method.toUpperCase())) return null;
   const site = input.secFetchSite?.trim().toLowerCase() ?? null;
-  if (site !== null && site !== 'same-origin' && site !== 'none') return 'The request came from another site.';
+  if (site !== null && site !== 'same-origin') return 'The request is not same-origin.';
   if (input.origin !== null) {
     const expected = `${input.protocol}//${(input.host as string).trim().toLowerCase()}`;
     if (input.origin.trim().toLowerCase() !== expected) return 'The request came from another origin.';
+    return null;
   }
-  return null;
+  if (site === 'same-origin') return null;
+  return 'The request carries no same-origin proof.';
 }
 
 export function ownerBoundaryRefusalFor(request: Request): string | null {
