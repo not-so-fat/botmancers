@@ -19,7 +19,10 @@
 // [4] a late adapter result after cancellation, timeout, or a superseding
 //     retry is recorded as evidence and never completes the request;
 //     external cancellation is requested only where the runtime supports
-//     it and is recorded honestly where it does not;
+//     it and is recorded honestly where it does not; a cancel or deadline
+//     arriving during reconciliation I/O (inspect, re-POST) wins over the
+//     reconcile decision; losing sight of a run whose cleanup cancel fails
+//     records it abandoned and never retries beside it;
 // [5] conversation projections distinguish cancel requested, cancelled,
 //     timed out, retry scheduled, and retries exhausted.
 'use strict';
@@ -727,6 +730,204 @@ async function externalCancel() {
 }
 
 // ---------------------------------------------------------------------
+// Holds the first Agent Deck call matching `match` until release(): the
+// test changes control state while that runtime I/O is in flight.
+function gateDeck(match) {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const state = { hit: false, release: () => release() };
+  deckApi.setAgentDeckApiFetch(async (url, init) => {
+    if (!state.hit && match(init.method, new URL(url, 'http://fake').pathname)) {
+      state.hit = true;
+      await gate;
+    }
+    return fake.fetch(url, init);
+  });
+  return state;
+}
+
+// The durable state a worker leaves when it dies mid-dispatch (as in
+// test-dispatcher): the real claim, Attempt, and launch intent; optionally
+// the real Agent Deck start. Only the crash is simulated.
+async function crashedAttempt(key, options = {}) {
+  // Intake stamps the deadline from the wall clock.
+  if (options.deadlineMs) clock = Date.now();
+  const id = queuedRequest(codex.id, key, options.deadlineMs ? { BOTMANCERS_REQUEST_DEADLINE_MS: options.deadlineMs } : {}).requestId;
+  const prepared = dispatch.prepareDispatch({
+    bot: codex, history: [{ speakerLabel: 'person:control-owner', fromAgent: false, content: `Task ${key}` }], toolProfile: 'readonly',
+  });
+  const dead = lib.createDispatcher(raw, engine, { owner: 'dead-host.invalid:1:deadbeef', now: () => clock, config: { maxGlobal: 1000, maxPerTarget: 1000 } });
+  const agent = dispatch.agentForDispatch(codex);
+  const attempt = engine.transaction(() => {
+    const claim = dead.claim(id, { data: { agent } });
+    const begun = executor.beginAttempt(engine, id, { agent, adapter: prepared.adapter, input: prepared.input, snapshot: { agent }, now: clock });
+    dead.recordLaunchIntent(claim.lease, begun.attempt.id, prepared.adapter.name, prepared.adapter.launchIntent(begun.input));
+    return begun.attempt;
+  });
+  let runId = options.forceRunId ?? null;
+  if (options.post) {
+    const intent = dead.launchIntent(attempt.id);
+    runId = (await deckApi.startAgentDeckRun(JSON.parse(intent.body), intent.idempotency_key)).runId;
+  }
+  if (runId) engine.recordAttemptExternalIds(attempt.id, { externalRunId: runId });
+  raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
+  return { id, attemptId: attempt.id, runId };
+}
+
+async function reconcileRaces() {
+  console.log('\n[4c] cancellation or a deadline arriving during reconciliation I/O wins over the reconcile decision');
+  configure({ heartbeatMs: 60_000 });
+  clock = Date.now();
+  const remote = control.createRequestControl(raw, engine, { now: () => clock });
+  const decisions = id => eventData(id, 'reconcile_decided').map(d => `${d.phase}/${d.action}`).join(',');
+
+  // attention: the run is unknown (run_not_found), but a cancel arrives
+  // while the inspect is pending.
+  const lost = await crashedAttempt('race-attention-cancel', { forceRunId: 'run-20261014T000000-gone' });
+  let gate = gateDeck((method, p) => method === 'GET' && p === `/api/agent-runs/${lost.runId}`);
+  let sweeping = service.sweepDispatch();
+  await waitFor(() => gate.hit, 'inspect in flight');
+  assert(remote.cancel(lost.id, { actor: PERSON, reason: 'during inspect' }).outcome === 'cancel_requested', 'attention race: intent recorded while inspect is pending');
+  gate.release();
+  await sweeping;
+  deckApi.setAgentDeckApiFetch(fake.fetch);
+  assert(req(lost.id).state === 'cancelled' && !attentionOf(lost.id) && !types(lost.id).includes('reconcile_decided')
+    && attemptsOf(lost.id)[0].outcome === 'cancelled' && attemptsOf(lost.id)[0].error_category === 'abandoned' && !leaseOf(lost.id),
+  `attention race: cancelled, no attention flag, no decision recorded (${req(lost.id).state}, ${decisions(lost.id) || 'none'})`);
+
+  // attention (interrupted_attention): the run died, but the request
+  // deadline passes while the inspect is pending.
+  fake.onStart = () => ({ hold: true });
+  const died = await crashedAttempt('race-died-deadline', { post: true, deadlineMs: 5_000 });
+  fake.runs.get(died.runId).state = 'died';
+  gate = gateDeck((method, p) => method === 'GET' && p === `/api/agent-runs/${died.runId}`);
+  sweeping = service.sweepDispatch();
+  await waitFor(() => gate.hit, 'inspect in flight');
+  advance(10_000);
+  gate.release();
+  await sweeping;
+  deckApi.setAgentDeckApiFetch(fake.fetch);
+  let reqRow = req(died.id);
+  assert(reqRow.state === 'failed' && reqRow.error_code === 'timed_out' && !attentionOf(died.id) && attemptsOf(died.id)[0].outcome === 'timed_out'
+    && attemptsOf(died.id).length === 1,
+  `died race: the deadline wins, no run_died attention (${reqRow.state}/${reqRow.error_code}, attention ${attentionOf(died.id)?.reason ?? 'none'})`);
+
+  // terminal (fail): the same-key re-POST is refused, but a cancel arrives
+  // while it is in flight: cancelled, not failed runtime_failed.
+  fake.onStart = () => ({ startError: { status: 422, code: 'CLIENT_UNSUPPORTED' } });
+  const refused = await crashedAttempt('race-fail-cancel');
+  gate = gateDeck((method, p) => method === 'POST' && p === '/api/agent-runs');
+  sweeping = service.sweepDispatch();
+  await waitFor(() => gate.hit, 're-POST in flight');
+  remote.cancel(refused.id, { actor: PERSON });
+  gate.release();
+  await sweeping;
+  deckApi.setAgentDeckApiFetch(fake.fetch);
+  reqRow = req(refused.id);
+  assert(reqRow.state === 'cancelled' && reqRow.error_code === 'cancelled' && attemptsOf(refused.id)[0].outcome === 'cancelled'
+    && decisions(refused.id) === 'launch/repost',
+  `fail race: cancelled, the refusal decision never recorded (${reqRow.state}/${reqRow.error_code}, ${decisions(refused.id)})`);
+
+  // terminal (fail) with a deadline crossing during the re-POST.
+  const refusedLate = await crashedAttempt('race-fail-deadline', { deadlineMs: 5_000 });
+  gate = gateDeck((method, p) => method === 'POST' && p === '/api/agent-runs');
+  sweeping = service.sweepDispatch();
+  await waitFor(() => gate.hit, 're-POST in flight');
+  advance(10_000);
+  gate.release();
+  await sweeping;
+  deckApi.setAgentDeckApiFetch(fake.fetch);
+  reqRow = req(refusedLate.id);
+  assert(reqRow.state === 'failed' && reqRow.error_code === 'timed_out' && attemptsOf(refusedLate.id)[0].outcome === 'timed_out',
+    `fail race: the deadline wins over runtime_failed (${reqRow.state}/${reqRow.error_code})`);
+
+  // repost: the re-POST is accepted after a cancel arrived meanwhile. The
+  // run it names is recorded and asked to stop; it is never followed.
+  fake.onStart = () => ({ result: 'DONE-repost-race', hold: true });
+  const reposted = await crashedAttempt('race-repost-cancel');
+  gate = gateDeck((method, p) => method === 'POST' && p === '/api/agent-runs');
+  sweeping = service.sweepDispatch();
+  await waitFor(() => gate.hit, 're-POST in flight');
+  remote.cancel(reposted.id, { actor: PERSON });
+  gate.release();
+  await sweeping;
+  deckApi.setAgentDeckApiFetch(fake.fetch);
+  const repostRun = attemptsOf(reposted.id)[0].external_run_id;
+  const repostCancel = eventData(reposted.id, 'external_cancel');
+  assert(req(reposted.id).state === 'cancelled' && repostRun && fake.runs.get(repostRun).state === 'canceled'
+    && repostCancel.length === 1 && repostCancel[0].status === 'requested' && repostCancel[0].external_run_id === repostRun
+    && fake.calls('GET', `/api/agent-runs/${repostRun}/events`).length === 0 && repliesOf(reposted.id).length === 0,
+  `repost race: cancelled, the accepted run recorded and cancelled, never followed (${req(reposted.id).state}, ${repostCancel.map(e => e.status).join(',')})`);
+
+  // repost after a cancel landed before the sweep: nothing is POSTed.
+  const posts = fake.calls('POST', '/api/agent-runs').length;
+  const early = await crashedAttempt('race-repost-early');
+  remote.cancel(early.id, { actor: PERSON });
+  await service.sweepDispatch();
+  assert(req(early.id).state === 'cancelled' && fake.calls('POST', '/api/agent-runs').length === posts && !types(early.id).includes('reconcile_decided'),
+    'repost: a request cancelled before reconciliation is never re-POSTed');
+  await service.waitForAgentDispatchIdle();
+}
+
+// Observation of a live Agent Deck run fails (not the unreachable case,
+// which defers). Under a retry-enabled policy the cleanup cancel decides:
+// accepted, the run is stopped and a retry may follow; refused, the run
+// may continue, so the Attempt is abandoned and nothing relaunches.
+async function observationLoss() {
+  console.log('\n[4d] losing sight of a run: a failed cleanup cancel is abandoned evidence, never a retry');
+  configure({ heartbeatMs: 60_000 });
+  clock = Date.now();
+  const failEvents = runIdOf => deckApi.setAgentDeckApiFetch(async (url, init) => {
+    const p = new URL(url, 'http://fake').pathname;
+    const run = runIdOf();
+    if (run && init.method === 'GET' && p === `/api/agent-runs/${run}/events`) {
+      fake.requests.push({ method: init.method, path: p, query: {}, headers: {}, body: null });
+      return { status: 500, json: async () => ({ success: false, error: 'boom', error_code: 'INTERNAL' }) };
+    }
+    return fake.fetch(url, init);
+  });
+
+  for (const c of [
+    { label: 'cancel refused', cancelError: { status: 503, code: 'CANCEL_UNAVAILABLE' } },
+    { label: 'cancel accepted', cancelError: null },
+  ]) {
+    fake.onStart = () => ({ result: 'DONE-unobserved', hold: true, ...(c.cancelError ? { cancelError: c.cancelError } : {}) });
+    const startsBefore = fake.calls('POST', '/api/agent-runs').length;
+    let id = null;
+    failEvents(() => (id ? attemptsOf(id)[0]?.external_run_id ?? null : null));
+    const sent = withPolicy({ BOTMANCERS_RETRY_MAX_ATTEMPTS: 3, BOTMANCERS_RETRY_BASE_DELAY_MS: 1_000 }, () =>
+      service.acceptAgentMessage(PERSON, { agentId: codex.id, content: `Unobserved ${c.label}`, idempotencyKey: `observation-lost-${c.label}` }));
+    id = sent.accepted.requestId;
+    await sent.dispatched;
+    deckApi.setAgentDeckApiFetch(fake.fetch);
+    const attempt = attemptsOf(id)[0];
+    const runId = attempt.external_run_id;
+    const abandon = eventData(id, 'attempt_abandoned');
+    const external = eventData(id, 'external_cancel');
+    if (c.cancelError) {
+      assert(attempt.outcome === 'failed' && attempt.error_category === 'abandoned' && /did not accept the cancel/.test(attempt.error_message)
+        && abandon.length === 1 && abandon[0].reason === 'observation_lost' && abandon[0].external_cancel === 'failed'
+        && external.length === 1 && external[0].status === 'failed' && external[0].external_run_id === runId,
+      `${c.label}: Attempt abandoned with failed external cancel (${attempt.error_category}, ${external.map(e => e.status).join(',')})`);
+      assert(req(id).state === 'waiting' && attentionOf(id)?.reason === 'external_cancel_failed' && req(id).next_eligible_at === null
+        && fake.runs.get(runId).state === 'running',
+      `${c.label}: no retry scheduled; operator attention while the run still runs (${req(id).state}, ${attentionOf(id)?.reason ?? 'none'})`);
+      advance(60_000);
+      await service.sweepDispatch();
+      await service.waitForAgentDispatchIdle();
+      assert(attemptsOf(id).length === 1 && fake.calls('POST', '/api/agent-runs').length === startsBefore + 1 && req(id).state === 'waiting',
+        `${c.label}: later sweeps launch no second Attempt beside the live run (${attemptsOf(id).length} Attempts)`);
+      fake.release(runId);
+    } else {
+      assert(attempt.outcome === 'failed' && attempt.error_category !== 'abandoned' && abandon.length === 0 && external.length === 0
+        && fake.runs.get(runId).state === 'canceled' && req(id).state === 'queued' && req(id).next_eligible_at !== null && !attentionOf(id),
+      `${c.label}: the run was stopped, so the retryable failure schedules a bounded retry (${req(id).state}, ${attempt.error_category})`);
+      await service.cancelWorkRequest(id, { actor: PERSON });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
 async function projections() {
   console.log('\n[5] conversation projections distinguish each control outcome');
   configure();
@@ -812,6 +1013,8 @@ async function main() {
   await retryScenarios();
   await supersedingRetry();
   await externalCancel();
+  await reconcileRaces();
+  await observationLoss();
   await projections();
   await service.waitForAgentDispatchIdle();
 
