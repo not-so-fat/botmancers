@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { Fragment, useState, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { parseRun, runLine } from '@/lib/run';
@@ -29,6 +29,8 @@ import { threadView, type ThreadLoad } from '@/lib/thread-state';
 import RuntimeFailureNotice from '@/app/components/RuntimeFailureNotice';
 import { classifyRuntimeFailure } from '@/lib/runtime-failure';
 import { latestLine } from '@/lib/message-preview';
+import WakeNotice from '@/app/components/WakeNotice';
+import { wakeNotices, type WakeEventView, type WakeNotice as WakeNoticeItem } from '@/lib/wake-notice';
 
 interface Bot {
   id: string;
@@ -178,6 +180,7 @@ export default function Home() {
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [notices, setNotices] = useState<WakeNoticeItem[]>([]);
   const [threadLoad, setThreadLoad] = useState<ThreadLoad | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const [inputMessage, setInputMessage] = useState('');
@@ -341,6 +344,14 @@ export default function Home() {
     const id = activeConversation.id;
     let data: unknown = null;
     let ok = false;
+    // NOT-475: Wake safety outcomes come from the projected conversation
+    // read model; a failed read keeps the last notices.
+    const eventsRead = fetch(`/api/conversations/${id}`)
+      .then(async res => {
+        const body = await res.json();
+        return res.ok && Array.isArray(body?.events) ? body.events as WakeEventView[] : null;
+      })
+      .catch(() => null);
     try {
       const res = await fetch(`/api/conversations/${id}/messages`);
       data = await res.json();
@@ -348,9 +359,11 @@ export default function Home() {
     } catch {
       ok = false;
     }
+    const events = await eventsRead;
     // A reply for a thread the owner already left must not paint this one.
     if (activeIdRef.current !== id) return;
     if (ok) setMessages(data as Message[]);
+    if (events) setNotices(wakeNotices(events));
     setThreadLoad({ conversationId: id, status: ok ? 'ready' : 'error' });
   }
 
@@ -407,7 +420,10 @@ export default function Home() {
 
     setPictureOpen(false);
     setAvatarStep(false);
-    if (conv.id !== activeConversation?.id) setMessages([]);
+    if (conv.id !== activeConversation?.id) {
+      setMessages([]);
+      setNotices([]);
+    }
     // Retarget the stale-read guard before the new thread commits, so a read
     // for the previous thread that resolves in between is dropped.
     activeIdRef.current = conv.id;
@@ -568,6 +584,7 @@ export default function Home() {
     if (activeConversation && ids.includes(activeConversation.details.id)) {
       setActiveConversation(null);
       setMessages([]);
+      setNotices([]);
     }
     await loadBots();
   };
@@ -805,6 +822,14 @@ export default function Home() {
   const title = (activeConversation?.details.title || '').trim();
   const nameColor = activeConversation?.details.color;
 
+  // NOT-475: Wake safety notices interleave with messages by time.
+  const shownNotices = new Set<string>();
+  const wakeNoticeRow = (notice: WakeNoticeItem) => (
+    <div key={notice.eventId} className="msg-status">
+      <WakeNotice notice={notice} onDone={() => { void loadMessages(); }} />
+    </div>
+  );
+
   const closeBotModal = () => {
     setShowBotModal(false);
     requestAnimationFrame(() => newRef.current?.focus());
@@ -961,13 +986,19 @@ export default function Home() {
             <div className="messages">
               {computerOpen ? null : threadNote}
               {messages.map((msg) => {
+                // Notices recorded before this message sit above it.
+                const before = notices.filter(notice => !shownNotices.has(notice.eventId) && notice.createdAt < msg.created_at);
+                before.forEach(notice => shownNotices.add(notice.eventId));
                 const mine = msg.sender_type === 'user';
                 const failure = mine ? null : classifyRuntimeFailure(stripStoredPrefix(msg.content));
                 if (failure) {
                   return (
-                    <div key={msg.id} className="msg-status">
-                      <RuntimeFailureNotice failure={failure} />
-                    </div>
+                    <Fragment key={msg.id}>
+                      {before.map(wakeNoticeRow)}
+                      <div className="msg-status">
+                        <RuntimeFailureNotice failure={failure} />
+                      </div>
+                    </Fragment>
                   );
                 }
                 const shown = messagePicture(stripStoredPrefix(msg.content));
@@ -983,7 +1014,9 @@ export default function Home() {
                 const draftStatus = msg.draftStatus ?? (draft ? 'open' : null);
                 const approvalStatus = msg.approvalStatus ?? (approvalCode ? 'pending' : null);
                 return (
-                  <div key={msg.id} className={mine ? 'msg-you' : 'msg-bot'} ref={run && run.state === 'running' ? runningLineRef : undefined}>
+                  <Fragment key={msg.id}>
+                  {before.map(wakeNoticeRow)}
+                  <div className={mine ? 'msg-you' : 'msg-bot'} ref={run && run.state === 'running' ? runningLineRef : undefined}>
                     <div
                       className={mine ? 'msg-name msg-name-you' : 'msg-name'}
                       style={speaker ? { color: speaker } : undefined}
@@ -1050,8 +1083,10 @@ export default function Home() {
                       </div>
                     ) : null}
                   </div>
+                  </Fragment>
                 );
               })}
+              {notices.filter(notice => !shownNotices.has(notice.eventId)).map(wakeNoticeRow)}
               <div ref={computerRoomRef} />
               <div ref={messagesEndRef} />
             </div>

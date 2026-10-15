@@ -27,16 +27,43 @@
 // NOT-472: every Work Request a Wake creates records where its result
 // returns (policy_snapshot.return_to: the requesting Agent and source
 // conversation); lib/coordinator-loop continues that Agent when the
-// request ends. Loop safety limits (depth, specialist budget, open
-// requests) are checked per lineage before a request is created, and a
-// review never targets the Agent whose implementation it reviews.
+// request ends. A review never targets the Agent whose implementation it
+// reviews.
+//
+// NOT-475: Wake safety (lib/wake-safety; contract Check order and
+// composition). One fixed order, stopping at the first unmet check:
+//   1. envelope, tracked lineage, references, depth, root budget -> rejected
+//   2. target name resolution                                      -> unavailable
+//   3. policy checks on the resolved Agent                         -> rejected
+//   4. edit grant (implementation/revision)                        -> blocked, grant_required
+//   5. launchability and availability                              -> blocked, target_*
+//   6. accepted: the request is queued and waits for capacity
+// Depth and root budget are counted inside the routing IMMEDIATE
+// transaction, so concurrent replies in one lineage cannot overshoot, and
+// a replayed event returns its stored Wakes without counting again. Every
+// Work Request a Wake creates records the caller principal, target, grant
+// rule and grant, and the policy snapshot used (wake_safety_decisions);
+// decideWakeGrant is the owner's Allow / Deny.
 import { randomUUID } from 'crypto';
-import db, { bots, engine, resolveWakeTarget, type Bot, type Message } from './db';
+import db, { bots, engine, resolveWakeTarget, type Bot, type Message, type Principal } from './db';
 import { agentTransport, resolveAgent } from './bot-definition';
 import { loadHermesConfig } from './hermes';
-import type { WorkRequest } from './engine-store';
+import type { SafetyDecisionInput, WorkRequest } from './engine-store';
 import { selectExecutionPolicy, type ExecutionPolicySnapshot } from './execution-policy';
 import { parseWakes, wakeIdempotencyKey, wakePayload, type WakeCandidate, type WakeEnvelope, type WakeSyntax } from './wake';
+import {
+  WAKE_SAFETY_VERSION,
+  activeEditGrant,
+  assertOwner,
+  ensureEditGrant,
+  isOwnerPrincipal,
+  needsEditGrant,
+  wakeSafetyLimits,
+  WakeSafetyError,
+  type CallerCategory,
+  type GrantRule,
+  type WakeGrant,
+} from './wake-safety';
 
 export type WakeStatus = 'accepted' | 'blocked' | 'unavailable' | 'rejected';
 
@@ -49,14 +76,21 @@ export type WakeReasonCode =
   | 'target_ambiguous'
   | 'target_unconfigured'
   | 'target_unavailable'
+  // Recorded before NOT-475; projects as wake_rejected.
   | 'limit_exceeded'
-  | 'reviewer_not_independent';
+  | 'reviewer_not_independent'
+  | 'depth_exceeded'
+  | 'root_budget_exhausted'
+  | 'untracked_lineage'
+  | 'grant_required'
+  | 'grant_denied';
 
-// NOT-472: coordinator loop safety limits, per root lineage. Values are
-// placeholders until the owner confirms them; change one line here.
-export const WAKE_MAX_DEPTH = 48;
-export const WAKE_MAX_SPECIALIST_REQUESTS = 24;
-export const WAKE_MAX_OPEN_REQUESTS = 16;
+// NOT-475: approved limits per root lineage (lib/wake-safety). Depth counts
+// Agent-to-Agent hops (work_requests.wake_depth); the root budget counts
+// Wake-created Work Requests in any state.
+export const WAKE_MAX_DEPTH = wakeSafetyLimits().maxWakeDepth;
+export const WAKE_ROOT_BUDGET = wakeSafetyLimits().rootBudget;
+export const WAKE_MAX_SPECIALIST_REQUESTS = WAKE_ROOT_BUDGET;
 
 export interface Wake {
   id: string;
@@ -79,6 +113,8 @@ export interface Wake {
   reason_code: WakeReasonCode | null;
   reason: string | null;
   work_request_id: string | null;
+  limit_value: number | null;
+  observed_value: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -140,8 +176,15 @@ function routed(wake: Wake, created: boolean): RoutedWake {
   return { wake, request: wake.work_request_id ? engine.getWorkRequest(wake.work_request_id) ?? null : null, created };
 }
 
-type Unrouted = { status: 'rejected' | 'unavailable'; code: WakeReasonCode; reason: string; target?: { id: string; name: string } };
-type Routable = { status: 'accepted' | 'blocked'; code: WakeReasonCode | null; reason: string | null; target: { id: string; name: string }; policy: ExecutionPolicySnapshot };
+type Unrouted = {
+  status: 'rejected' | 'unavailable'; code: WakeReasonCode; reason: string; target?: { id: string; name: string };
+  limit?: number; observed?: number;
+};
+// grant: the rule that admitted the Wake (null while grant_required).
+type Routable = {
+  status: 'accepted' | 'blocked'; code: WakeReasonCode | null; reason: string | null; target: { id: string; name: string };
+  policy: ExecutionPolicySnapshot; grant: { rule: GrantRule; id: string | null } | null;
+};
 type Outcome = Unrouted | Routable;
 
 function routable(outcome: Outcome): outcome is Routable {
@@ -166,27 +209,68 @@ function referenceProblem(envelope: WakeEnvelope, conversationId: string, parent
   return null;
 }
 
-// Depth, budget, and concurrency of the lineage this Wake would extend.
-// Counts include requests created earlier in the same reply.
-function limitProblem(parent: WorkRequest | null): string | null {
-  if (!parent) return null;
-  if (parent.depth + 1 > WAKE_MAX_DEPTH) return `This work is already ${parent.depth} Wakes deep (limit ${WAKE_MAX_DEPTH}).`;
-  const counts = db.prepare(`
-    SELECT COUNT(*) AS total, SUM(CASE WHEN terminal_at IS NULL THEN 1 ELSE 0 END) AS open
-    FROM work_requests WHERE root_request_id = ? AND wake_event_id IS NOT NULL
-  `).get(parent.root_request_id) as { total: number; open: number | null };
-  if (counts.total >= WAKE_MAX_SPECIALIST_REQUESTS) {
-    return `This work already woke ${counts.total} specialists (limit ${WAKE_MAX_SPECIALIST_REQUESTS}).`;
+// Wake-created Work Requests in one root lineage, in any state (blocked
+// and cancelled included). Read inside the routing transaction, so it
+// includes requests created earlier in the same reply.
+function rootBudgetUsed(rootRequestId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS n FROM work_requests WHERE root_request_id = ? AND wake_event_id IS NOT NULL')
+    .get(rootRequestId) as { n: number }).n;
+}
+
+function budgetProblem(rootRequestId: string): Unrouted | null {
+  const { rootBudget } = wakeSafetyLimits();
+  const used = rootBudgetUsed(rootRequestId);
+  if (used < rootBudget) return null;
+  return {
+    status: 'rejected', code: 'root_budget_exhausted', limit: rootBudget, observed: used,
+    reason: `This work already used ${used} Wakes (limit ${rootBudget}).`,
+  };
+}
+
+// Step 1 limits of the lineage this Wake would extend.
+function limitProblem(parent: WorkRequest): Unrouted | null {
+  const { maxWakeDepth } = wakeSafetyLimits();
+  const depth = parent.wake_depth + 1;
+  if (depth > maxWakeDepth) {
+    return {
+      status: 'rejected', code: 'depth_exceeded', limit: maxWakeDepth, observed: depth,
+      reason: `This work is already ${parent.wake_depth} Wakes deep (limit ${maxWakeDepth}).`,
+    };
   }
-  if ((counts.open ?? 0) >= WAKE_MAX_OPEN_REQUESTS) {
-    return `This work already has ${counts.open} specialist requests open (limit ${WAKE_MAX_OPEN_REQUESTS}).`;
-  }
-  return null;
+  return budgetProblem(parent.root_request_id);
+}
+
+// The caller, and the parent turn its Wake extends, for steps 3-6.
+interface WakeCaller {
+  agentId: string;
+  parent: WorkRequest | null;
+}
+
+// Self-wake exemption: an implementation Wake to the caller itself, from a
+// turn that is a direct message by the human owner (root principal
+// person:local-owner, categorized human_owner at intake, depth 0, not a
+// Wake or continuation turn).
+function ownerDirectSelfWake(envelope: WakeEnvelope, target: { id: string }, caller: WakeCaller): boolean {
+  const parent = caller.parent;
+  if (envelope.executionKind !== 'implementation' || target.id !== caller.agentId || !parent) return false;
+  if (parent.wake_event_id !== null || parent.wake_depth !== 0 || parent.parent_request_id !== null || parent.target_agent_id !== caller.agentId) return false;
+  if (!isOwnerPrincipal({ kind: parent.root_principal_kind ?? '', id: parent.root_principal_id ?? '' })) return false;
+  const first = engine.listSafetyDecisions(parent.id)[0];
+  return first?.principal_type === 'human_owner';
+}
+
+// Step 4: the grant rule that admits this Wake, or null when the owner
+// must approve one first.
+function grantFor(envelope: WakeEnvelope, target: { id: string }, caller: WakeCaller): { rule: GrantRule; id: string | null } | null {
+  if (!needsEditGrant(envelope.executionKind)) return { rule: 'readonly_default', id: null };
+  if (ownerDirectSelfWake(envelope, target, caller)) return { rule: 'owner_direct_self_wake', id: null };
+  const grant = activeEditGrant(caller.agentId, target.id);
+  return grant ? { rule: 'edit_grant', id: grant.id } : null;
 }
 
 // Target resolution by name, then the launch checks. Used by first routing
 // and by retrying an unavailable Wake (which has no target yet).
-function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax, rootRequestId: string | null): Outcome {
+function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax, caller: WakeCaller): Outcome {
   const resolved = resolveWakeTarget(envelope.target);
   if (!resolved.ok) {
     if (resolved.reason === 'ambiguous') {
@@ -197,13 +281,14 @@ function resolveOutcome(envelope: WakeEnvelope, syntax: WakeSyntax, rootRequestI
     }
     return { status: 'unavailable', code: 'target_not_found', reason: `No Agent is named ${envelope.target}.` };
   }
-  return checkTarget(envelope, syntax, { id: resolved.agentId, name: resolved.displayName }, rootRequestId);
+  return checkTarget(envelope, syntax, { id: resolved.agentId, name: resolved.displayName }, caller);
 }
 
 // Resume constraint, configuration, and availability of one resolved
 // Agent. A blocked Wake's retry calls this on its stored target, never on
 // whichever Agent now holds the requested name.
-function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: string; name: string }, rootRequestId: string | null): Outcome {
+function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: string; name: string }, caller: WakeCaller): Outcome {
+  const rootRequestId = caller.parent?.root_request_id ?? null;
   // NOT-471: authority comes from the envelope's explicit kind under the
   // central rules (structured: any kind, revision resumes; legacy:
   // conversation only), never from the target's Agent type.
@@ -234,21 +319,71 @@ function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: s
       return { status: 'rejected', code: 'reviewer_not_independent', reason: `${target.name} did the work under review; wake a different reviewer or ask the person.`, target };
     }
   }
+  // The grant is asked before availability: only the owner can satisfy
+  // it, and an unlaunchable target never hides a pending approval.
+  const grant = grantFor(envelope, target, caller);
+  if (!grant) {
+    return { status: 'blocked', code: 'grant_required', reason: `${target.name} needs your approval for edit work.`, target, policy, grant: null };
+  }
+  return availabilityOutcome(target, policy, grant);
+}
+
+// Step 5-6 for a resolved, granted target.
+function availabilityOutcome(target: { id: string; name: string }, policy: ExecutionPolicySnapshot, grant: { rule: GrantRule; id: string | null }): Routable {
   const bot = bots.getById(target.id) as Bot;
   const agent = resolveAgent(bot);
   if (!agent.launchable) {
     const reason = agent.needs_deck_selection
       ? `${target.name} has no Agent Deck selected.`
       : `${target.name} has an unsupported Agent type.`;
-    return { status: 'blocked', code: 'target_unconfigured', reason, target, policy };
+    return { status: 'blocked', code: 'target_unconfigured', reason, target, policy, grant };
   }
   const availability = (availabilityOverride ?? defaultAvailability)(bot);
-  if (!availability.available) return { status: 'blocked', code: 'target_unavailable', reason: availability.reason, target, policy };
-  return { status: 'accepted', code: null, reason: null, target, policy };
+  if (!availability.available) return { status: 'blocked', code: 'target_unavailable', reason: availability.reason, target, policy, grant };
+  return { status: 'accepted', code: null, reason: null, target, policy, grant };
+}
+
+// The policy snapshot one evaluation used: version, root principal, depth,
+// grant, and the root budget after this request.
+function safetySnapshot(input: { rootPrincipal: { kind: string; id: string }; wakeDepth: number; grant: Routable['grant']; rootRequestId: string | null; counting: boolean }): Record<string, unknown> {
+  const limits = wakeSafetyLimits();
+  const used = input.rootRequestId ? rootBudgetUsed(input.rootRequestId) : 0;
+  return {
+    safety_version: WAKE_SAFETY_VERSION,
+    root_principal: input.rootPrincipal,
+    wake_depth: input.wakeDepth,
+    grant_rule: input.grant?.rule ?? null,
+    grant_id: input.grant?.id ?? null,
+    root_budget: { used: used + (input.counting ? 1 : 0), limit: limits.rootBudget },
+    safety_limits: { max_wake_depth: limits.maxWakeDepth, root_budget: limits.rootBudget },
+  };
+}
+
+function decisionFor(outcome: Routable, wakeId: string, requesterId: string, snapshot: Record<string, unknown>, now: number): SafetyDecisionInput {
+  return {
+    principalType: 'agent_principal',
+    principal: { kind: 'bot', id: requesterId },
+    decision: outcome.status === 'accepted' ? 'allowed' : 'blocked',
+    reasonCode: outcome.code,
+    grantRule: outcome.grant?.rule ?? null,
+    grantId: outcome.grant?.id ?? null,
+    wakeId,
+    snapshot,
+    now,
+  };
 }
 
 function createRequest(wake: Pick<Wake, 'id' | 'idempotency_key' | 'source_conversation_id' | 'source_event_id' | 'requester_agent_id' | 'parent_request_id' | 'root_wake_id' | 'syntax'>,
   envelope: WakeEnvelope, outcome: Routable, now: number): WorkRequest {
+  const parent = wake.parent_request_id ? engine.getWorkRequest(wake.parent_request_id) ?? null : null;
+  if (!parent) throw new WakeRouterError('invalid_input', 'A Wake creates work only in a tracked lineage.');
+  const snapshot = safetySnapshot({
+    rootPrincipal: { kind: parent.root_principal_kind ?? 'unknown', id: parent.root_principal_id ?? 'unknown' },
+    wakeDepth: parent.wake_depth + 1,
+    grant: outcome.grant,
+    rootRequestId: parent.root_request_id,
+    counting: true,
+  });
   const { request } = engine.createOrGetWorkRequest({
     sourceConversationId: wake.source_conversation_id,
     sourceEventId: wake.source_event_id,
@@ -277,9 +412,27 @@ function createRequest(wake: Pick<Wake, 'id' | 'idempotency_key' | 'source_conve
     executionPolicy: outcome.policy,
     initialState: outcome.status === 'blocked' ? 'blocked' : 'queued',
     stateReason: outcome.status === 'blocked' ? `${outcome.code}: ${outcome.reason}` : null,
+    safetySnapshot: snapshot,
+    safety: decisionFor(outcome, wake.id, wake.requester_agent_id, snapshot, now),
     now,
   });
+  if (outcome.code === 'grant_required') grantRequested(request, wake.id, now);
   return request;
+}
+
+function grantRequested(request: WorkRequest, wakeId: string, now: number): void {
+  engine.appendEvent(request.id, {
+    type: 'grant_requested',
+    data: { wake_id: wakeId, caller_agent_id: request.requester_id, target_agent_id: request.target_agent_id, authority: 'edit', execution_kind: request.execution_kind },
+    now,
+  });
+}
+
+// A blocked request whose Wake reason changed without a state change (the
+// owner allowed but the target cannot launch, or a retry found the grant
+// revoked): the conversation shows the current reason.
+function reblocked(request: WorkRequest, code: WakeReasonCode, reason: string, now: number): void {
+  engine.reblockWorkRequest(request.id, { reason: `${code}: ${reason}`, type: 'wake_reblocked', data: { reason_code: code, reason }, now });
 }
 
 function routeCandidate(candidate: WakeCandidate, source: Message, requesterId: string, parent: WorkRequest | null, now: number): RoutedWake {
@@ -307,13 +460,17 @@ function routeCandidate(candidate: WakeCandidate, source: Message, requesterId: 
   let outcome: Outcome;
   if (!candidate.validation.ok) {
     outcome = { status: 'rejected', code: 'invalid_envelope', reason: candidate.validation.reason };
+  } else if (!parent) {
+    // An Agent principal whose turn the engine did not dispatch: identity
+    // is known, lineage is not, and a fresh root would reset depth and
+    // budget. Recorded, never routed.
+    envelope = candidate.validation.envelope;
+    outcome = { status: 'rejected', code: 'untracked_lineage', reason: 'Its source turn is not tracked work, so the Wake cannot start a lineage.' };
   } else {
     envelope = candidate.validation.envelope;
     const problem = referenceProblem(envelope, source.conversation_id, parent);
-    const limit = problem ? null : limitProblem(parent);
     outcome = problem ? { status: 'rejected', code: 'invalid_reference', reason: problem }
-      : limit ? { status: 'rejected', code: 'limit_exceeded', reason: limit }
-        : resolveOutcome(envelope, candidate.syntax, parent?.root_request_id ?? null);
+      : limitProblem(parent) ?? resolveOutcome(envelope, candidate.syntax, { agentId: requesterId, parent });
   }
 
   const request = envelope && routable(outcome)
@@ -324,14 +481,14 @@ function routeCandidate(candidate: WakeCandidate, source: Message, requesterId: 
       id, idempotency_key, source_conversation_id, source_event_id, position, syntax, payload,
       requester_agent_id, requested_target, target_agent_id, target_name_snapshot, execution_kind,
       parent_request_id, root_request_id, root_wake_id, depth, status, reason_code, reason,
-      work_request_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      work_request_id, limit_value, observed_value, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, key, source.conversation_id, source.id, candidate.position, candidate.syntax, wakePayload(candidate),
     requesterId, envelope?.target ?? null, outcome.target?.id ?? null, outcome.target?.name ?? null, envelope?.executionKind ?? null,
     parent?.id ?? null, request?.root_request_id ?? parent?.root_request_id ?? null, base.root_wake_id,
-    request?.depth ?? (parent ? parent.depth + 1 : 0), outcome.status, outcome.code, outcome.reason,
-    request?.id ?? null, now, now
+    request?.wake_depth ?? (parent ? parent.wake_depth + 1 : 0), outcome.status, outcome.code, outcome.reason,
+    request?.id ?? null, routable(outcome) ? null : outcome.limit ?? null, routable(outcome) ? null : outcome.observed ?? null, now, now
   );
   return routed(getWake(id) as Wake, true);
 }
@@ -340,7 +497,8 @@ export interface RouteWakesInput {
   // The Agent reply message that carries the Wakes.
   sourceEventId: string;
   // The Work Request whose turn produced that reply, when there is one.
-  // Without it the Wakes start a new lineage (depth 0).
+  // Without it the reply has untracked lineage: its Wakes are recorded
+  // rejected (untracked_lineage) and create no work.
   parentRequestId?: string | null;
   now?: number;
 }
@@ -371,36 +529,45 @@ export function routeAgentWakes(input: RouteWakesInput): RoutedWake[] {
   }).immediate();
 }
 
-// Recovery from durable state. An unavailable Wake re-resolves its
-// target and, once found, creates its Work Request; if the name now
-// resolves to something no Wake may target, it becomes rejected. A
-// blocked Wake whose target can now launch moves its request from blocked
-// to queued; one that stays blocked records the current reason.
-// Accepted and rejected Wakes are returned unchanged.
+// Recovery from durable state. An unavailable Wake re-checks the root
+// budget (its request was never counted), re-resolves its target and, once
+// found, creates its Work Request through steps 3-6; if the name now
+// resolves to something no Wake may target, it becomes rejected. A blocked
+// Wake re-runs steps 3-6 against its stored target Agent: a grant revoked
+// since asks again (grant_required), a launchable granted target moves its
+// request from blocked to queued, and one that stays blocked records the
+// current reason. Accepted, rejected, and owner-denied Wakes are returned
+// unchanged.
 export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake {
   return db.transaction((): RoutedWake => {
     const wake = getWake(wakeId);
     if (!wake) throw new WakeRouterError('not_found', `No Wake ${wakeId}.`);
     if (wake.status !== 'unavailable' && wake.status !== 'blocked') return routed(wake, false);
+    if (wake.reason_code === 'grant_denied') return routed(wake, false);
     const envelope = (JSON.parse(wake.payload) as { envelope: WakeEnvelope }).envelope;
     const update = db.prepare(`
       UPDATE wakes SET status = ?, reason_code = ?, reason = ?, target_agent_id = ?, target_name_snapshot = ?,
-        work_request_id = ?, root_request_id = ?, updated_at = ?
+        work_request_id = ?, root_request_id = ?, limit_value = ?, observed_value = ?, updated_at = ?
       WHERE id = ?
     `);
+    const parent = wake.parent_request_id ? engine.getWorkRequest(wake.parent_request_id) ?? null : null;
+    const caller: WakeCaller = { agentId: wake.requester_agent_id, parent };
 
     if (wake.status === 'unavailable') {
-      const outcome = resolveOutcome(envelope, wake.syntax, wake.root_request_id);
+      const outcome: Outcome = !parent
+        ? { status: 'rejected', code: 'untracked_lineage', reason: 'Its source turn is not tracked work, so the Wake cannot start a lineage.' }
+        : budgetProblem(parent.root_request_id) ?? resolveOutcome(envelope, wake.syntax, caller);
       if (!routable(outcome)) {
         // Still unresolved: keep it visible with the current reason. A
         // rejection is terminal, so status and reason never disagree.
         if (outcome.status !== wake.status || outcome.code !== wake.reason_code || outcome.reason !== wake.reason) {
-          update.run(outcome.status, outcome.code, outcome.reason, null, null, null, wake.root_request_id, now, wake.id);
+          update.run(outcome.status, outcome.code, outcome.reason, null, null, null, wake.root_request_id,
+            outcome.limit ?? null, outcome.observed ?? null, now, wake.id);
         }
         return routed(getWake(wake.id) as Wake, false);
       }
       const request = createRequest(wake, envelope, outcome, now);
-      update.run(outcome.status, outcome.code, outcome.reason, outcome.target.id, outcome.target.name, request.id, request.root_request_id, now, wake.id);
+      update.run(outcome.status, outcome.code, outcome.reason, outcome.target.id, outcome.target.name, request.id, request.root_request_id, null, null, now, wake.id);
       return routed(getWake(wake.id) as Wake, true);
     }
 
@@ -409,15 +576,103 @@ export function retryWake(wakeId: string, now: number = Date.now()): RoutedWake 
     const request = engine.getWorkRequest(wake.work_request_id as string) as WorkRequest;
     const stored = bots.getById(request.target_agent_id) as Bot | undefined;
     if (!stored || request.state !== 'blocked') return routed(wake, false);
-    const outcome = checkTarget(envelope, wake.syntax, { id: stored.id, name: stored.name }, request.root_request_id);
-    if (outcome.status === 'blocked' && (outcome.code !== wake.reason_code || outcome.reason !== wake.reason)) {
-      update.run('blocked', outcome.code, outcome.reason, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);
-      return routed(getWake(wake.id) as Wake, false);
+    const outcome = checkTarget(envelope, wake.syntax, { id: stored.id, name: stored.name }, caller);
+    return settleBlocked(wake, request, outcome, 'target_available', now);
+  }).immediate();
+}
+
+// Applies a re-evaluated outcome to a blocked Wake and its blocked request.
+function settleBlocked(wake: Wake, request: WorkRequest, outcome: Outcome, queuedReason: 'target_available' | 'grant_approved', now: number): RoutedWake {
+  const update = db.prepare('UPDATE wakes SET status = ?, reason_code = ?, reason = ?, updated_at = ? WHERE id = ?');
+  if (outcome.status === 'blocked') {
+    if (outcome.code === wake.reason_code && outcome.reason === wake.reason) return routed(wake, false);
+    update.run('blocked', outcome.code, outcome.reason, now, wake.id);
+    const snapshot = safetySnapshot({
+      rootPrincipal: { kind: request.root_principal_kind ?? 'unknown', id: request.root_principal_id ?? 'unknown' },
+      wakeDepth: request.wake_depth, grant: outcome.grant, rootRequestId: null, counting: false,
+    });
+    engine.recordSafetyDecision(request.id, decisionFor(outcome, wake.id, wake.requester_agent_id, snapshot, now));
+    if (outcome.code === 'grant_required') grantRequested(request, wake.id, now);
+    reblocked(request, outcome.code as WakeReasonCode, outcome.reason as string, now);
+    return routed(getWake(wake.id) as Wake, false);
+  }
+  if (outcome.status !== 'accepted') return routed(wake, false);
+  // The decision that makes the request runnable commits with its
+  // blocked -> queued transition.
+  const snapshot = safetySnapshot({
+    rootPrincipal: { kind: request.root_principal_kind ?? 'unknown', id: request.root_principal_id ?? 'unknown' },
+    wakeDepth: request.wake_depth, grant: outcome.grant, rootRequestId: null, counting: false,
+  });
+  engine.recordSafetyDecision(request.id, decisionFor(outcome, wake.id, wake.requester_agent_id, snapshot, now));
+  engine.transitionWorkRequest(request.id, { from: 'blocked', to: 'queued', reason: queuedReason, data: { grant_rule: outcome.grant?.rule ?? null, grant_id: outcome.grant?.id ?? null }, now });
+  update.run('accepted', null, null, now, wake.id);
+  return routed(getWake(wake.id) as Wake, true);
+}
+
+export interface GrantDecisionResult extends RoutedWake {
+  decision: 'allow' | 'deny';
+  grant: WakeGrant | null;
+  // The request is now queued and may be dispatched.
+  runnable: boolean;
+  // The request ended (Deny); its result continuation follows from
+  // lib/coordinator-loop continueAfterTerminal.
+  ended: boolean;
+}
+
+// The owner's Allow / Deny of a blocked edit Wake (contract, Human override
+// and recovery). Allow persists the (caller, target, edit) grant, records
+// grant_approved, then re-runs availability: a launchable target becomes
+// accepted and its request moves blocked -> queued (grant_approved);
+// otherwise both stay blocked on the availability reason. Deny records
+// grant_denied and cancels the request (blocked -> cancelled, grant_denied);
+// no grant is created. Only offered while the reason is grant_required; a
+// repeated decision returns the stored outcome and changes nothing.
+export function decideWakeGrant(input: {
+  wakeId: string;
+  decision: 'allow' | 'deny';
+  caller: { category: CallerCategory; principal: Principal };
+  now?: number;
+}): GrantDecisionResult {
+  assertOwner(input.caller.category);
+  if (input.decision !== 'allow' && input.decision !== 'deny') throw new WakeRouterError('invalid_input', 'decision must be allow or deny.');
+  const now = input.now ?? Date.now();
+  return db.transaction((): GrantDecisionResult => {
+    const wake = getWake(input.wakeId);
+    if (!wake) throw new WakeSafetyError('not_found', `No Wake ${input.wakeId}.`);
+    const request = wake.work_request_id ? engine.getWorkRequest(wake.work_request_id) : undefined;
+    const settled = (entry: RoutedWake, grant: WakeGrant | null): GrantDecisionResult => ({
+      ...entry, decision: input.decision, grant,
+      runnable: entry.request?.state === 'queued', ended: entry.request?.terminal_at !== null && entry.request?.terminal_at !== undefined,
+    });
+    if (wake.status !== 'blocked' || wake.reason_code !== 'grant_required' || !request || request.state !== 'blocked') {
+      // Already decided this way: replay, not an error.
+      const pair = request ? activeEditGrant(wake.requester_agent_id, request.target_agent_id) ?? null : null;
+      if (input.decision === 'deny' && wake.reason_code === 'grant_denied') return { ...settled(routed(wake, false), null), runnable: false };
+      if (input.decision === 'allow' && pair && wake.reason_code !== 'grant_denied') return { ...settled(routed(wake, false), pair), runnable: false };
+      throw new WakeSafetyError('not_pending', 'This Wake is not waiting for an owner grant decision.');
     }
-    if (outcome.status !== 'accepted') return routed(wake, false);
-    engine.transitionWorkRequest(request.id, { from: 'blocked', to: 'queued', reason: 'target_available', now });
-    update.run('accepted', null, null, wake.target_agent_id, wake.target_name_snapshot, wake.work_request_id, wake.root_request_id, now, wake.id);
-    return routed(getWake(wake.id) as Wake, true);
+    const decidedBy = { kind: input.caller.principal.kind, id: input.caller.principal.id };
+    if (input.decision === 'deny') {
+      db.prepare("UPDATE wakes SET reason_code = 'grant_denied', reason = ?, updated_at = ? WHERE id = ?")
+        .run('The owner denied this edit Wake.', now, wake.id);
+      engine.appendEvent(request.id, { type: 'grant_denied', data: { wake_id: wake.id, caller_agent_id: wake.requester_agent_id, target_agent_id: request.target_agent_id, authority: 'edit', decided_by: decidedBy }, now });
+      engine.recordSafetyDecision(request.id, {
+        principalType: 'human_owner', principal: decidedBy, decision: 'denied', reasonCode: 'grant_denied', wakeId: wake.id,
+        snapshot: { safety_version: WAKE_SAFETY_VERSION, decision: 'deny', decided_by: decidedBy }, now,
+      });
+      engine.transitionWorkRequest(request.id, {
+        from: 'blocked', to: 'cancelled', reason: 'grant_denied', expectedVersion: request.version,
+        errorCode: 'grant_denied', errorMessage: 'The owner denied this edit Wake; no work ran.', now,
+      });
+      return settled(routed(getWake(wake.id) as Wake, false), null);
+    }
+    const { grant } = ensureEditGrant({ callerAgentId: wake.requester_agent_id, targetAgentId: request.target_agent_id, grantedBy: decidedBy, sourceWakeId: wake.id, now });
+    engine.appendEvent(request.id, { type: 'grant_approved', data: { wake_id: wake.id, grant_id: grant.id, caller_agent_id: grant.caller_agent_id, target_agent_id: grant.target_agent_id, authority: 'edit', decided_by: decidedBy }, now });
+    const envelope = (JSON.parse(wake.payload) as { envelope: WakeEnvelope }).envelope;
+    const target = bots.getById(request.target_agent_id) as Bot;
+    const parent = wake.parent_request_id ? engine.getWorkRequest(wake.parent_request_id) ?? null : null;
+    const outcome = checkTarget(envelope, wake.syntax, { id: target.id, name: target.name }, { agentId: wake.requester_agent_id, parent });
+    return settled(settleBlocked(wake, request, outcome, 'grant_approved', now), grant);
   }).immediate();
 }
 

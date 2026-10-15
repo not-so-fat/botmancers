@@ -73,10 +73,11 @@ import {
   resolveAndEnsureBotWorkdir,
 } from './agent-deck-settings';
 
-// Conversational delegation limits (NOT-395). Placeholder values until the
-// owner confirms them; change one line here. Tests assert these constants.
+// Conversational delegation limits (NOT-395). NOT-475: the legacy path tells
+// the same story as the approved Wake safety limits (depth 3, budget 12)
+// until it converges on Work Requests. Tests assert these constants.
 export const DELEGATION_MAX_DEPTH = 3;
-export const DELEGATION_MAX_DELEGATED_TURNS = 8;
+export const DELEGATION_MAX_DELEGATED_TURNS = 12;
 
 export const DELEGATION_DEPTH_REASON =
   `[Delegation limit] Depth limit reached (max ${DELEGATION_MAX_DEPTH} handoffs). No further handoff.`;

@@ -884,6 +884,65 @@ button.thread-name {
   cursor: pointer;
 }
 
+/* NOT-475: Wake safety outcomes share the runtime-failure status chrome;
+   the edge says whether the owner must act, work went ahead, or stopped. */
+.wake-notice {
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-left: 4px solid var(--ink-muted);
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: var(--field);
+  color: var(--ink);
+  font-family: var(--chrome);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.wake-notice-blocked,
+.wake-notice-allowed {
+  border-left-color: var(--accent);
+}
+
+.wake-notice-rejected,
+.wake-notice-denied,
+.wake-notice-stopped {
+  border-left-color: var(--danger);
+}
+
+.wake-notice-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.wake-notice-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+
+.wake-notice-blocked .wake-notice-label,
+.wake-notice-allowed .wake-notice-label {
+  color: var(--accent);
+}
+
+.wake-notice-rejected .wake-notice-label,
+.wake-notice-denied .wake-notice-label,
+.wake-notice-stopped .wake-notice-label {
+  color: var(--danger);
+}
+
+.wake-notice-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+}
+
 /* NOT-437: same-thread delegation trace. Deck event lines render in the
    thread's monospace run style at the existing message size; long ids and
    results wrap, never truncate. No event line is clickable. */

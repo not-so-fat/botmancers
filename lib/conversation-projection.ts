@@ -40,6 +40,17 @@
 // an operator), and retries exhausted (failed with reason
 // retries_exhausted). Abandoned Attempts, external cancel answers, and late
 // results stay internal evidence.
+//
+// NOT-475: Wake safety. A rejected Wake projects as wake_rejected from the
+// Wake row itself (it has no Work Request or engine event, so it never
+// shows request_* lifecycle text). A blocked Wake shows its reason, with
+// Allow / Deny actions only while it waits for the owner's grant; a later
+// reason change (wake_reblocked) shows again. A blocked request admitted by
+// the owner or by a recovered target projects as wake_accepted; Deny as
+// request_cancelled. A capacity deferral shows as request_queued waiting
+// for capacity, and a stopped lineage as lineage_stopped. Grant audit
+// events (grant_requested, grant_approved, grant_denied, grant_revoked) stay
+// internal.
 import type Database from 'better-sqlite3';
 import type { EngineEvent, WorkAttempt, WorkRequest, WorkRequestState } from './engine-store';
 
@@ -65,7 +76,9 @@ export type ConversationEventKind =
   | 'request_cancel_requested'
   | 'request_timed_out'
   | 'request_retry_scheduled'
-  | 'request_retries_exhausted';
+  | 'request_retries_exhausted'
+  | 'wake_rejected'
+  | 'lineage_stopped';
 
 export const CONVERSATION_EVENT_KINDS: ConversationEventKind[] = [
   'wake_accepted', 'wake_blocked', 'request_queued', 'request_blocked', 'request_running',
@@ -74,14 +87,16 @@ export const CONVERSATION_EVENT_KINDS: ConversationEventKind[] = [
   'finalization_preparing', 'finalization_committed', 'finalization_blocked',
   'finalization_failed', 'finalization_canceled', 'finalization_rejected',
   'request_cancel_requested', 'request_timed_out', 'request_retry_scheduled', 'request_retries_exhausted',
+  'wake_rejected', 'lineage_stopped',
 ];
 
 export interface ConversationEventRow {
   id: string;
   conversation_id: string;
-  engine_event_id: string;
+  // Null for a row projected from a rejected Wake.
+  engine_event_id: string | null;
   part: number;
-  request_id: string;
+  request_id: string | null;
   request_sequence: number;
   attempt_id: string | null;
   wake_id: string | null;
@@ -99,11 +114,11 @@ export interface ConversationEventView {
   eventId: string;
   seq: number;
   kind: ConversationEventKind;
-  requestId: string;
+  requestId: string | null;
   requestSequence: number;
   attemptId: string | null;
   wakeId: string | null;
-  engineEventId: string;
+  engineEventId: string | null;
   state: WorkRequestState | null;
   text: string;
   data: Record<string, unknown>;
@@ -135,6 +150,57 @@ function str(value: unknown): string | null {
 
 function withReason(text: string, reason: string | null): string {
   return reason ? `${text}: ${reason}` : text;
+}
+
+// A Wake's stored state reason is "<code>: <reason>".
+function wakeReason(stateReason: string | null): { code: string | null; reason: string | null } {
+  if (!stateReason) return { code: null, reason: null };
+  const match = /^([a-z_]+): ([\s\S]*)$/.exec(stateReason);
+  return match ? { code: match[1], reason: match[2] } : { code: null, reason: stateReason };
+}
+
+const GRANT_REQUIRED_TEXT = 'needs your approval for edit work';
+
+function wakeBlockedPart(target: string, code: string | null, reason: string | null, identity: Record<string, unknown>): Part {
+  const grant = code === 'grant_required';
+  const shown = grant ? GRANT_REQUIRED_TEXT : reason;
+  return {
+    kind: 'wake_blocked', attemptId: null,
+    text: shown ? `Wake blocked: ${target} — ${shown}` : `Wake blocked: ${target}`,
+    data: { ...identity, target_name: target, reason_code: code, reason, actions: grant ? ['allow', 'deny'] : [] },
+  };
+}
+
+interface WakeRow {
+  id: string;
+  source_conversation_id: string;
+  requested_target: string | null;
+  target_name_snapshot: string | null;
+  target_agent_id: string | null;
+  execution_kind: string | null;
+  requester_agent_id: string;
+  parent_request_id: string | null;
+  root_request_id: string | null;
+  depth: number;
+  status: string;
+  reason_code: string | null;
+  reason: string | null;
+  limit_value: number | null;
+  observed_value: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+// The one line a rejected Wake shows (contract, Denied, exhausted, and
+// unknown behavior). Pure over the Wake row, which is final once rejected.
+export function wakeRejectedText(wake: Pick<WakeRow, 'requested_target' | 'target_name_snapshot' | 'reason_code' | 'reason' | 'limit_value' | 'observed_value'>): string {
+  const target = wake.target_name_snapshot ?? wake.requested_target ?? 'an unnamed target';
+  switch (wake.reason_code) {
+    case 'untracked_lineage': return 'Wake not started: its source turn is not tracked work';
+    case 'depth_exceeded': return `Wake not started: ${target} — depth limit ${wake.limit_value ?? '?'} reached`;
+    case 'root_budget_exhausted': return `Wake not started: ${target} — this work already used ${wake.observed_value ?? wake.limit_value ?? '?'} Wakes`;
+    default: return wake.reason ? `Wake not started: ${target} — ${wake.reason}` : `Wake not started: ${target}`;
+  }
 }
 
 // Request state and the latest finished Attempt as of one event.
@@ -180,7 +246,11 @@ export function createConversationProjector(db: Db) {
           return [{
             kind: 'wake_accepted', attemptId: null,
             text: `Wake accepted: ${target} (${request.execution_kind})`,
-            data: { ...identity, target_name: target, requester_kind: request.requester_kind, requester_id: request.requester_id, parent_request_id: request.parent_request_id, depth: request.depth },
+            data: {
+              ...identity, target_name: target, requester_kind: request.requester_kind, requester_id: request.requester_id,
+              parent_request_id: request.parent_request_id, depth: request.depth, wake_depth: request.wake_depth,
+              grant_rule: str(policy.grant_rule), grant_id: str(policy.grant_id),
+            },
           }];
         }
         return [{ kind: 'request_queued', attemptId: null, text: 'Queued', data: { ...identity, requester_kind: request.requester_kind, requester_id: request.requester_id } }];
@@ -193,11 +263,8 @@ export function createConversationProjector(db: Db) {
           case 'blocked':
             // A Wake whose request started blocked (accepted as blocked).
             if (wake && from === 'queued' && before.state === 'blocked') {
-              return [{
-                kind: 'wake_blocked', attemptId: null,
-                text: withReason(`Wake blocked: ${target}`, reason),
-                data: { ...identity, target_name: target, reason },
-              }];
+              const parsed = wakeReason(reason);
+              return [wakeBlockedPart(target, parsed.code, parsed.reason, identity)];
             }
             return [{ kind: 'request_blocked', attemptId: null, text: withReason('Blocked', reason), data: { from, reason } }];
           case 'queued':
@@ -213,6 +280,19 @@ export function createConversationProjector(db: Db) {
                   from, reason, manual: data.manual === true, attempt_count: attempts, max_attempts: max,
                   next_eligible_at: data.next_eligible_at ?? null, delay_ms: data.delay_ms ?? null,
                   category: data.category ?? null, outcome: before.lastFinished?.outcome ?? null,
+                },
+              }];
+            }
+            // A blocked Wake admitted by the owner's grant or a recovered
+            // target: accepted now.
+            if (wake && from === 'blocked' && (reason === 'grant_approved' || reason === 'target_available')) {
+              return [{
+                kind: 'wake_accepted', attemptId: null,
+                text: `Wake accepted: ${target} (${request.execution_kind})`,
+                data: {
+                  ...identity, target_name: target, requester_kind: request.requester_kind, requester_id: request.requester_id,
+                  parent_request_id: request.parent_request_id, depth: request.depth, wake_depth: request.wake_depth,
+                  reason, grant_rule: data.grant_rule ?? null, grant_id: data.grant_id ?? null,
                 },
               }];
             }
@@ -268,7 +348,9 @@ export function createConversationProjector(db: Db) {
               text: to === 'failed'
                 ? withReason('Failed', message ?? code)
                 // A cancellation command names its own reason (set once).
-                : reason === 'cancel_requested' ? withReason('Cancelled', request.cancel_reason) : withReason('Cancelled', reason ?? message),
+                : reason === 'cancel_requested' ? withReason('Cancelled', request.cancel_reason)
+                  : reason === 'grant_denied' ? 'Cancelled: owner denied edit Wake'
+                    : withReason('Cancelled', reason ?? message),
               data: { success: false, error_code: code, error_message: message, reason, outcome: finished?.outcome ?? null },
             }];
           }
@@ -285,6 +367,27 @@ export function createConversationProjector(db: Db) {
           data: { phase: 'runtime_started', adapter, external_run_id: str(data.external_run_id), success: false },
         }];
       }
+      case 'wake_reblocked':
+        return [wakeBlockedPart(target, str(data.reason_code), str(data.reason), identity)];
+      case 'dispatch_deferred':
+        // Allowed work waiting for a global or per-target slot: queued,
+        // never a denial. Recorded once per wait.
+        return [{
+          kind: 'request_queued', attemptId: null,
+          text: 'Queued: waiting for capacity',
+          data: {
+            waiting_for: 'capacity', limit: str(data.reason), active_global: data.active_global ?? null, active_target: data.active_target ?? null,
+            max_global: data.max_global ?? null, max_per_target: data.max_per_target ?? null,
+          },
+        }];
+      case 'lineage_stopped':
+        return [{
+          kind: 'lineage_stopped', attemptId: null,
+          text: data.reason === 'continuation_budget_exhausted'
+            ? `Stopped: coordinator continuation limit ${data.limit ?? '?'} reached`
+            : withReason('Stopped', str(data.reason)),
+          data,
+        }];
       case 'cancel_requested': {
         const reason = str(data.reason);
         return [{
@@ -409,13 +512,38 @@ export function createConversationProjector(db: Db) {
     }).immediate();
   }
 
+  // One row per rejected Wake, keyed by the Wake. A rejection is final, so
+  // the row is a pure function of the Wake row and is written once.
+  function projectRejectedWakes(conversationId: string): number {
+    const rows = db.prepare(`
+      SELECT w.* FROM wakes w
+      WHERE w.source_conversation_id = ? AND w.status = 'rejected'
+        AND NOT EXISTS (SELECT 1 FROM conversation_events e WHERE e.id = 'wake:' || w.id || ':0')
+      ORDER BY w.created_at ASC, w.position ASC
+    `).all(conversationId) as WakeRow[];
+    let written = 0;
+    for (const wake of rows) {
+      const data = {
+        wake_id: wake.id, target_name: wake.target_name_snapshot ?? wake.requested_target, target_agent_id: wake.target_agent_id,
+        execution_kind: wake.execution_kind, requester_agent_id: wake.requester_agent_id, parent_request_id: wake.parent_request_id,
+        reason_code: wake.reason_code, reason: wake.reason,
+        limit: wake.limit_value, observed: wake.observed_value, work_request_id: null,
+      };
+      written += insertRow.run(
+        `wake:${wake.id}:0`, wake.source_conversation_id, null, 0, null, 0, null, wake.id, 'wake_rejected', null,
+        wakeRejectedText(wake), JSON.stringify(data), wake.updated_at, wake.created_at, wake.updated_at
+      ).changes;
+    }
+    return written;
+  }
+
   // Catches the whole conversation up. Safe to call on every read.
   function projectConversation(conversationId: string): number {
     return db.transaction((): number => {
       const ids = db.prepare(
         'SELECT id FROM work_requests WHERE source_conversation_id = ? ORDER BY created_at ASC, id ASC'
       ).all(conversationId) as { id: string }[];
-      return ids.reduce((sum, row) => sum + projectRequest(row.id), 0);
+      return ids.reduce((sum, row) => sum + projectRequest(row.id), 0) + projectRejectedWakes(conversationId);
     }).immediate();
   }
 
@@ -428,7 +556,7 @@ export function createConversationProjector(db: Db) {
   function listConversationEventRows(conversationId: string): ConversationEventRow[] {
     return db.prepare(`
       SELECT * FROM conversation_events WHERE conversation_id = ?
-      ORDER BY sort_at ASC, request_created_at ASC, request_id ASC, request_sequence ASC, part ASC
+      ORDER BY sort_at ASC, request_created_at ASC, COALESCE(request_id, wake_id) ASC, request_sequence ASC, part ASC
     `).all(conversationId) as ConversationEventRow[];
   }
 

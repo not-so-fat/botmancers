@@ -265,6 +265,12 @@ async function main() {
     const uiReplay = await uiPost(direct.id, { content: 'hello from the UI', idempotencyKey: 'ui-live' });
     assert(uiReplay.json.intake.replayed === true && raw.prepare('SELECT COUNT(*) AS n FROM processing_queue').get().n === before.processing_queue + 1, 'a UI replay enqueues no second turn');
 
+    // Earlier sections (and the stubbed UI loop) leave accepted work queued.
+    // FIFO admission (NOT-475) would run that older work on Hermy first, so
+    // it is cancelled before the API turn is measured.
+    for (const { id } of raw.prepare("SELECT id FROM work_requests WHERE state = 'queued'").all()) {
+      db.engine.transitionWorkRequest(id, { from: 'queued', to: 'cancelled', reason: 'test_cleanup' });
+    }
     before = counts();
     const apiLive = await apiPost(service, hermy.id, { content: 'hello from the API', idempotencyKey: 'api-live', wait: true });
     const apiLiveDelta = delta(before, counts());

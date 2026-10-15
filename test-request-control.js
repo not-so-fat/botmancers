@@ -576,6 +576,8 @@ async function retryScenarios() {
   // Retry command outcomes in the other states.
   const queued = queuedRequest(hermes.id, 'retry-queued');
   assert((await service.retryWorkRequest(queued.requestId)).outcome === 'already_queued', 'retry on queued: already_queued');
+  // FIFO admission: the older queued request would take Hermes's slot first.
+  await service.cancelWorkRequest(queued.requestId);
   useControlledAdapter();
   const active = service.acceptAgentMessage(PERSON, { agentId: hermes.id, content: 'Retry active', idempotencyKey: 'retry-active' });
   await waitFor(() => runsFor(active.accepted.requestId).length === 1, 'active adapter entered');
@@ -583,7 +585,6 @@ async function retryScenarios() {
   runsFor(active.accepted.requestId)[0].finish({ output: 'fine' });
   await active.dispatched;
   assert((await service.retryWorkRequest(active.accepted.requestId)).outcome === 'already_terminal', 'retry on completed: already_terminal');
-  await service.cancelWorkRequest(queued.requestId);
 
   // A retry is never claimed twice: competing dispatchers race for it.
   clock = Date.now();

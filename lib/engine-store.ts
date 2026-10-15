@@ -82,6 +82,46 @@ export interface WorkRequest {
   cancel_requested_at: number | null;
   cancel_requested_by: string | null;
   cancel_reason: string | null;
+  // NOT-475 lineage safety (migration 13 backfills older rows).
+  wake_depth: number;
+  root_principal_kind: string | null;
+  root_principal_id: string | null;
+}
+
+// NOT-475: how a caller was categorized at its strongest available
+// boundary (lib/wake-safety). Unknown callers never reach the store.
+export type SafetyPrincipalType = 'human_owner' | 'api_principal' | 'agent_principal' | 'engine';
+export type SafetyDecisionKind = 'allowed' | 'blocked' | 'denied';
+
+export interface SafetyDecisionInput {
+  principalType: SafetyPrincipalType;
+  principal: { kind: string; id: string };
+  decision: SafetyDecisionKind;
+  reasonCode?: string | null;
+  grantRule?: string | null;
+  grantId?: string | null;
+  wakeId?: string | null;
+  // The policy evaluated (limits, depth, budget, grant), stored verbatim.
+  snapshot: Record<string, unknown>;
+  now?: number;
+}
+
+export interface SafetyDecision {
+  id: string;
+  request_id: string;
+  sequence: number;
+  wake_id: string | null;
+  principal_type: SafetyPrincipalType;
+  principal_kind: string;
+  principal_id: string;
+  target_agent_id: string;
+  execution_kind: ExecutionKind;
+  decision: SafetyDecisionKind;
+  reason_code: string | null;
+  grant_rule: string | null;
+  grant_id: string | null;
+  policy_snapshot: string;
+  created_at: number;
 }
 
 export interface WorkAttempt {
@@ -1133,7 +1173,251 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 13,
+    name: 'wake_safety',
+    up: db => {
+      db.exec(`
+        -- NOT-475: Wake safety (docs/design/2026-10-14-wake-safety-contract.md,
+        -- lib/wake-safety). Lineage columns: wake_depth counts Agent-to-Agent
+        -- hops from the root (a continuation runs at the depth of the Agent it
+        -- continues) and the root principal is whoever started the lineage.
+        -- Both are fixed at intake.
+        ALTER TABLE work_requests ADD COLUMN wake_depth INTEGER NOT NULL DEFAULT 0 CHECK (wake_depth >= 0);
+        ALTER TABLE work_requests ADD COLUMN root_principal_kind TEXT;
+        ALTER TABLE work_requests ADD COLUMN root_principal_id TEXT;
+
+        -- Owner-approved edit grants for one (caller Agent, target Agent)
+        -- pair. Never seeded; revoked once, never rewritten or reused.
+        CREATE TABLE wake_grants (
+          id TEXT PRIMARY KEY,
+          caller_agent_id TEXT NOT NULL,
+          target_agent_id TEXT NOT NULL,
+          authority TEXT NOT NULL CHECK (authority = 'edit'),
+          granted_by_kind TEXT NOT NULL,
+          granted_by_id TEXT NOT NULL,
+          source_wake_id TEXT,
+          created_at INTEGER NOT NULL,
+          revoked_at INTEGER,
+          revoked_by_kind TEXT,
+          revoked_by_id TEXT,
+          CHECK ((revoked_at IS NULL) = (revoked_by_kind IS NULL) AND (revoked_at IS NULL) = (revoked_by_id IS NULL))
+        );
+        CREATE UNIQUE INDEX idx_wake_grants_active ON wake_grants(caller_agent_id, target_agent_id, authority) WHERE revoked_at IS NULL;
+        CREATE TRIGGER trg_wake_grants_immutable BEFORE UPDATE ON wake_grants
+        BEGIN
+          SELECT RAISE(ABORT, 'wake_grants are immutable except for one revocation')
+            WHERE OLD.revoked_at IS NOT NULL
+              OR NEW.id IS NOT OLD.id OR NEW.caller_agent_id IS NOT OLD.caller_agent_id
+              OR NEW.target_agent_id IS NOT OLD.target_agent_id OR NEW.authority IS NOT OLD.authority
+              OR NEW.granted_by_kind IS NOT OLD.granted_by_kind OR NEW.granted_by_id IS NOT OLD.granted_by_id
+              OR NEW.source_wake_id IS NOT OLD.source_wake_id OR NEW.created_at IS NOT OLD.created_at;
+        END;
+
+        -- One append-only row per safety evaluation of a Work Request: the
+        -- categorized caller principal, target, decision, matched grant rule
+        -- and grant, and the policy snapshot used. A request is runnable
+        -- only while its latest decision is allowed (lib/dispatcher). A
+        -- later policy change (a revoked grant, new limits) adds rows for
+        -- later evaluations and never rewrites these.
+        CREATE TABLE wake_safety_decisions (
+          id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL CHECK (sequence > 0),
+          wake_id TEXT,
+          principal_type TEXT NOT NULL CHECK (principal_type IN ('human_owner', 'api_principal', 'agent_principal', 'engine')),
+          principal_kind TEXT NOT NULL,
+          principal_id TEXT NOT NULL,
+          target_agent_id TEXT NOT NULL,
+          execution_kind TEXT NOT NULL,
+          decision TEXT NOT NULL CHECK (decision IN ('allowed', 'blocked', 'denied')),
+          reason_code TEXT,
+          grant_rule TEXT,
+          grant_id TEXT,
+          policy_snapshot TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (request_id, sequence),
+          CHECK (decision <> 'allowed' OR grant_rule IS NOT NULL),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        CREATE TRIGGER trg_wake_safety_decisions_fk BEFORE INSERT ON wake_safety_decisions
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: wake_safety_decisions.request_id')
+            WHERE NOT EXISTS (SELECT 1 FROM work_requests WHERE id = NEW.request_id);
+        END;
+        CREATE TRIGGER trg_wake_safety_decisions_immutable BEFORE UPDATE ON wake_safety_decisions
+        BEGIN
+          SELECT RAISE(ABORT, 'wake_safety_decisions are append-only');
+        END;
+
+        -- Depth and root-budget refusals name the limit and what was seen.
+        ALTER TABLE wakes ADD COLUMN limit_value INTEGER;
+        ALTER TABLE wakes ADD COLUMN observed_value INTEGER;
+
+        -- Rejected Wakes project from the Wake row (no Work Request, no
+        -- engine event), and a stopped lineage projects as its own kind.
+        CREATE TABLE conversation_events_v13 (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          engine_event_id TEXT,
+          part INTEGER NOT NULL CHECK (part >= 0),
+          request_id TEXT,
+          request_sequence INTEGER NOT NULL,
+          attempt_id TEXT,
+          wake_id TEXT,
+          kind TEXT NOT NULL CHECK (kind IN (
+            'wake_accepted', 'wake_blocked', 'request_queued', 'request_blocked', 'request_running',
+            'request_waiting', 'request_completed', 'request_failed', 'request_cancelled',
+            'question', 'result', 'artifact',
+            'finalization_preparing', 'finalization_committed', 'finalization_blocked',
+            'finalization_failed', 'finalization_canceled', 'finalization_rejected',
+            'request_cancel_requested', 'request_timed_out', 'request_retry_scheduled', 'request_retries_exhausted',
+            'wake_rejected', 'lineage_stopped'
+          )),
+          state TEXT CHECK (state IN (${stateList})),
+          text TEXT NOT NULL,
+          data TEXT NOT NULL,
+          sort_at INTEGER NOT NULL,
+          request_created_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (engine_event_id, part),
+          CHECK ((engine_event_id IS NULL) = (request_id IS NULL)),
+          CHECK (request_id IS NOT NULL OR wake_id IS NOT NULL),
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (engine_event_id) REFERENCES engine_events(id),
+          FOREIGN KEY (request_id) REFERENCES work_requests(id)
+        );
+        INSERT INTO conversation_events_v13 SELECT
+          id, conversation_id, engine_event_id, part, request_id, request_sequence, attempt_id, wake_id,
+          kind, state, text, data, sort_at, request_created_at, created_at
+        FROM conversation_events;
+        DROP TABLE conversation_events;
+        ALTER TABLE conversation_events_v13 RENAME TO conversation_events;
+        CREATE INDEX idx_conversation_events_order
+          ON conversation_events(conversation_id, sort_at, request_created_at, request_id, request_sequence, part);
+        CREATE INDEX idx_conversation_events_request ON conversation_events(request_id);
+        CREATE INDEX idx_conversation_events_wake ON conversation_events(wake_id);
+        CREATE TRIGGER trg_conversation_events_immutable BEFORE UPDATE ON conversation_events
+        BEGIN
+          SELECT RAISE(ABORT, 'conversation_events are immutable');
+        END;
+      `);
+      backfillWakeSafety(db);
+      db.exec(`
+        CREATE TRIGGER trg_work_requests_safety_immutable BEFORE UPDATE OF wake_depth, root_principal_kind, root_principal_id ON work_requests
+        WHEN NEW.wake_depth IS NOT OLD.wake_depth
+          OR NEW.root_principal_kind IS NOT OLD.root_principal_kind
+          OR NEW.root_principal_id IS NOT OLD.root_principal_id
+        BEGIN
+          SELECT RAISE(ABORT, 'work_requests wake depth and root principal are immutable');
+        END;
+      `);
+    },
+  },
 ];
+
+// Migration 13 backfill (contract, Migration). Lineage: an intake root is
+// depth 0, a Wake-created request its parent turn's depth + 1, a
+// continuation the depth of the Agent it continues (for a result, the
+// Wake's requester: one hop above the specialist). The root principal is
+// the root request's requester. A row whose root cannot be resolved gets
+// depth 0 and root principal unknown, which disables the self-wake
+// exemption for it. No grants are seeded. Requests already runnable
+// (queued, running, waiting) keep running under their frozen snapshot and
+// get one allowed decision with rule pre_safety_migration; blocked ones get
+// none, so their recovery goes through the new checks.
+function backfillWakeSafety(db: Db): void {
+  type Row = Pick<WorkRequest, 'id' | 'parent_request_id' | 'root_request_id' | 'wake_event_id' | 'requester_kind' | 'requester_id'
+    | 'policy_snapshot' | 'state' | 'target_agent_id' | 'execution_kind' | 'legacy_agent_request_id' | 'created_at'>;
+  const rows = db.prepare(`
+    SELECT id, parent_request_id, root_request_id, wake_event_id, requester_kind, requester_id, policy_snapshot, state,
+      target_agent_id, execution_kind, legacy_agent_request_id, created_at
+    FROM work_requests ORDER BY created_at ASC, rowid ASC
+  `).all() as Row[];
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const policyOf = (row: Row): Record<string, unknown> => {
+    try {
+      const parsed = JSON.parse(row.policy_snapshot) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  };
+  // A lineage resolves only when its whole parent chain exists, has no
+  // cycle, stays within the declared root, and ends at that root.
+  const resolvedChains = new Map<string, boolean>();
+  const chainResolves = (row: Row): boolean => {
+    const known = resolvedChains.get(row.id);
+    if (known !== undefined) return known;
+    const chain: Row[] = [];
+    const seen = new Set<string>();
+    let node: Row | undefined = row;
+    let ok = false;
+    while (node) {
+      if (seen.has(node.id) || node.root_request_id !== row.root_request_id) break;
+      const cached = resolvedChains.get(node.id);
+      if (cached !== undefined) { ok = cached; break; }
+      seen.add(node.id);
+      chain.push(node);
+      if (node.parent_request_id === null) { ok = node.id === row.root_request_id; break; }
+      node = byId.get(node.parent_request_id);
+    }
+    for (const member of chain) resolvedChains.set(member.id, ok);
+    return ok;
+  };
+  const depths = new Map<string, number>();
+  // Only called for resolved rows, whose chains are finite and acyclic.
+  const depthOf = (row: Row): number => {
+    const known = depths.get(row.id);
+    if (known !== undefined) return known;
+    let depth = 0;
+    const parent = row.parent_request_id ? byId.get(row.parent_request_id) : undefined;
+    if (parent) {
+      const parentDepth = depthOf(parent);
+      const policy = policyOf(row);
+      if (row.wake_event_id) depth = parentDepth + 1;
+      else if (policy.source === 'coordinator_continuation' && policy.continues === 'result') depth = Math.max(parentDepth - 1, 0);
+      else depth = parentDepth;
+    }
+    depths.set(row.id, depth);
+    return depth;
+  };
+  const update = db.prepare('UPDATE work_requests SET wake_depth = ?, root_principal_kind = ?, root_principal_id = ? WHERE id = ?');
+  const insertDecision = db.prepare(`
+    INSERT INTO wake_safety_decisions (
+      id, request_id, sequence, wake_id, principal_type, principal_kind, principal_id, target_agent_id, execution_kind,
+      decision, reason_code, grant_rule, grant_id, policy_snapshot, created_at
+    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, 'allowed', NULL, 'pre_safety_migration', NULL, ?, ?)
+  `);
+  // Terminal rows are immutable; their lineage columns are filled while
+  // the guard is lifted, then it is restored unchanged.
+  db.exec('DROP TRIGGER trg_work_requests_terminal');
+  for (const row of rows) {
+    const root = byId.get(row.root_request_id);
+    const resolved = !!root && chainResolves(row);
+    const depth = resolved ? depthOf(row) : 0;
+    const principal = resolved && root ? { kind: root.requester_kind, id: root.requester_id } : { kind: 'unknown', id: 'unknown' };
+    update.run(depth, principal.kind, principal.id, row.id);
+    if (row.legacy_agent_request_id === null && ['queued', 'running', 'waiting'].includes(row.state)) {
+      const policy = policyOf(row);
+      const principalType = policy.source === 'wake' ? 'agent_principal'
+        : policy.source === 'coordinator_continuation' ? 'engine'
+          : policy.surface === 'api' ? 'api_principal' : 'human_owner';
+      insertDecision.run(
+        randomUUID(), row.id, row.wake_event_id, principalType, row.requester_kind, row.requester_id, row.target_agent_id, row.execution_kind,
+        JSON.stringify({ safety_version: 1, migrated: true, root_principal: principal, wake_depth: depth, grant_rule: 'pre_safety_migration' }),
+        row.created_at
+      );
+    }
+  }
+  db.exec(`
+    CREATE TRIGGER trg_work_requests_terminal BEFORE UPDATE ON work_requests
+    WHEN OLD.state IN (${terminalList})
+    BEGIN
+      SELECT RAISE(ABORT, 'terminal work_requests are immutable');
+    END;
+  `);
+}
 
 // Requests whose events the running aggregate cleanup may delete, per
 // connection. Module-private: only deleteEngineRecords fills it, and it is
@@ -1158,7 +1442,9 @@ export const ENGINE_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 // Applies pending versioned migrations, then the idempotent legacy
 // backfill. Safe to call on every open and from concurrent processes:
 // each step runs in an IMMEDIATE transaction and rechecks its version.
-export function migrateEngineSchema(db: Db): void {
+// `through` stops after that version and skips the backfill; migration
+// tests use it to build a database as an older release left it.
+export function migrateEngineSchema(db: Db, options: { through?: number } = {}): void {
   purgeSet(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1170,6 +1456,7 @@ export function migrateEngineSchema(db: Db): void {
   const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE version = ?');
   const record = db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)');
   for (const migration of MIGRATIONS) {
+    if (options.through !== undefined && migration.version > options.through) return;
     db.transaction(() => {
       if (applied.get(migration.version)) return;
       migration.up(db);
@@ -1271,8 +1558,8 @@ export function backfillLegacyAgentRequests(db: Db): number {
         id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
         intent, execution_kind, tool_profile, parent_request_id, root_request_id, wake_event_id, depth,
         idempotency_key, request_hash, policy_snapshot, state, state_reason, result, error_code, error_message,
-        version, legacy_agent_request_id, created_at, updated_at, terminal_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation', 'readonly', NULL, ?, NULL, 0, ?, ?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?)
+        version, legacy_agent_request_id, created_at, updated_at, terminal_at, root_principal_kind, root_principal_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation', 'readonly', NULL, ?, NULL, 0, ?, ?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
     `);
     const insertEvent = db.prepare(
       'INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, data, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?)'
@@ -1304,7 +1591,7 @@ export function backfillLegacyAgentRequests(db: Db): number {
         row.state === 'completed' ? JSON.stringify({ reply_message_id: row.reply_message_id }) : null,
         row.state === 'failed' ? row.failure_code : null,
         row.state === 'failed' ? row.failure_message : null,
-        row.id, row.created_at, row.updated_at, row.updated_at
+        row.id, row.created_at, row.updated_at, row.updated_at, row.principal_kind, row.principal_id
       );
       let sequence = 0;
       for (const event of legacyEvents.all(row.id) as { type: string; data: string | null; created_at: number }[]) {
@@ -1345,6 +1632,16 @@ export interface CreateWorkRequestInput {
   // Attempt). Neither is part of the idempotency hash.
   deadlineAt?: number | null;
   retryPolicy?: RetryPolicy;
+  // NOT-475: the lineage principal of a root request (default: the
+  // requester; a child inherits its parent's), its wake depth (default: a
+  // Wake-created child is one deeper than its parent, any other child at
+  // the parent's depth), the safety decision recorded with it in the same
+  // transaction, and the safety fields added to policy_snapshot. None is
+  // part of the idempotency hash.
+  rootPrincipal?: { kind: string; id: string };
+  wakeDepth?: number;
+  safety?: SafetyDecisionInput;
+  safetySnapshot?: Record<string, unknown>;
   now?: number;
 }
 
@@ -1500,14 +1797,19 @@ export function createEngineStore(db: Db) {
         const id = randomUUID();
         let rootId: string = id;
         let depth = 0;
+        let wakeDepth = 0;
+        let rootPrincipal = input.rootPrincipal ?? input.requester;
         if (input.parentRequestId) {
           const parent = getRequest.get(input.parentRequestId) as WorkRequest | undefined;
           if (!parent) throw new EngineStoreError('not_found', 'Parent work request not found.');
           rootId = parent.root_request_id;
           depth = parent.depth + 1;
+          wakeDepth = input.wakeEventId ? parent.wake_depth + 1 : parent.wake_depth;
+          rootPrincipal = { kind: parent.root_principal_kind ?? 'unknown', id: parent.root_principal_id ?? 'unknown' };
         }
+        if (input.wakeDepth !== undefined) wakeDepth = input.wakeDepth;
         const state = input.initialState ?? 'queued';
-        const policy = JSON.stringify({ ...(callerPolicy ?? {}), tool_profile: input.toolProfile });
+        const policy = JSON.stringify({ ...(callerPolicy ?? {}), ...(input.safetySnapshot ?? {}), tool_profile: input.toolProfile });
         const defaults = requestControlDefaultsFromEnv();
         const retryPolicy = input.retryPolicy ?? defaults.retryPolicy;
         const deadlineAt = input.deadlineAt !== undefined ? input.deadlineAt : defaults.deadlineMs === null ? null : now + defaults.deadlineMs;
@@ -1516,13 +1818,13 @@ export function createEngineStore(db: Db) {
             id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
             intent, execution_kind, tool_profile, parent_request_id, root_request_id, wake_event_id, depth,
             idempotency_key, request_hash, policy_snapshot, state, state_reason, version, created_at, updated_at,
-            deadline_at, retry_policy
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            deadline_at, retry_policy, wake_depth, root_principal_kind, root_principal_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           id, input.sourceConversationId, input.sourceEventId, input.requester.kind, input.requester.id, input.targetAgentId,
           input.intent, input.executionKind, input.toolProfile, input.parentRequestId ?? null, rootId, input.wakeEventId ?? null, depth,
           input.idempotencyKey, hash, policy, state, input.stateReason ?? null, now, now,
-          deadlineAt, JSON.stringify(retryPolicy)
+          deadlineAt, JSON.stringify(retryPolicy), wakeDepth, rootPrincipal.kind, rootPrincipal.id
         );
         insertEvent(id, 'accepted', {
           state, execution_kind: input.executionKind, tool_profile: input.toolProfile,
@@ -1532,12 +1834,47 @@ export function createEngineStore(db: Db) {
         // rule only (no prompt text, sessions, or credentials).
         if (input.executionPolicy) insertEvent(id, 'policy_selected', { ...input.executionPolicy }, null, now);
         if (state === 'blocked') insertEvent(id, 'state_changed', { from: 'queued', to: 'blocked', reason: input.stateReason ?? null }, null, now);
+        if (input.safety) store.recordSafetyDecision(id, { ...input.safety, now: input.safety.now ?? now });
         return { request: requireRequest(id), created: true };
       }).immediate();
     },
 
     getWorkRequest(id: string): WorkRequest | undefined {
       return getRequest.get(id) as WorkRequest | undefined;
+    },
+
+    // NOT-475: appends one safety decision for a request. Decisions are
+    // never updated; the latest one is the request's current authority.
+    recordSafetyDecision(requestId: string, input: SafetyDecisionInput): SafetyDecision {
+      if (!['human_owner', 'api_principal', 'agent_principal', 'engine'].includes(input.principalType)) {
+        throw new EngineStoreError('invalid_input', 'A categorized principal is required.');
+      }
+      if (!nonEmpty(input.principal?.kind) || !nonEmpty(input.principal?.id)) throw new EngineStoreError('invalid_input', 'A principal is required.');
+      if (!['allowed', 'blocked', 'denied'].includes(input.decision)) throw new EngineStoreError('invalid_input', 'Unknown safety decision.');
+      if (input.decision === 'allowed' && !nonEmpty(input.grantRule)) throw new EngineStoreError('invalid_input', 'An allowed decision names its grant rule.');
+      return db.transaction((): SafetyDecision => {
+        const request = requireRequest(requestId);
+        const id = randomUUID();
+        db.prepare(`
+          INSERT INTO wake_safety_decisions (
+            id, request_id, sequence, wake_id, principal_type, principal_kind, principal_id, target_agent_id, execution_kind,
+            decision, reason_code, grant_rule, grant_id, policy_snapshot, created_at
+          ) SELECT ?, ?, COALESCE(MAX(sequence), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM wake_safety_decisions WHERE request_id = ?
+        `).run(
+          id, requestId, input.wakeId ?? null, input.principalType, input.principal.kind, input.principal.id,
+          request.target_agent_id, request.execution_kind, input.decision, input.reasonCode ?? null,
+          input.grantRule ?? null, input.grantId ?? null, JSON.stringify(input.snapshot), input.now ?? Date.now(), requestId
+        );
+        return db.prepare('SELECT * FROM wake_safety_decisions WHERE id = ?').get(id) as SafetyDecision;
+      }).immediate();
+    },
+
+    listSafetyDecisions(requestId: string): SafetyDecision[] {
+      return db.prepare('SELECT * FROM wake_safety_decisions WHERE request_id = ? ORDER BY sequence ASC').all(requestId) as SafetyDecision[];
+    },
+
+    latestSafetyDecision(requestId: string): SafetyDecision | undefined {
+      return db.prepare('SELECT * FROM wake_safety_decisions WHERE request_id = ? ORDER BY sequence DESC LIMIT 1').get(requestId) as SafetyDecision | undefined;
     },
 
     // Compare-and-set: succeeds only when the stored state (and version,
@@ -1580,6 +1917,22 @@ export function createEngineStore(db: Db) {
         if (terminal && current.legacy_agent_request_id === null) {
           db.prepare('INSERT OR IGNORE INTO terminal_followups (request_id, created_at) VALUES (?, ?)').run(id, now);
         }
+        return requireRequest(id);
+      }).immediate();
+    },
+
+    // NOT-475: a blocked request whose reason changed without a state
+    // change (a Wake now waiting on its target instead of the owner, or the
+    // reverse). Compare-and-set on the blocked state; the reason and its
+    // event commit together.
+    reblockWorkRequest(id: string, input: { reason: string; type: string; data?: Record<string, unknown>; now?: number }): WorkRequest {
+      return db.transaction(() => {
+        const now = input.now ?? Date.now();
+        const changed = db.prepare(
+          "UPDATE work_requests SET state_reason = ?, version = version + 1, updated_at = ? WHERE id = ? AND state = 'blocked'"
+        ).run(input.reason, now, id);
+        if (changed.changes !== 1) throw new EngineStoreError('stale_state', `Work request ${id} is not blocked.`);
+        insertEvent(id, input.type, input.data ?? {}, null, now);
         return requireRequest(id);
       }).immediate();
     },
@@ -1829,6 +2182,8 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   db.prepare(`DELETE FROM candidate_manifests WHERE request_id IN ${inSet}`).run(list(requests));
   db.prepare(`DELETE FROM attempt_finalization_baselines WHERE request_id IN ${inSet}`).run(list(requests));
   db.prepare(`DELETE FROM conversation_projection_cursors WHERE request_id IN ${inSet}`).run(list(requests));
+  // NOT-475: safety decisions go with the requests they authorized.
+  db.prepare(`DELETE FROM wake_safety_decisions WHERE request_id IN ${inSet}`).run(list(requests));
   // NOT-469: dispatch state goes with the requests it names.
   db.prepare(`DELETE FROM dispatch_leases WHERE request_id IN ${inSet}`).run(list(requests));
   db.prepare(`DELETE FROM attempt_launch_intents WHERE request_id IN ${inSet}`).run(list(requests));
@@ -1860,7 +2215,11 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
       throw new Error('Engine records could not be removed: unexpected attempt/binding reference cycle.');
     }
   }
-  // Wakes go with the requests they created or descend from.
+  // Wakes go with the requests they created or descend from (with their
+  // own projected rows, which name no request).
+  db.prepare(
+    `DELETE FROM conversation_events WHERE request_id IS NULL AND wake_id IN (SELECT id FROM wakes WHERE work_request_id IN ${inSet} OR parent_request_id IN ${inSet} OR root_request_id IN ${inSet})`
+  ).run(list(requests), list(requests), list(requests));
   db.prepare(
     `DELETE FROM wakes WHERE work_request_id IN ${inSet} OR parent_request_id IN ${inSet} OR root_request_id IN ${inSet}`
   ).run(list(requests), list(requests), list(requests));
@@ -1871,6 +2230,7 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
 
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
   db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM conversation_events WHERE conversation_id = ? AND request_id IS NULL').run(conversationId);
   db.prepare('DELETE FROM wakes WHERE source_conversation_id = ?').run(conversationId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE source_conversation_id = ?',
@@ -1883,7 +2243,11 @@ export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
   // A Wake the Agent requested stays while its request (to another Agent)
   // survives; deleteEngineRecords removes it with that request. Only the
   // Agent's unrouted Wakes, which nothing references, go now.
+  db.prepare(`DELETE FROM conversation_events WHERE request_id IS NULL AND wake_id IN (
+    SELECT id FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL))`).run(agentId, agentId);
   db.prepare('DELETE FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL)').run(agentId, agentId);
+  // NOT-475: deleting either Agent deletes its grants.
+  db.prepare('DELETE FROM wake_grants WHERE caller_agent_id = ? OR target_agent_id = ?').run(agentId, agentId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE target_agent_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE agent_id = ?',

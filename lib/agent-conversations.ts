@@ -56,6 +56,8 @@ import { authorizeWorkRequest } from './execution-policy';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 import type { ConversationEventView } from './conversation-projection';
 import { continueAfterFinalization, continueAfterTerminal, pendingCoordinatorWork, resumeBindingFor, turnContext } from './coordinator-loop';
+import { decideWakeGrant, retryWake, type GrantDecisionResult, type RoutedWake } from './wake-router';
+import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-safety';
 import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
@@ -248,6 +250,7 @@ const INTAKE_TO_API: Record<IntakeErrorCode, AgentApiErrorCode> = {
   conversation_not_writable: 'conversation_not_writable',
   target_not_found: 'agent_not_found',
   idempotency_conflict: 'idempotency_conflict',
+  unknown_principal: 'unauthenticated',
   intake_failed: 'internal_error',
 };
 
@@ -402,7 +405,9 @@ class DeferCommit extends Error {
 // capacity stays queued and is drained when a lease is released.
 async function runDispatch(requestId: string): Promise<void> {
   const claimed = await runTurn(requestId);
-  afterRequest(requestId, claimed);
+  // A request that left the queue without a claim (failed before launch)
+  // may have been holding back younger deferred work: drain it too.
+  afterRequest(requestId, claimed || engine.getWorkRequest(requestId)?.state !== 'queued');
 }
 
 function afterRequest(requestId: string, released: boolean): void {
@@ -411,18 +416,8 @@ function afterRequest(requestId: string, released: boolean): void {
   if (released) drainDeferred();
 }
 
-// Queued requests whose last event is a capacity deferral, oldest first.
-function deferredRequestIds(): string[] {
-  return (db.prepare(`
-    SELECT w.id FROM work_requests w
-    WHERE w.state = 'queued'
-      AND (SELECT e.type FROM engine_events e WHERE e.request_id = w.id ORDER BY e.sequence DESC LIMIT 1) = 'dispatch_deferred'
-    ORDER BY w.created_at ASC, w.id ASC
-  `).all() as { id: string }[]).map(row => row.id);
-}
-
 function drainDeferred(): void {
-  for (const id of deferredRequestIds()) if (!inFlight.has(id)) void startAgentDispatch(id);
+  for (const id of dispatcher.deferredRequestIds()) if (!inFlight.has(id)) void startAgentDispatch(id);
 }
 
 // Whether this call claimed (and so later released or handed off) a lease.
@@ -490,10 +485,14 @@ async function runTurn(requestId: string): Promise<boolean> {
   // (its own timeout or the request deadline, whichever is first) is
   // recorded in the launch snapshot and passed to the adapter.
   const controller = new AbortController();
+  let waitingBehind: string | undefined;
   try {
     started = engine.transaction(() => {
       const claim = dispatcher.claim(requestId, { expectedVersion: request.version, data: { agent } });
-      if (!claim.ok) return null;
+      if (!claim.ok) {
+        waitingBehind = claim.blockedBy;
+        return null;
+      }
       if (prepared) {
         const startedAt = dispatcher.now();
         const deadlineAt = dispatcher.control.attemptDeadlineFor(claim.request, startedAt);
@@ -516,7 +515,13 @@ async function runTurn(requestId: string): Promise<boolean> {
     if (error instanceof EngineStoreError && error.code === 'stale_state') return false;
     throw error;
   }
-  if (!started) return false;
+  if (!started) {
+    // NOT-475: the slot belongs to older queued work; make sure it is
+    // dispatched (joined when already running). This request stays
+    // deferred and drains when a lease is released.
+    if (waitingBehind) void startAgentDispatch(waitingBehind);
+    return false;
+  }
   const { lease } = started;
   if (!prepared || typeof started.attempt === 'string') {
     const failure = unprepared ?? new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
@@ -1060,6 +1065,36 @@ export async function retryAgentRequest(principal: Principal, requestId: string)
   } catch (error) {
     return controlError(error);
   }
+}
+
+// ---------------------------------------------------------------------
+// NOT-475: the owner's grant commands. The decision commits first (owner
+// only, lib/wake-router decideWakeGrant); then an admitted request is
+// dispatched, and a denied one runs its loop follow-up so the coordinator
+// is told no work ran.
+
+export interface WakeCommandCaller {
+  category: CallerCategory;
+  principal: Principal;
+}
+
+export function decideWakeGrantCommand(wakeId: string, decision: 'allow' | 'deny', caller: WakeCommandCaller): GrantDecisionResult {
+  const result = decideWakeGrant({ wakeId, decision, caller });
+  if (result.request && result.runnable) void startAgentDispatch(result.request.id);
+  if (result.request && result.ended) for (const next of continueAfterTerminal(result.request.id)) void startAgentDispatch(next);
+  return result;
+}
+
+// Re-checks a blocked or unavailable Wake (grant, target availability)
+// and dispatches its request once it is queued.
+export function retryWakeCommand(wakeId: string): RoutedWake {
+  const result = retryWake(wakeId);
+  if (result.request?.state === 'queued') void startAgentDispatch(result.request.id);
+  return result;
+}
+
+export function revokeWakeGrantCommand(grantId: string, caller: WakeCommandCaller): { grant: WakeGrant; revoked: boolean } {
+  return revokeWakeGrant(grantId, caller);
 }
 
 const inFlight = new Map<string, Promise<void>>();

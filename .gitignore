@@ -10,3 +10,6 @@ botmancers.db-wal
 tsconfig.tsbuildinfo
 *.tsbuildinfo
 .agent-dealer-visual-qa
+botmancers-test-migration.db
+botmancers-test-migration.db-shm
+botmancers-test-migration.db-wal

@@ -8,9 +8,9 @@
 //      turn that emits implementation, review, or revision Wakes creates
 //      exactly those requests and nothing else;
 //   2. tells the replying Agent, in one read-only continuation turn, about
-//      any of those Wakes that did not start (rejected, unavailable,
-//      blocked, or not routable at all), so it never assumes work happened
-//      that did not;
+//      any of those Wakes that did not start (rejected, unavailable, or not
+//      routable at all), so it never assumes work happened that did not;
+//      a blocked Wake is reported only once it is denied (NOT-475);
 //   3. returns a Wake-created request's terminal result to the Agent that
 //      woke it (policy_snapshot.return_to) as exactly one read-only
 //      continuation turn carrying the canonical Work Request reference and
@@ -45,6 +45,7 @@ import db, { bots, engine, type Message } from './db';
 import type { SessionBinding, WorkRequest } from './engine-store';
 import { selectExecutionPolicy } from './execution-policy';
 import { routeAgentWakes, WakeRouterError, type RoutedWake } from './wake-router';
+import { WAKE_SAFETY_VERSION, wakeSafetyLimits } from './wake-safety';
 import type { DispatchHistoryEntry } from './agent-dispatch';
 import {
   candidateEvidence,
@@ -54,9 +55,9 @@ import {
   type DecisionOutcome,
 } from './agent-deck-finalization';
 
-// Continuation turns per root lineage. Placeholder value until the owner
-// confirms it; change one line here.
-export const COORDINATOR_MAX_CONTINUATIONS = 32;
+// NOT-475: continuation turns per root lineage, derived from the approved
+// root budget (2 x 12 = 24), not a separate setting.
+export const COORDINATOR_MAX_CONTINUATIONS = wakeSafetyLimits().maxContinuations;
 
 // The engine itself requests continuation turns.
 export const ENGINE_REQUESTER = { kind: 'service', id: 'botmancers-engine' } as const;
@@ -232,12 +233,15 @@ function continuation(spec: ContinuationSpec): WorkRequest | null {
   const used = db.prepare(
     'SELECT COUNT(*) AS n FROM work_requests WHERE root_request_id = ? AND requester_kind = ? AND requester_id = ?'
   ).get(spec.parent.root_request_id, ENGINE_REQUESTER.kind, ENGINE_REQUESTER.id) as { n: number };
-  if (used.n >= COORDINATOR_MAX_CONTINUATIONS) {
-    const noted = db.prepare("SELECT 1 FROM engine_events WHERE request_id = ? AND type = 'continuation_limited'").get(spec.parent.id);
+  const limit = wakeSafetyLimits().maxContinuations;
+  if (used.n >= limit) {
+    // NOT-475: the lineage stops; recorded (and projected) once, on the
+    // request whose follow-up would have continued it.
+    const noted = db.prepare("SELECT 1 FROM engine_events WHERE request_id = ? AND type = 'lineage_stopped'").get(spec.parent.id);
     if (!noted) {
       engine.appendEvent(spec.parent.id, {
-        type: 'continuation_limited',
-        data: { limit: COORDINATOR_MAX_CONTINUATIONS, continues: spec.continues },
+        type: 'lineage_stopped',
+        data: { reason: 'continuation_budget_exhausted', limit, observed: used.n, continues: spec.continues, coordinator_agent_id: spec.coordinatorId },
         now: spec.now,
       });
     }
@@ -245,6 +249,17 @@ function continuation(spec: ContinuationSpec): WorkRequest | null {
   }
   const selection = selectExecutionPolicy({ entryPoint: 'continuation', executionKind: 'conversation' });
   if (!selection.ok) return null;
+  // A continuation runs at the depth of the Agent it continues: a result
+  // returns one hop up, to the Agent that woke the specialist.
+  const wakeDepth = spec.continues === 'result' ? Math.max(spec.parent.wake_depth - 1, 0) : spec.parent.wake_depth;
+  const snapshot = {
+    safety_version: WAKE_SAFETY_VERSION,
+    root_principal: { kind: spec.parent.root_principal_kind ?? 'unknown', id: spec.parent.root_principal_id ?? 'unknown' },
+    wake_depth: wakeDepth,
+    grant_rule: 'readonly_default',
+    grant_id: null,
+    continuations: { used: used.n + 1, limit },
+  };
   return engine.createOrGetWorkRequest({
     sourceConversationId: spec.conversationId,
     sourceEventId: spec.sourceEventId,
@@ -257,6 +272,11 @@ function continuation(spec: ContinuationSpec): WorkRequest | null {
     parentRequestId: spec.parent.id,
     policy: { source: 'coordinator_continuation', continues: spec.continues, work_requests: spec.subjects },
     executionPolicy: selection.policy,
+    wakeDepth,
+    safetySnapshot: snapshot,
+    safety: {
+      principalType: 'engine', principal: ENGINE_REQUESTER, decision: 'allowed', grantRule: 'readonly_default', snapshot, now: spec.now,
+    },
     now: spec.now,
   }).request;
 }
@@ -305,7 +325,10 @@ export function continueAfterTerminal(requestId: string, now: number = Date.now(
           now,
         }));
       }
-      const unstarted = routed.filter(entry => entry.wake.status !== 'accepted');
+      // NOT-475: a blocked Wake (waiting for the owner's grant or for its
+      // target) is not reported: nothing is said until it runs, is denied
+      // (a result continuation), or is stopped.
+      const unstarted = routed.filter(entry => entry.wake.status === 'rejected' || entry.wake.status === 'unavailable');
       if (failure || unstarted.length > 0) {
         queued(continuation({
           key: `continuation:v1:wakes:${reply.id}`,

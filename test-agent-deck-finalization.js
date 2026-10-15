@@ -63,6 +63,11 @@ const coordinator = bots.create({ name: 'Coordinator 487', title: 'Coordinator',
 const developer = bots.create({ name: 'Developer 487', title: 'Developer', description: '', agent: 'codex', deck_id: 'deck-dev', working_directory: FIXTURE_WORKTREE });
 const reviewer = bots.create({ name: 'Reviewer 487', title: 'Reviewer', description: '', agent: 'claude', deck_id: 'deck-review', working_directory: FIXTURE_WORKTREE });
 const other = bots.create({ name: 'Other 487', title: 'Other', description: '', agent: 'cursor', deck_id: 'deck-other' });
+// NOT-475: the owner already allowed the coordinator's edit Wakes to the developer.
+{
+  const safety = jiti('./lib/wake-safety.ts');
+  safety.ensureEditGrant({ callerAgentId: coordinator.id, targetAgentId: developer.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
+}
 const conversation = conversations.getByBotId(coordinator.id);
 let clock = 1800000000000;
 
