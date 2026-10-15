@@ -6,8 +6,10 @@
 // named, exist, be the root of a clean Git repository, carry the
 // .botmancers-disposable marker at its root, and lie outside this
 // repository, the user's home directory itself, ~/.botmancers, and the
-// filesystem root. Captured evidence is redacted before it is printed or
-// written.
+// filesystem root. The server URL may carry no credentials, and the evidence
+// file may not land in the workdir or any protected Botmancers state, nor
+// overwrite an existing file. Captured evidence is redacted before it is
+// printed or written.
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
@@ -70,9 +72,47 @@ function validateDisposableWorkdir(workdir, { home = os.userInfo().homedir, repo
   return resolved;
 }
 
+// Returns the normalized http(s) server URL or throws a GuardError. Userinfo,
+// a query, or a fragment could carry credentials into the evidence.
+function validateServerUrl(raw) {
+  let url;
+  try { url = new URL(raw); } catch { throw new GuardError('invalid_argument', '--server must be an http(s) URL.'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new GuardError('invalid_argument', '--server must be an http(s) URL.');
+  if (url.username || url.password) throw new GuardError('server_credentials', '--server must not embed credentials (user:password@); pass the token in AGENT_DECK_RUN_TOKEN.');
+  if (url.search || url.hash) throw new GuardError('server_credentials', '--server must not carry a query string or fragment.');
+  return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+}
+
+// Returns the resolved evidence file path or throws a GuardError. The file
+// must be new, in an existing directory, and outside the workdir, this
+// repository, ~/.botmancers, and every configured production path, so that
+// writing it cannot change the state the smoke has just checked.
+function validateEvidencePath(file, { workdir, protectedPaths = [], home = os.userInfo().homedir, repoRoot = REPO_ROOT } = {}) {
+  if (typeof file !== 'string' || file.trim() === '') throw new GuardError('evidence_invalid', '--evidence needs a file path.');
+  const parent = path.dirname(path.resolve(file.trim()));
+  let stat;
+  try { stat = fs.statSync(parent); } catch { throw new GuardError('evidence_invalid', `The evidence directory ${parent} does not exist.`); }
+  if (!stat.isDirectory()) throw new GuardError('evidence_invalid', `The evidence directory ${parent} is not a directory.`);
+  const target = path.join(real(parent), path.basename(file.trim()));
+  const guarded = [
+    ['the smoke workdir', workdir],
+    ['the Botmancers repository', repoRoot],
+    ['the Botmancers data directory ~/.botmancers', path.join(real(home), '.botmancers')],
+    ...protectedPaths.map(entry => ['configured Botmancers state', entry]),
+  ];
+  for (const [label, entry] of guarded) {
+    if (entry && within(target, real(entry))) throw new GuardError('evidence_protected', `The evidence file ${target} would be written inside ${label} (${real(entry)}).`);
+  }
+  let exists = true;
+  try { fs.lstatSync(target); } catch { exists = false; }
+  if (exists) throw new GuardError('evidence_exists', `The evidence file ${target} already exists; the smoke never overwrites a file.`);
+  return target;
+}
+
 // Names whose values are secrets wherever they appear.
 const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL|AUTHORIZATION|BEARER)/i;
 const SECRET_PATTERNS = [
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, '$1[REDACTED]@'],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [REDACTED]'],
   [/\badg_[A-Za-z0-9_-]+/g, '[REDACTED]'],
   [/\bsk-[A-Za-z0-9_-]{8,}/g, '[REDACTED]'],
@@ -109,4 +149,4 @@ function redact(value, secrets) {
   return value;
 }
 
-module.exports = { DISPOSABLE_MARKER, GuardError, redact, redactText, secretValues, validateDisposableWorkdir };
+module.exports = { DISPOSABLE_MARKER, GuardError, redact, redactText, secretValues, validateDisposableWorkdir, validateEvidencePath, validateServerUrl };

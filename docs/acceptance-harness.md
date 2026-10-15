@@ -71,9 +71,12 @@ working tree. It never assumes a developer server on port 43123.
   `rm -rf "${TMPDIR:-/tmp}"/botmancers-acceptance-*`.
 
 The runner takes a snapshot of the configured production paths before and after
-the run: `./botmancers.db*`, `./files`, `~/.botmancers`, and any
-`BOTMANCERS_DB_PATH` or `BOTMANCERS_FILES_ROOT` outside the temp directory. It
-also records this repository's `git status`. The run fails if anything changed.
+the run: `./botmancers.db*`, `./files`, `~/.botmancers`, and any explicitly set
+`BOTMANCERS_DB_PATH` (with its `-wal`/`-shm`) or `BOTMANCERS_FILES_ROOT`,
+wherever it lives. Directories are walked to any depth, and each file is
+recorded by size, mtime, ctime, and a content digest (files over 64 MB by
+metadata only). It also records this repository's `git status`. The run fails
+if anything changed.
 
 ## Scenarios
 
@@ -122,6 +125,12 @@ unless all of the following hold:
 - The workdir is outside this repository, is not your home directory (and does
   not contain it), is not inside `~/.botmancers`, and is not `/`.
 - `AGENT_DECK_RUN_TOKEN` and `--deck` are set.
+- `--server` is an http(s) URL with no `user:password@`, query string, or
+  fragment. Pass the token only through `AGENT_DECK_RUN_TOKEN`.
+- The evidence file (`--evidence` or the default) is new, its directory
+  exists, and it is outside the workdir, this repository, `~/.botmancers`, and
+  every configured production path. Writing it therefore cannot change the
+  state the smoke verifies, and it never overwrites an existing file.
 
 To prepare a disposable workdir:
 
@@ -150,8 +159,8 @@ Before anything is printed or written, the evidence is redacted:
 
 - The token, and every environment value whose name looks secret (`*TOKEN*`,
   `*SECRET*`, `*API_KEY*`, and similar), is replaced.
-- So are `Bearer …`, `adg_…`, `sk-…`, `gh?_…`, and `xox?-…` patterns, along with
-  any field whose name looks secret.
+- So are `Bearer …`, `adg_…`, `sk-…`, `gh?_…`, and `xox?-…` patterns, URL
+  userinfo (`scheme://user:pass@`), and any field whose name looks secret.
 
 The harness root is removed after a passing smoke and kept after a failing one.
 `npm run test:acceptance:harness` runs the guardrails and the whole smoke flow

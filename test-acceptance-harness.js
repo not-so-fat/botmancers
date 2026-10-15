@@ -194,6 +194,36 @@ async function main() {
     assert(got === expected, `${label}: ${expected} (got ${got})`);
   }
 
+  const serverCases = [
+    ['http://user:pass@127.0.0.1:1111', 'server_credentials'],
+    ['http://token@127.0.0.1:1111', 'server_credentials'],
+    ['http://127.0.0.1:1111/?token=abc', 'server_credentials'],
+    ['http://127.0.0.1:1111/#secret', 'server_credentials'],
+    ['ftp://127.0.0.1', 'invalid_argument'],
+    ['not a url', 'invalid_argument'],
+    ['http://127.0.0.1:1111/', 'ok'],
+  ];
+  for (const [url, expected] of serverCases) {
+    assert(code(() => guard.validateServerUrl(url)) === expected, `server ${url}: ${expected}`);
+  }
+  assert(guard.validateServerUrl('https://deck.example/base/') === 'https://deck.example/base', 'server URL normalized without a trailing slash');
+  const existingEvidence = path.join(scratchDir('existing'), 'evidence.json');
+  fs.writeFileSync(existingEvidence, 'keep me\n');
+  const configuredDb = path.join(scratchDir('configured-db'), 'botmancers.db');
+  const evidenceCases = [
+    ['inside the workdir', path.join(disposable, 'evidence.json'), {}, 'evidence_protected'],
+    ['inside this repository', path.join(harnessLib.REPO_ROOT, 'smoke-evidence.json'), {}, 'evidence_protected'],
+    ['inside ~/.botmancers', path.join(fakeHome, '.botmancers', 'evidence.json'), { home: fakeHome }, 'evidence_protected'],
+    ['next to a configured database (its -wal)', `${configuredDb}-wal`, { protectedPaths: harnessLib.productionPaths({ BOTMANCERS_DB_PATH: configuredDb }) }, 'evidence_protected'],
+    ['an existing file', existingEvidence, {}, 'evidence_exists'],
+    ['a missing directory', path.join(plain, 'nope', 'evidence.json'), {}, 'evidence_invalid'],
+    ['a new file elsewhere', path.join(plain, 'evidence.json'), {}, 'ok'],
+  ];
+  for (const [label, file, extra, expected] of evidenceCases) {
+    const got = code(() => guard.validateEvidencePath(file, { workdir: disposable, ...extra }));
+    assert(got === expected, `evidence ${label}: ${expected} (got ${got})`);
+  }
+
   const smoke = (args, extraEnv = {}) => run(process.execPath, ['scripts/agent-deck-smoke.js', ...args], { ...process.env, AGENT_DECK_RUN_TOKEN: '', ...extraEnv });
   const smokeCases = [
     ['no --workdir', [], {}, /workdir_missing/],
@@ -201,13 +231,21 @@ async function main() {
     ['workdir without the marker', ['--workdir', noMarker, '--deck', 'd'], { AGENT_DECK_RUN_TOKEN: 'adg_x_token_value' }, /workdir_not_disposable/],
     ['no token', ['--workdir', disposable, '--deck', 'd'], {}, /token_missing/],
     ['no deck', ['--workdir', disposable], { AGENT_DECK_RUN_TOKEN: 'adg_x_token_value' }, /deck_missing/],
+    ['a server URL with credentials', ['--workdir', disposable, '--deck', 'd', '--server', 'http://smokeuser:url-pass-123@127.0.0.1:1'], { AGENT_DECK_RUN_TOKEN: 'adg_x_token_value' }, /server_credentials/],
+    ['evidence inside the workdir', ['--workdir', disposable, '--deck', 'd', '--evidence', path.join(disposable, 'evidence.json')], { AGENT_DECK_RUN_TOKEN: 'adg_x_token_value' }, /evidence_protected/],
+    ['evidence inside this repository', ['--workdir', disposable, '--deck', 'd', '--evidence', path.join(harnessLib.REPO_ROOT, 'smoke-evidence.json')], { AGENT_DECK_RUN_TOKEN: 'adg_x_token_value' }, /evidence_protected/],
+    ['evidence over an existing file', ['--workdir', disposable, '--deck', 'd', '--evidence', existingEvidence], { AGENT_DECK_RUN_TOKEN: 'adg_x_token_value' }, /evidence_exists/],
   ];
   for (const [label, args, extraEnv, pattern] of smokeCases) {
     const before = rootsOf('agent-deck-smoke');
     const result = await smoke(args, extraEnv);
     assert(result.code === 2 && pattern.test(result.err) && JSON.stringify(rootsOf('agent-deck-smoke')) === JSON.stringify(before),
       `smoke refuses ${label} (exit ${result.code}) before creating any state`);
+    if (args.some(arg => /url-pass-123/.test(arg))) assert(!/url-pass-123/.test(result.out + result.err), 'the refusal never echoes the URL credential');
   }
+  assert(!fs.existsSync(path.join(disposable, 'evidence.json')) && execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: disposable, encoding: 'utf8' }) === ''
+    && !fs.existsSync(path.join(harnessLib.REPO_ROOT, 'smoke-evidence.json')) && fs.readFileSync(existingEvidence, 'utf8') === 'keep me\n',
+  'refused evidence targets were never written: the workdir is clean, the repository has no evidence file, the existing file is intact');
 
   console.log('\nSmoke end to end against the fake Agent Deck over loopback (stand-in for a real server)');
   const secret = 'adg_selftest_SUPER_SECRET_value_42';
@@ -255,6 +293,25 @@ async function main() {
   const redacted = guard.redact({ authorization: 'Bearer abc.def', apiKey: 'k-123456', nested: [{ note: 'token adg_live_123 and sk-abcdefghij' }], keep: 'hello' }, ['k-123456']);
   assert(redacted.authorization === '[REDACTED]' && redacted.apiKey === '[REDACTED]' && redacted.nested[0].note === 'token [REDACTED] and [REDACTED]' && redacted.keep === 'hello',
     'redact() scrubs secret-named fields, known values, and token patterns');
+  const urlRedacted = guard.redact({ server: 'http://alice:hunter2@deck.example:1111/api', note: 'see https://ghost@deck.example/x and http://plain.example/a@b' }, []);
+  assert(urlRedacted.server === 'http://[REDACTED]@deck.example:1111/api' && urlRedacted.note === 'see https://[REDACTED]@deck.example/x and http://plain.example/a@b',
+    'redact() scrubs URL userinfo wherever it appears');
+
+  // ===================================================================
+  console.log('\nProduction-state snapshot: configured paths anywhere, at any depth');
+  const configured = harnessLib.productionPaths({ BOTMANCERS_DB_PATH: configuredDb, BOTMANCERS_FILES_ROOT: path.join(tmp, 'configured-files') });
+  assert([configuredDb, `${configuredDb}-wal`, `${configuredDb}-shm`, path.join(tmp, 'configured-files')].every(entry => configured.includes(entry)),
+    'explicitly configured database (with -wal/-shm) and data root are checked even under the temp directory');
+  const deepRoot = scratchDir('deep');
+  const deepFile = path.join(deepRoot, 'a', 'b', 'c', 'd', 'e', 'f', 'state.json');
+  fs.mkdirSync(path.dirname(deepFile), { recursive: true });
+  fs.writeFileSync(deepFile, '{"v":1}');
+  const deepBefore = harnessLib.snapshotProductionState([deepRoot]);
+  const { atime, mtime } = fs.statSync(deepFile);
+  fs.writeFileSync(deepFile, '{"v":2}');
+  fs.utimesSync(deepFile, atime, mtime);
+  const deepChanges = harnessLib.diffSnapshots(deepBefore, harnessLib.snapshotProductionState([deepRoot]));
+  assert(deepChanges.length === 1 && deepChanges[0].startsWith(deepFile), `a same-size rewrite of a file seven levels deep, with its mtime restored, is detected (${deepChanges.length} change(s))`);
 
   // ===================================================================
   console.log('\nProduction Botmancers state and this working tree');

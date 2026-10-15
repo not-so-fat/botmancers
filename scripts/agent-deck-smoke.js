@@ -7,8 +7,9 @@
 //     [--server http://127.0.0.1:1111] [--prompt "..."]
 //
 // Refuses to run (exit 2) unless --workdir names an explicit disposable
-// Git repository (test-support/acceptance/real-deck-guard.js) and a token
-// and deck are given. Botmancers state (database, data root, HOME) lives in
+// Git repository (test-support/acceptance/real-deck-guard.js), a token and
+// deck are given, --server carries no credentials, and --evidence names a
+// new file outside the workdir and protected Botmancers state. Botmancers state (database, data root, HOME) lives in
 // a disposable harness root as in the default suite; only the Agent Deck
 // server and the given workdir are real. One read-only conversation turn
 // runs; the evidence (versions, Work Request / Attempt / run ids, outcome)
@@ -63,6 +64,8 @@ function gitState(dir) {
 async function main(args) {
   let options;
   let workdir;
+  let server;
+  let evidencePath;
   try {
     options = parseArgs(args);
     workdir = guard.validateDisposableWorkdir(options.workdir);
@@ -71,17 +74,20 @@ async function main(args) {
     }
     if (!options.deck) throw new guard.GuardError('deck_missing', 'An Agent Deck deck id is required (--deck <id>).');
     if (options.agent && !AGENTS.includes(options.agent)) throw new guard.GuardError('invalid_argument', `--agent must be one of ${AGENTS.join(', ')}.`);
-    const server = new URL(options.server || DEFAULT_SERVER);
-    if (server.protocol !== 'http:' && server.protocol !== 'https:') throw new guard.GuardError('invalid_argument', '--server must be an http(s) URL.');
+    server = guard.validateServerUrl(options.server || DEFAULT_SERVER);
+    // Resolved and checked before the run: writing the evidence must not
+    // change the workdir or production state the smoke is about to verify.
+    evidencePath = guard.validateEvidencePath(
+      options.evidence !== undefined ? options.evidence : path.join(os.tmpdir(), `botmancers-agent-deck-smoke-${Date.now()}.json`),
+      { workdir, protectedPaths: harnessLib.productionPaths() },
+    );
   } catch (error) {
     if (error instanceof guard.GuardError) return refuse(error);
-    if (error instanceof TypeError) return refuse(new guard.GuardError('invalid_argument', '--server must be an http(s) URL.'));
     throw error;
   }
 
   const token = process.env.AGENT_DECK_RUN_TOKEN.trim();
   const secrets = guard.secretValues(process.env, [token]);
-  const server = (options.server || DEFAULT_SERVER).replace(/\/+$/, '');
   const before = harnessLib.snapshotProductionState();
   const workdirBefore = gitState(workdir);
   const harness = harnessLib.createHarness('agent-deck-smoke');
@@ -132,10 +138,7 @@ async function main(args) {
     exitCode: run.code,
     stderrTail: run.err ? run.err.slice(-2000) : '',
   }, secrets);
-  const evidencePath = options.evidence
-    ? path.resolve(options.evidence)
-    : path.join(os.tmpdir(), `botmancers-agent-deck-smoke-${Date.now()}.json`);
-  fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + '\n');
+  fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + '\n', { flag: 'wx' });
   const preserved = harness.finish(ok, ok ? '' : JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify(evidence, null, 2));
   console.log(`\nevidence (redacted): ${evidencePath}`);

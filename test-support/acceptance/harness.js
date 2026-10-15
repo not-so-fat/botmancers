@@ -19,6 +19,7 @@
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -27,8 +28,9 @@ const { execFileSync } = require('child_process');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ROOT_PREFIX = 'botmancers-acceptance-';
 
-// The state a normal Botmancers install reads and writes. The harness never
-// opens these; the isolation self-test proves they are untouched.
+// The state a normal Botmancers install reads and writes, including any
+// explicitly configured database or data root wherever it lives. The harness
+// never opens these; the isolation self-test proves they are untouched.
 function productionPaths(env = process.env) {
   const realHome = os.userInfo().homedir;
   const paths = [
@@ -38,31 +40,42 @@ function productionPaths(env = process.env) {
     path.join(REPO_ROOT, 'files'),
     path.join(realHome, '.botmancers'),
   ];
-  if (env.BOTMANCERS_DB_PATH && !isInsideTmp(env.BOTMANCERS_DB_PATH)) paths.push(path.resolve(env.BOTMANCERS_DB_PATH));
-  if (env.BOTMANCERS_FILES_ROOT && !isInsideTmp(env.BOTMANCERS_FILES_ROOT)) paths.push(path.resolve(env.BOTMANCERS_FILES_ROOT));
+  if (env.BOTMANCERS_DB_PATH) {
+    const db = path.resolve(env.BOTMANCERS_DB_PATH);
+    paths.push(db, `${db}-wal`, `${db}-shm`);
+  }
+  if (env.BOTMANCERS_FILES_ROOT) paths.push(path.resolve(env.BOTMANCERS_FILES_ROOT));
   return [...new Set(paths)];
 }
 
-function isInsideTmp(file) {
-  const tmp = fs.realpathSync(os.tmpdir());
-  let resolved;
-  try { resolved = fs.realpathSync(file); } catch { resolved = path.resolve(file); }
-  return resolved === tmp || resolved.startsWith(tmp + path.sep);
+// Files up to this size are fingerprinted by content as well.
+const HASH_LIMIT = 64 * 1024 * 1024;
+
+function fileDigest(file, size) {
+  if (size > HASH_LIMIT) return 'unhashed';
+  try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); } catch (error) { return `unreadable:${error.code}`; }
 }
 
-// Existence, size, and mtime of each path (recursively for directories),
-// plus the repository's Git status: a before/after pair must be equal.
+// Every path recursively, at any depth: existence, size, mtime, ctime (which
+// a write always advances), and a content digest for files, plus the
+// repository's Git status. A before/after pair must be equal.
 function snapshotProductionState(paths = productionPaths()) {
   const entries = {};
-  const visit = (file, depth) => {
+  const visit = file => {
     let stat;
     try { stat = fs.lstatSync(file); } catch { entries[file] = 'absent'; return; }
-    entries[file] = stat.isDirectory() ? `dir:${stat.mtimeMs}` : `file:${stat.size}:${stat.mtimeMs}`;
-    if (stat.isDirectory() && depth < 4) {
-      for (const name of fs.readdirSync(file).sort()) visit(path.join(file, name), depth + 1);
+    if (stat.isDirectory()) {
+      entries[file] = `dir:${stat.mtimeMs}:${stat.ctimeMs}`;
+      let names = [];
+      try { names = fs.readdirSync(file).sort(); } catch (error) { entries[file] += `:unreadable:${error.code}`; }
+      for (const name of names) visit(path.join(file, name));
+    } else if (stat.isSymbolicLink()) {
+      entries[file] = `link:${fs.readlinkSync(file)}:${stat.ctimeMs}`;
+    } else {
+      entries[file] = `file:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${fileDigest(file, stat.size)}`;
     }
   };
-  for (const file of paths) visit(file, 0);
+  for (const file of paths) visit(file);
   let gitStatus;
   try {
     gitStatus = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: REPO_ROOT, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
@@ -195,7 +208,6 @@ module.exports = {
   ROOT_PREFIX,
   createHarness,
   diffSnapshots,
-  isInsideTmp,
   productionPaths,
   snapshotProductionState,
 };
