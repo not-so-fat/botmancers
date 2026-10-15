@@ -1,8 +1,9 @@
 # Bot configuration page — design spec
 
 > **Historical — NOT-392 spec.** Decision history for the configuration page.
-> Its references to `processing_queue` and `processQueueItem` describe the legacy
-> UI loop, not the engine contract. See the authoritative
+> Its references to `processing_queue` and `processQueueItem` describe the
+> retired legacy UI loop (NOT-477: UI thread turns are now Work Requests), not the
+> engine contract. See the authoritative
 > [core-engine design](../core-engine.md).
 
 Ticket: NOT-392. Owner: Atelier. Next: Critiquito critique, then build ticket.

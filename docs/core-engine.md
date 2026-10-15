@@ -323,23 +323,32 @@ returns an error and writes nothing.
 ## Current code and convergence
 
 The current Agent identity plus Agent Deck model is directionally consistent with
-this product. One transitional inconsistency remains, and it is not a product
-requirement:
+this product. Every unit of work, from every entry point, is a Work Request with
+one lifecycle (`queued`, `running`, `waiting`, `blocked`, then `completed`,
+`failed`, or `cancelled`) in `work_requests`. A request's `executor` names the
+worker that runs it:
 
-- Web UI turns still execute through the legacy agent loop (`lib/agent.ts`) over
-  the `processing_queue` table. UI messages are accepted through the shared
-  conversation intake and create canonical Work Requests, and a UI turn to a
-  coding Agent dispatches its Work Request as one read-only Attempt through the
-  canonical dispatcher. Hermes UI turns, though, run inside the loop together
-  with the UI-only features it hosts: drafts, approvals, ask-and-wait,
-  one-shots and routines, file artifacts, Agent birth, and commands. The loop's
-  legacy `WAKE` handoffs keep Stop, depth, and budget state in a per-process
-  delegation-chain map that a restart loses. `/api/v0` and every Wake-created
-  request use only the canonical engine.
+- `dispatcher` (`lib/dispatcher.ts`, `lib/agent-conversations.ts`): `/api/v0`
+  messages, Wake-created requests, and coordinator continuations. Leases,
+  Attempts, restart reconciliation, deadlines, and retries apply.
+- `ui_message` and `ui_continuation`: the UI turn executor (`lib/ui-turns.ts`,
+  `lib/agent.ts`) runs web UI thread turns one at a time, oldest first. It hosts
+  the UI thread features: drafts, approvals, ask-and-wait, one-shots and
+  routines, file artifacts, Agent birth, commands, and the legacy `WAKE` and
+  group handoffs. A UI message is accepted by the shared conversation intake,
+  and the UI route gives its Work Requests to this executor (`ui_message`).
+  Turns the executor creates itself (a handoff target, a report-back to the
+  caller, a timer tick, a new Agent's greeting, a gateway poke) are
+  `ui_continuation` requests whose parent is the turn that caused them. A UI
+  message to a coding Agent that reaches launch is handed to the dispatcher
+  (`executor` becomes `dispatcher`) and runs as one read-only Attempt. Stop
+  cancels the thread's queued turns. On restart, a UI turn left `running` fails
+  with `ui_turn_interrupted` and is not run again.
 
-Retiring that loop needs the canonical engine to host those UI features first.
-That is new engine behavior, so it is migration work for a later ticket, not
-cleanup.
+The legacy `WAKE` handoffs keep their Stop, depth, budget, and caller-frame
+accounting in `delegation_chains`, one durable row per user message, so a
+restart keeps all of it. There is no separate queue table and no delegation
+state in process memory.
 
 Resolved since this contract was written:
 
@@ -357,8 +366,9 @@ Resolved since this contract was written:
 - NOT-475: Wake grants, depth, root budget, and the loopback owner boundary are
   enforced.
 - NOT-477: the composite implement/review/resume helper is deleted. The
-  `agent_requests` lifecycle is migrated into the canonical tables and archived
-  (see [Persistent schema](#persistent-schema)).
+  `agent_requests` lifecycle and the UI loop's `processing_queue` are migrated
+  into the canonical tables and archived, and the in-memory delegation-chain map
+  is replaced by `delegation_chains` (see [Persistent schema](#persistent-schema)).
 
 Since NOT-473, Work Requests carry a durable cancellation intent, an absolute
 deadline, and a bounded retry policy fixed at intake (`lib/request-policy.ts`,
@@ -375,10 +385,9 @@ above them:
 | Current area | Intended responsibility |
 | --- | --- |
 | `lib/agent-conversations.ts` | Conversation events and projections only |
-| `lib/agent.ts` | Compatibility facade, then removal after callers use the engine |
+| `lib/agent.ts`, `lib/ui-turns.ts` | UI turn executor: UI thread features over UI turn Work Requests |
 | `lib/agent-dispatch.ts` | Runtime adapter selection, not workflow policy |
 | `lib/agent-deck-run.ts` | Agent Deck transport and session resume |
-| `processing_queue` | Removed with the legacy UI loop; the canonical Work Request store replaces it |
 
 ### Persistent schema
 
@@ -394,8 +403,9 @@ All tables are SQLite tables in one database. The engine's tables are versioned 
 | `attempt_finalization_baselines`, `candidate_manifests`, `finalizations` | Reviewed Git finalization |
 | `conversation_events`, `conversation_projection_cursors` | Typed projection of engine events into conversations |
 | `conversations`, `messages`, `conversation_participants` | Conversations and their ordered history |
-| `processing_queue` | Transitional: the legacy UI loop's queue (see above) |
+| `delegation_chains` | Delegation accounting for UI thread turns: handoffs, delegated turns, Stop, and caller frames per user message |
 | `legacy_agent_requests_archive`, `legacy_agent_request_events_archive` | Evidence only. Every pre-NOT-465 `agent_requests` row, verbatim. Nothing reads or writes these tables. They exist only in databases that had the legacy tables |
+| `legacy_processing_queue_archive` | Evidence only. Every `processing_queue` row, verbatim. Nothing reads it except conversation and Agent deletion, which remove their rows. It exists only in databases that had the queue |
 
 Migration 14 (`retire_legacy_agent_requests`) copies each mappable legacy
 request into `work_requests` and keeps its original id in
@@ -409,6 +419,21 @@ request into `work_requests` and keeps its original id in
 
 Rows that cannot be mapped without guessing stay in the archive only: a missing
 conversation, Agent, or accepted message, or a key already held elsewhere.
+
+Migration 15 (`ui_turns_on_work_requests`) adds `work_requests.executor` and
+`delegation_chains`, then reconciles each `processing_queue` row:
+
+- A row naming a Work Request that is still `queued` gives it to the UI turn
+  executor. Its outcome becomes the request's: `pending` stays `queued`,
+  `completed` and `failed` become `completed` and `failed` at the row's times,
+  and `processing` becomes `failed` with `ui_turn_interrupted`. A request the
+  dispatcher already ran keeps its own outcome.
+- A `pending` row without a Work Request becomes one queued `ui_continuation`
+  request for the same Agent and conversation.
+- Any other row (finished loop bookkeeping, or a missing conversation or
+  Agent) stays in the archive only.
+
+Then the table is renamed to `legacy_processing_queue_archive`.
 
 ## Scope now
 

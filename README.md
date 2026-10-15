@@ -54,8 +54,8 @@ The application can:
 - import bot identity from the Grok marketplace boundary;
 - persist state in SQLite.
 
-Web UI turns still run through a transitional agent loop. See "Current code
-and convergence" in `docs/core-engine.md`.
+Web UI thread turns are Work Requests run by the UI turn executor. See
+"Current code and convergence" in `docs/core-engine.md`.
 
 ## Run the app
 

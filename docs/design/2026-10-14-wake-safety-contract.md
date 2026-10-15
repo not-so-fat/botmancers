@@ -1,5 +1,13 @@
 # Wake safety: principals, grants, and limits
 
+> **NOT-477 note.** Where this contract describes the legacy Wake path
+> (`lib/agent.ts`) as running queue turns and keeping lineage in an in-memory
+> `delegationChains` map that a restart loses, it describes the code when it was
+> written. UI thread turns are now Work Requests, and that path's delegation
+> accounting is durable. See the authoritative
+> [core-engine design](../core-engine.md#current-code-and-convergence). The
+> policy itself is unchanged.
+
 Status: **proposed — awaiting product-owner approval** (see [Approval](#approval)).
 Merging the PR that introduces this document is the accepted revision.
 
