@@ -177,12 +177,41 @@ function createContext(scenarioName) {
     return accepted;
   }
 
+  // Waits (bounded) until every named request has left queued/running, as
+  // work started by a route handler finishes, then for dispatch to idle.
+  async function settle(requestIds, { timeoutMs = 10_000, until = ['completed', 'failed', 'cancelled', 'blocked'] } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const pending = requestIds.filter(id => !until.includes((engine.getWorkRequest(id) || {}).state));
+      if (pending.length === 0) break;
+      if (Date.now() > deadline) throw new Error(`requests did not settle within ${timeoutMs}ms: ${pending.join(', ')}`);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    await service.waitForAgentDispatchIdle();
+  }
+
+  // The real API route handlers behind proxy.ts on an ephemeral loopback
+  // port, started on first use and closed by close().
+  let host = null;
+  async function routeHost() {
+    if (!host) {
+      const { allocatePort } = require('./harness.js');
+      const { startRouteHost } = require('./route-host.js');
+      host = await startRouteHost({ jiti, repoRoot: REPO_ROOT, port: await allocatePort() });
+    }
+    return host;
+  }
+  async function close() {
+    if (host) await host.close();
+    host = null;
+  }
+
   return {
     REPO_ROOT, jiti, lib, db, raw, service, dispatch, router, safety, engine, projector, bots, conversations, UI_OWNER_PRINCIPAL,
     fakeDeck, deckScripts, plans, coordinatorLaunches, PERSON, workspace,
     check, engineCheck, conversationCheck, isolationCheck, results,
     one, all, requestsIn, attemptsOf, wakesIn, messagesIn, eventTypes, counts, sameCounts, projection, projectedKinds, inOrder,
-    agent, block, ask,
+    agent, block, ask, settle, routeHost, close,
     guards: { blockedConnections, spawned },
   };
 }

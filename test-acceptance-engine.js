@@ -46,6 +46,7 @@ async function runScenarioChild(name) {
   console.log(`[${name}] ${scenario.title}`);
   await scenario.run(ctx);
   await ctx.service.waitForAgentDispatchIdle();
+  await ctx.close();
   ctx.isolationCheck(ctx.guards.blockedConnections.length === 0, `no non-loopback network connection was attempted (${ctx.guards.blockedConnections.join(', ') || 'none'})`);
   const runtimes = ctx.guards.spawned.filter(command => command !== 'git');
   ctx.isolationCheck(runtimes.length === 0, `no runtime process was spawned (${runtimes.join(', ') || 'none'})`);

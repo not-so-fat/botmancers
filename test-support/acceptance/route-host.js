@@ -93,6 +93,7 @@ async function startRouteHost({ jiti, repoRoot, port }) {
   const origin = `http://127.0.0.1:${server.address().port}`;
   return {
     origin,
+    port: server.address().port,
     requests,
     // A same-origin owner request, as the Botmancers page sends it.
     async owner(method, pathname, body) {
