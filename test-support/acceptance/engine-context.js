@@ -31,11 +31,12 @@ function assertIsolatedEnvironment() {
   }
 }
 
-const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const blockedConnections = [];
 const spawned = [];
 
-function installGuards() {
+function installGuards(allowHosts = []) {
+  for (const host of allowHosts) ALLOWED_HOSTS.add(String(host).toLowerCase());
   const original = net.Socket.prototype.connect;
   net.Socket.prototype.connect = function guardedConnect(...args) {
     let options = args[0];
@@ -44,11 +45,10 @@ function installGuards() {
     if (options && typeof options === 'object') host = options.path ? null : (options.host || 'localhost');
     else if (typeof options === 'number' || /^\d+$/.test(String(options))) host = typeof args[1] === 'string' ? args[1] : 'localhost';
     else host = null; // a Unix socket path
-    if (host !== null && !LOOPBACK.has(String(host).toLowerCase())) {
+    if (host !== null && !ALLOWED_HOSTS.has(String(host).toLowerCase())) {
       blockedConnections.push(String(host));
-      const socket = this;
-      process.nextTick(() => socket.destroy(new Error(`acceptance harness: network connection to ${host} refused`)));
-      return socket;
+      process.nextTick(() => this.destroy(new Error(`acceptance harness: network connection to ${host} refused`)));
+      return this;
     }
     return original.apply(this, args);
   };
@@ -63,9 +63,11 @@ function installGuards() {
 
 function createContext(scenarioName, options = {}) {
   assertIsolatedEnvironment();
-  installGuards();
-  // Fixture-only credentials, set in this process only; never a real secret.
-  process.env.AGENT_DECK_RUN_TOKEN = 'adg_acceptance_fixture_bearer';
+  // options.allowHosts: the real Agent Deck host of the opt-in smoke only.
+  installGuards(options.allowHosts);
+  // Fixture-only credentials, set in this process only; never a real
+  // secret. The opt-in smoke (options.realToken) keeps the operator's.
+  if (!options.realToken) process.env.AGENT_DECK_RUN_TOKEN = 'adg_acceptance_fixture_bearer';
 
   const { createJiti } = require('jiti');
   const jiti = createJiti(path.join(REPO_ROOT, 'test-acceptance-engine.js'), { alias: { '@': REPO_ROOT } });
@@ -150,7 +152,7 @@ function createContext(scenarioName, options = {}) {
         const request = engine.getWorkRequest(input.correlation.requestId);
         const runId = `coordinator-run-${++runCounter}`;
         coordinatorLaunches.push({ input, request, runId });
-        onEvent && onEvent({ type: 'started', adapter: 'hermes-gateway', at: Date.now(), externalRunId: runId, externalSessionId: null });
+        onEvent?.({ type: 'started', adapter: 'hermes-gateway', at: Date.now(), externalRunId: runId, externalSessionId: null });
         const script = hermesScripts.get(request.target_agent_id);
         const plan = plans.get(request.source_conversation_id) || [];
         const step = script || plan.shift();

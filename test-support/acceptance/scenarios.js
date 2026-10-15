@@ -16,7 +16,6 @@
 const path = require('path');
 const { spawn } = require('child_process');
 
-const lastEntry = input => input.prompt.history[input.prompt.history.length - 1];
 const startsFor = (fakeDeck, deckId) => fakeDeck.calls('POST', '/api/agent-runs').filter(call => call.body.deckId === deckId);
 
 async function waitFor(predicate, label, timeoutMs = 10_000) {
