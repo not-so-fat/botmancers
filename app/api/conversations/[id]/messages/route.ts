@@ -89,6 +89,7 @@ export async function POST(
       content: String(content),
       fingerprint: [id, String(content), mentionedBotId ? String(mentionedBotId) : null],
       route: conversation => uiRouting(conversation, String(content), mentionedBotId ? String(mentionedBotId) : undefined),
+      executor: 'ui_message',
       dispatch: startUiTurns,
     });
 
@@ -171,13 +172,12 @@ function uiRouting(conversation: Conversation, content: string, mentionedBotId: 
   return { deliveries, handoffTargets };
 }
 
-// NOT-477: each newly accepted Work Request becomes a UI turn (executor
-// ui_message) and the UI turn executor (lib/agent) runs them in order
-// (NOT-471: a coding-Agent turn is handed to the dispatcher as one
-// read-only Attempt). Replays start nothing new.
-function startUiTurns(accepted: AcceptedIntake): void {
-  if (accepted.replayed) return;
-  uiTurns.adopt(accepted.requestIds);
+// NOT-477: each accepted Work Request is a UI turn (executor ui_message,
+// set by the intake transaction) and the UI turn executor (lib/agent) runs
+// them in order (NOT-471: a coding-Agent turn is handed to the dispatcher
+// as one read-only Attempt). A replay only re-kicks the executor, which
+// finds any turn still queued.
+function startUiTurns(_accepted: AcceptedIntake): void {
   processUiTurns().catch(console.error);
 }
 

@@ -8,10 +8,11 @@
 //     -> record the intake under the requester's idempotency key
 //
 // all in one transaction, then hand the accepted requests to the runtime
-// dispatch seam. The caller's dispatch seam decides who runs accepted
-// work (the UI route gives its requests to the UI turn executor,
-// lib/ui-turns; /api/v0 starts the dispatcher), and tests replace it with
-// setIntakeDispatcher. Nothing here writes a queue.
+// dispatch seam. The caller names who runs accepted work (executor,
+// recorded on each request inside the intake transaction: the UI route's
+// requests are UI message turns, lib/ui-turns; /api/v0's run on the
+// dispatcher), and its dispatch seam starts that worker; tests replace the
+// seam with setIntakeDispatcher. Nothing here writes a queue.
 //
 // Idempotency: (requester kind, requester id, idempotency key) is unique
 // across surfaces. An exact retry (same surface and payload fingerprint)
@@ -29,7 +30,7 @@
 // safety decision naming that principal. Message text is never a Wake.
 import { createHash, randomUUID } from 'crypto';
 import db, { bots, engine, type Conversation, type Message, type Principal } from './db';
-import { EngineStoreError, type WorkRequest } from './engine-store';
+import { EngineStoreError, type RequestExecutor, type WorkRequest } from './engine-store';
 import { selectExecutionPolicy } from './execution-policy';
 import { WAKE_SAFETY_VERSION, categorizeIntakeCaller } from './wake-safety';
 
@@ -99,6 +100,10 @@ export interface ConversationIntakeInput {
   // Target resolution runs inside the intake transaction, after the
   // conversation is validated, and only for new (non-replayed) intake.
   route: (conversation: Conversation) => IntakeRouting;
+  // Who runs the accepted requests, written with them in the intake
+  // transaction so no other worker can claim them first. Defaults to the
+  // dispatcher.
+  executor?: RequestExecutor;
   // The caller's production runtime path for accepted work. Replaced
   // wholesale by setIntakeDispatcher in tests.
   dispatch: IntakeDispatcher;
@@ -293,6 +298,7 @@ function intakeTransaction(input: ConversationIntakeInput, hash: string): Accept
         wakeDepth: 0,
         safetySnapshot,
         safety: { principalType, principal: requester, decision: 'allowed', grantRule: 'readonly_default', snapshot: safetySnapshot, now },
+        executor: input.executor,
         now,
       });
       requestIds.push(request.id);

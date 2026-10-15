@@ -141,6 +141,14 @@ async function main() {
     log(`  seam calls: ${seen.map(a => `${a.surface}:${a.requestIds.join(',')}:replayed=${a.replayed}`).join(' | ')}`);
     assert(seen.length === 2 && seen[0].surface === 'ui' && seen[1].surface === 'api', 'UI route and /api/v0 both hand their accepted intake to the one intake dispatch seam');
     assert(seen[0].requestIds[0] === ui.json.intake.requestIds[0] && seen[1].requestIds[0] === apiFirst.json.requestId, 'the seam receives the identifiers each entry point returns');
+    // NOT-477: the UI executor is chosen inside the intake transaction, so
+    // with the dispatch seam replaced (as if the process died right after
+    // commit) the UI request is already a UI turn no dispatcher may claim.
+    const uiOwned = workRequest(ui.json.intake.requestIds[0]);
+    const dispatcherClaimable = raw.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE id = ? AND executor = 'dispatcher'").get(uiOwned.id).n;
+    assert(uiOwned.state === 'queued' && uiOwned.executor === 'ui_message' && dispatcherClaimable === 0,
+      'a committed UI intake is a queued UI message turn before any dispatch seam runs');
+    assert(workRequest(apiFirst.json.requestId).executor === 'dispatcher', 'an API intake stays dispatcher work');
   }
 
   log('\nAC2 one source event and one canonical Work Request per equivalent intake');

@@ -336,7 +336,8 @@ worker that runs it:
   the UI thread features: drafts, approvals, ask-and-wait, one-shots and
   routines, file artifacts, Agent birth, commands, and the legacy `WAKE` and
   group handoffs. A UI message is accepted by the shared conversation intake,
-  and the UI route gives its Work Requests to this executor (`ui_message`).
+  and the intake transaction itself records its Work Requests for this
+  executor (`ui_message`), so no dispatcher can claim them first.
   Turns the executor creates itself (a handoff target, a report-back to the
   caller, a timer tick, a new Agent's greeting, a gateway poke) are
   `ui_continuation` requests whose parent is the turn that caused them. A UI

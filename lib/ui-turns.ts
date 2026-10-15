@@ -2,8 +2,8 @@
 // One engine). The UI turn executor (lib/agent) runs every turn of a UI
 // thread from work_requests; there is no separate queue table.
 //
-//   UI message route     -> executor ui_message      (adopt, right after
-//                           conversation intake accepts the message)
+//   UI message route     -> executor ui_message      (written by the
+//                           conversation intake transaction itself)
 //   the executor itself  -> executor ui_continuation (enqueue: a handoff
 //                           target, a report-back to the caller, a timer
 //                           tick, a new Agent's greeting, a gateway poke)
@@ -175,18 +175,6 @@ export const uiTurns = {
       engine.transitionWorkRequest(id, { from: 'running', to: 'queued', expectedVersion: request.version, reason: 'ui_turn_handoff' });
       db.prepare("UPDATE work_requests SET executor = 'dispatcher' WHERE id = ?").run(id);
       return true;
-    });
-  },
-
-  // The UI route's dispatch seam: the accepted, still queued Work Requests
-  // of a UI message become UI message turns. Runs synchronously after the
-  // intake transaction, before any dispatcher pass can see them.
-  adopt(requestIds: string[]): void {
-    const adopt = db.prepare(
-      "UPDATE work_requests SET executor = 'ui_message' WHERE id = ? AND state = 'queued' AND executor = 'dispatcher'"
-    );
-    engine.transaction(() => {
-      for (const id of requestIds) adopt.run(id);
     });
   },
 
