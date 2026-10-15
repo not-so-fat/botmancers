@@ -1,5 +1,8 @@
 # NOT-430 proof (local, Mac, 2026-10-12 PT)
 
+> **Evidence — NOT-430 (2026-10-12).** Brand-asset proof, kept as empirical
+> evidence. Not an engine or product contract.
+
 sha256 public/brand vs brand-logo-assets ee88e6f design-reference/logo:
 ```
 botmancers-logo-filled-1024.png 8f1d0d46227cddf2e85e928165d1a45edc1cf3c52977074783d09ee12963c574 MATCH

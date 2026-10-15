@@ -168,10 +168,9 @@ function visibleFields(html) {
   return ['runtime', 'agent', 'deck', 'workdir'].filter(field => has(html, `data-field="${field}"`));
 }
 
-// Fake local machine for the same-thread trace.
+// Fake local machine for Agent Deck runs.
 const resumeSessions = {};
 let runCounter = 0;
-let failImplLog = false;
 deck.setDeckRunProcess(async argv => {
   if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
     const runId = argv[3];
@@ -185,9 +184,7 @@ deck.setDeckRunProcess(async argv => {
   if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
     const runId = argv[3];
     const session = resumeSessions[runId] || `ses-opaque-for-${runId}`;
-    const lines = failImplLog
-      ? [JSON.stringify({ t: 'text', text: 'working' }), JSON.stringify({ t: 'error', message: 'agent-deck run run-9f2c died' })]
-      : [JSON.stringify({ t: 'text', text: 'working' }), JSON.stringify({ t: 'result', sessionId: session, result: `done by ${runId}` }), JSON.stringify({ t: 'end', sessionId: session })];
+    const lines = [JSON.stringify({ t: 'text', text: 'working' }), JSON.stringify({ t: 'result', sessionId: session, result: `done by ${runId}` }), JSON.stringify({ t: 'end', sessionId: session })];
     return { stdout: lines.join('\n') + '\n', stderr: '', exitCode: 0 };
   }
   if (argv[0] === 'agent-deck' && argv[1] === 'run') {
@@ -470,17 +467,18 @@ async function rosterConfigSection(created) {
   }
 }
 
-async function traceSection() {
-  log('\n[5] Same-thread Agent Deck trace');
-  agent.setDelegationChatStub(async () => 'hello there');
-  const bot = bots.create({ name: 'Delegator', title: '', description: '', deck_id: 'planner' });
-  const conv = conversations.getByBotId(bot.id);
-  const result = await deck.delegateCodingViaDeck({
-    conversationId: conv.id, botId: bot.id, deck: 'planner', client: 'codex', cwd: '/tmp/fake-cwd',
-    task: 'Add rate limiting to the login route', reviewFocus: deck.DECK_REVIEW_FOCUS_DEFAULT,
-  });
-  assert(!!result, 'trace: launch-through-result sequence completes');
-  const thread = messages.getByConversation(conv.id).filter(m => m.sender_type === 'bot').map(m => m.content);
+// NOT-477: the composite implement/review/resume helper is retired, but
+// threads written by it keep its [Deck ...] observation lines, so their
+// rendering stays pinned against fixed historical lines.
+function traceSection() {
+  log('\n[5] Historical Agent Deck trace rendering');
+  const thread = [
+    '[Deck handoff] agent=codex deck=planner\nAdd rate limiting to the login route',
+    '[Deck run] runId=run-fake-1 sessionId=ses-opaque-for-run-fake-1',
+    '[Deck review] runId=run-fake-2 result=Looks good.',
+    '[Deck resume] runId=run-fake-3 sessionId=ses-opaque-for-run-fake-1',
+    '[Deck result] runId=run-fake-3 result=Rate limiting added.',
+  ];
   const kinds = ui.orderedDeckEventKinds(thread);
   assert(JSON.stringify(kinds) === JSON.stringify(['handoff', 'run', 'review', 'resume', 'result']), `trace: observations render in order (${kinds.join(' > ')})`);
   const labels = thread.flatMap(t => t.split('\n')).map(line => ui.deckEventDisplay(line)).filter(Boolean);
@@ -489,32 +487,19 @@ async function traceSection() {
   assert(labels[0].detail.includes('agent=codex') && labels[0].detail.includes('deck=planner'), 'trace: launch carries the selected agent and deck verbatim');
   assert(!labels.some(item => /Hermes|handoff/i.test(item.label)), 'trace: no label describes a Hermes-to-code handoff');
   const runLine = thread.find(t => t.includes('[Deck run]'));
-  assert(!!runLine && runLine.includes('runId=run-fake-1') && runLine.includes('sessionId=ses-opaque-for-run-fake-1'), 'trace: run carries the opaque run and session ids verbatim');
+  assert(!!runLine && ui.deckEventDisplay(runLine).detail.includes('runId=run-fake-1') && ui.deckEventDisplay(runLine).detail.includes('sessionId=ses-opaque-for-run-fake-1'), 'trace: run carries the opaque run and session ids verbatim');
 
-  const failingBot = bots.create({ name: 'Failer', title: '', description: '', deck_id: 'planner' });
-  const failingConv = conversations.getByBotId(failingBot.id);
-  failImplLog = true;
-  let threw = false;
-  try {
-    await deck.delegateCodingViaDeck({
-      conversationId: failingConv.id, botId: failingBot.id, deck: 'planner', client: 'codex', cwd: '/tmp/fake-cwd',
-      task: 'Break the build', reviewFocus: deck.DECK_REVIEW_FOCUS_DEFAULT,
-    });
-  } catch {
-    threw = true;
-  } finally {
-    failImplLog = false;
-  }
-  const failingThread = messages.getByConversation(failingConv.id).filter(m => m.sender_type === 'bot').map(m => m.content);
+  const failingThread = [
+    '[Deck handoff] agent=codex deck=planner\nBreak the build',
+    '[Deck failed] agent=codex deck=planner error=Error: agent-deck run run-fake-4 failed',
+  ];
   const failingKinds = ui.orderedDeckEventKinds(failingThread);
-  assert(threw && failingKinds[0] === 'handoff' && failingKinds[failingKinds.length - 1] === 'failed', `failure: launch then failure render in the originating thread (${failingKinds.join(' > ')})`);
+  assert(failingKinds[0] === 'handoff' && failingKinds[failingKinds.length - 1] === 'failed', `failure: launch then failure render in the originating thread (${failingKinds.join(' > ')})`);
   const failed = ui.deckEventDisplay(failingThread.find(t => t.includes('[Deck failed]')));
   assert(failed.label === 'Agent Deck failed' && failed.detail.includes('agent=codex') && failed.detail.includes('deck=planner'), 'failure: labelled Agent Deck failed with agent and deck');
   assert(ui.deckEventDisplay(agent.deckNeedsSelectionMessage('Relay', null)).label === 'Agent Deck needs a deck', 'trace: the needs-selection notice renders as an Agent Deck event');
   assert(ui.deckEventDisplay('[Deck needs reselection] Relay cannot launch: no deck ID is selected.').label === 'Agent Deck needs a deck', 'trace: pre-NOT-456 needs-reselection notices still render');
   assert(ui.deckEventDisplay('plain reply') === null, 'trace: ordinary bot text is untouched');
-  deck.setDeckRunProcess(null);
-  agent.setDelegationChatStub(null);
 }
 
 function fieldOrder(html, prefix) {
@@ -692,9 +677,11 @@ function runtimeFailureSection() {
   assert(!has(html, 'msg-bot') && !has(html, 'msg-name') && !has(html, 'Chief'), 'thread: no bot card, speaker name, or agent attribution');
 
   const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
+  // NOT-470: each row is a Fragment so the Wake notices recorded before it
+  // render above it; a failure row keeps those notices and nothing else.
   const loop = page.slice(page.indexOf('{messages.map((msg) => {'));
   const classifyAt = loop.indexOf('classifyRuntimeFailure(');
-  assert(classifyAt > 0 && classifyAt < loop.indexOf("'msg-bot'") && /if \(failure\) \{\s*return \(\s*<div key=\{msg\.id\} className="msg-status">\s*<RuntimeFailureNotice failure=\{failure\} \/>/.test(loop),
+  assert(classifyAt > 0 && classifyAt < loop.indexOf("'msg-bot'") && /if \(failure\) \{\s*return \(\s*<Fragment key=\{msg\.id\}>\s*\{before\.map\(wakeNoticeRow\)\}\s*<div className="msg-status">\s*<RuntimeFailureNotice failure=\{failure\} \/>/.test(loop),
     'thread: page classifies bot messages before normal rendering and returns the status callout instead of a bot card');
   assert(/mine \? null : classifyRuntimeFailure/.test(loop), 'thread: user messages are never classified');
   assert(/import \{ latestLine \} from '@\/lib\/message-preview'/.test(page) && !/function latestLine/.test(page), 'roster: page uses the shared latestLine');
@@ -707,7 +694,7 @@ async function main() {
   const created = await newBotSection();
   await workdirSection(created);
   await rosterConfigSection(created);
-  await traceSection();
+  traceSection();
   await hierarchySection();
   dialogSection();
   runtimeFailureSection();

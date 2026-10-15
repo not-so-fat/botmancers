@@ -941,7 +941,7 @@ function runLegacy() {
   const router = jiti('./lib/wake-router.ts');
   const dispatcherLib = jiti('./lib/dispatcher.ts');
   const { engine } = db;
-  assert(raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === 13, 'migrated to schema 13');
+  assert(raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === jiti('./lib/engine-store.ts').ENGINE_SCHEMA_VERSION, 'migrated to the current schema');
   assert(raw.prepare('SELECT COUNT(*) AS n FROM wake_grants').get().n === 0, 'no grants are seeded from history');
   const after = Object.fromEntries(raw.prepare('SELECT * FROM work_requests ORDER BY id').all().map(row => [row.id, row]));
   const unchanged = ['state', 'policy_snapshot', 'request_hash', 'depth', 'state_reason', 'result', 'version', 'terminal_at'];

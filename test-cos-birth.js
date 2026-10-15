@@ -28,7 +28,8 @@ const agent = jiti('./lib/agent.ts');
 const birth = jiti('./lib/birth.ts');
 const skills = jiti('./lib/skills.ts');
 
-const { bots, conversations, messages, queue, oneShots, routines } = db;
+const { bots, conversations, messages, oneShots, routines } = db;
+const { uiTurns } = jiti('./lib/ui-turns.ts');
 
 let failures = 0;
 const skillNames = [];
@@ -50,7 +51,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 40) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -123,7 +124,7 @@ async function main() {
   // Case 1: create with template.
   log('\nCase 1: create with template');
   messages.create(conv.id, 'user', 'make me a specialist called Scout that tracks competitor pricing');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const scout = bots.getAll().find(b => b.name === 'Scout');
   assert(!!scout, 'Scout created');
@@ -135,7 +136,7 @@ async function main() {
   assert(!!reply1 && scout && reply1.content.includes(scout.id), 'reply includes the new bot id');
   if (scout) {
     const scoutConv = conversations.getByBotId(scout.id);
-    assert(!!scoutConv && queue.listByConversation(scoutConv.id).filter(q => q.status === 'pending').length === 0, 'no greeting queued for the new bot');
+    assert(!!scoutConv && uiTurns.listByConversation(scoutConv.id).filter(q => q.state === 'queued').length === 0, 'no greeting queued for the new bot');
     assert(!!scoutConv && messages.getByConversation(scoutConv.id).length === 0, 'no greeting storm in the new thread');
   }
   log('PASS: create with template');
@@ -143,7 +144,7 @@ async function main() {
   // Case 2: create plain (snapshot sentence, no market fit).
   log('\nCase 2: create plain');
   messages.create(conv.id, 'user', 'Create a specialist named Plainbot. The job is: water my plants');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const plain = bots.getAll().find(b => b.name === 'Plainbot');
   assert(!!plain, 'Plainbot created');
@@ -162,7 +163,7 @@ async function main() {
   skills.writeSkillForBot('Scout', '# Scout skill\nWatch prices.');
   bots.setAvatar(scout.id, 'data:image/png;base64,sourceavatar');
   messages.create(conv.id, 'user', 'duplicate Scout as Scout2');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const scout2 = bots.getAll().find(b => b.name === 'Scout2');
   assert(!!scout2, 'Scout2 created');
@@ -179,7 +180,7 @@ async function main() {
   log('\nCase 4: unknown duplicate source');
   const countBeforeUnknown = bots.getAll().length;
   messages.create(conv.id, 'user', 'Duplicate Nobody as Ghost');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   assert(bots.getAll().length === countBeforeUnknown, 'no bot created for unknown source');
   assert(!bots.getAll().some(b => b.name === 'Ghost'), 'Ghost absent from roster');
@@ -191,7 +192,7 @@ async function main() {
   log('\nCase 5: name collision');
   const countBeforeCollision = bots.getAll().length;
   messages.create(conv.id, 'user', 'make me a specialist called scout that does more');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   assert(bots.getAll().length === countBeforeCollision, 'no bot created on collision');
   const reply5 = lastCosReply(conv.id, cos.id);
@@ -201,7 +202,7 @@ async function main() {
   // Case 6: paraphrase accepted (deterministic + model-assisted).
   log('\nCase 6: paraphrase accepted');
   messages.create(conv.id, 'user', 'Could you please build a new bot named Parabot to summarize meeting notes?');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const para = bots.getAll().find(b => b.name === 'Parabot');
   assert(!!para, 'deterministic paraphrase creates Parabot');
@@ -213,7 +214,7 @@ async function main() {
   const modelIntent = await birth.extractBirthIntent(modelWording);
   assert(modelIntent.kind === 'create' && modelIntent.name === 'Watcher', 'stub model extracts the create intent');
   messages.create(conv.id, 'user', modelWording);
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const watcher = bots.getAll().find(b => b.name === 'Watcher');
   assert(!!watcher, 'model-assisted paraphrase creates Watcher');
@@ -225,7 +226,7 @@ async function main() {
   const countBeforeNoise = bots.getAll().length;
   const callsBeforeNoise = delegationCalls;
   messages.create(conv.id, 'user', 'What does a specialist do?');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   assert(bots.getAll().length === countBeforeNoise, 'non-request creates nothing');
   assert(delegationCalls === callsBeforeNoise + 1, 'normal loop continues past a non-request');
@@ -256,20 +257,20 @@ async function main() {
   // hook's already-replied guard.
   log('\nCase 9: due tick posts after a birth reply');
   messages.create(conv.id, 'user', 'make me a specialist called Tickbot that files weekly reports');
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const tickbot = bots.getAll().find(b => b.name === 'Tickbot');
   assert(!!tickbot, 'Tickbot created for the tick regression');
   const callsBeforeTick = delegationCalls;
   oneShots.create(conv.id, cos.id, Date.now() - 1000);
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const tickPosts = messages.getByConversation(conv.id).filter(m => m.sender_type === 'bot' && m.content === agent.ONE_SHOT_MESSAGE);
   assert(tickPosts.length === 1, `due one-shot posts after a birth reply (got ${tickPosts.length})`);
   assert(delegationCalls === callsBeforeTick, 'tick after birth never calls the model');
   assert(oneShots.pending(conv.id) === undefined, 'one-shot row claimed after firing');
   routines.create(conv.id, cos.id, 'tickword', Date.now() - 1000, 60000);
-  queue.enqueue(conv.id, cos.id);
+  uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const routinePosts = messages.getByConversation(conv.id).filter(m => m.sender_type === 'bot' && m.content === '[routine]\ntickword');
   assert(routinePosts.length === 1, `due routine posts after a birth reply (got ${routinePosts.length})`);

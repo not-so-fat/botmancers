@@ -30,7 +30,8 @@ const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
 const botsRoute = jiti('./app/api/bots/route.ts');
 const conversationsRoute = jiti('./app/api/conversations/route.ts');
 
-const { bots, conversations, messages, queue, groups } = db;
+const { bots, conversations, messages, groups } = db;
+const { uiTurns } = jiti('./lib/ui-turns.ts');
 
 let failures = 0;
 
@@ -52,7 +53,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 60) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -161,9 +162,9 @@ async function main() {
   agent.setDelegationChatStub(() => { stubCalls1++; return 'UNEXPECTED-MODEL-CALL'; });
   const user1 = messages.create(convTrio.id, 'user', SNAPSHOT_HANDOFF, undefined, [ana.id, ben.id]);
   await sleep(5);
-  queue.enqueue(convTrio.id, ana.id);
+  uiTurns.enqueue(convTrio.id, ana.id);
   await sleep(5);
-  queue.enqueue(convTrio.id, ben.id);
+  uiTurns.enqueue(convTrio.id, ben.id);
   await drain();
   const after1 = chainAfter(convTrio.id, user1.id);
   const handoffs1 = after1.filter(m =>
@@ -178,10 +179,10 @@ async function main() {
   assert(plums1.length === 1, 'Ben replies PLUM once');
   assert(cara1.length === 0, 'third member posts nothing');
   assert(stubCalls1 === 0, 'snapshot handoff answers without calling the model');
-  assert(queue.countPending(convTrio.id) === 0, 'queue drained after handoff');
-  queue.enqueue(convTrio.id, ana.id);
+  assert(uiTurns.countPending(convTrio.id) === 0, 'queue drained after handoff');
+  uiTurns.enqueue(convTrio.id, ana.id);
   await sleep(5);
-  queue.enqueue(convTrio.id, ben.id);
+  uiTurns.enqueue(convTrio.id, ben.id);
   await drain();
   const afterRerun = chainAfter(convTrio.id, user1.id);
   assert(afterRerun.filter(m => m.sender_type === 'bot' && m.sender_id === ana.id && m.content.startsWith('[Handing off to Ben]')).length === 1, 'rerun posts no second handoff');
@@ -208,9 +209,9 @@ async function main() {
   });
   const user2 = messages.create(convTrio.id, 'user', '@Ana hand this to Ben: summarize the launch plan', undefined, [ana.id, ben.id]);
   await sleep(5);
-  queue.enqueue(convTrio.id, ana.id);
+  uiTurns.enqueue(convTrio.id, ana.id);
   await sleep(5);
-  queue.enqueue(convTrio.id, ben.id);
+  uiTurns.enqueue(convTrio.id, ben.id);
   await drain();
   const after2 = chainAfter(convTrio.id, user2.id);
   const handoffs2 = after2.filter(m => m.sender_type === 'bot' && m.sender_id === ana.id && m.content.startsWith('[Handing off to Ben]'));
@@ -220,9 +221,9 @@ async function main() {
   assert(handoffs2.length === 1 && handoffs2[0].content === '[Handing off to Ben]\nsummarize the launch plan', 'general handoff posts one marker with the task');
   assert(summaries2.length === 1 && summaries2[0].content === 'Launch summary: Friday.', 'target answers the general task once via the model');
   assert(anaCalls2 === 0 && benCalls2 === 1, 'only the target calls the model, exactly once');
-  queue.enqueue(convTrio.id, ana.id);
+  uiTurns.enqueue(convTrio.id, ana.id);
   await sleep(5);
-  queue.enqueue(convTrio.id, ben.id);
+  uiTurns.enqueue(convTrio.id, ben.id);
   await drain();
   const after2Rerun = chainAfter(convTrio.id, user2.id);
   assert(after2Rerun.filter(m => m.sender_type === 'bot' && m.sender_id === ana.id && m.content.startsWith('[Handing off to Ben]')).length === 1, 'rerun posts no second general handoff');
@@ -325,9 +326,9 @@ async function main() {
   });
   const userLoop = messages.create(convLoop.id, 'user', '@LoopA hand this to LoopB: start loop', undefined, [loopA.id, loopB.id]);
   await sleep(5);
-  queue.enqueue(convLoop.id, loopA.id);
+  uiTurns.enqueue(convLoop.id, loopA.id);
   await sleep(5);
-  queue.enqueue(convLoop.id, loopB.id);
+  uiTurns.enqueue(convLoop.id, loopB.id);
   await drain();
   const afterLoop = chainAfter(convLoop.id, userLoop.id);
   const loopHandoffs = afterLoop.filter(m => m.sender_type === 'bot' && m.content.includes('[Handing off to'));
@@ -337,17 +338,17 @@ async function main() {
   assert(!!loopDepth, 'explicit depth reason posted for the handoff loop');
   assert(!!loopDepth && loopDepth.content.includes(String(MAX_DEPTH)), 'depth reason names the constant');
   assert(loopHandoffs.length === MAX_DEPTH, `handoffs stop at the constant (${MAX_DEPTH})`);
-  assert(queue.countPending(convLoop.id) === 0, 'no further handoff queued after depth refusal');
+  assert(uiTurns.countPending(convLoop.id) === 0, 'no further handoff queued after depth refusal');
 
   agent.setDelegationChatStub(() => 'UNEXPECTED-MODEL-CALL');
   const userStop = messages.create(convLoop.id, 'user', '@LoopA hand this to LoopB: reply with exactly the word STOPTEST', undefined, [loopA.id]);
   await sleep(5);
-  queue.enqueue(convLoop.id, loopA.id);
-  await agent.processNextQueueItem();
+  uiTurns.enqueue(convLoop.id, loopA.id);
+  await agent.processNextUiTurn();
   await sleep(5);
   const midStop = chainAfter(convLoop.id, userStop.id);
   assert(midStop.some(m => m.sender_type === 'bot' && m.sender_id === loopA.id && m.content.startsWith('[Handing off to LoopB]')), 'handoff posted before Stop');
-  assert(queue.countPending(convLoop.id) === 1, 'handoff target queued before Stop');
+  assert(uiTurns.countPending(convLoop.id) === 1, 'handoff target queued before Stop');
   const stopped = agent.stopDelegation(convLoop.id);
   assert(stopped === true, 'stopDelegation reports something stopped');
   const countAfterStop = messages.getByConversation(convLoop.id).length;
@@ -367,17 +368,17 @@ async function main() {
   agent.setDelegationChatStub(() => 'PASS');
   const userPass = messages.create(convPass.id, 'user', 'Hello everyone');
   await sleep(5);
-  queue.enqueue(convPass.id, passA.id);
+  uiTurns.enqueue(convPass.id, passA.id);
   await sleep(5);
-  queue.enqueue(convPass.id, passB.id);
+  uiTurns.enqueue(convPass.id, passB.id);
   await drain();
   assert(chainAfter(convPass.id, userPass.id).filter(m => m.sender_type === 'bot').length === 0, 'open-group PASS replies are discarded');
   agent.setDelegationChatStub(() => 'WAKE PassB: Please review my research.');
   const userCanned = messages.create(convPass.id, 'user', 'Hello again');
   await sleep(5);
-  queue.enqueue(convPass.id, passA.id);
+  uiTurns.enqueue(convPass.id, passA.id);
   await sleep(5);
-  queue.enqueue(convPass.id, passB.id);
+  uiTurns.enqueue(convPass.id, passB.id);
   await drain();
   assert(chainAfter(convPass.id, userCanned.id).filter(m => m.sender_type === 'bot').length === 0, 'open-group canned handoffs are discarded');
 
@@ -389,9 +390,9 @@ async function main() {
   agent.setDelegationChatStub(() => { exactCalls++; return 'UNEXPECTED-MODEL-CALL'; });
   const userExact = messages.create(convExact.id, 'user', 'reply with exactly the word MINT');
   await sleep(5);
-  queue.enqueue(convExact.id, plainA.id);
+  uiTurns.enqueue(convExact.id, plainA.id);
   await sleep(5);
-  queue.enqueue(convExact.id, hookB.id);
+  uiTurns.enqueue(convExact.id, hookB.id);
   // Let the clock pass the last enqueue so a peer reply drained next can
   // never share its millisecond (open-group turns compare created_at).
   await sleep(5);
@@ -402,9 +403,9 @@ async function main() {
   assert(exactCalls === 0, 'open-group exact-word answers without the model');
   const userNamed = messages.create(convExact.id, 'user', 'HookB, reply with exactly the word MINT');
   await sleep(5);
-  queue.enqueue(convExact.id, plainA.id);
+  uiTurns.enqueue(convExact.id, plainA.id);
   await sleep(5);
-  queue.enqueue(convExact.id, hookB.id);
+  uiTurns.enqueue(convExact.id, hookB.id);
   // Let the clock pass the last enqueue so a peer reply drained next can
   // never share its millisecond (open-group turns compare created_at).
   await sleep(5);
@@ -419,7 +420,7 @@ async function main() {
   });
   const userWakeGroup = messages.create(convPass.id, 'user', '@PassA hello', undefined, [passA.id]);
   await sleep(5);
-  queue.enqueue(convPass.id, passA.id);
+  uiTurns.enqueue(convPass.id, passA.id);
   await drain();
   const afterWakeGroup = chainAfter(convPass.id, userWakeGroup.id);
   assert(afterWakeGroup.some(m => m.sender_type === 'bot' && m.sender_id === passA.id && m.content === 'hello all'), 'WAKE GROUP posts its message');
@@ -455,14 +456,16 @@ async function main() {
   const pairConv = conversations.getByGroupId(delPairGroup.id);
   messages.create(pairConv.id, 'user', 'pair hello');
   messages.create(pairConv.id, 'bot', 'pair reply', pairB.id);
-  queue.markCompleted(queue.enqueue(pairConv.id, pairB.id).id, 'completed');
+  const pairTurn = uiTurns.enqueue(pairConv.id, pairB.id);
+  uiTurns.start(pairTurn.id);
+  uiTurns.finish(pairTurn.id, 'completed');
   const pairPreview = bots.deletionPreview([pairA.id]);
   assert(pairPreview.groups.find(g => g.id === delPairGroup.id).outcome === 'removed', 'preview removes a two-member group losing one');
   bots.removeMany([pairA.id]);
   assert(!groups.getById(delPairGroup.id), 'two-member group is deleted when one member goes');
   assert(!conversations.getById(pairConv.id), 'its conversation is deleted');
   assert(messages.getByConversation(pairConv.id).length === 0, 'its messages are deleted');
-  assert(queue.listByConversation(pairConv.id).length === 0, 'its queue rows are deleted');
+  assert(uiTurns.listByConversation(pairConv.id).length === 0, 'its UI turns are deleted');
   assert(bots.getById(pairB.id) && conversations.getByBotId(pairB.id), 'surviving member and its direct conversation stay');
 
   const m1 = mk('Multi1', t0 + 50);

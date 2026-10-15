@@ -71,7 +71,7 @@ Cannot demonstrate without API key because:
 - Without HERMES_API_SERVER_KEY, bots return Hermes errors immediately
 - No bot response → no WAKE command → no peer wake
 
-See `lib/agent.ts` processQueueItem() for detection logic:
+Historical: at the time of this report, detection lived in `lib/agent.ts` processQueueItem(), which NOT-477 removed. UI-thread WAKE detection now lives in processUiTurn() (`lib/agent.ts`); Agent-reply Wake routing for dispatcher-owned requests lives in `lib/wake-router.ts`. The snippet below is the historical one:
 ```typescript
 const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*(.+)/s);
 ```

@@ -1,5 +1,8 @@
 # Bot configuration page — design critique
 
+> **Historical — NOT-393 critique.** Decision history for the configuration
+> page. See the authoritative [core-engine design](../core-engine.md).
+
 Ticket: NOT-393. Owner: Critiquito.
 Input: `docs/design/bot-config-page.md` (NOT-392, Atelier).
 Status: critique only. No spec rewrite and no build in this ticket.

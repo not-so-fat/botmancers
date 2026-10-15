@@ -438,9 +438,9 @@ async function main() {
   });
   const relayConv = loopDb.conversations.getByBotId(relay.id);
   loopDb.messages.create(relayConv.id, 'user', 'Build the widget.');
-  loopDb.queue.enqueue(relayConv.id, relay.id);
+  jitiLoop('./lib/ui-turns.ts').uiTurns.enqueue(relayConv.id, relay.id);
   let processed = 0;
-  while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+  while (processed < 20 && await loopAgent.processNextUiTurn()) processed += 1;
   assert(!!launchedArgv, 'Agent Deck direct-dispatch assertion: ordinary Agent Deck message launches the stored deck run');
   assert(
     launchedArgv && hasFlag(launchedArgv, '--client', 'codex') && launchedArgv[2] === 'stored-deck-id' && hasFlag(launchedArgv, '--cwd', workdir),
@@ -459,9 +459,9 @@ async function main() {
   });
   const heraldConv = loopDb.conversations.getByBotId(herald.id);
   loopDb.messages.create(heraldConv.id, 'user', 'Hello Herald.');
-  loopDb.queue.enqueue(heraldConv.id, herald.id);
+  jitiLoop('./lib/ui-turns.ts').uiTurns.enqueue(heraldConv.id, herald.id);
   processed = 0;
-  while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+  while (processed < 20 && await loopAgent.processNextUiTurn()) processed += 1;
   assert(hermesAnswered === 1, 'Hermes direct-dispatch assertion: ordinary Hermes message uses the existing Hermes session');
   assert(launchedArgv === null, 'Hermes direct-dispatch assertion: opposite adapter (agent-deck) was not invoked');
   loopAgent.setDelegationChatStub(null);
@@ -527,9 +527,9 @@ async function main() {
     const expectedDefault = widSettings.defaultBotWorkdir(defaultBot.id, isolatedHome);
     const defaultConv = loopDb.conversations.getByBotId(defaultBot.id);
     loopDb.messages.create(defaultConv.id, 'user', 'Build the widget in the default dir.');
-    loopDb.queue.enqueue(defaultConv.id, defaultBot.id);
+    jitiLoop('./lib/ui-turns.ts').uiTurns.enqueue(defaultConv.id, defaultBot.id);
     processed = 0;
-    while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+    while (processed < 20 && await loopAgent.processNextUiTurn()) processed += 1;
     const defaultCwd = defaultLaunchedArgv ? defaultLaunchedArgv[defaultLaunchedArgv.indexOf('--cwd') + 1] : null;
     log(`pre-launch default fixture: expected=${expectedDefault} launchedCwd=${defaultCwd} existedBeforeSpawn=${preLaunchExists}`);
     assert(!!defaultLaunchedArgv, 'bot without an override launches a deck run');
@@ -564,9 +564,9 @@ async function main() {
     });
     const overrideConv = loopDb.conversations.getByBotId(overrideBot.id);
     loopDb.messages.create(overrideConv.id, 'user', 'Build the widget in the override dir.');
-    loopDb.queue.enqueue(overrideConv.id, overrideBot.id);
+    jitiLoop('./lib/ui-turns.ts').uiTurns.enqueue(overrideConv.id, overrideBot.id);
     processed = 0;
-    while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+    while (processed < 20 && await loopAgent.processNextUiTurn()) processed += 1;
     const overrideCwd = overrideLaunchedArgv ? overrideLaunchedArgv[overrideLaunchedArgv.indexOf('--cwd') + 1] : null;
     log(`override launch fixture: override=${overrideDir} launchedCwd=${overrideCwd}`);
     assert(overrideCwd === overrideDir, 'explicit override is preserved and used at launch');
@@ -592,9 +592,9 @@ async function main() {
     });
     const remoteConv = loopDb.conversations.getByBotId(remoteBot.id);
     loopDb.messages.create(remoteConv.id, 'user', 'Build the widget against the remote server.');
-    loopDb.queue.enqueue(remoteConv.id, remoteBot.id);
+    jitiLoop('./lib/ui-turns.ts').uiTurns.enqueue(remoteConv.id, remoteBot.id);
     processed = 0;
-    while (processed < 20 && await loopAgent.processNextQueueItem()) processed += 1;
+    while (processed < 20 && await loopAgent.processNextUiTurn()) processed += 1;
     const threadTexts = loopDb.messages.getByConversation(remoteConv.id).map(m => m.content);
     const visibleFailure = threadTexts.reverse().find(t => t.includes('Remote Agent Deck launch is not supported'));
     log(`non-local fixture: server_url=http://192.168.1.10:1111 agent-deck run spawns=${remoteRunSpawns}`);

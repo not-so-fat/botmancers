@@ -298,6 +298,13 @@ async function runMain() {
   const legacyAsk = messages.create(legacyThread.id, 'user', 'old question');
   const legacyReply = messages.create(legacyThread.id, 'bot', 'old answer', legacyBot.id);
   messages.create(legacyThread.id, 'bot', '[Agent Deck] launching', legacyBot.id);
+  // NOT-477: a pre-NOT-465 agent_requests row, as an older database held
+  // it, migrated by the retirement step.
+  raw.exec(`CREATE TABLE agent_requests (id TEXT PRIMARY KEY, principal_kind TEXT NOT NULL, principal_id TEXT NOT NULL, operation TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL, payload_hash TEXT NOT NULL, conversation_id TEXT NOT NULL, target_bot_id TEXT NOT NULL,
+    accepted_message_id TEXT NOT NULL, runtime TEXT, state TEXT NOT NULL, reply_message_id TEXT, failure_code TEXT,
+    failure_message TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE agent_request_events (id TEXT PRIMARY KEY, request_id TEXT NOT NULL, type TEXT NOT NULL, data TEXT, created_at INTEGER NOT NULL);`);
   raw.prepare(`INSERT INTO agent_requests (id, principal_kind, principal_id, operation, idempotency_key, payload_hash, conversation_id,
     target_bot_id, accepted_message_id, runtime, state, reply_message_id, created_at, updated_at)
     VALUES ('legacy-req', 'person', 'local-owner', 'send_message', 'legacy-key', 'h', ?, ?, ?, 'hermes', 'completed', ?, 1, 2)`)
@@ -305,7 +312,7 @@ async function runMain() {
   for (const [i, type] of ['accepted', 'dispatched', 'runtime_started', 'completed'].entries()) {
     raw.prepare('INSERT INTO agent_request_events (id, request_id, type, data, created_at) VALUES (?, ?, ?, NULL, ?)').run(`legacy-ev-${i}`, 'legacy-req', type, i + 1);
   }
-  assert(engineStore.backfillLegacyAgentRequests(raw) === 1, 'legacy request backfilled');
+  assert(raw.transaction(() => engineStore.archiveLegacyAgentRequests(raw))() === 1, 'legacy request backfilled');
   const legacyView = (await (await api.handleGetConversation(new Request('http://engine.test/x'), legacyThread.id)).json());
   assert(legacyView.messages.map(m => m.content).join('|') === 'old question|old answer|[Agent Deck] launching', 'legacy messages read unchanged and in order');
   assert(Array.isArray(legacyView.events) && legacyView.events.length === 0, 'backfilled legacy request projects no lifecycle (no false running/success)');

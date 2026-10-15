@@ -12,8 +12,10 @@
 // (./conversation-intake), the same service the web UI route uses. Each
 // accepted message is one canonical Work Request (./engine-store); the
 // request id is the Work Request id and its lifecycle is the canonical
-// state machine shown in the documented API vocabulary. agent_requests
-// is read only, for requests and idempotency keys accepted before NOT-465.
+// state machine shown in the documented API vocabulary. NOT-477: requests
+// and idempotency keys accepted before NOT-465 were copied into the
+// canonical tables (lib/engine-store archiveLegacyAgentRequests) and keep
+// their original request ids here.
 //
 // Idempotency: (principal kind, principal id, idempotency key) is unique.
 // An exact retry returns the original request; the same key with a
@@ -25,7 +27,7 @@
 // Existing UI threads ('bot'/'group' conversations) are readable here
 // through the compatibility participants bound in ./db; they stay
 // writable only through the UI routes, whose agent loop owns their turns.
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import db, { bots, engine, projector, type Bot, type Principal, type PrincipalKind } from './db';
 import {
   DispatchFailure,
@@ -61,8 +63,6 @@ import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-saf
 import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
-
-export const SEND_MESSAGE_OPERATION = 'send_message';
 
 export type AgentApiErrorCode =
   | 'authentication_unavailable'
@@ -102,25 +102,6 @@ export class AgentApiError extends Error {
 }
 
 export type AgentRequestState = 'accepted' | 'dispatched' | 'completed' | 'failed';
-
-interface AgentRequestRow {
-  id: string;
-  principal_kind: PrincipalKind;
-  principal_id: string;
-  operation: string;
-  idempotency_key: string;
-  payload_hash: string;
-  conversation_id: string;
-  target_bot_id: string;
-  accepted_message_id: string;
-  runtime: string | null;
-  state: AgentRequestState;
-  reply_message_id: string | null;
-  failure_code: string | null;
-  failure_message: string | null;
-  created_at: number;
-  updated_at: number;
-}
 
 interface MessageRow {
   id: string;
@@ -190,12 +171,6 @@ export function samePrincipal(a: Principal, b: Principal): boolean {
   return a.kind === b.kind && a.id === b.id;
 }
 
-function payloadHash(input: SendAgentMessageInput): string {
-  return createHash('sha256')
-    .update(JSON.stringify([input.agentId, input.conversationId ?? null, input.content]))
-    .digest('hex');
-}
-
 function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -204,16 +179,6 @@ function isParticipant(conversationId: string, principal: Principal): boolean {
   return !!db.prepare(
     'SELECT 1 FROM conversation_participants WHERE conversation_id = ? AND participant_kind = ? AND participant_id = ?'
   ).get(conversationId, principal.kind, principal.id);
-}
-
-function acceptedView(row: AgentRequestRow, replayed: boolean): AcceptedAgentRequest {
-  return {
-    requestId: row.id,
-    conversationId: row.conversation_id,
-    acceptedMessageId: row.accepted_message_id,
-    state: row.state,
-    replayed,
-  };
 }
 
 // Canonical lifecycle seen through the documented API vocabulary.
@@ -265,8 +230,7 @@ function dispatchAccepted(accepted: AcceptedIntake): Promise<void> {
 }
 
 // Accepts through the shared conversation intake (lib/conversation-intake).
-// A key first used before NOT-465 still replays its legacy agent request
-// (compatibility read); new acceptance never writes agent_requests.
+// A key first used before NOT-465 replays from its migrated intake row.
 export function acceptAgentMessage(principal: Principal, input: SendAgentMessageInput): { accepted: AcceptedAgentRequest; dispatched: Promise<void> } {
   assertKnownPrincipal(principal);
   if (!nonEmptyString(input.agentId)) throw new AgentApiError('invalid_request', 'agentId is required.');
@@ -276,16 +240,6 @@ export function acceptAgentMessage(principal: Principal, input: SendAgentMessage
   }
   if (input.conversationId !== undefined && input.conversationId !== null && !nonEmptyString(input.conversationId)) {
     throw new AgentApiError('invalid_request', 'conversationId must be a non-empty string when present.');
-  }
-
-  const legacy = db.prepare(
-    'SELECT * FROM agent_requests WHERE principal_kind = ? AND principal_id = ? AND operation = ? AND idempotency_key = ?'
-  ).get(principal.kind, principal.id, SEND_MESSAGE_OPERATION, input.idempotencyKey) as AgentRequestRow | undefined;
-  if (legacy) {
-    if (legacy.payload_hash !== payloadHash(input)) {
-      throw new AgentApiError('idempotency_conflict', 'The idempotency key was already used with a different payload.');
-    }
-    return { accepted: acceptedView(legacy, true), dispatched: Promise.resolve() };
   }
 
   let intake: ReturnType<typeof acceptConversationMessage>;
@@ -307,7 +261,7 @@ export function acceptAgentMessage(principal: Principal, input: SendAgentMessage
   const request = intake.requests[0];
   return {
     accepted: {
-      requestId: intake.requestIds[0],
+      requestId: request ? publicRequestId(request) : intake.requestIds[0],
       conversationId: intake.conversationId,
       acceptedMessageId: intake.acceptedMessageId,
       state: request ? apiStateOf(request.state) : 'accepted',
@@ -576,7 +530,7 @@ function scheduleRetry(requestId: string, at: number): void {
 function eligibleRetryIds(): string[] {
   return (db.prepare(`
     SELECT id FROM work_requests
-    WHERE state = 'queued' AND legacy_agent_request_id IS NULL AND next_eligible_at IS NOT NULL AND next_eligible_at <= ?
+    WHERE state = 'queued' AND legacy_agent_request_id IS NULL AND executor = 'dispatcher' AND next_eligible_at IS NOT NULL AND next_eligible_at <= ?
     ORDER BY next_eligible_at ASC, id ASC
   `).all(dispatcher.now()) as { id: string }[]).map(row => row.id);
 }
@@ -1189,7 +1143,7 @@ function workRequestView(request: WorkRequest): AgentRequestView {
     : undefined;
   const failed = request.state === 'failed' || request.state === 'cancelled';
   return {
-    requestId: request.id,
+    requestId: publicRequestId(request),
     conversationId: request.source_conversation_id,
     agentId: request.target_agent_id,
     acceptedMessageId: request.source_event_id,
@@ -1205,42 +1159,19 @@ function workRequestView(request: WorkRequest): AgentRequestView {
   };
 }
 
-// Pre-NOT-465 agent requests stay readable (compatibility read).
-function legacyRequestView(row: AgentRequestRow): AgentRequestView {
-  const reply = row.reply_message_id
-    ? (db.prepare('SELECT id, content FROM messages WHERE id = ?').get(row.reply_message_id) as { id: string; content: string } | undefined)
-    : undefined;
-  const events = db.prepare(
-    'SELECT type, created_at FROM agent_request_events WHERE request_id = ? ORDER BY created_at ASC, rowid ASC'
-  ).all(row.id) as { type: string; created_at: number }[];
-  return {
-    requestId: row.id,
-    conversationId: row.conversation_id,
-    agentId: row.target_bot_id,
-    acceptedMessageId: row.accepted_message_id,
-    state: row.state,
-    reply: reply ? { messageId: reply.id, content: reply.content } : null,
-    failure: row.failure_code ? { code: row.failure_code, message: row.failure_message ?? '' } : null,
-    events: events.map(event => ({ type: event.type, at: event.created_at })),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+// A request accepted before NOT-465 keeps the id its caller was given.
+function publicRequestId(request: WorkRequest): string {
+  return request.legacy_agent_request_id ?? request.id;
 }
 
 export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {
   assertKnownPrincipal(principal);
-  const request = engine.getWorkRequest(requestId);
-  if (request) {
-    if (!isParticipant(request.source_conversation_id, principal)) {
-      throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
-    }
-    return workRequestView(request);
-  }
-  const row = db.prepare('SELECT * FROM agent_requests WHERE id = ?').get(requestId) as AgentRequestRow | undefined;
-  if (!row || !isParticipant(row.conversation_id, principal)) {
+  const migrated = db.prepare('SELECT id FROM work_requests WHERE legacy_agent_request_id = ?').get(requestId) as { id: string } | undefined;
+  const request = engine.getWorkRequest(migrated ? migrated.id : requestId);
+  if (!request || !isParticipant(request.source_conversation_id, principal)) {
     throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
   }
-  return legacyRequestView(row);
+  return workRequestView(request);
 }
 
 const CONVERSATION_TYPE_VIEW: Record<string, ConversationView['type']> = {

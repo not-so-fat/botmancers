@@ -1,19 +1,18 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
-import { messages, conversations, queue, groups, bots, draftActions, approvals, memories, UI_OWNER_PRINCIPAL } from '@/lib/db';
+import { messages, conversations, groups, bots, draftActions, approvals, memories, UI_OWNER_PRINCIPAL } from '@/lib/db';
 import type { Bot, Conversation } from '@/lib/db';
 import {
   IntakeError,
   acceptConversationMessage,
   getAcceptedMessage,
-  type AcceptedIntake,
   type IntakeDelivery,
   type IntakeRouting,
 } from '@/lib/conversation-intake';
 import { getApprovalByCode } from '@/lib/approvals';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { resumeBotIdsForConversation } from '@/lib/ask';
-import { processQueue } from '@/lib/agent';
+import { processUiTurns } from '@/lib/agent';
 
 export async function GET(
   request: Request,
@@ -88,7 +87,8 @@ export async function POST(
       content: String(content),
       fingerprint: [id, String(content), mentionedBotId ? String(mentionedBotId) : null],
       route: conversation => uiRouting(conversation, String(content), mentionedBotId ? String(mentionedBotId) : undefined),
-      dispatch: enqueueUiTurns,
+      executor: 'ui_message',
+      dispatch: startUiTurns,
     });
 
     // Per-bot memory (NOT-411): a direct thread teaches its own bot, unless
@@ -170,15 +170,13 @@ function uiRouting(conversation: Conversation, content: string, mentionedBotId: 
   return { deliveries, handoffTargets };
 }
 
-// The UI agent loop (lib/agent processQueue) still executes UI turns: each
-// newly accepted Work Request becomes one queue item for its target and
-// conversation, naming that request (NOT-471: a coding-Agent turn
-// dispatches it as one read-only Attempt). Replays enqueue nothing.
-// agent_requests is never written.
-function enqueueUiTurns(accepted: AcceptedIntake): void {
-  if (accepted.replayed) return;
-  for (const request of accepted.requests) queue.enqueue(request.source_conversation_id, request.target_agent_id, request.id);
-  processQueue().catch(console.error);
+// NOT-477: each accepted Work Request is a UI turn (executor ui_message,
+// set by the intake transaction) and the UI turn executor (lib/agent) runs
+// them in order (NOT-471: a coding-Agent turn is handed to the dispatcher
+// as one read-only Attempt). A replay only re-kicks the executor, which
+// finds any turn still queued.
+function startUiTurns(): void {
+  processUiTurns().catch(console.error);
 }
 
 function mentionAt(content: string, name: string): boolean {

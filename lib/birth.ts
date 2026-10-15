@@ -15,7 +15,8 @@
 // Provenance and hermes profile are never copied to a duplicate.
 
 import { randomUUID, createHash } from 'crypto';
-import { bots, conversations, messages, queue } from './db';
+import { bots, conversations, messages } from './db';
+import { uiTurns } from './ui-turns';
 import type { Bot, Message } from './db';
 import { AgentNameConflictError, agentNameConflictMessage } from './agent-names';
 import { applySkillEndToken, localSkillForBot, isSupportedSkillName, writeSkillForBot } from './skills';
@@ -314,11 +315,11 @@ export interface BirthOperation {
 }
 
 function noGreetingStorm(botId: string): void {
-  // The birth path creates directly (no queue row), and this cancels any
-  // greeting another writer queued, so the new bot stays silent.
-  queue.cancelPendingForBot(botId);
+  // The birth path creates directly (no greeting turn), and this cancels
+  // any greeting another writer queued, so the new bot stays silent.
+  uiTurns.cancelPendingForBot(botId);
   const conversation = conversations.getByBotId(botId);
-  if (conversation) queue.cancelPending(conversation.id);
+  if (conversation) uiTurns.cancelPending(conversation.id);
 }
 
 export async function createPlainSpecialist(

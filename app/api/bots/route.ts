@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import db, { BotDeletionError, bots, conversations, messages, queue } from '@/lib/db';
+import db, { BotDeletionError, bots, conversations, messages } from '@/lib/db';
+import { uiTurns } from '@/lib/ui-turns';
 import { blockedReasonCopy, parseDeleteIds, type DeletePreview } from '@/lib/bot-deletion';
-import { processQueue } from '@/lib/agent';
+import { processUiTurns } from '@/lib/agent';
 import {
   hasAgentUpdate,
   serializeBot,
@@ -78,8 +79,8 @@ export async function POST(request: Request) {
     });
     const conversation = conversations.getByBotId(bot.id);
     if (conversation) {
-      queue.enqueue(conversation.id, bot.id);
-      processQueue().catch(console.error);
+      uiTurns.enqueue(conversation.id, bot.id, { reason: 'greeting' });
+      processUiTurns().catch(console.error);
     }
     return NextResponse.json(serializeBot(bot));
   } catch (error) {
@@ -174,7 +175,7 @@ function deletionErrorResponse(preview: DeletePreview) {
 
 // NOT-459: legacy `{ id }` or bulk `{ ids }`. 400 for malformed input,
 // 404 when any target is missing, 409 when any target is the Chief of
-// Staff or has a pending/processing queue row; the batch is atomic.
+// Staff or has a queued or running UI turn; the batch is atomic.
 export async function DELETE(request: Request) {
   let body: unknown;
   try {

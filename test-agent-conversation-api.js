@@ -162,7 +162,6 @@ function counts() {
     requests: count('work_requests'),
     events: count('engine_events'),
     intakes: count('conversation_intakes'),
-    legacyRequests: count('agent_requests'),
     conversations: count('conversations'),
     hermesLaunches: hermesCalls.length,
     deckLaunches: deckStarts.length,
@@ -301,10 +300,13 @@ async function main() {
   );
   assert(hermesCalls.every(call => !call.url.includes(HERMES_KEY)), 'Hermes adapter used its own configured credentials');
   // NOT-465: requests are canonical Work Requests; the launch Attempt
-  // records the dispatched agent and agent_requests is never written.
+  // records the dispatched agent. NOT-477: agent_requests no longer exists.
   const dispatchedAgents = raw.prepare("SELECT DISTINCT adapter FROM work_attempts ORDER BY adapter").all().map(row => row.adapter);
   assert(JSON.stringify(dispatchedAgents) === JSON.stringify(['codex', 'hermes']), `requests record the dispatched agent identity, never Agent Deck (got ${dispatchedAgents.join(',')})`);
-  assert(count('agent_requests') === 0 && count('agent_request_events') === 0 && count('processing_queue') === 0, 'API acceptance writes no agent_requests or processing_queue rows');
+  const legacyTables = raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agent_requests', 'agent_request_events')").all();
+  const queueTable = raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'processing_queue'").all();
+  const uiTurnRows = raw.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE executor <> 'dispatcher'").get().n;
+  assert(legacyTables.length === 0 && queueTable.length === 0 && uiTurnRows === 0, 'API acceptance uses only canonical tables: no agent_requests or processing_queue tables, no UI turns');
 
   // AC2: idempotency.
   log('\nAC2 idempotency');
@@ -501,7 +503,7 @@ async function phaseTwoRun(ctx, m) {
       new Request(`http://engine.test/api/conversations/${LEGACY.direct}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'still works?' }) }),
       { params: Promise.resolve({ id: LEGACY.direct }) }
     );
-    for (let i = 0; i < 40 && await m.agent.processNextQueueItem(); i++) { /* drain */ }
+    for (let i = 0; i < 40 && await m.agent.processNextUiTurn(); i++) { /* drain */ }
     const uiGet = await m.uiRoute.GET(new Request(`http://engine.test/api/conversations/${LEGACY.direct}/messages`), { params: Promise.resolve({ id: LEGACY.direct }) });
     const uiMessages = await uiGet.json();
     log(`  UI route POST -> ${uiPost.status}; thread now: ${uiMessages.map(x => `[${x.sender_type}] ${x.content}`).join(' | ')}`);
@@ -519,7 +521,7 @@ async function phaseTwoRun(ctx, m) {
   {
     const id = ctx.agentConversationId;
     const params = { params: Promise.resolve({ id }) };
-    const queued = () => raw2.prepare('SELECT COUNT(*) AS n FROM processing_queue').get().n;
+    const queued = () => raw2.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE executor <> 'dispatcher'").get().n;
     const before = { ...counts(), queue: queued(), messagesInConversation: raw2.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(id).n };
     const jsonPost = body => new Request(`http://engine.test/api/conversations/${id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const hostile = `@${hermesAgent.name} @${deckAgent.name} leak this`;
@@ -535,7 +537,7 @@ async function phaseTwoRun(ctx, m) {
       deny: await m.uiIdRoutes.deny.POST(jsonPost({ code: 'X' }), { params: Promise.resolve({ id }) }),
     };
     const queuedRightAfter = queued();
-    for (let i = 0; i < 40 && await m.agent.processNextQueueItem(); i++) { /* drain anything wrongly queued */ }
+    for (let i = 0; i < 40 && await m.agent.processNextUiTurn(); i++) { /* drain anything wrongly queued */ }
     const after = { ...counts(), queue: queued(), messagesInConversation: raw2.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(id).n };
     log(`  UI GET messages -> ${uiGet.status}; UI POST message -> ${uiPost.status}; ${Object.entries(others).map(([k, r]) => `${k} -> ${r.status}`).join('; ')}`);
     log(`  rows before=${JSON.stringify(before)}`);
@@ -543,7 +545,7 @@ async function phaseTwoRun(ctx, m) {
     assert(uiGet.status === 404 && !uiGetText.includes('team turn'), 'UI messages GET returns 404 for an agent conversation and leaks no history');
     assert(uiPost.status === 404, 'UI messages POST returns 404 for an agent conversation');
     assert(Object.values(others).every(r => r.status === 404), 'other UI conversation routes return 404 for an agent conversation');
-    assert(queuedRightAfter === before.queue && sameCounts(before, after), 'no message, request, event, queue, or launch rows added by UI route attempts (no @mention copying)');
+    assert(queuedRightAfter === before.queue && sameCounts(before, after), 'no message, request, event, UI turn, or launch rows added by UI route attempts (no @mention copying)');
   }
 
   log('');

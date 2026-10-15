@@ -417,7 +417,7 @@ export function createRequestControl(db: Db, store: EngineStore, options: Reques
       const at = now ?? clock();
       return (db.prepare(`
         SELECT id FROM work_requests
-        WHERE state IN ('queued', 'blocked', 'running', 'waiting') AND legacy_agent_request_id IS NULL
+        WHERE state IN ('queued', 'blocked', 'running', 'waiting') AND legacy_agent_request_id IS NULL AND executor = 'dispatcher'
           AND ((deadline_at IS NOT NULL AND deadline_at <= ?) OR state = 'running')
         ORDER BY created_at ASC, id ASC
       `).all(at) as { id: string }[]).map(row => row.id);

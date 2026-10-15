@@ -23,7 +23,8 @@ const jiti = createJiti(__filename);
 const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
 
-const { bots, conversations, messages, queue, memories, oneShots, routines, launchSnapshots } = db;
+const { bots, conversations, messages, memories, oneShots, routines, launchSnapshots } = db;
+const { uiTurns } = jiti('./lib/ui-turns.ts');
 
 let failures = 0;
 
@@ -44,7 +45,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 40) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -79,7 +80,7 @@ async function main() {
     return 'You like green tea.';
   });
   messages.create(memConv.id, 'user', 'What do I like?');
-  queue.enqueue(memConv.id, memBot.id);
+  uiTurns.enqueue(memConv.id, memBot.id);
   await drain();
   assert(memSent.includes('Remembered facts:'), 'prompt carries the remembered-facts block');
   assert(memSent.includes('- I like green tea.'), 'prompt carries the exact fact');
@@ -99,7 +100,7 @@ async function main() {
   const onceBot = bots.create({ deck_id: 'deck-test', name: 'OnceBot', title: 'Waker', description: 'Wakes once.' });
   const onceConv = conversations.getByBotId(onceBot.id);
   messages.create(onceConv.id, 'user', 'Hello.');
-  queue.enqueue(onceConv.id, onceBot.id);
+  uiTurns.enqueue(onceConv.id, onceBot.id);
   await drain();
   oneShots.create(onceConv.id, onceBot.id, Date.now() + 60);
   agent.resumeLoopTimers();
@@ -108,7 +109,7 @@ async function main() {
   const onceFired = botMessages(onceConv.id).filter(m => m.content === agent.ONE_SHOT_MESSAGE);
   assert(onceFired.length === 1, `one-shot posted exactly once (got ${onceFired.length})`);
   assert(oneShots.pending(onceConv.id) === undefined, 'one-shot row claimed after firing');
-  assert(queue.countPending(onceConv.id) === 0, 'queue drained after one-shot');
+  assert(uiTurns.countPending(onceConv.id) === 0, 'queue drained after one-shot');
   await sleep(200);
   agent.resumeLoopTimers();
   await drain();
@@ -126,7 +127,7 @@ async function main() {
   const routineBot = bots.create({ deck_id: 'deck-test', name: 'RoutineBot', title: 'Ticker', description: 'Ticks.' });
   const routineConv = conversations.getByBotId(routineBot.id);
   messages.create(routineConv.id, 'user', 'Teach me a routine.');
-  queue.enqueue(routineConv.id, routineBot.id);
+  uiTurns.enqueue(routineConv.id, routineBot.id);
   await drain();
   assert(stubCalls === 1, 'user turn answered once by the model');
   const WORD = 'stretch';
@@ -143,7 +144,7 @@ async function main() {
   await drain();
   assert(routinePosts().length === 2, `routine posted after the second interval (got ${routinePosts().length})`);
   assert(stubCalls === 1, 'routine ticks never called the model');
-  assert(queue.countPending(routineConv.id) === 0, 'queue drained after routine ticks');
+  assert(uiTurns.countPending(routineConv.id) === 0, 'queue drained after routine ticks');
   const stopped = agent.stopDelegation(routineConv.id);
   assert(stopped === true, 'stopDelegation reports something stopped');
   const countAfterStop = messages.getByConversation(routineConv.id).length;
@@ -153,7 +154,7 @@ async function main() {
   const final = messages.getByConversation(routineConv.id);
   assert(routinePosts().length === 2, `no routine post after Stop (got ${routinePosts().length})`);
   assert(final.length === countAfterStop, 'zero new messages after Stop');
-  assert(queue.countPending(routineConv.id) === 0, 'no tick queued after Stop');
+  assert(uiTurns.countPending(routineConv.id) === 0, 'no tick queued after Stop');
 
   // Scenario 4: a routine tick never bypasses the delegation budget. While
   // exhausted, heartbeats enqueue nothing (no post, no per-heartbeat budget
@@ -165,7 +166,7 @@ async function main() {
   const budgetConv = conversations.getByBotId(budgetBot.id);
   messages.create(budgetConv.id, 'user', 'Spend the budget.');
   for (let i = 0; i < MAX_TURNS + 2; i++) {
-    queue.enqueue(budgetConv.id, budgetBot.id);
+    uiTurns.enqueue(budgetConv.id, budgetBot.id);
     await sleep(2);
   }
   await drain();
@@ -193,9 +194,9 @@ async function main() {
   );
   assert(lateRoutine().length === 0, 'three heartbeats fire no routine while exhausted');
   assert(budgetReasons().length === 1, 'three heartbeats post no further budget reasons');
-  assert(queue.countPending(budgetConv.id) === 0, 'three heartbeats enqueue nothing while exhausted');
+  assert(uiTurns.countPending(budgetConv.id) === 0, 'three heartbeats enqueue nothing while exhausted');
   messages.create(budgetConv.id, 'user', 'Thanks, go on.');
-  queue.enqueue(budgetConv.id, budgetBot.id);
+  uiTurns.enqueue(budgetConv.id, budgetBot.id);
   await drain();
   agent.resumeLoopTimers();
   await sleep(150);
@@ -219,7 +220,7 @@ async function main() {
   const teachBot = bots.create({ deck_id: 'deck-test', name: 'TeachBot', title: 'Student', description: 'Learns timers.' });
   const teachConv = conversations.getByBotId(teachBot.id);
   messages.create(teachConv.id, 'user', 'Reply with the word teacup.');
-  queue.enqueue(teachConv.id, teachBot.id);
+  uiTurns.enqueue(teachConv.id, teachBot.id);
   await drain();
   const taught = routines.forConversation(teachConv.id);
   assert(!!taught && taught.word === 'teacup', 'routine phrase teaches the word');
@@ -230,7 +231,7 @@ async function main() {
   const taughtRoutinePosts = () =>
     botMessages(teachConv.id).filter(m => m.content === '[routine]\nteacup');
   assert(taughtRoutinePosts().length === 1, `taught routine posts exactly once past due (got ${taughtRoutinePosts().length})`);
-  assert(queue.countPending(teachConv.id) === 0, 'no queued rows after the taught routine fires');
+  assert(uiTurns.countPending(teachConv.id) === 0, 'no queued rows after the taught routine fires');
   assert(teachCalls === 0, 'taught routine tick never calls the model');
   const teachSnapshots = launchSnapshots.listByBot(teachBot.id).length;
   await sleep(200);
@@ -241,7 +242,7 @@ async function main() {
     'no re-arm loop: snapshot count stable after the taught routine fires'
   );
   messages.create(teachConv.id, 'user', 'Reply with the word teacup.');
-  queue.enqueue(teachConv.id, teachBot.id);
+  uiTurns.enqueue(teachConv.id, teachBot.id);
   await drain();
   assert(
     routines.all().filter(row => row.conversation_id === teachConv.id).length === 1,
@@ -252,7 +253,7 @@ async function main() {
   const shotConv = conversations.getByBotId(shotBot.id);
   const teachAt = Date.now();
   messages.create(shotConv.id, 'user', 'Set a one-shot in 1 second.');
-  queue.enqueue(shotConv.id, shotBot.id);
+  uiTurns.enqueue(shotConv.id, shotBot.id);
   await drain();
   const taughtShot = oneShots.pending(shotConv.id);
   assert(!!taughtShot, 'one-shot phrase teaches a durable one-shot');
@@ -266,7 +267,7 @@ async function main() {
   const taughtShotPosts = () =>
     botMessages(shotConv.id).filter(m => m.content === agent.ONE_SHOT_MESSAGE);
   assert(taughtShotPosts().length === 1, `taught one-shot posts exactly once past due (got ${taughtShotPosts().length})`);
-  assert(queue.countPending(shotConv.id) === 0, 'no queued rows after the taught one-shot fires');
+  assert(uiTurns.countPending(shotConv.id) === 0, 'no queued rows after the taught one-shot fires');
   assert(teachCalls === 0, 'taught one-shot tick never calls the model');
   const shotSnapshots = launchSnapshots.listByBot(shotBot.id).length;
   await sleep(200);
@@ -284,7 +285,7 @@ async function main() {
   const draftTickBot = bots.create({ deck_id: 'deck-test', name: 'DraftTickBot', title: 'Ticker', description: 'Ticks past drafts.' });
   const draftTickConv = conversations.getByBotId(draftTickBot.id);
   messages.create(draftTickConv.id, 'user', 'Email Alice the summary.');
-  queue.enqueue(draftTickConv.id, draftTickBot.id);
+  uiTurns.enqueue(draftTickConv.id, draftTickBot.id);
   await drain();
   assert(
     botMessages(draftTickConv.id).some(m => m.content.includes('[draft]')),

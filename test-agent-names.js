@@ -222,12 +222,13 @@ async function main() {
     legacy.prepare("INSERT INTO messages (id, conversation_id, sender_type, sender_id, content, created_at) VALUES (?, ?, 'bot', ?, ?, ?)").run(`msg-b-${row.id}`, `conv-${row.id}`, row.id, `I am ${row.name}`, row.at + 1);
     legacy.prepare("INSERT INTO processing_queue (id, conversation_id, bot_id, status, created_at) VALUES (?, ?, ?, 'completed', ?)").run(`q-${row.id}`, `conv-${row.id}`, row.id, row.at);
   }
-  const historyOf = conn => ({
+  // NOT-477: the queue rows end up in legacy_processing_queue_archive.
+  const historyOf = (conn, queueTable) => ({
     conversations: conn.prepare('SELECT id, bot_id FROM conversations ORDER BY id').all(),
     messages: conn.prepare('SELECT id, conversation_id, sender_id, content, created_at FROM messages ORDER BY id').all(),
-    queue: conn.prepare('SELECT id, conversation_id, bot_id FROM processing_queue ORDER BY id').all(),
+    queue: conn.prepare(`SELECT id, conversation_id, bot_id FROM ${queueTable} ORDER BY id`).all(),
   });
-  const historyBefore = historyOf(legacy);
+  const historyBefore = historyOf(legacy, 'processing_queue');
   const idsBefore = legacy.prepare('SELECT id, created_at FROM bots ORDER BY id').all();
   legacy.close();
 
@@ -246,7 +247,7 @@ async function main() {
     assert(!!got && got.name === row.expect && got.name_key === names.agentNameKey(row.expect), `${row.id} -> ${JSON.stringify(row.expect)}`, JSON.stringify(got));
   }
   assert(JSON.stringify(after.prepare('SELECT id, created_at FROM bots ORDER BY id').all()) === JSON.stringify(idsBefore), 'every Agent ID (and created_at) survives; none merged or deleted');
-  assert(JSON.stringify(historyOf(after)) === JSON.stringify(historyBefore), 'conversations, messages (text included), and queue rows keep their Agent IDs unchanged');
+  assert(JSON.stringify(historyOf(after, 'legacy_processing_queue_archive')) === JSON.stringify(historyBefore), 'conversations, messages (text included), and archived queue rows keep their Agent IDs unchanged');
   const orphans = after.prepare(
     "SELECT COUNT(*) AS n FROM messages m WHERE m.sender_type = 'bot' AND m.sender_id NOT IN (SELECT id FROM bots)"
   ).get().n + after.prepare('SELECT COUNT(*) AS n FROM conversations c WHERE c.bot_id IS NOT NULL AND c.bot_id NOT IN (SELECT id FROM bots)').get().n;

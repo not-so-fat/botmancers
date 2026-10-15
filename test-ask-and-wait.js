@@ -23,7 +23,8 @@ const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
 const ask = jiti('./lib/ask.ts');
 
-const { bots, conversations, messages, queue, groups } = db;
+const { bots, conversations, messages, groups } = db;
+const { uiTurns } = jiti('./lib/ui-turns.ts');
 
 let failures = 0;
 
@@ -45,7 +46,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 40) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -89,7 +90,7 @@ async function main() {
   agent.setDelegationChatStub(askThenResumeStub('Trip booked'));
   const task1 = messages.create(convA.id, 'user', 'Plan my trip.');
   await sleep(5);
-  queue.enqueue(convA.id, tripA.id);
+  uiTurns.enqueue(convA.id, tripA.id);
   await drain();
   const afterAsk = chainAfter(convA.id, task1.id);
   const question1 = afterAsk.find(m => m.sender_type === 'bot' && m.sender_id === tripA.id);
@@ -107,7 +108,7 @@ async function main() {
   const answer1 = messages.create(convA.id, 'user', 'Lisbon');
   await sleep(5);
   for (const botId of ask.resumeBotIdsForConversation(convA.id) || [tripA.id]) {
-    queue.enqueue(convA.id, botId);
+    uiTurns.enqueue(convA.id, botId);
   }
   await drain();
   const afterAnswer = chainAfter(convA.id, answer1.id);
@@ -125,7 +126,7 @@ async function main() {
   await drain();
   assert(messages.getByConversation(convA.id).length === countBeforeRedrain, 'no double reply on redrain');
   assert(messages.getByConversation(convOther.id).length === otherBefore, 'unrelated thread untouched');
-  assert(queue.countPending(convA.id) === 0, 'queue drained');
+  assert(uiTurns.countPending(convA.id) === 0, 'queue drained');
   if (failures === caseFailures) log('PASS: Case 1: ask then answer resumes once');
 
   // Case 2: restart persistence (pending row survives in-memory reset).
@@ -136,7 +137,7 @@ async function main() {
   agent.setDelegationChatStub(askThenResumeStub('Trip booked'));
   const task2 = messages.create(convB.id, 'user', 'Plan my trip.');
   await sleep(5);
-  queue.enqueue(convB.id, tripB.id);
+  uiTurns.enqueue(convB.id, tripB.id);
   await drain();
   assert(ask.listAskedForConversation(convB.id).length === 1, 'question parked before restart');
   agent.resetDelegationForTests(); // drops all in-memory chains/stubs; DB rows remain
@@ -145,7 +146,7 @@ async function main() {
   const answer2 = messages.create(convB.id, 'user', 'Lisbon');
   await sleep(5);
   for (const botId of ask.resumeBotIdsForConversation(convB.id) || [tripB.id]) {
-    queue.enqueue(convB.id, botId);
+    uiTurns.enqueue(convB.id, botId);
   }
   await drain();
   const botReplies2 = chainAfter(convB.id, answer2.id).filter(m => m.sender_type === 'bot');
@@ -169,9 +170,9 @@ async function main() {
   });
   const task3 = messages.create(convG.id, 'user', 'Plan our trip.');
   await sleep(5);
-  queue.enqueue(convG.id, g1.id);
+  uiTurns.enqueue(convG.id, g1.id);
   await sleep(5);
-  queue.enqueue(convG.id, g2.id);
+  uiTurns.enqueue(convG.id, g2.id);
   await drain();
   const groupAsked = ask.listAskedForConversation(convG.id);
   assert(groupAsked.length === 1 && groupAsked[0].bot_id === g1.id, 'only the asking bot holds a pending row');
@@ -181,7 +182,7 @@ async function main() {
   assert(Array.isArray(resumeIds) && resumeIds.length === 1 && resumeIds[0] === g1.id, 'routing helper names only the asked bot');
   const answer3 = messages.create(convG.id, 'user', 'Lisbon');
   await sleep(5);
-  for (const botId of resumeIds) queue.enqueue(convG.id, botId);
+  for (const botId of resumeIds) uiTurns.enqueue(convG.id, botId);
   await drain();
   const afterGroupAnswer = chainAfter(convG.id, answer3.id);
   const groupReplies = afterGroupAnswer.filter(m => m.sender_type === 'bot');
@@ -209,7 +210,7 @@ async function main() {
   });
   const task4 = messages.create(convC.id, 'user', 'Plan my trip.');
   await sleep(5);
-  queue.enqueue(convC.id, tripC.id);
+  uiTurns.enqueue(convC.id, tripC.id);
   await drain();
   assert(ask.listAskedForConversation(convC.id).length === 1, 'question parked before Stop');
   const stopped = agent.stopDelegation(convC.id);
@@ -219,7 +220,7 @@ async function main() {
   assert(cleared.length === 1 && cleared[0].status === 'expired', 'pending row expired by Stop');
   const answer4 = messages.create(convC.id, 'user', 'Lisbon');
   await sleep(5);
-  queue.enqueue(convC.id, tripC.id);
+  uiTurns.enqueue(convC.id, tripC.id);
   await drain();
   const botReplies4 = chainAfter(convC.id, answer4.id).filter(m => m.sender_type === 'bot');
   log(`  after-stop: ${botReplies4.map(m => JSON.stringify(m.content)).join(' | ') || '(missing)'}`);
@@ -244,7 +245,7 @@ async function main() {
   });
   const task5 = messages.create(convD.id, 'user', 'Plan my trip.');
   await sleep(5);
-  queue.enqueue(convD.id, tripD.id);
+  uiTurns.enqueue(convD.id, tripD.id);
   await drain();
   const pending5 = ask.listAskedForConversation(convD.id);
   assert(pending5.length === 1, 'question parked before expire');
@@ -252,7 +253,7 @@ async function main() {
   assert(ask.expireQuestion(pending5[0].id) === false, 'second expire is a no-op');
   const answer5 = messages.create(convD.id, 'user', 'Lisbon');
   await sleep(5);
-  queue.enqueue(convD.id, tripD.id);
+  uiTurns.enqueue(convD.id, tripD.id);
   await drain();
   const botReplies5 = chainAfter(convD.id, answer5.id).filter(m => m.sender_type === 'bot');
   assert(sawResume5 === false, 'resumed context never built for an expired question');
@@ -288,7 +289,7 @@ async function main() {
     const callsBefore = modelCalls6;
     const task = messages.create(convE.id, 'user', `Plan my trip. ${phrase}`);
     await sleep(5);
-    queue.enqueue(convE.id, tripE.id);
+    uiTurns.enqueue(convE.id, tripE.id);
     await drain();
     const asked = chainAfter(convE.id, task.id).filter(m => m.sender_type === 'bot');
     assert(asked.length === 1 && asked[0].content.includes('which city'), `${label}: question posted without the model`);
@@ -296,7 +297,7 @@ async function main() {
     const answer = messages.create(convE.id, 'user', 'Lisbon');
     await sleep(5);
     for (const botId of ask.resumeBotIdsForConversation(convE.id) || [tripE.id]) {
-      queue.enqueue(convE.id, botId);
+      uiTurns.enqueue(convE.id, botId);
     }
     await drain();
     const resumed = chainAfter(convE.id, answer.id).filter(m => m.sender_type === 'bot');
@@ -313,7 +314,7 @@ async function main() {
   agent.setDelegationChatStub(() => 'NORMAL-REPLY-7');
   const task7 = messages.create(convF.id, 'user', 'Hello, how are you?');
   await sleep(5);
-  queue.enqueue(convF.id, tripF.id);
+  uiTurns.enqueue(convF.id, tripF.id);
   await drain();
   const replies7 = chainAfter(convF.id, task7.id).filter(m => m.sender_type === 'bot');
   assert(replies7.length === 1 && replies7[0].content === 'NORMAL-REPLY-7', 'plain message gets a plain model reply');

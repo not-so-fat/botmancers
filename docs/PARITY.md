@@ -1,5 +1,9 @@
 # Design parity record (NOT-412)
 
+> **Evidence — NOT-412.** A dated UI design-parity record, not an engine or
+> product contract. For the current architecture see the authoritative
+> [core-engine design](core-engine.md).
+
 Reference: branch `origin/v0-box-snapshot` (commit `4524751`), screenshots
 under `design-reference/screenshots/`, notes in `SNAPSHOT.md`. Reference
 only; never merged. Read with

@@ -56,9 +56,12 @@ const wake = jiti('./lib/wake.ts');
 const raw = db.default;
 const { bots, conversations, messages, groups, engine } = db;
 
-const TABLES = ['wakes', 'work_requests', 'engine_events', 'processing_queue'];
+const TABLES = ['wakes', 'work_requests', 'engine_events'];
 function counts() {
-  return Object.fromEntries(TABLES.map(table => [table, raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n]));
+  return {
+    ...Object.fromEntries(TABLES.map(table => [table, raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n])),
+    ui_turns: raw.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE executor <> 'dispatcher'").get().n,
+  };
 }
 function sameCounts(a, b) {
   return TABLES.every(table => a[table] === b[table]);
@@ -113,7 +116,7 @@ function runMain() {
   const r1 = first[0].request;
   assert(w1.status === 'accepted' && w1.reason_code === null, 'Wake is accepted');
   assert(after1.wakes - before1.wakes === 1 && after1.work_requests - before1.work_requests === 1, 'exactly one wakes row and one work_requests row');
-  assert(after1.processing_queue === before1.processing_queue, 'no processing_queue row (no dispatch)');
+  assert(after1.ui_turns === before1.ui_turns, 'no UI turn (no UI dispatch)');
   const row = raw.prepare('SELECT * FROM work_requests WHERE id = ?').get(r1.id);
   assert(row.requester_kind === 'bot' && row.requester_id === tank.id, 'requester is the sending Agent (derived from the source event)');
   assert(row.target_agent_id === dev.id, 'target is the resolved Agent ID');
@@ -355,7 +358,7 @@ function runRestart() {
   assert(engine.listEvents(ids.r1).filter(event => event.type === 'accepted').length === 1, 'still one accepted event');
 
   const agent = jiti('./lib/agent.ts');
-  assert(agent.getDelegationState(ids.conversation) === null, 'in-memory delegation chain is empty after restart');
+  assert(agent.getDelegationState(ids.conversation) === null, 'a routed Wake writes no UI delegation chain');
   finish();
 }
 

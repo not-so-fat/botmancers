@@ -31,7 +31,8 @@ const manageRoute = jiti('./app/api/bots/manage/route.ts');
 const deletion = jiti('./lib/bot-deletion.ts');
 
 const sqlite = db.default;
-const { bots, groups, conversations, messages, queue, memories, oneShots, routines, launchSnapshots, approvals } = db;
+const { bots, groups, conversations, messages, memories, oneShots, routines, launchSnapshots, approvals } = db;
+const { uiTurns } = jiti('./lib/ui-turns.ts');
 
 let failures = 0;
 function assert(condition, label) {
@@ -67,7 +68,7 @@ function ownedRows(botId) {
     bots: count('SELECT COUNT(*) AS n FROM bots WHERE id = ?', botId),
     conversations: count('SELECT COUNT(*) AS n FROM conversations WHERE bot_id = ?', botId),
     messages: count('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?', convId),
-    queue: count('SELECT COUNT(*) AS n FROM processing_queue WHERE bot_id = ? OR conversation_id = ?', botId, convId),
+    ui_turns: count("SELECT COUNT(*) AS n FROM work_requests WHERE executor <> 'dispatcher' AND (target_agent_id = ? OR source_conversation_id = ?)", botId, convId),
     approvals: count('SELECT COUNT(*) AS n FROM approvals WHERE conversation_id = ?', convId),
     approval_requests: count('SELECT COUNT(*) AS n FROM approval_requests WHERE conversation_id = ? OR bot_id = ?', convId, botId),
     snapshots: count('SELECT COUNT(*) AS n FROM launch_snapshots WHERE bot_id = ?', botId),
@@ -84,8 +85,9 @@ function seedOwnedRecords(bot, peer) {
   const conv = conversations.getByBotId(bot.id);
   messages.create(conv.id, 'user', `hello ${bot.name}`);
   messages.create(conv.id, 'bot', `I am ${bot.name}, I like tea.`, bot.id);
-  const done = queue.enqueue(conv.id, bot.id);
-  queue.markCompleted(done.id, 'completed');
+  const done = uiTurns.enqueue(conv.id, bot.id);
+  uiTurns.start(done.id);
+  uiTurns.finish(done.id, 'completed');
   approvals.recordPending(conv.id, `code-${bot.name}`);
   sqlite.prepare(
     "INSERT INTO approval_requests (id, conversation_id, bot_id, code, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)"
@@ -154,9 +156,9 @@ async function main() {
   const chief = makeBot('chief-of-staff');
   const pendingBot = makeBot('PendingBot');
   const processingBot = makeBot('ProcessingBot');
-  queue.enqueue(conversations.getByBotId(pendingBot.id).id, pendingBot.id);
-  const proc = queue.enqueue(conversations.getByBotId(processingBot.id).id, processingBot.id);
-  queue.markProcessing(proc.id);
+  uiTurns.enqueue(conversations.getByBotId(pendingBot.id).id, pendingBot.id);
+  const proc = uiTurns.enqueue(conversations.getByBotId(processingBot.id).id, processingBot.id);
+  uiTurns.start(proc.id);
   res = await del({ ids: [a.id, chief.id] });
   body = await json(res);
   assert(res.status === 409, `batch with Chief of Staff → 409 (got ${res.status})`);

@@ -13,8 +13,7 @@
 //   revision Wakes, never for direct or explanation messages or legacy WAKE;
 // - unknown kinds, unsupported authority, and malformed snapshots fail
 //   before any adapter call, with the reason persisted;
-// - the composite implement/review/resume path is unreachable from
-//   default dispatch and runs only through its explicit compatibility gate.
+// - the composite implement/review/resume path is removed (NOT-477).
 // Self-contained: isolated SQLite file, fake Agent Deck public API, no network.
 'use strict';
 
@@ -264,7 +263,7 @@ async function main() {
     const body = await response.json();
     const requestId = body.intake.requestIds[0];
     await waitFor(() => engine.getWorkRequest(requestId).state === 'completed', `${agentType}: UI request completes`);
-    while (await agent.processNextQueueItem()) { /* drain */ }
+    while (await agent.processNextUiTurn()) { /* drain */ }
     const request = engine.getWorkRequest(requestId);
     const attempts = engine.listAttempts(requestId);
     const thread = messages.getByConversation(conv.id).filter(m => m.sender_type === 'bot');
@@ -277,16 +276,14 @@ async function main() {
       `${agentType}: one reply, no composite observations`);
   }
 
-  console.log('\nComposite path: unreachable from default dispatch (code reference)');
+  console.log('\nComposite path: retired (code reference)');
   const agentSource = fs.readFileSync(path.join(ROOT, 'lib/agent.ts'), 'utf8');
   const conversationsSource = fs.readFileSync(path.join(ROOT, 'lib/agent-conversations.ts'), 'utf8');
-  assert(!/delegateCodingViaDeck\s*\(/.test(agentSource) && !/import[^;]*delegateCodingViaDeck[^;]*from/.test(agentSource),
-    'lib/agent.ts neither imports nor calls delegateCodingViaDeck');
-  assert(!conversationsSource.includes('delegateCodingViaDeck') && !conversationsSource.includes('runCompositeCompatibility'),
-    'lib/agent-conversations.ts never reaches the composite');
   const deckSource = fs.readFileSync(path.join(ROOT, 'lib/agent-deck-run.ts'), 'utf8');
-  assert(deckSource.includes('LEGACY (NOT-472)') && deckRun.runCompositeCompatibility === undefined && deckRun.COMPOSITE_COMPATIBILITY === undefined,
-    'NOT-472: the composite compatibility gate is retired; no canonical request reaches the composite');
+  assert(![agentSource, conversationsSource, deckSource].some(source => source.includes('delegateCodingViaDeck') || source.includes('runCompositeCompatibility')),
+    'NOT-477: no engine module defines or reaches the composite implement/review/resume helper');
+  assert(deckRun.delegateCodingViaDeck === undefined && deckRun.DECK_DELEGATION_PHASE_TOOLS === undefined && deckRun.runCompositeCompatibility === undefined,
+    'NOT-477: lib/agent-deck-run exports no composite helper or phase table');
 
   // ---------------------------------------------------------------
   console.log('\nWake fixtures: edit only for explicit implementation or revision');

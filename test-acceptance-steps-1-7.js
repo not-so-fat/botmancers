@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+// Historical live-server walkthrough (steps 1-7 of ACCEPTANCE.md), kept as
+// evidence. It is not part of the deterministic suite; the current engine
+// and its acceptance coverage are described in docs/core-engine.md and
+// docs/acceptance-harness.md.
+
 const http = require('http');
 const fs = require('fs');
 
@@ -71,8 +76,8 @@ async function stubPeerWake() {
         ? 'Brief research on AI agents. WAKE Bob: Please review my research on AI agents.'
         : 'Bob: reviewed, looks good.');
       db.messages.create(conv.id, 'user', '@Alice can you research best practices for AI agents and hand off to Bob for review?');
-      db.queue.enqueue(conv.id, alice.id);
-      for (let i = 0; i < 40 && await agent.processNextQueueItem(); i++) await new Promise(r => setTimeout(r, 3));
+      jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, alice.id);
+      for (let i = 0; i < 40 && await agent.processNextUiTurn(); i++) await new Promise(r => setTimeout(r, 3));
       const thread = db.messages.getByConversation(conv.id);
       const handoff = thread.find(m => m.sender_id === alice.id && m.content.includes('[Handing off to Bob]'));
       const reply = thread.find(m => m.sender_id === bob.id);
@@ -239,7 +244,8 @@ async function runAcceptanceSteps1to7() {
     console.log('  1. Set HERMES_API_SERVER_KEY');
     console.log('  2. Run this test again');
     console.log('  3. Step 6 will show peer wake if bot generates WAKE command');
-    console.log('  4. Check lib/agent.ts processQueueItem() for WAKE detection logic\n');
+    console.log('  4. Check WAKE detection: processUiTurn() in lib/agent.ts (UI thread turns) and lib/wake-router.ts');
+    console.log('     (Agent replies of dispatcher-owned requests). processQueueItem() was removed by NOT-477.\n');
   } else {
     console.log('✓ Hermes key present - peer wake was tested in Step 6 above\n');
   }

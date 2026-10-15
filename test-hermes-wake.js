@@ -41,7 +41,8 @@ const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
 const hermes = jiti('./lib/hermes.ts');
 
-const { bots, conversations, messages, queue, launchSnapshots } = db;
+const { bots, conversations, messages, launchSnapshots } = db;
+const { uiTurns } = jiti('./lib/ui-turns.ts');
 const deckRun = jiti('./lib/agent-deck-run.ts');
 
 let failures = 0;
@@ -63,7 +64,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 40) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -239,7 +240,7 @@ async function main() {
     return `${ctx.botName} should never run through the stub on the gateway path.`;
   });
   const user1 = messages.create(conv.id, 'user', 'Get A to draft the launch note and B to check it.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
 
   const seen = gateway.state.requests;
@@ -285,9 +286,9 @@ async function main() {
   const delegation = agent.getDelegationState(conv.id);
   assert(!!delegation && delegation.handoffs === 2, `each poke counts a handoff (got ${delegation && delegation.handoffs})`);
   assert(!!delegation && delegation.turns === 4, `each poke counts a turn: caller + 2 pokes + report (got ${delegation && delegation.turns})`);
-  assert(queue.countPending(conv.id) === 0, 'queue drained after the report');
+  assert(uiTurns.countPending(conv.id) === 0, 'queue drained after the report');
 
-  // Scenario 2: failed poke marks the queue row failed and logs wait_failed.
+  // Scenario 2: failed poke marks its UI turn failed and logs wait_failed.
   log('\nScenario 2: failed poke');
   gateway.state.requests.length = 0;
   const waitsBefore2 = readWaitLog().length;
@@ -301,18 +302,18 @@ async function main() {
     return 'unused';
   });
   const user2 = messages.create(conv.id, 'user', 'Ask A to do the thing that fails.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
 
   assert(gateway.state.requests.length === 1, 'one gateway request attempted');
-  const rows2 = queue.listByConversation(conv.id).filter(r => r.bot_id === botA.id);
-  assert(rows2.some(r => r.status === 'failed'), 'failed poke marks its queue row failed');
+  const rows2 = uiTurns.listByConversation(conv.id).filter(r => r.bot_id === botA.id);
+  assert(rows2.some(r => r.state === 'failed'), 'failed poke marks its UI turn failed');
   const waits2 = readWaitLog().slice(waitsBefore2);
   const failed = waits2.filter(l => l.event === 'wait_failed');
   assert(failed.length === 1, 'wait log has one wait_failed line');
   assert(
-    failed.length === 1 && rows2.some(r => r.id === failed[0].wait_id && r.status === 'failed'),
-    'wait_failed names the failed queue row'
+    failed.length === 1 && rows2.some(r => r.id === failed[0].wait_id && r.state === 'failed'),
+    'wait_failed names the failed UI turn'
   );
   const thread2 = chainAfter(conv.id, user2.id);
   assert(countIn(thread2, origin.id, '[Specialist A failed:') === 1, 'one failure notice in the caller thread');
@@ -329,8 +330,8 @@ async function main() {
     return 'unused';
   });
   const user3 = messages.create(conv.id, 'user', 'Ask A and B for slow work, then stop.');
-  queue.enqueue(conv.id, origin.id);
-  const inFlight = agent.processNextQueueItem();
+  uiTurns.enqueue(conv.id, origin.id);
+  const inFlight = agent.processNextUiTurn();
   await sleep(200);
   assert(gateway.state.requests.length === 2, 'both pokes in flight before Stop');
   const stopped = agent.stopDelegation(conv.id);
@@ -341,8 +342,8 @@ async function main() {
   const waits3 = readWaitLog().slice(waitsBefore3);
   const aborted = waits3.filter(l => l.event === 'wait_failed' && l.code === 'aborted');
   assert(aborted.length === 2, `both pokes log wait_failed with code aborted (got ${aborted.length})`);
-  const rows3 = queue.listByConversation(conv.id).filter(r => r.created_at > user3.created_at);
-  assert(rows3.filter(r => r.status === 'failed').length >= 2, 'aborted pokes mark their queue rows failed');
+  const rows3 = uiTurns.listByConversation(conv.id).filter(r => r.created_at > user3.created_at);
+  assert(rows3.filter(r => r.state === 'failed').length >= 2, 'aborted pokes mark their UI turns failed');
   const afterStop = messages.getByConversation(conv.id);
   const countAfterStop = afterStop.length;
   await drain();
@@ -351,7 +352,7 @@ async function main() {
   const thread3 = chainAfter(conv.id, user3.id);
   assert(countIn(thread3, botA.id, 'GATEWAY-REPLY') === 0, 'no late A reply after Stop');
   assert(countIn(thread3, botB.id, 'GATEWAY-REPLY') === 0, 'no late B reply after Stop');
-  assert(queue.countPending(conv.id) === 0, 'caller return suppressed after Stop');
+  assert(uiTurns.countPending(conv.id) === 0, 'caller return suppressed after Stop');
 
   // Scenario 4 (NOT-434): missing or unreachable Hermes configuration posts
   // a visible Hermes error and never activates a hidden fallback. No stub
@@ -368,7 +369,7 @@ async function main() {
   delete process.env.HERMES_API_SERVER_KEY;
   gateway.state.requests.length = 0;
   const user4a = messages.create(failConv.id, 'user', 'Hello with no Hermes key configured.');
-  queue.enqueue(failConv.id, failBot.id);
+  uiTurns.enqueue(failConv.id, failBot.id);
   await drain();
   const thread4a = chainAfter(failConv.id, user4a.id);
   assert(
@@ -387,7 +388,7 @@ async function main() {
   process.env.HERMES_BASE_URL = 'http://unreachable.invalid';
   gateway.state.requests.length = 0;
   const user4b = messages.create(failConv.id, 'user', 'Hello with an unreachable Hermes gateway.');
-  queue.enqueue(failConv.id, failBot.id);
+  uiTurns.enqueue(failConv.id, failBot.id);
   await drain();
   const thread4b = chainAfter(failConv.id, user4b.id);
   assert(
@@ -424,7 +425,7 @@ async function main() {
     'user',
     'Could you kindly have A put together the launch note, and ask B to look it over?'
   );
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
 
   assert(gateway.state.requests.length === 2, 'paraphrased message still wakes two specialists');
@@ -447,7 +448,7 @@ async function main() {
     return 'unused';
   });
   const user6 = messages.create(conv.id, 'user', 'Same task as the first round, please.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
 
   const thread6 = chainAfter(conv.id, user6.id);
@@ -479,7 +480,7 @@ async function main() {
     return 'unused';
   });
   const user7 = messages.create(conv.id, 'user', 'Ask the chief to coordinate the launch.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
 
   const seen7 = gateway.state.requests;
@@ -517,7 +518,7 @@ async function main() {
   assert(!!soloConv, 'solo thread exists');
   gateway.state.requests.length = 0;
   const user8 = messages.create(soloConv.id, 'user', 'Hello Solo, are you there?');
-  queue.enqueue(soloConv.id, solo.id);
+  uiTurns.enqueue(soloConv.id, solo.id);
   await drain();
   const soloConfig = hermes.loadHermesConfig();
   const soloSession = hermes.hermesSessionIdForBot(solo.id, soloConfig);
@@ -546,7 +547,7 @@ async function main() {
   log('\nScenario 9: repeated turns reuse the stable Hermes session');
   gateway.state.requests.length = 0;
   const user9 = messages.create(soloConv.id, 'user', 'Solo, one more turn please.');
-  queue.enqueue(soloConv.id, solo.id);
+  uiTurns.enqueue(soloConv.id, solo.id);
   await drain();
   const seen9 = gateway.state.requests;
   assert(seen9.length === 1, `second ordinary turn sends one gateway request (got ${seen9.length})`);
@@ -571,8 +572,8 @@ async function main() {
   gateway.state.delayMs = 1500;
   gateway.state.requests.length = 0;
   const userStop = messages.create(soloConv.id, 'user', 'Solo, take your time on this one.');
-  queue.enqueue(soloConv.id, solo.id);
-  const ordinaryInFlight = agent.processNextQueueItem();
+  uiTurns.enqueue(soloConv.id, solo.id);
+  const ordinaryInFlight = agent.processNextUiTurn();
   let waitedStop = 0;
   while (gateway.state.requests.length === 0 && waitedStop < 2000) {
     await sleep(50);
@@ -622,7 +623,7 @@ async function main() {
   assert(!!hermesDirectConv, 'hermes-direct thread exists');
   const hermesDirectSession = hermes.hermesSessionIdForBot(hermesDirect.id, hermes.loadHermesConfig());
   const user10a = messages.create(hermesDirectConv.id, 'user', 'Hello Hermes bot.');
-  queue.enqueue(hermesDirectConv.id, hermesDirect.id);
+  uiTurns.enqueue(hermesDirectConv.id, hermesDirect.id);
   await drain();
   const hermesDirectRequests = gateway.state.requests.slice();
   assert(
@@ -681,7 +682,7 @@ async function main() {
   gateway.state.requests.length = 0;
   const gatewayBeforeDeck = gateway.state.requests.length;
   const user10 = messages.create(coderConv.id, 'user', 'Build the widget.');
-  queue.enqueue(coderConv.id, coder.id);
+  uiTurns.enqueue(coderConv.id, coder.id);
   await drain();
   deckRun.setDeckRunProcess(null);
   agent.setDelegationChatStub(null);

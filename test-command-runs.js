@@ -67,7 +67,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 20) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -267,7 +267,7 @@ async function main() {
   // Case 8: chief-of-staff prints a word end to end through the queue.
   log('\nCase 8: chief-of-staff command run end to end');
   messages.create(conv.id, 'user', 'Print the word boxmint8 and wait 1 second');
-  db.queue.enqueue(conv.id, cos.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const thread8 = messages.getByConversation(conv.id);
   const run8 = [...thread8].reverse().find(m => m.sender_type === 'bot' && runLib.parseRun(m.content));
