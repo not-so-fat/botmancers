@@ -1,5 +1,7 @@
 import fs from 'fs';
-import { bots, conversations, engine, messages, queue, groups, mcpServers, launchSnapshots, memories, oneShots, routines, wakeTargets } from './db';
+import { bots, conversations, engine, messages, groups, mcpServers, launchSnapshots, memories, oneShots, routines, wakeTargets } from './db';
+import { uiTurns, type UiTurn } from './ui-turns';
+import { chainFor, existingChain, latestChainState, type DelegationChain, type DelegationChainState } from './delegation-chain';
 import { parseApprovalCode, parseDraft, parseFileNames, serializeDraft } from './draft';
 import { createDraft, parseDraftRequest } from './draft-producer';
 import {
@@ -22,7 +24,7 @@ import {
   HermesError,
 } from './hermes';
 import type { HermesConfig } from './hermes';
-import type { Bot, Conversation, Message, OneShot, QueueItem, Routine } from './db';
+import type { Bot, Conversation, Message, OneShot, Routine } from './db';
 import { parseFileReadAsk, parsePublicPageReadAsk, parseCodingLimbAsk, serializeRun } from './run';
 import { beginFileReadRun, beginPublicPageReadRun, beginCodingLimbRun, beginCommandRun } from './run-child';
 import { commandRunPage, parseCommandAsk } from './commands';
@@ -90,20 +92,10 @@ export const DELEGATION_BUDGET_REASON =
 export const DELEGATION_STOPPED_REASON =
   '[Delegation stopped] Delegation stopped. No further handoffs or delegated turns.';
 
-interface DelegationFrame {
-  delegateId: string;
-  callerId: string;
-}
-
-interface DelegationChain {
-  userMessageId: string;
-  handoffs: number;
-  turns: number;
-  stopped: boolean;
-  frames: DelegationFrame[];
-}
-
-const delegationChains = new Map<string, DelegationChain>();
+// NOT-477: delegation accounting (handoffs, delegated turns, Stop, caller
+// frames) is durable per user message (./delegation-chain), and every turn
+// is a canonical Work Request run by this UI turn executor (./ui-turns).
+// A restart keeps both; no chain or queue state lives in process memory.
 
 // NOT-435: the embedded example model loop is removed. Hermes turns run
 // on the persistent Hermes gateway and record HERMES_GATEWAY_TRANSPORT;
@@ -182,36 +174,21 @@ function abortHermesPokes(conversationId: string): number {
   return count;
 }
 
-function delegationChainFor(conversationId: string, latestUserId: string | null): DelegationChain | null {
-  if (!latestUserId) return null;
-  const existing = delegationChains.get(conversationId);
-  if (existing && existing.userMessageId === latestUserId) return existing;
-  const fresh: DelegationChain = { userMessageId: latestUserId, handoffs: 0, turns: 0, stopped: false, frames: [] };
-  delegationChains.set(conversationId, fresh);
-  return fresh;
+// Caller-managed return: the delegate's reply hands control back to its
+// caller with one report-back turn, unless the chain was stopped.
+function returnToCaller(item: UiTurn, chain: DelegationChain | null, delegateId: string): void {
+  if (!chain || chain.stopped) return;
+  const callerId = chain.popCaller(delegateId);
+  if (callerId) uiTurns.enqueue(item.conversation_id, callerId, { reason: 'report_back', parentRequestId: item.id });
 }
 
-function callerFor(chain: DelegationChain | null, delegateId: string): string | null {
-  if (!chain) return null;
-  for (let i = chain.frames.length - 1; i >= 0; i--) {
-    if (chain.frames[i].delegateId === delegateId) return chain.frames[i].callerId;
-  }
-  return null;
+// A delegated turn for target (a handoff or GROUP wake), caused by item.
+function enqueueDelegate(item: UiTurn, targetId: string): void {
+  uiTurns.enqueue(item.conversation_id, targetId, { reason: 'handoff', parentRequestId: item.id, delegated: true });
 }
 
-function popCaller(chain: DelegationChain, delegateId: string): string | null {
-  for (let i = chain.frames.length - 1; i >= 0; i--) {
-    if (chain.frames[i].delegateId === delegateId) {
-      const callerId = chain.frames[i].callerId;
-      chain.frames.splice(i, 1);
-      return callerId;
-    }
-  }
-  return null;
-}
-
-export function getDelegationState(conversationId: string): DelegationChain | null {
-  return delegationChains.get(conversationId) ?? null;
+export function getDelegationState(conversationId: string): DelegationChainState | null {
+  return latestChainState(conversationId);
 }
 
 // Stop cancels queued delegated turns for this thread and prevents further
@@ -220,19 +197,10 @@ export function getDelegationState(conversationId: string): DelegationChain | nu
 export function stopDelegation(conversationId: string): boolean {
   const conversationMessages = messages.getByConversation(conversationId);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
-  let chain: DelegationChain | null = null;
-  if (latestUser) {
-    const existing = delegationChains.get(conversationId);
-    if (existing && existing.userMessageId === latestUser.id) {
-      chain = existing;
-    } else {
-      chain = { userMessageId: latestUser.id, handoffs: 0, turns: 0, stopped: false, frames: [] };
-      delegationChains.set(conversationId, chain);
-    }
-  }
+  const chain = latestUser ? chainFor(conversationId, latestUser.id) : null;
   const alreadyStopped = chain?.stopped ?? false;
   const hadActivity = !!chain && (chain.turns > 0 || chain.handoffs > 0);
-  const cancelled = queue.cancelPending(conversationId);
+  const cancelled = uiTurns.cancelPending(conversationId);
   const aborted = abortHermesPokes(conversationId);
   let clearedAsks = 0;
   try {
@@ -240,7 +208,7 @@ export function stopDelegation(conversationId: string): boolean {
   } catch (error) {
     console.error('Error clearing pending questions:', error);
   }
-  if (chain) chain.stopped = true;
+  if (chain) chain.stop();
   const stoppedSomething = cancelled > 0 || aborted > 0 || clearedAsks > 0 || (hadActivity && !alreadyStopped);
   if (stoppedSomething) {
     messages.create(conversationId, 'bot', DELEGATION_STOPPED_REASON);
@@ -265,8 +233,9 @@ export function setDelegationChatStub(stub: DelegationChatStub | null): void {
   delegationChatStub = stub;
 }
 
+// Drops this process's test stub and in-flight pokes (a simulated
+// restart). Delegation chains and turns are durable and stay.
 export function resetDelegationForTests(): void {
-  delegationChains.clear();
   delegationChatStub = null;
   for (const conversationId of [...hermesInFlight.keys()]) {
     abortHermesPokes(conversationId);
@@ -283,8 +252,8 @@ function chainStoppedForLatestUser(conversationId: string): boolean {
   const conversationMessages = messages.getByConversation(conversationId);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
   if (!latestUser) return false;
-  const chain = delegationChains.get(conversationId);
-  return !!chain && chain.userMessageId === latestUser.id && chain.stopped;
+  const chain = existingChain(conversationId, latestUser.id);
+  return !!chain && chain.stopped;
 }
 
 // True when the thread's latest user message belongs to a chain whose
@@ -296,8 +265,8 @@ function chainBudgetExhaustedForLatestUser(conversationId: string): boolean {
   const conversationMessages = messages.getByConversation(conversationId);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
   if (!latestUser) return false;
-  const chain = delegationChains.get(conversationId);
-  return !!chain && chain.userMessageId === latestUser.id && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS;
+  const chain = existingChain(conversationId, latestUser.id);
+  return !!chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS;
 }
 
 // True while the latest user message has no bot reply after it, so a tick
@@ -383,16 +352,16 @@ const routineTimers = new Set<string>();
 function fireTimerTick(conversationId: string, botId: string): void {
   if (chainStoppedForLatestUser(conversationId)) return;
   if (chainBudgetExhaustedForLatestUser(conversationId)) return;
-  if (queue.countPending(conversationId) > 0) return;
-  queue.enqueue(conversationId, botId);
-  chainProcessQueue();
+  if (uiTurns.countPending(conversationId) > 0) return;
+  uiTurns.enqueue(conversationId, botId, { reason: 'tick' });
+  continueUiTurns();
 }
 
 function armDurableOneShot(row: OneShot): void {
   if (row.fired || durableOneShotTimers.has(row.id)) return;
   if (chainStoppedForLatestUser(row.conversation_id)) return;
   if (chainBudgetExhaustedForLatestUser(row.conversation_id)) return;
-  if (queue.countPending(row.conversation_id) > 0) return;
+  if (uiTurns.countPending(row.conversation_id) > 0) return;
   durableOneShotTimers.add(row.id);
   const wait = Math.max(0, row.due_at - Date.now());
   setTimeout(() => {
@@ -405,7 +374,7 @@ function armRoutine(row: Routine): void {
   if (routineTimers.has(row.id)) return;
   if (chainStoppedForLatestUser(row.conversation_id)) return;
   if (chainBudgetExhaustedForLatestUser(row.conversation_id)) return;
-  if (queue.countPending(row.conversation_id) > 0) return;
+  if (uiTurns.countPending(row.conversation_id) > 0) return;
   routineTimers.add(row.id);
   const wait = Math.max(0, row.next_due_at - Date.now());
   setTimeout(() => {
@@ -473,21 +442,21 @@ function scheduleTaughtOneShot(conversationId: string, botId: string, delayMs: n
 
 const AUTO_PROCESS = process.env.BOTMANCERS_NO_AUTOPROCESS !== '1';
 
-function chainProcessQueue(): void {
-  if (AUTO_PROCESS) setImmediate(() => processQueue());
+function continueUiTurns(): void {
+  if (AUTO_PROCESS) setImmediate(() => processUiTurns());
 }
 
 let isProcessing = false;
 
 // Snapshot inputs captured at config read time, held for the run, and
-// written when the queue item is marked terminal. Keyed by queue item id.
+// written when the turn is marked terminal. Keyed by turn (request) id.
 // A rules/skill edit during an in-flight run never changes the held values.
 // Transport rides alongside the held input (never inside the hash): ordinary
 // turns and gateway pokes record HERMES_GATEWAY_TRANSPORT.
 const pendingSnapshots = new Map<string, { json: string; hash: string; transport: string }>();
 
 function holdSnapshot(
-  item: QueueItem,
+  item: UiTurn,
   bot: Bot,
   skill: { path: string | null; present: boolean | null; content: string | null },
   facts: string[] | null = null,
@@ -497,7 +466,7 @@ function holdSnapshot(
   pendingSnapshots.set(item.id, { json: JSON.stringify(input), hash: hashSnapshot(input), transport });
 }
 
-function flushSnapshot(item: QueueItem): void {
+function flushSnapshot(item: UiTurn): void {
   const held = pendingSnapshots.get(item.id);
   pendingSnapshots.delete(item.id);
   if (!held) return;
@@ -513,7 +482,7 @@ function flushSnapshot(item: QueueItem): void {
 // turns with no task): a launch snapshot must describe what actually
 // ran, never a turn that stayed silent. Paths that post a refusal or a
 // failure keep their snapshot and flush normally.
-function dropSnapshot(item: QueueItem): void {
+function dropSnapshot(item: UiTurn): void {
   pendingSnapshots.delete(item.id);
 }
 
@@ -540,18 +509,15 @@ function handoffTaskFor(conversationMessages: Message[], botName: string): strin
 // NOT-456: one launch gate for every agent. A bot without a selected
 // Agent Deck posts a visible notice (naming any legacy deck reference)
 // and hands control back to its delegating caller; nothing launches.
-function postDeckNeedsSelection(item: QueueItem, bot: Bot, chain: DelegationChain | null): void {
+function postDeckNeedsSelection(item: UiTurn, bot: Bot, chain: DelegationChain | null): void {
   messages.create(
     item.conversation_id,
     'bot',
     deckNeedsSelectionMessage(bot.name, resolveAgent(bot).deck_name),
     bot.id
   );
-  if (chain && !chain.stopped) {
-    const callerId = popCaller(chain, bot.id);
-    if (callerId) queue.enqueue(item.conversation_id, callerId);
-  }
-  chainProcessQueue();
+  returnToCaller(item, chain, bot.id);
+  continueUiTurns();
 }
 
 // NOT-442/NOT-456: direct deck-run dispatch. An ordinary message to a
@@ -563,7 +529,7 @@ function postDeckNeedsSelection(item: QueueItem, bot: Bot, chain: DelegationChai
 // NOT-443: a non-local workspace server URL fails explicitly here;
 // remote `agent-deck run` targeting is unconfirmed.
 async function processAgentDeckTurn(args: {
-  item: QueueItem;
+  item: UiTurn;
   bot: Bot;
   conversationMessages: Message[];
   latestUser: Message | null;
@@ -579,13 +545,13 @@ async function processAgentDeckTurn(args: {
   // on a message nobody directed at this bot.
   if (openGroupTurn) {
     dropSnapshot(item);
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
   if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
     messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
-    queue.cancelPending(item.conversation_id);
-    chainProcessQueue();
+    uiTurns.cancelPending(item.conversation_id);
+    continueUiTurns();
     return;
   }
   const resolved = resolveAgent(bot);
@@ -603,11 +569,8 @@ async function processAgentDeckTurn(args: {
       `[Deck failed] agent=${resolved.agent} deck=${resolved.deck_id} error=Invalid agent-deck run client.`,
       bot.id
     );
-    if (chain && !chain.stopped) {
-      const callerId = popCaller(chain, bot.id);
-      if (callerId) queue.enqueue(item.conversation_id, callerId);
-    }
-    chainProcessQueue();
+    returnToCaller(item, chain, bot.id);
+    continueUiTurns();
     return;
   }
   const task = (delegated ? handoffTaskFor(conversationMessages, bot.name) : null)
@@ -618,12 +581,12 @@ async function processAgentDeckTurn(args: {
     // freshly created bot): stay silent rather than launching an empty
     // run or posting a failure for a turn with no request.
     dropSnapshot(item);
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
   if (chain?.stopped) {
     dropSnapshot(item);
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
   // NOT-443: remote launch is unconfirmed. A non-local workspace server
@@ -632,11 +595,8 @@ async function processAgentDeckTurn(args: {
   const agentDeckServerUrl = getAgentDeckServerUrl();
   if (!isLocalAgentDeckUrl(agentDeckServerUrl)) {
     messages.create(item.conversation_id, 'bot', remoteLaunchUnsupportedMessage(agentDeckServerUrl), bot.id);
-    if (chain && !chain.stopped) {
-      const callerId = popCaller(chain, bot.id);
-      if (callerId) queue.enqueue(item.conversation_id, callerId);
-    }
-    chainProcessQueue();
+    returnToCaller(item, chain, bot.id);
+    continueUiTurns();
     return;
   }
   // NOT-443: per-bot default workdir (~/.botmancers/{botId}), created on
@@ -651,14 +611,11 @@ async function processAgentDeckTurn(args: {
       `[Deck failed] agent=${client} deck=${resolved.deck_id} error=${String(error instanceof Error ? error.message : error).slice(0, 300)}`,
       bot.id
     );
-    if (chain && !chain.stopped) {
-      const callerId = popCaller(chain, bot.id);
-      if (callerId) queue.enqueue(item.conversation_id, callerId);
-    }
-    chainProcessQueue();
+    returnToCaller(item, chain, bot.id);
+    continueUiTurns();
     return;
   }
-  if (chain) chain.turns += 1;
+  chain?.addTurns(1);
   const skillState = readSkillState(bot.name);
   const rememberedFacts = memories.latestFacts(bot.id);
   // Re-hold with the resolved launch configuration: the stored agent
@@ -673,29 +630,29 @@ async function processAgentDeckTurn(args: {
   // NOT-471: one Agent turn per message, never an automatic
   // implement/review/resume sequence. A turn accepted through conversation
   // intake dispatches its canonical Work Request (one Attempt under that
-  // request's validated read-only policy); a turn without one (a legacy
+  // request's validated read-only policy); a continuation turn (a legacy
   // WAKE handoff, tick, or routine) runs one read-only Attempt on its task.
-  const answered = item.work_request_id
-    ? await runCanonicalDeckTurn(item.work_request_id, item, bot, client, resolved.deck_id)
+  const answered = item.kind === 'message'
+    ? await runCanonicalDeckTurn(item, bot, client, resolved.deck_id)
     : await runDirectDeckTurn({ item, bot, client, deck: resolved.deck_id, cwd, task: task.trim(), chain, delegated });
   // A Stop-silent turn (neither result nor failure) suppresses the
   // return, like every other stopped path.
-  if (answered && chain && !chain.stopped) {
-    const callerId = popCaller(chain, bot.id);
-    if (callerId) queue.enqueue(item.conversation_id, callerId);
-  }
-  chainProcessQueue();
+  if (answered) returnToCaller(item, chain, bot.id);
+  continueUiTurns();
 }
 
-function postDeckFailed(item: QueueItem, bot: Bot, client: DeckRuntime, deck: string, error: string): void {
+function postDeckFailed(item: UiTurn, bot: Bot, client: DeckRuntime, deck: string, error: string): void {
   messages.create(item.conversation_id, 'bot', `[Deck failed] agent=${client} deck=${deck} error=${error.slice(0, 300)}`, bot.id);
 }
 
-// The canonical dispatcher (./agent-conversations) validates the policy
-// snapshot, persists one Attempt, and projects the reply into the source
-// conversation. A failed request posts its fixed failure text here so the
-// thread shows it. Returns whether the turn answered (reply or failure).
-async function runCanonicalDeckTurn(requestId: string, item: QueueItem, bot: Bot, client: DeckRuntime, deck: string): Promise<boolean> {
+// The UI message turn is handed to the canonical dispatcher
+// (./agent-conversations), which validates the policy snapshot, persists
+// one Attempt, and projects the reply into the source conversation. A
+// failed request posts its fixed failure text here so the thread shows
+// it. Returns whether the turn answered (reply or failure).
+async function runCanonicalDeckTurn(item: UiTurn, bot: Bot, client: DeckRuntime, deck: string): Promise<boolean> {
+  const requestId = item.id;
+  uiTurns.handOff(requestId);
   await startAgentDispatch(requestId);
   const request = engine.getWorkRequest(requestId);
   if (request?.state === 'failed') {
@@ -705,12 +662,12 @@ async function runCanonicalDeckTurn(requestId: string, item: QueueItem, bot: Bot
   return request?.state === 'completed';
 }
 
-// One read-only Attempt for a turn with no canonical Work Request. A
+// One read-only Attempt for a continuation turn. A
 // delegated turn came from a legacy WAKE handoff, so it runs under the
 // legacy-Wake conversation rule; anything else is a direct conversation
 // turn. Either way the central policy selects read-only.
 async function runDirectDeckTurn(args: {
-  item: QueueItem;
+  item: UiTurn;
   bot: Bot;
   client: DeckRuntime;
   deck: string;
@@ -746,30 +703,34 @@ async function runDirectDeckTurn(args: {
   return true;
 }
 
-export async function processNextQueueItem(): Promise<boolean> {
-  const item = queue.getNext();
+// Runs the oldest queued UI turn: queued -> running, the turn, then
+// completed (failed when it threw). A turn handed to the dispatcher keeps
+// the dispatcher's outcome. Returns false when nothing is queued.
+export async function processNextUiTurn(): Promise<boolean> {
+  const item = uiTurns.next();
   if (!item) return false;
-
-  queue.markProcessing(item.id);
+  if (!uiTurns.start(item.id)) return true;
 
   try {
-    await processQueueItem(item);
-    queue.markCompleted(item.id, 'completed');
+    await processUiTurn(item);
+    uiTurns.finish(item.id, 'completed');
     flushSnapshot(item);
   } catch (error) {
-    console.error('Error processing queue item:', error);
-    queue.markCompleted(item.id, 'failed');
+    console.error('Error processing UI turn:', error);
+    uiTurns.finish(item.id, 'failed');
     flushSnapshot(item);
   }
   return true;
 }
 
-export async function processQueue() {
+// The UI turn executor: one turn at a time, oldest first, until no UI turn
+// is queued. Continuations a turn enqueues are picked up on the next pass.
+export async function processUiTurns() {
   if (isProcessing) return;
   isProcessing = true;
 
   try {
-    while (await processNextQueueItem()) {
+    while (await processNextUiTurn()) {
       // Drains until empty; WAKE enqueues are picked up on the next iteration.
     }
   } finally {
@@ -895,21 +856,22 @@ function hermesFailureNotice(targetName: string, error: unknown): string {
 }
 
 // One gateway poke: a delegated turn served by the Hermes gateway instead of
-// the serial queue. Owns a processing queue row (so the wait is visible and
+// the serial executor. Owns a running UI turn (so the wait is visible and
 // terminalizes completed/failed), a launch snapshot with the gateway
 // transport, and one wait-log start/finish pair. Aborted by Stop via the
 // conversation's AbortController set.
 async function pokeSpecialistViaGateway(args: {
   caller: Bot;
+  callerTurnId: string;
   target: Bot;
   conversationId: string;
   taskMessage: string;
   chain: DelegationChain | null;
   hermesConfig: HermesConfig;
 }): Promise<void> {
-  const { caller, target, conversationId, taskMessage, chain, hermesConfig } = args;
-  const wait = queue.enqueue(conversationId, target.id);
-  queue.markProcessing(wait.id);
+  const { caller, callerTurnId, target, conversationId, taskMessage, chain, hermesConfig } = args;
+  const wait = uiTurns.enqueue(conversationId, target.id, { reason: 'gateway_poke', parentRequestId: callerTurnId, delegated: true, start: true });
+  if (!wait) return;
   const startedAt = Date.now();
   appendHermesWaitLog({
     event: 'wait_start',
@@ -964,7 +926,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
     });
     const finishedAt = Date.now();
     if (chain?.stopped) {
-      queue.markCompleted(wait.id, 'completed');
+      uiTurns.finish(wait.id, 'completed');
       flushSnapshot(wait);
       appendHermesWaitLog({
         event: 'wait_finish',
@@ -985,7 +947,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       taskMessage,
       reply,
     });
-    queue.markCompleted(wait.id, 'completed');
+    uiTurns.finish(wait.id, 'completed');
     flushSnapshot(wait);
     appendHermesWaitLog({
       event: 'wait_finish',
@@ -1000,7 +962,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
     });
   } catch (error) {
     const finishedAt = Date.now();
-    queue.markCompleted(wait.id, 'failed');
+    uiTurns.finish(wait.id, 'failed');
     flushSnapshot(wait);
     appendHermesWaitLog({
       event: 'wait_failed',
@@ -1026,11 +988,12 @@ The standing rules decide the whole reply. If they require one short sentence, w
 
 // Gateway wake turn: the caller's reply addressed only known specialists, so
 // every poke runs concurrently against the one gateway instead of draining
-// serially through the queue. Each poke consumes one handoff and one turn of
+// serially through the executor. Each poke consumes one handoff and one turn of
 // the existing limits; refused pokes post the same reasons as the main path.
 // The caller is re-queued once for its report-back turn (caller-managed), and
 // Stop aborts in-flight pokes and suppresses the return.
 async function handleHermesWakeTurn(args: {
+  item: UiTurn;
   bot: Bot;
   conversation: Conversation;
   chain: DelegationChain | null;
@@ -1038,14 +1001,14 @@ async function handleHermesWakeTurn(args: {
   targets: { directive: WakeDirective; bot: Bot }[];
   hermesConfig: HermesConfig;
 }): Promise<void> {
-  const { bot, conversation, chain, responseContent, targets, hermesConfig } = args;
+  const { item, bot, conversation, chain, responseContent, targets, hermesConfig } = args;
   if (chain?.stopped) {
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
   if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
     messages.create(conversation.id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
@@ -1059,9 +1022,9 @@ async function handleHermesWakeTurn(args: {
       messages.create(conversation.id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
     } else {
       messages.create(conversation.id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
-      queue.cancelPending(conversation.id);
+      uiTurns.cancelPending(conversation.id);
     }
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
@@ -1077,14 +1040,15 @@ async function handleHermesWakeTurn(args: {
   }
 
   if (chain) {
-    chain.handoffs += allowed.length;
-    chain.turns += allowed.length;
+    chain.addHandoffs(allowed.length);
+    chain.addTurns(allowed.length);
   }
 
   await Promise.allSettled(
     allowed.map(({ directive, bot: targetBot }) =>
       pokeSpecialistViaGateway({
         caller: bot,
+        callerTurnId: item.id,
         target: targetBot,
         conversationId: conversation.id,
         taskMessage: directive.message,
@@ -1099,8 +1063,8 @@ async function handleHermesWakeTurn(args: {
       messages.create(conversation.id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
     } else {
       messages.create(conversation.id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
-      queue.cancelPending(conversation.id);
-      chainProcessQueue();
+      uiTurns.cancelPending(conversation.id);
+      continueUiTurns();
       return;
     }
   }
@@ -1108,12 +1072,12 @@ async function handleHermesWakeTurn(args: {
   // Caller-managed return: one re-queue for the report-back turn, suppressed
   // by Stop. Budget for the report is enforced when that turn processes.
   if (chain && !chain.stopped) {
-    queue.enqueue(conversation.id, bot.id);
+    uiTurns.enqueue(conversation.id, bot.id, { reason: 'report_back', parentRequestId: item.id });
   }
-  chainProcessQueue();
+  continueUiTurns();
 }
 
-async function processQueueItem(item: QueueItem) {
+async function processUiTurn(item: UiTurn) {
   const bot = bots.getById(item.bot_id);
   if (!bot) {
     console.error('Bot not found:', item.bot_id);
@@ -1133,9 +1097,9 @@ async function processQueueItem(item: QueueItem) {
   const conversationMessages = messages.getByConversation(item.conversation_id);
   const latestUser = [...conversationMessages].reverse().find(msg => msg.sender_type === 'user');
 
-  const chain = delegationChainFor(item.conversation_id, latestUser ? latestUser.id : null);
+  const chain = latestUser ? chainFor(item.conversation_id, latestUser.id) : null;
   if (chain?.stopped) {
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
@@ -1151,12 +1115,12 @@ async function processQueueItem(item: QueueItem) {
     const askedRow = pendingForBot(item.conversation_id, bot.id);
     if (askedRow) {
       if (latestUser.id === askedRow.task_message_id) {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       const resolved = resolveQuestion(askedRow.id, latestUser.id, latestUser.content);
       if (!resolved || !resolved.answer) {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       askResume = {
@@ -1165,13 +1129,13 @@ async function processQueueItem(item: QueueItem) {
         taskContent: resolved.task_content,
       };
     } else if (findAnsweredByAnswer(item.conversation_id, bot.id, latestUser.id)) {
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
 
   const isDelegatedTurn = delegatedTurn(conversationMessages, bot.name);
-  const delegatingCallerId = callerFor(chain, bot.id);
+  const delegatingCallerId = chain?.callerFor(bot.id) ?? null;
   const delegatingCallerName = delegatingCallerId ? getBotName(delegatingCallerId) : null;
 
   // Timer-tick hook (NOT-411): a due one-shot or routine makes this launch
@@ -1191,16 +1155,16 @@ async function processQueueItem(item: QueueItem) {
   ) {
     if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
       messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
-      queue.cancelPending(item.conversation_id);
-      chainProcessQueue();
+      uiTurns.cancelPending(item.conversation_id);
+      continueUiTurns();
       return;
     }
     if (consumeDueTimerTick(item.conversation_id, bot.id, conversationMessages, latestUser ?? null)) {
-      if (chain) chain.turns += 1;
-      chainProcessQueue();
+      chain?.addTurns(1);
+      continueUiTurns();
       return;
     }
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
@@ -1219,7 +1183,7 @@ async function processQueueItem(item: QueueItem) {
       conversationMessages
     );
     if (handled) {
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1241,7 +1205,7 @@ async function processQueueItem(item: QueueItem) {
       if (!alreadyReplied) {
         messages.create(item.conversation_id, 'bot', serializeDraft(createDraft(request)), bot.id);
       }
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1259,7 +1223,7 @@ async function processQueueItem(item: QueueItem) {
       try {
         valid = validateArtifact(fileRequest);
       } catch {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       const userIdx = conversationMessages.findIndex(msg => msg.id === latestUser.id);
@@ -1270,14 +1234,14 @@ async function processQueueItem(item: QueueItem) {
         msg.content.startsWith(artifactCardText(valid.name))
       );
       if (alreadyPosted) {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       let exists = false;
       try {
         exists = fs.existsSync(resolveArtifactPath(valid.name));
       } catch {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       if (exists) {
@@ -1293,7 +1257,7 @@ async function processQueueItem(item: QueueItem) {
             });
           } catch (error) {
             if (error instanceof ApprovalActionRefused) {
-              chainProcessQueue();
+              continueUiTurns();
               return;
             }
             throw error;
@@ -1302,17 +1266,17 @@ async function processQueueItem(item: QueueItem) {
           const posted = messages.create(item.conversation_id, 'bot', card, bot.id);
           setApprovalMessage(item.conversation_id, code, posted.id);
         }
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       try {
         writeArtifactFile(valid.name, valid.content, { allowOverwrite: false });
       } catch {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, artifactCardText(valid.name)), bot.id);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1326,13 +1290,13 @@ async function processQueueItem(item: QueueItem) {
     const oneShotDelay = oneShotTeachDelayMs(latestUser.content);
     if (oneShotDelay !== null) {
       scheduleTaughtOneShot(item.conversation_id, bot.id, oneShotDelay);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     const routineWord = routineTeachWord(latestUser.content);
     if (routineWord) {
       scheduleTaughtRoutine(item.conversation_id, bot.id, routineWord);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1347,28 +1311,28 @@ async function processQueueItem(item: QueueItem) {
         bot.id
       );
       beginCommandRun(runMessage.id, commandAsk);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     const fileReadAsk = parseFileReadAsk(latestUser.content);
     if (fileReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginFileReadRun(runMessage.id, fileReadAsk.seconds);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     const publicPageReadAsk = parsePublicPageReadAsk(latestUser.content);
     if (publicPageReadAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginPublicPageReadRun(runMessage.id, publicPageReadAsk.seconds, publicPageReadAsk.url);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     const codingLimbAsk = parseCodingLimbAsk(latestUser.content);
     if (codingLimbAsk) {
       const runMessage = messages.create(item.conversation_id, 'bot', serializeRun({ state: 'running' }), bot.id);
       beginCodingLimbRun(runMessage.id, codingLimbAsk.seconds);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1391,7 +1355,7 @@ async function processQueueItem(item: QueueItem) {
       thread: conversationMessages,
     });
     if (raised) {
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1408,7 +1372,7 @@ async function processQueueItem(item: QueueItem) {
         listAskedForConversation(item.conversation_id).some(row => row.task_message_id === latestUser.id) ||
         findByTask(item.conversation_id, bot.id, latestUser.id);
       if (claimed) {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       const row = createPendingQuestion({
@@ -1421,7 +1385,7 @@ async function processQueueItem(item: QueueItem) {
       const posted = messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, requested), bot.id);
       setQuestionMessage(row.id, posted.id);
       recordApprovalIfPresent(item.conversation_id, posted);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1486,11 +1450,11 @@ async function processQueueItem(item: QueueItem) {
       const isSource = userAddressedBot(latestUser, bot) && memberNamed(bot, handoff.fromName);
       if (isSource) {
         if (chain?.stopped) {
-          chainProcessQueue();
+          continueUiTurns();
           return;
         }
         if (!target || target.id === bot.id) {
-          chainProcessQueue();
+          continueUiTurns();
           return;
         }
         if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
@@ -1503,7 +1467,7 @@ async function processQueueItem(item: QueueItem) {
           if (!alreadyRefused) {
             messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
           }
-          chainProcessQueue();
+          continueUiTurns();
           return;
         }
         if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
@@ -1516,8 +1480,8 @@ async function processQueueItem(item: QueueItem) {
           if (!alreadyRefused) {
             messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
           }
-          queue.cancelPending(item.conversation_id);
-          chainProcessQueue();
+          uiTurns.cancelPending(item.conversation_id);
+          continueUiTurns();
           return;
         }
         const alreadyPassed = conversationMessages.some(msg =>
@@ -1533,9 +1497,9 @@ async function processQueueItem(item: QueueItem) {
             `[Handing off to ${target.name}]\n${handoff.task}`,
             bot.id
           );
-          queue.enqueue(item.conversation_id, target.id);
-          if (chain) chain.handoffs += 1;
-          chainProcessQueue();
+          enqueueDelegate(item, target.id);
+          chain?.addHandoffs(1);
+          continueUiTurns();
           return;
         }
         // Already passed: a later WAKE to the source is answered once via the
@@ -1558,17 +1522,17 @@ async function processQueueItem(item: QueueItem) {
             msg.created_at > wakeAt
           );
           if (alreadyAnsweredWake) {
-            chainProcessQueue();
+            continueUiTurns();
             return;
           }
           // Else fall through to the model (do not return, do not consume).
         } else {
-          chainProcessQueue();
+          continueUiTurns();
           return;
         }
       } else if (target && bot.id === target.id) {
         if (chain?.stopped) {
-          chainProcessQueue();
+          continueUiTurns();
           return;
         }
         const markerExists = conversationMessages.some(msg =>
@@ -1579,7 +1543,7 @@ async function processQueueItem(item: QueueItem) {
           msg.content.startsWith(`[Handing off to ${bot.name}]`)
         );
         if (!markerExists) {
-          chainProcessQueue();
+          continueUiTurns();
           return;
         }
         const exactTask = exactWordAsk(handoff.task);
@@ -1591,18 +1555,18 @@ async function processQueueItem(item: QueueItem) {
             msg.content.trim() === exactTask.word
           );
           if (alreadyReplied) {
-            chainProcessQueue();
+            continueUiTurns();
             return;
           }
           if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
             messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
-            queue.cancelPending(item.conversation_id);
-            chainProcessQueue();
+            uiTurns.cancelPending(item.conversation_id);
+            continueUiTurns();
             return;
           }
           messages.create(item.conversation_id, 'bot', exactTask.word, bot.id);
-          if (chain) chain.turns += 1;
-          chainProcessQueue();
+          chain?.addTurns(1);
+          continueUiTurns();
           return;
         }
         // General task: fall through to the model as a delegated turn, once
@@ -1625,13 +1589,13 @@ async function processQueueItem(item: QueueItem) {
           msg.created_at > wakeAt
         );
         if (alreadyRepliedToWake) {
-          chainProcessQueue();
+          continueUiTurns();
           return;
         }
         // Fall through (do not return): delegatedTurn is true via the marker,
         // so the open-group suppression does not apply.
       } else {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
     }
@@ -1659,7 +1623,7 @@ async function processQueueItem(item: QueueItem) {
     // Unaddressed group turns stay silent, as for the coding agents.
     if (openGroupTurn) {
       dropSnapshot(item);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     postDeckNeedsSelection(item, bot, chain);
@@ -1671,11 +1635,11 @@ async function processQueueItem(item: QueueItem) {
     if (ask) {
       const members = groups.getMembers(conversation.group_id);
       if (!shouldSayExactWord(bot, members, ask)) {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       messages.create(item.conversation_id, 'bot', ask.word, bot.id);
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
   }
@@ -1756,11 +1720,11 @@ The standing rules decide the whole reply. If they require one short sentence, w
 
   if (chain && chain.turns >= DELEGATION_MAX_DELEGATED_TURNS) {
     messages.create(item.conversation_id, 'bot', DELEGATION_BUDGET_REASON, bot.id);
-    queue.cancelPending(item.conversation_id);
-    chainProcessQueue();
+    uiTurns.cancelPending(item.conversation_id);
+    continueUiTurns();
     return;
   }
-  if (chain) chain.turns += 1;
+  chain?.addTurns(1);
 
   const sent = [
     { role: 'system' as const, content: systemPrompt },
@@ -1834,7 +1798,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
     } else {
       if (!hermesConfig) {
         messages.create(item.conversation_id, 'bot', HERMES_MISSING_CONFIG_MESSAGE, bot.id);
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       const controller = new AbortController();
@@ -1854,7 +1818,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
         if (!aborted && !chain?.stopped) {
           messages.create(item.conversation_id, 'bot', hermesTurnFailureMessage(bot.name, error), bot.id);
         }
-        chainProcessQueue();
+        continueUiTurns();
         return;
       } finally {
         untrackHermesPoke(item.conversation_id, controller);
@@ -1863,14 +1827,14 @@ The standing rules decide the whole reply. If they require one short sentence, w
   }
 
   if (chain?.stopped) {
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
   // A handoff on an open group turn violates that turn's no-handoff
   // instruction the same way a canned WAKE does, so it is dropped silently.
   if (openGroupTurn && (declinedGroupTurn(responseContent) || cannedGroupHandoff(responseContent))) {
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
@@ -1900,7 +1864,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
           bot.id
         );
       }
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     const validFile = typed.file;
@@ -1910,14 +1874,14 @@ The standing rules decide the whole reply. If they require one short sentence, w
       msg.content.startsWith(artifactCardText(validFile.name))
     );
     if (alreadyPosted) {
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     let exists = false;
     try {
       exists = fs.existsSync(resolveArtifactPath(validFile.name));
     } catch {
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     if (exists) {
@@ -1933,7 +1897,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
           });
         } catch (error) {
           if (error instanceof ApprovalActionRefused) {
-            chainProcessQueue();
+            continueUiTurns();
             return;
           }
           throw error;
@@ -1942,17 +1906,17 @@ The standing rules decide the whole reply. If they require one short sentence, w
         const posted = messages.create(item.conversation_id, 'bot', card, bot.id);
         setApprovalMessage(item.conversation_id, code, posted.id);
       }
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     try {
       writeArtifactFile(validFile.name, validFile.content, { allowOverwrite: false });
     } catch {
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, artifactCardText(validFile.name)), bot.id);
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
@@ -1966,7 +1930,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
     const taskId = latestUser ? latestUser.id : null;
     const existing = pendingForBot(item.conversation_id, bot.id);
     if (existing && taskId && existing.task_message_id === taskId) {
-      chainProcessQueue();
+      continueUiTurns();
       return;
     }
     const row = createPendingQuestion({
@@ -1979,7 +1943,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
     const posted = messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, askedMarker), bot.id);
     setQuestionMessage(row.id, posted.id);
     recordApprovalIfPresent(item.conversation_id, posted);
-    chainProcessQueue();
+    continueUiTurns();
     return;
   }
 
@@ -2003,6 +1967,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       );
       if (specialistTargets.length === resolved.length) {
         await handleHermesWakeTurn({
+          item,
           bot,
           conversation,
           chain,
@@ -2031,10 +1996,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
 
     if (!isGroupWake && !targetBot) {
       recordApprovalIfPresent(item.conversation_id, messages.create(item.conversation_id, 'bot', applySkillEndToken(bot.name, responseContent), bot.id));
-      if (chain && !chain.stopped) {
-        const callerId = popCaller(chain, bot.id);
-        if (callerId) queue.enqueue(item.conversation_id, callerId);
-      }
+      returnToCaller(item, chain, bot.id);
     } else {
       const matchIndex = wakeMatch.index ?? responseContent.indexOf(wakeMatch[0]);
       const prefix = responseContent.slice(0, matchIndex).trim();
@@ -2043,12 +2005,12 @@ The standing rules decide the whole reply. If they require one short sentence, w
       }
 
       if (chain?.stopped) {
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
       if (chain && chain.handoffs >= DELEGATION_MAX_DEPTH) {
         messages.create(item.conversation_id, 'bot', DELEGATION_DEPTH_REASON, bot.id);
-        chainProcessQueue();
+        continueUiTurns();
         return;
       }
 
@@ -2059,10 +2021,10 @@ The standing rules decide the whole reply. If they require one short sentence, w
           const groupMembers = groups.getMembers(conversation.group_id!);
           const otherBot = groupMembers.find(b => b.id !== bot.id);
           if (otherBot) {
-            queue.enqueue(item.conversation_id, otherBot.id);
+            enqueueDelegate(item, otherBot.id);
             if (chain) {
-              chain.handoffs += 1;
-              chain.frames.push({ delegateId: otherBot.id, callerId: bot.id });
+              chain.addHandoffs(1);
+              chain.pushFrame({ delegateId: otherBot.id, callerId: bot.id });
             }
           }
         }
@@ -2073,10 +2035,10 @@ The standing rules decide the whole reply. If they require one short sentence, w
         const handoff = messages.create(item.conversation_id, 'bot', `[Handing off to ${targetBot.name}]\n${message.trim()}`, bot.id);
         recordApprovalIfPresent(item.conversation_id, handoff);
         wakeTargets.accept({ conversationId: item.conversation_id, requestedTarget: target, sourceBotId: bot.id, sourceMessageId: handoff.id });
-        queue.enqueue(item.conversation_id, targetBot.id);
+        enqueueDelegate(item, targetBot.id);
         if (chain) {
-          chain.handoffs += 1;
-          chain.frames.push({ delegateId: targetBot.id, callerId: bot.id });
+          chain.addHandoffs(1);
+          chain.pushFrame({ delegateId: targetBot.id, callerId: bot.id });
         }
       }
     }
@@ -2085,13 +2047,10 @@ The standing rules decide the whole reply. If they require one short sentence, w
     // Caller-managed return: a delegated turn that finishes without a further
     // WAKE hands control back to its caller. Budget is enforced on the
     // caller's next turn; Stop suppresses the return.
-    if (chain && !chain.stopped) {
-      const callerId = popCaller(chain, bot.id);
-      if (callerId) queue.enqueue(item.conversation_id, callerId);
-    }
+    returnToCaller(item, chain, bot.id);
   }
 
-  chainProcessQueue();
+  continueUiTurns();
 }
 
 
@@ -2293,13 +2252,15 @@ function modelTurn(msg: Message, selfId: string): { role: 'user'; content: strin
 
 if (AUTO_PROCESS) {
   bots.touchSeen();
+  // NOT-477: a UI turn the previous process left running never finished.
+  uiTurns.recoverInterrupted();
   resumeLoopTimers();
   // NOT-472: coordinator continuations and Wake requests survive restart.
   recoverCoordinatorLoops().catch(console.error);
   setInterval(() => {
     bots.touchSeen();
     resumeLoopTimers();
-    processQueue().catch(console.error);
+    processUiTurns().catch(console.error);
     // NOT-469: reconcile expired dispatch leases and drain deferred work.
     sweepDispatch().catch(console.error);
   }, 2000);

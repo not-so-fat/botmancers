@@ -11,8 +11,8 @@
 // one canonical Work Request, and one intake record; exact and conflicting
 // retries on both surfaces; missing conversation, invalid target, and
 // transaction failures with one normalized category and no partial rows;
-// and no agent_requests tables (NOT-477) or processing_queue rows (API)
-// lifecycle rows.
+// and no agent_requests or processing_queue tables (NOT-477): a UI turn is
+// its canonical Work Request, run by the UI turn executor.
 'use strict';
 
 const fs = require('fs');
@@ -50,7 +50,7 @@ function assert(condition, label) {
   else { failures++; log(`  FAIL: ${label}`); }
 }
 
-const TABLES = ['messages', 'conversations', 'work_requests', 'engine_events', 'conversation_intakes', 'work_attempts', 'processing_queue'];
+const TABLES = ['messages', 'conversations', 'work_requests', 'engine_events', 'conversation_intakes', 'work_attempts'];
 function counts() {
   const out = {};
   for (const table of TABLES) out[table] = raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
@@ -103,9 +103,9 @@ function workRequest(id) {
 
 async function settleUiQueue() {
   for (let i = 0; i < 200; i++) {
-    const open = raw.prepare("SELECT COUNT(*) AS n FROM processing_queue WHERE status IN ('pending', 'processing')").get().n;
+    const open = raw.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE executor <> 'dispatcher' AND state IN ('queued', 'running')").get().n;
     if (open === 0) return;
-    await agent.processNextQueueItem();
+    await agent.processNextUiTurn();
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -244,7 +244,7 @@ async function main() {
     assert(retry.status === 200 && retry.json.intake.replayed === false, 'the same key is accepted normally after a rolled-back attempt');
   }
 
-  log('\nAC4 default dispatch: no agent_requests tables, no processing_queue from the API');
+  log('\nAC4 default dispatch: UI turns are Work Requests; no agent_requests or processing_queue tables');
   {
     intake.setIntakeDispatcher(null);
     agent.setDelegationChatStub(() => 'ui loop reply');
@@ -256,13 +256,18 @@ async function main() {
 
     let before = counts();
     const uiLive = await uiPost(direct.id, { content: 'hello from the UI', idempotencyKey: 'ui-live' });
-    const uiQueued = raw.prepare('SELECT conversation_id, bot_id FROM processing_queue ORDER BY rowid DESC LIMIT 1').get();
     const uiLiveDelta = delta(before, counts());
     log(`  UI live -> ${uiLive.status} delta=${JSON.stringify(uiLiveDelta)}`);
-    assert(uiLiveDelta.processing_queue === 1 && uiQueued.conversation_id === direct.id && uiQueued.bot_id === hermy.id, 'the UI agent loop receives exactly one turn, derived from the accepted Work Request');
+    const uiTurn = workRequest(uiLive.json.intake.requestIds[0]);
+    assert(uiLiveDelta.work_requests === 1 && uiLive.json.intake.requestIds.length === 1 && uiTurn.executor === 'ui_message'
+      && uiTurn.source_conversation_id === direct.id && uiTurn.target_agent_id === hermy.id,
+    'the UI turn executor owns exactly one turn: the accepted Work Request itself');
     await settleUiQueue();
+    const uiDone = workRequest(uiTurn.id);
+    assert(uiDone.state === 'completed' && uiDone.executor === 'ui_message', 'the UI turn completes on its own Work Request');
+    const settledRequests = counts().work_requests;
     const uiReplay = await uiPost(direct.id, { content: 'hello from the UI', idempotencyKey: 'ui-live' });
-    assert(uiReplay.json.intake.replayed === true && raw.prepare('SELECT COUNT(*) AS n FROM processing_queue').get().n === before.processing_queue + 1, 'a UI replay enqueues no second turn');
+    assert(uiReplay.json.intake.replayed === true && counts().work_requests === settledRequests, 'a UI replay starts no second turn');
 
     // Earlier sections (and the stubbed UI loop) leave accepted work queued.
     // FIFO admission (NOT-475) would run that older work on Hermy first, so
@@ -275,9 +280,10 @@ async function main() {
     const apiLiveDelta = delta(before, counts());
     log(`  API live -> ${apiLive.status} state=${apiLive.json.state} events=${apiLive.json.events.map(e => e.type).join('>')} delta=${JSON.stringify(apiLiveDelta)}`);
     assert(apiLive.json.state === 'completed' && apiLive.json.reply && apiLive.json.reply.content === 'hermes reply to [From service:ci-pipeline] hello from the API', 'API request completes through the canonical dispatcher');
-    assert(apiLiveDelta.processing_queue === 0, 'API submission writes no processing_queue rows');
+    assert(workRequest(apiLive.json.requestId).executor === 'dispatcher', 'an API request is owned by the dispatcher');
     assert(apiLiveDelta.work_requests === 1 && apiLiveDelta.work_attempts === 1 && workRequest(apiLive.json.requestId).state === 'completed', 'API lifecycle lives on one Work Request with one Attempt');
     assert(raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_requests', 'agent_request_events')").get().n === 0, 'NOT-477: no agent_requests lifecycle tables exist after every UI and API submission in this run');
+    assert(raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'processing_queue'").get().n === 0, 'NOT-477: no processing_queue table exists');
   }
 
   log('');

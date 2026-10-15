@@ -8,9 +8,10 @@
 //     -> record the intake under the requester's idempotency key
 //
 // all in one transaction, then hand the accepted requests to the runtime
-// dispatch seam. Nothing here writes processing_queue;
-// the caller's dispatcher decides how accepted work is executed, and tests
-// replace it with setIntakeDispatcher.
+// dispatch seam. The caller's dispatch seam decides who runs accepted
+// work (the UI route gives its requests to the UI turn executor,
+// lib/ui-turns; /api/v0 starts the dispatcher), and tests replace it with
+// setIntakeDispatcher. Nothing here writes a queue.
 //
 // Idempotency: (requester kind, requester id, idempotency key) is unique
 // across surfaces. An exact retry (same surface and payload fingerprint)

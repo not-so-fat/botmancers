@@ -23,7 +23,8 @@ const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
 const deckRun = jiti('./lib/agent-deck-run.ts');
 
-const { bots, conversations, messages, queue } = db;
+const { bots, conversations, messages } = db;
+const { uiTurns } = jiti('./lib/ui-turns.ts');
 
 let failures = 0;
 
@@ -44,7 +45,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 40) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -90,7 +91,7 @@ async function main() {
     return 'No response';
   });
   const user1 = messages.create(conv.id, 'user', 'Get A to draft the launch note and B to check it.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
 
   const thread1 = messages.getByConversation(conv.id);
@@ -119,14 +120,14 @@ async function main() {
   assert((seenBy.B || '').includes('delegated by @Origin'), 'B was told Origin delegated it');
   assert(!(seenBy.A || '').includes('DECK'), 'delegate prompt never presents a DECK directive to the model');
   assert(!(seenBy.A || '').includes('agent-deck'), 'delegate prompt names no Agent Deck launch path (routing is stored, not prompted)');
-  assert(queue.countPending(conv.id) === 0, 'queue drained after report');
+  assert(uiTurns.countPending(conv.id) === 0, 'queue drained after report');
 
   // Scenario 2: handoff beyond the depth constant is refused with a reason.
   log('\nScenario 2: depth limit');
   const next = { Origin: 'A', A: 'B', B: 'A' };
   agent.setDelegationChatStub(ctx => `WAKE ${next[ctx.botName] || 'A'}: continue the depth probe.`);
   const user2 = messages.create(conv.id, 'user', 'Depth probe: keep handing off.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
 
   const thread2 = chainAfter(conv.id, user2.id);
@@ -137,14 +138,14 @@ async function main() {
   assert(!!depthReason, 'explicit depth reason posted');
   assert(!!depthReason && depthReason.content.includes(String(MAX_DEPTH)), 'depth reason names the constant');
   assert(handoffs.length === MAX_DEPTH, `handoffs stop at the constant (${MAX_DEPTH})`);
-  assert(queue.countPending(conv.id) === 0, 'no further handoff queued after depth refusal');
+  assert(uiTurns.countPending(conv.id) === 0, 'no further handoff queued after depth refusal');
 
   // Scenario 3: delegated turn beyond the budget constant is refused.
   log('\nScenario 3: budget limit');
   agent.setDelegationChatStub(() => 'budget-turn-ok');
   const user3 = messages.create(conv.id, 'user', 'Budget probe: many turns.');
   for (let i = 0; i < MAX_TURNS + 2; i++) {
-    queue.enqueue(conv.id, origin.id);
+    uiTurns.enqueue(conv.id, origin.id);
     await sleep(2);
   }
   await drain();
@@ -157,7 +158,7 @@ async function main() {
   assert(!!budgetReason, 'explicit budget reason posted');
   assert(!!budgetReason && budgetReason.content.includes(String(MAX_TURNS)), 'budget reason names the constant');
   assert(botMsgs3.length === MAX_TURNS + 1, `turns stop at constant + reason (${MAX_TURNS} + 1)`);
-  assert(queue.countPending(conv.id) === 0, 'queued turns cancelled after budget refusal');
+  assert(uiTurns.countPending(conv.id) === 0, 'queued turns cancelled after budget refusal');
 
   // Scenario 4: Stop mid-chain -> zero new messages after Stop.
   log('\nScenario 4: Stop');
@@ -173,17 +174,17 @@ async function main() {
     return 'No response';
   });
   const user4 = messages.create(conv.id, 'user', 'Get A to draft and B to check, then stop.');
-  queue.enqueue(conv.id, origin.id);
-  await agent.processNextQueueItem(); // Origin -> handoff to A
+  uiTurns.enqueue(conv.id, origin.id);
+  await agent.processNextUiTurn(); // Origin -> handoff to A
   await sleep(3);
-  await agent.processNextQueueItem(); // A -> draft, runtime returns to Origin
+  await agent.processNextUiTurn(); // A -> draft, runtime returns to Origin
   await sleep(3);
 
   const midChain = chainAfter(conv.id, user4.id);
   assert(midChain.some(m => m.content.includes('DRAFT from A')), 'draft posted before Stop');
   assert(!midChain.some(m => m.content.includes('CHECK from B')), 'check not yet posted before Stop');
-  assert(queue.countPending(conv.id) === 1, 'one caller return queued before Stop');
-  const pendingBeforeStop = queue.getNext();
+  assert(uiTurns.countPending(conv.id) === 1, 'one caller return queued before Stop');
+  const pendingBeforeStop = uiTurns.next();
   assert(!!pendingBeforeStop && pendingBeforeStop.bot_id === origin.id, 'queued return is the caller (Origin)');
 
   const stopped = agent.stopDelegation(conv.id);
@@ -197,7 +198,7 @@ async function main() {
   const final = messages.getByConversation(conv.id);
   log(`  messages after Stop: ${final.length - countAfterStop} new (expected 0)`);
   assert(final.length === countAfterStop, 'zero new messages after Stop');
-  assert(queue.countPending(conv.id) === 0, 'queued delegated turn cancelled');
+  assert(uiTurns.countPending(conv.id) === 0, 'queued delegated turn cancelled');
   const thread4 = chainAfter(conv.id, user4.id);
   assert(!thread4.some(m => m.content.includes('CHECK from B')), 'no B turn produced after Stop');
   assert(!thread4.some(m => m.content.includes('REPORT: should never run')), 'no report produced after Stop');
@@ -253,7 +254,7 @@ async function main() {
     throw new Error('Hermes adapter must not run for an agent-deck turn');
   });
   const user6 = messages.create(coderConv.id, 'user', 'Build the widget through the coding agent.');
-  queue.enqueue(coderConv.id, coder.id);
+  uiTurns.enqueue(coderConv.id, coder.id);
   await drain();
   deckRun.setDeckRunProcess(null);
 
@@ -283,7 +284,7 @@ async function main() {
   const chain6 = agent.getDelegationState(coderConv.id);
   assert(!!chain6 && chain6.handoffs === 0 && chain6.turns === 1, `direct dispatch consumes a turn, not a handoff (handoffs=${chain6 ? chain6.handoffs : '?'}, turns=${chain6 ? chain6.turns : '?'})`);
   assert(thread6.every(m => m.conversation_id === coderConv.id), 'all direct-dispatch observations stay in the originating thread');
-  assert(queue.countPending(coderConv.id) === 0, 'queue drained after the direct-dispatch sequence');
+  assert(uiTurns.countPending(coderConv.id) === 0, 'queue drained after the direct-dispatch sequence');
 
   // A Hermes reply carrying directive-shaped text is conversational, not
   // routing: it posts verbatim and starts no deck run.
@@ -297,7 +298,7 @@ async function main() {
     return 'No response';
   });
   const user6b = messages.create(conv.id, 'user', 'What would the coding agent do?');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
   deckRun.setDeckRunProcess(null);
   const thread6b = chainAfter(conv.id, user6b.id);
@@ -310,7 +311,7 @@ async function main() {
     'directive-shaped Hermes reply posts no deck observations'
   );
   assert(deckRecorded6b.length === 0, 'directive-shaped Hermes reply starts no deck run');
-  assert(queue.countPending(conv.id) === 0, 'queue drained after the directive-shaped reply');
+  assert(uiTurns.countPending(conv.id) === 0, 'queue drained after the directive-shaped reply');
   try { fs.rmSync(coderWorkdir, { recursive: true, force: true }); } catch { /* best effort */ }
 
   // Scenario 9: a bot that still needs Agent Deck selection cannot launch,
@@ -340,7 +341,7 @@ async function main() {
     return 'No response';
   });
   const user9 = messages.create(conv.id, 'user', 'Build the widget through the coding agent.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
   deckRun.setDeckRunProcess(null);
   const thread9 = chainAfter(conv.id, user9.id);
@@ -353,7 +354,7 @@ async function main() {
     thread9.some(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('REPORT: deck unavailable')),
     'caller still reports after the refused launch (caller-managed return)'
   );
-  assert(queue.countPending(conv.id) === 0, 'queue drained after the refused launch');
+  assert(uiTurns.countPending(conv.id) === 0, 'queue drained after the refused launch');
 
   // Scenario 10: a WAKE handoff carrying deck-mentioning text is not
   // hijacked. 'WAKE B: update the deck notes: ...' contains 'deck
@@ -370,7 +371,7 @@ async function main() {
     return 'No response';
   });
   const user10 = messages.create(conv.id, 'user', 'Write the release note.');
-  queue.enqueue(conv.id, origin.id);
+  uiTurns.enqueue(conv.id, origin.id);
   await drain();
   const thread10 = chainAfter(conv.id, user10.id);
   assert(!thread10.some(m => m.content.startsWith('[Deck')), 'no deck observations for the deck-mentioning handoff');
@@ -382,7 +383,7 @@ async function main() {
     thread10.some(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('REPORT: note done.')),
     'caller still reports after the deck-mentioning handoff'
   );
-  assert(queue.countPending(conv.id) === 0, 'queue drained after the deck-mentioning handoff');
+  assert(uiTurns.countPending(conv.id) === 0, 'queue drained after the deck-mentioning handoff');
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;

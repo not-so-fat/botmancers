@@ -30,6 +30,10 @@
 // its Wake to be accepted; otherwise the request fails not_authorized and
 // no Attempt is created. The approved defaults are global 4 and per-target
 // 1 running Attempts (lib/wake-safety).
+//
+// NOT-477: the dispatcher selects, recovers, and enforces only requests
+// whose executor is 'dispatcher'. UI thread turns run on the UI turn
+// executor (lib/ui-turns) until it hands one over.
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import os from 'os';
@@ -213,7 +217,7 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
   const lastEvent = db.prepare(`SELECT type, data FROM engine_events WHERE request_id = ? AND type NOT IN (${GRANT_AUDIT_EVENT_SQL}) ORDER BY sequence DESC LIMIT 1`);
   const deferredIds = db.prepare(`
     SELECT w.id FROM work_requests w
-    WHERE w.state = 'queued'
+    WHERE w.state = 'queued' AND w.executor = 'dispatcher'
       AND (SELECT e.type FROM engine_events e WHERE e.request_id = w.id AND e.type NOT IN (${GRANT_AUDIT_EVENT_SQL}) ORDER BY e.sequence DESC LIMIT 1) = 'dispatch_deferred'
     ORDER BY w.created_at ASC, w.id ASC
   `);
@@ -237,7 +241,7 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
   // free slot. Same order as claimNext.
   const olderClaimable = db.prepare(`
     SELECT w.id FROM work_requests w
-    WHERE w.state = 'queued' AND w.legacy_agent_request_id IS NULL AND w.id <> ?
+    WHERE w.state = 'queued' AND w.legacy_agent_request_id IS NULL AND w.executor = 'dispatcher' AND w.id <> ?
       AND (w.created_at < ? OR (w.created_at = ? AND w.rowid < (SELECT rowid FROM work_requests WHERE id = ?)))
       AND (w.next_eligible_at IS NULL OR w.next_eligible_at <= ?)
       AND (w.deadline_at IS NULL OR w.deadline_at > ?)
@@ -354,7 +358,7 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
     // the global limit stops the scan.
     claimNext(candidates?: string[]): ClaimResult {
       const ids = candidates ?? (db.prepare(`
-        SELECT id FROM work_requests WHERE state = 'queued' AND legacy_agent_request_id IS NULL
+        SELECT id FROM work_requests WHERE state = 'queued' AND legacy_agent_request_id IS NULL AND executor = 'dispatcher'
           AND (next_eligible_at IS NULL OR next_eligible_at <= ?)
         ORDER BY created_at ASC, rowid ASC
       `).all(now()) as { id: string }[]).map(row => row.id);
@@ -481,7 +485,7 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
       }
       const orphans = db.prepare(`
         SELECT w.id FROM work_requests w
-        WHERE w.state = 'running' AND w.legacy_agent_request_id IS NULL
+        WHERE w.state = 'running' AND w.legacy_agent_request_id IS NULL AND w.executor = 'dispatcher'
           AND NOT EXISTS (SELECT 1 FROM dispatch_leases l WHERE l.request_id = w.id)
           AND NOT EXISTS (SELECT 1 FROM dispatch_attention a WHERE a.request_id = w.id AND a.cleared_at IS NULL)
         ORDER BY w.updated_at ASC, w.id ASC

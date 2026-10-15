@@ -263,7 +263,7 @@ async function main() {
     const body = await response.json();
     const requestId = body.intake.requestIds[0];
     await waitFor(() => engine.getWorkRequest(requestId).state === 'completed', `${agentType}: UI request completes`);
-    while (await agent.processNextQueueItem()) { /* drain */ }
+    while (await agent.processNextUiTurn()) { /* drain */ }
     const request = engine.getWorkRequest(requestId);
     const attempts = engine.listAttempts(requestId);
     const thread = messages.getByConversation(conv.id).filter(m => m.sender_type === 'bot');

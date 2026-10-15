@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'crypto';
 import {
   TOOL_PROFILE_FOR_KIND,
   isExecutionKind,
+  selectExecutionPolicy,
   validateExecutionPolicy,
   type ExecutionKind,
   type ExecutionPolicySnapshot,
@@ -16,6 +17,10 @@ import { requestControlDefaultsFromEnv, validateRetryPolicy, type RetryPolicy } 
 // message intake create their Work Requests here (lib/conversation-intake).
 // NOT-477: the pre-NOT-465 agent_requests lifecycle is retired; migration 14
 // copies it here and archives its tables (archiveLegacyAgentRequests).
+// Migration 15 does the same for the UI loop's processing_queue
+// (retireProcessingQueue): UI thread turns are Work Requests run by the UI
+// turn executor (RequestExecutor), and their delegation accounting is the
+// durable delegation_chains table.
 // NOT-466: Agent Wakes are recorded in wakes and create theirs through
 // lib/wake-router.
 //
@@ -87,7 +92,19 @@ export interface WorkRequest {
   wake_depth: number;
   root_principal_kind: string | null;
   root_principal_id: string | null;
+  // NOT-477 (migration 15): who runs the request (RequestExecutor).
+  executor: RequestExecutor;
 }
+
+// NOT-477: which worker runs a Work Request. 'dispatcher' requests run
+// through lib/dispatcher (leases, Attempts, recovery). A UI thread turn
+// runs through the UI turn executor (lib/ui-turns, lib/agent): 'ui_message'
+// is a turn accepted by UI intake, 'ui_continuation' one the executor
+// created itself (a handoff, a report-back, a timer tick, a greeting). A
+// UI message turn for a coding Agent is handed to the dispatcher (its
+// executor becomes 'dispatcher') once the executor's hooks let it launch.
+export type RequestExecutor = 'dispatcher' | 'ui_message' | 'ui_continuation';
+export const REQUEST_EXECUTORS: RequestExecutor[] = ['dispatcher', 'ui_message', 'ui_continuation'];
 
 // NOT-475: how a caller was categorized at its strongest available
 // boundary (lib/wake-safety). Unknown callers never reach the store.
@@ -1322,6 +1339,40 @@ const MIGRATIONS: Migration[] = [
       archiveLegacyAgentRequests(db);
     },
   },
+  {
+    // NOT-477: UI thread turns are Work Requests (executor), delegation
+    // accounting is durable (delegation_chains), and the processing_queue
+    // lifecycle is reconciled into work_requests and archived
+    // (retireProcessingQueue).
+    version: 15,
+    name: 'ui_turns_on_work_requests',
+    up: db => {
+      db.exec(`
+        ALTER TABLE work_requests ADD COLUMN executor TEXT NOT NULL DEFAULT 'dispatcher'
+          CHECK (executor IN ('dispatcher', 'ui_message', 'ui_continuation'));
+        CREATE INDEX idx_work_requests_executor ON work_requests(executor, state, created_at);
+
+        -- Delegation accounting for one user message in one UI thread:
+        -- handoffs (depth), delegated turns (budget), Stop, and the
+        -- caller frames a delegate's reply returns to. One row per
+        -- (conversation, user message); a later user message starts a
+        -- fresh row.
+        CREATE TABLE delegation_chains (
+          conversation_id TEXT NOT NULL,
+          user_message_id TEXT NOT NULL,
+          handoffs INTEGER NOT NULL DEFAULT 0 CHECK (handoffs >= 0),
+          turns INTEGER NOT NULL DEFAULT 0 CHECK (turns >= 0),
+          stopped INTEGER NOT NULL DEFAULT 0 CHECK (stopped IN (0, 1)),
+          frames TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (conversation_id, user_message_id),
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        );
+      `);
+      retireProcessingQueue(db);
+    },
+  },
 ];
 
 // Migration 13 backfill (contract, Migration). Lineage: an intake root is
@@ -1689,6 +1740,146 @@ function seedLegacyIntakes(db: Db): void {
   }
 }
 
+// NOT-477: the requester of the UI turns the UI turn executor creates
+// itself (handoffs, report-backs, timer ticks, greetings).
+export const UI_TURN_REQUESTER = Object.freeze({ kind: 'service' as const, id: 'botmancers-ui-turns' });
+
+// The policy a UI continuation turn carries: a read-only conversation turn
+// (a handoff target runs under the legacy-WAKE rule, everything else under
+// the direct-message rule), exactly what the turn's launch selects.
+export function uiTurnExecutionPolicy(delegated: boolean): ExecutionPolicySnapshot {
+  const selection = selectExecutionPolicy(delegated
+    ? { entryPoint: 'wake', executionKind: 'conversation', wakeSyntax: 'legacy' }
+    : { entryPoint: 'ui', executionKind: 'conversation' });
+  if (!selection.ok) throw new EngineStoreError('invalid_input', selection.reason);
+  return selection.policy;
+}
+
+export const UI_TURN_INTERRUPTED = 'ui_turn_interrupted';
+export const UI_TURN_INTERRUPTED_MESSAGE = 'The UI turn was interrupted before it finished; it is not run again.';
+
+interface LegacyQueueRow {
+  id: string;
+  conversation_id: string;
+  bot_id: string;
+  status: string;
+  work_request_id: string | null;
+  created_at: number;
+  started_at: number | null;
+  completed_at: number | null;
+}
+
+// NOT-477: retires the processing_queue lifecycle. Each row was one UI
+// loop turn; since NOT-471 a turn accepted by UI intake names its Work
+// Request, which the loop left queued unless it handed it to the
+// dispatcher. Rows are reconciled oldest first (created_at, rowid):
+//
+// - A row naming a request that is still queued gives that request to the
+//   UI turn executor (executor ui_message). Its outcome becomes the
+//   request's: pending stays queued (the executor runs it, as the loop
+//   would have after a restart); completed and failed become completed and
+//   failed (queued -> running -> terminal, reason legacy_queue_turn, at the
+//   row's own times); processing becomes failed with ui_turn_interrupted
+//   (the loop never re-ran a started row). A request already past queued
+//   was dispatched and keeps its own outcome.
+// - A pending row without a request (a loop-internal turn) becomes one
+//   queued ui_continuation request for the same Agent and conversation, so
+//   it still runs. Other rows without a request recorded only the loop's
+//   bookkeeping and stay in the archive.
+// - A row whose conversation or Agent is gone stays in the archive only.
+//
+// Finally processing_queue is renamed to legacy_processing_queue_archive:
+// every original row is kept verbatim and nothing reads or writes it.
+// Runs inside migration 15's transaction. Returns the number of requests
+// created or reconciled.
+export function retireProcessingQueue(db: Db): number {
+  const tableExists = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+  if (!tableExists('processing_queue')) return 0;
+  const columns = new Set((db.prepare('PRAGMA table_info(processing_queue)').all() as { name: string }[]).map(column => column.name));
+  const requestColumn = columns.has('work_request_id') ? 'q.work_request_id' : 'NULL';
+  const rows = db.prepare(`
+    SELECT q.id, q.conversation_id, q.bot_id, q.status, ${requestColumn} AS work_request_id, q.created_at, q.started_at, q.completed_at
+    FROM processing_queue q
+    JOIN conversations c ON c.id = q.conversation_id
+    JOIN bots b ON b.id = q.bot_id
+    ORDER BY q.created_at ASC, q.rowid ASC
+  `).all() as LegacyQueueRow[];
+  const getRequest = db.prepare('SELECT * FROM work_requests WHERE id = ?');
+  const setState = db.prepare(`
+    UPDATE work_requests SET state = ?, state_reason = ?, version = version + 1, updated_at = ?,
+      error_code = ?, error_message = ?, terminal_at = ?, executor = 'ui_message'
+    WHERE id = ?
+  `);
+  const insertEvent = db.prepare(`
+    INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, data, created_at)
+    SELECT ?, ?, COALESCE(MAX(sequence), 0) + 1, NULL, ?, ?, ? FROM engine_events WHERE request_id = ?
+  `);
+  const event = (requestId: string, type: string, data: unknown, at: number) =>
+    insertEvent.run(randomUUID(), requestId, type, JSON.stringify(data), at, requestId);
+  const latestMessage = db.prepare(
+    'SELECT id FROM messages WHERE conversation_id = ? AND created_at <= ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+  );
+  const insertRequest = db.prepare(`
+    INSERT INTO work_requests (
+      id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
+      intent, execution_kind, tool_profile, parent_request_id, root_request_id, wake_event_id, depth,
+      idempotency_key, request_hash, policy_snapshot, state, version, created_at, updated_at,
+      wake_depth, root_principal_kind, root_principal_id, executor
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation', 'readonly', NULL, ?, NULL, 0, ?, ?, ?, 'queued', 0, ?, ?, 0, ?, ?, 'ui_continuation')
+  `);
+  const executionPolicy = uiTurnExecutionPolicy(false);
+  let changed = 0;
+  for (const row of rows) {
+    if (row.work_request_id) {
+      const request = getRequest.get(row.work_request_id) as WorkRequest | undefined;
+      if (!request || request.state !== 'queued') continue;
+      const startedAt = row.started_at ?? row.created_at;
+      const endedAt = Math.max(row.completed_at ?? startedAt, startedAt);
+      if (row.status === 'pending') {
+        db.prepare("UPDATE work_requests SET executor = 'ui_message' WHERE id = ?").run(request.id);
+      } else if (row.status === 'completed' || row.status === 'failed') {
+        setState.run('running', null, startedAt, null, null, null, request.id);
+        event(request.id, 'state_changed', { from: 'queued', to: 'running', reason: null, legacy_queue_id: row.id }, startedAt);
+        setState.run(row.status, 'legacy_queue_turn', endedAt,
+          row.status === 'failed' ? 'ui_turn_failed' : null,
+          row.status === 'failed' ? 'The UI turn failed in the retired processing queue.' : null,
+          endedAt, request.id);
+        event(request.id, 'state_changed', { from: 'running', to: row.status, reason: 'legacy_queue_turn', legacy_queue_id: row.id }, endedAt);
+      } else {
+        const at = Math.max(Date.now(), startedAt);
+        setState.run('running', null, startedAt, null, null, null, request.id);
+        event(request.id, 'state_changed', { from: 'queued', to: 'running', reason: null, legacy_queue_id: row.id }, startedAt);
+        setState.run('failed', UI_TURN_INTERRUPTED, at, UI_TURN_INTERRUPTED, UI_TURN_INTERRUPTED_MESSAGE, at, request.id);
+        event(request.id, 'state_changed', { from: 'running', to: 'failed', reason: UI_TURN_INTERRUPTED, error_code: UI_TURN_INTERRUPTED, legacy_queue_id: row.id }, at);
+      }
+      changed++;
+      continue;
+    }
+    if (row.status !== 'pending') continue;
+    const id = randomUUID();
+    const source = (latestMessage.get(row.conversation_id, row.created_at) as { id: string } | undefined)?.id ?? row.conversation_id;
+    const policy = { source: 'legacy_processing_queue', legacy_queue_id: row.id };
+    const hash = workRequestHash({
+      sourceConversationId: row.conversation_id, sourceEventId: source, targetAgentId: row.bot_id, intent: 'turn',
+      executionKind: 'conversation', toolProfile: 'readonly', policy: { ...policy, execution_policy: executionPolicy },
+    });
+    insertRequest.run(
+      id, row.conversation_id, source, UI_TURN_REQUESTER.kind, UI_TURN_REQUESTER.id, row.bot_id, 'turn', id,
+      `legacy-queue:${row.id}`, hash, JSON.stringify({ ...policy, execution_policy: executionPolicy, tool_profile: 'readonly' }),
+      row.created_at, row.created_at, UI_TURN_REQUESTER.kind, UI_TURN_REQUESTER.id
+    );
+    event(id, 'accepted', { state: 'queued', execution_kind: 'conversation', tool_profile: 'readonly' }, row.created_at);
+    event(id, 'backfilled', { legacy_queue_id: row.id }, row.created_at);
+    changed++;
+  }
+  if (tableExists('legacy_processing_queue_archive')) {
+    db.exec('INSERT INTO legacy_processing_queue_archive SELECT * FROM processing_queue; DROP TABLE processing_queue;');
+  } else {
+    db.exec('ALTER TABLE processing_queue RENAME TO legacy_processing_queue_archive');
+  }
+  return changed;
+}
+
 export interface CreateWorkRequestInput {
   sourceConversationId: string;
   sourceEventId: string;
@@ -1724,6 +1915,9 @@ export interface CreateWorkRequestInput {
   wakeDepth?: number;
   safety?: SafetyDecisionInput;
   safetySnapshot?: Record<string, unknown>;
+  // NOT-477: who runs the request (default: the dispatcher). Not part of
+  // the idempotency hash.
+  executor?: RequestExecutor;
   now?: number;
 }
 
@@ -1840,6 +2034,9 @@ export function createEngineStore(db: Db) {
       }
     }
     if (!nonEmpty(input.idempotencyKey)) throw new EngineStoreError('invalid_input', 'idempotencyKey is required.');
+    if (input.executor !== undefined && !REQUEST_EXECUTORS.includes(input.executor)) {
+      throw new EngineStoreError('invalid_input', 'Unknown request executor.');
+    }
     if (input.initialState && input.initialState !== 'queued' && input.initialState !== 'blocked') {
       throw new EngineStoreError('invalid_input', 'A work request starts queued or blocked.');
     }
@@ -1900,13 +2097,13 @@ export function createEngineStore(db: Db) {
             id, source_conversation_id, source_event_id, requester_kind, requester_id, target_agent_id,
             intent, execution_kind, tool_profile, parent_request_id, root_request_id, wake_event_id, depth,
             idempotency_key, request_hash, policy_snapshot, state, state_reason, version, created_at, updated_at,
-            deadline_at, retry_policy, wake_depth, root_principal_kind, root_principal_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+            deadline_at, retry_policy, wake_depth, root_principal_kind, root_principal_id, executor
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           id, input.sourceConversationId, input.sourceEventId, input.requester.kind, input.requester.id, input.targetAgentId,
           input.intent, input.executionKind, input.toolProfile, input.parentRequestId ?? null, rootId, input.wakeEventId ?? null, depth,
           input.idempotencyKey, hash, policy, state, input.stateReason ?? null, now, now,
-          deadlineAt, JSON.stringify(retryPolicy), wakeDepth, rootPrincipal.kind, rootPrincipal.id
+          deadlineAt, JSON.stringify(retryPolicy), wakeDepth, rootPrincipal.kind, rootPrincipal.id, input.executor ?? 'dispatcher'
         );
         insertEvent(id, 'accepted', {
           state, execution_kind: input.executionKind, tool_profile: input.toolProfile,
@@ -2312,6 +2509,7 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
 
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
   db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM delegation_chains WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM conversation_events WHERE conversation_id = ? AND request_id IS NULL').run(conversationId);
   db.prepare('DELETE FROM wakes WHERE source_conversation_id = ?').run(conversationId);
   deleteEngineRecords(db, {

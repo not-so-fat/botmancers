@@ -76,7 +76,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 20) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -85,7 +85,7 @@ async function drain(cap = 20) {
 
 async function ask(bot, conv, text) {
   messages.create(conv.id, 'user', text);
-  db.queue.enqueue(conv.id, bot.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
   await drain();
   return messages.getByConversation(conv.id);
 }
@@ -180,7 +180,7 @@ async function main() {
   log('\nCase 4: repeat turn does not rewrite');
   const mtimeBefore = fs.statSync(planPath).mtimeMs;
   await sleep(25);
-  db.queue.enqueue(conv.id, drafter.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, drafter.id);
   await drain();
   thread = messages.getByConversation(conv.id);
   assert(fileCards(thread, 'plan.txt').length === 1, 'repeat posts no second [file] link');
@@ -188,7 +188,7 @@ async function main() {
   assert(fs.readFileSync(planPath, 'utf8') === 'launch', 'repeat preserves bytes');
   const draftsBeforeRepeat = draftCards(thread).length;
   const draftConv = conversations.getByBotId(drafter.id);
-  db.queue.enqueue(draftConv.id, drafter.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(draftConv.id, drafter.id);
   await drain();
   assert(
     draftCards(messages.getByConversation(draftConv.id)).length === draftsBeforeRepeat,
@@ -379,7 +379,7 @@ async function main() {
   assert(gateRow && gateRow.status === 'pending', 'gated request is pending');
   assert(gateRow && gateRow.action_type === 'write_file', 'gated request carries write_file');
   const approvalsBeforeRepeat = gateCards.length;
-  db.queue.enqueue(gateConv.id, gateBot.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(gateConv.id, gateBot.id);
   await drain();
   assert(
     countWhere(messages.getByConversation(gateConv.id), m => draftLib.parseApprovalCode(m.content)) === approvalsBeforeRepeat,

@@ -530,7 +530,7 @@ function scheduleRetry(requestId: string, at: number): void {
 function eligibleRetryIds(): string[] {
   return (db.prepare(`
     SELECT id FROM work_requests
-    WHERE state = 'queued' AND legacy_agent_request_id IS NULL AND next_eligible_at IS NOT NULL AND next_eligible_at <= ?
+    WHERE state = 'queued' AND legacy_agent_request_id IS NULL AND executor = 'dispatcher' AND next_eligible_at IS NOT NULL AND next_eligible_at <= ?
     ORDER BY next_eligible_at ASC, id ASC
   `).all(dispatcher.now()) as { id: string }[]).map(row => row.id);
 }

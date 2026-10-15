@@ -71,8 +71,8 @@ async function stubPeerWake() {
         ? 'Brief research on AI agents. WAKE Bob: Please review my research on AI agents.'
         : 'Bob: reviewed, looks good.');
       db.messages.create(conv.id, 'user', '@Alice can you research best practices for AI agents and hand off to Bob for review?');
-      db.queue.enqueue(conv.id, alice.id);
-      for (let i = 0; i < 40 && await agent.processNextQueueItem(); i++) await new Promise(r => setTimeout(r, 3));
+      jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, alice.id);
+      for (let i = 0; i < 40 && await agent.processNextUiTurn(); i++) await new Promise(r => setTimeout(r, 3));
       const thread = db.messages.getByConversation(conv.id);
       const handoff = thread.find(m => m.sender_id === alice.id && m.content.includes('[Handing off to Bob]'));
       const reply = thread.find(m => m.sender_id === bob.id);

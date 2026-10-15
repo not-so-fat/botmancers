@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
-import { messages, conversations, queue, groups, bots, draftActions, approvals, memories, UI_OWNER_PRINCIPAL } from '@/lib/db';
+import { messages, conversations, groups, bots, draftActions, approvals, memories, UI_OWNER_PRINCIPAL } from '@/lib/db';
 import type { Bot, Conversation } from '@/lib/db';
 import {
   IntakeError,
@@ -13,7 +13,8 @@ import {
 import { getApprovalByCode } from '@/lib/approvals';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { resumeBotIdsForConversation } from '@/lib/ask';
-import { processQueue } from '@/lib/agent';
+import { processUiTurns } from '@/lib/agent';
+import { uiTurns } from '@/lib/ui-turns';
 
 export async function GET(
   request: Request,
@@ -88,7 +89,7 @@ export async function POST(
       content: String(content),
       fingerprint: [id, String(content), mentionedBotId ? String(mentionedBotId) : null],
       route: conversation => uiRouting(conversation, String(content), mentionedBotId ? String(mentionedBotId) : undefined),
-      dispatch: enqueueUiTurns,
+      dispatch: startUiTurns,
     });
 
     // Per-bot memory (NOT-411): a direct thread teaches its own bot, unless
@@ -170,14 +171,14 @@ function uiRouting(conversation: Conversation, content: string, mentionedBotId: 
   return { deliveries, handoffTargets };
 }
 
-// The UI agent loop (lib/agent processQueue) still executes UI turns: each
-// newly accepted Work Request becomes one queue item for its target and
-// conversation, naming that request (NOT-471: a coding-Agent turn
-// dispatches it as one read-only Attempt). Replays enqueue nothing.
-function enqueueUiTurns(accepted: AcceptedIntake): void {
+// NOT-477: each newly accepted Work Request becomes a UI turn (executor
+// ui_message) and the UI turn executor (lib/agent) runs them in order
+// (NOT-471: a coding-Agent turn is handed to the dispatcher as one
+// read-only Attempt). Replays start nothing new.
+function startUiTurns(accepted: AcceptedIntake): void {
   if (accepted.replayed) return;
-  for (const request of accepted.requests) queue.enqueue(request.source_conversation_id, request.target_agent_id, request.id);
-  processQueue().catch(console.error);
+  uiTurns.adopt(accepted.requestIds);
+  processUiTurns().catch(console.error);
 }
 
 function mentionAt(content: string, name: string): boolean {

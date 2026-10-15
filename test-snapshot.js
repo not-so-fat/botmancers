@@ -193,9 +193,9 @@ async function main() {
   const heraldConv = db.conversations.getByBotId(herald.id);
   assert.ok(heraldConv, 'herald thread exists');
   db.messages.create(heraldConv.id, 'user', 'Hello Herald.');
-  db.queue.enqueue(heraldConv.id, herald.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(heraldConv.id, herald.id);
   let processed = 0;
-  while (processed < 20 && await agent.processNextQueueItem()) processed += 1;
+  while (processed < 20 && await agent.processNextUiTurn()) processed += 1;
   assert.strictEqual(hermesStubCalls, 1, 'Hermes direct-dispatch assertion: ordinary Hermes message uses the Hermes session');
   assert.strictEqual(deckCallsDuringHermes, 0, 'Hermes direct-dispatch assertion: opposite adapter (agent-deck) was not invoked');
   console.log('PASS: Hermes direct-dispatch assertion: ordinary message uses the Hermes session, agent-deck adapter not invoked');
@@ -255,9 +255,9 @@ async function main() {
   const relayConv = db.conversations.getByBotId(relay.id);
   assert.ok(relayConv, 'relay thread exists');
   db.messages.create(relayConv.id, 'user', 'Build the widget.');
-  db.queue.enqueue(relayConv.id, relay.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(relayConv.id, relay.id);
   processed = 0;
-  while (processed < 20 && await agent.processNextQueueItem()) processed += 1;
+  while (processed < 20 && await agent.processNextUiTurn()) processed += 1;
   assert.ok(launched, 'Agent Deck direct-dispatch assertion: ordinary message launches the stored deck run');
   const flag = (argv, name) => {
     const i = argv.indexOf(name);
@@ -293,9 +293,9 @@ async function main() {
   });
   const migratedConv = db.conversations.getByBotId(migrated.id);
   db.messages.create(migratedConv.id, 'user', 'Build the widget.');
-  db.queue.enqueue(migratedConv.id, migrated.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(migratedConv.id, migrated.id);
   processed = 0;
-  while (processed < 20 && await agent.processNextQueueItem()) processed += 1;
+  while (processed < 20 && await agent.processNextUiTurn()) processed += 1;
   const migratedSnaps = db.launchSnapshots.listByBot(migrated.id);
   assert.ok(migratedSnaps.length >= 1, 'a launch snapshot was flushed for the migrated row');
   const migratedFlushed = JSON.parse(migratedSnaps[migratedSnaps.length - 1].snapshot);
@@ -316,9 +316,9 @@ async function main() {
   const pendingHermes = db.bots.create({ name: 'PendingHermes', title: '', description: 'No deck yet.', agent: 'hermes' });
   const pendingConv = db.conversations.getByBotId(pendingHermes.id);
   db.messages.create(pendingConv.id, 'user', 'Hello?');
-  db.queue.enqueue(pendingConv.id, pendingHermes.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(pendingConv.id, pendingHermes.id);
   processed = 0;
-  while (processed < 20 && await agent.processNextQueueItem()) processed += 1;
+  while (processed < 20 && await agent.processNextUiTurn()) processed += 1;
   assert.strictEqual(unresolvedHermesCalls, 0, 'Hermes without a deck never reaches the Hermes adapter');
   const pendingThread = db.messages.getByConversation(pendingConv.id);
   assert.ok(pendingThread.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck needs selection] PendingHermes')), 'Hermes without a deck posts the needs-selection notice');

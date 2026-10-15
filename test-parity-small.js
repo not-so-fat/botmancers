@@ -63,7 +63,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function drain(cap = 20) {
   let processed = 0;
-  while (processed < cap && await agent.processNextQueueItem()) {
+  while (processed < cap && await agent.processNextUiTurn()) {
     processed++;
     await sleep(3);
   }
@@ -72,7 +72,7 @@ async function drain(cap = 20) {
 
 async function ask(bot, conv, text) {
   messages.create(conv.id, 'user', text);
-  db.queue.enqueue(conv.id, bot.id);
+  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
   await drain();
   return messages.getByConversation(conv.id);
 }
