@@ -50,10 +50,9 @@ import {
   setApprovalMessage,
   ApprovalActionRefused,
 } from './approvals';
-// NOT-471: the composite implement/review/resume path
-// (delegateCodingViaDeck) is deliberately not imported here: an ordinary
-// coding-Agent turn is one Attempt. It stays reachable only through the
-// explicit compatibility gate in ./agent-deck-run.
+// NOT-471/NOT-477: an ordinary coding-Agent turn is one Attempt. The
+// composite implement/review/resume helper is removed; implementation,
+// review, and revision are coordinator Wakes (./coordinator-loop).
 import {
   createAgentDeckAttemptAdapter,
   parseDeckRuntime,
