@@ -56,6 +56,8 @@ import { authorizeWorkRequest } from './execution-policy';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 import type { ConversationEventView } from './conversation-projection';
 import { continueAfterFinalization, continueAfterTerminal, pendingCoordinatorWork, resumeBindingFor, turnContext } from './coordinator-loop';
+import { decideWakeGrant, retryWake, type GrantDecisionResult, type RoutedWake } from './wake-router';
+import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-safety';
 import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
@@ -248,6 +250,7 @@ const INTAKE_TO_API: Record<IntakeErrorCode, AgentApiErrorCode> = {
   conversation_not_writable: 'conversation_not_writable',
   target_not_found: 'agent_not_found',
   idempotency_conflict: 'idempotency_conflict',
+  unknown_principal: 'unauthenticated',
   intake_failed: 'internal_error',
 };
 
@@ -1060,6 +1063,36 @@ export async function retryAgentRequest(principal: Principal, requestId: string)
   } catch (error) {
     return controlError(error);
   }
+}
+
+// ---------------------------------------------------------------------
+// NOT-475: the owner's grant commands. The decision commits first (owner
+// only, lib/wake-router decideWakeGrant); then an admitted request is
+// dispatched, and a denied one runs its loop follow-up so the coordinator
+// is told no work ran.
+
+export interface WakeCommandCaller {
+  category: CallerCategory;
+  principal: Principal;
+}
+
+export function decideWakeGrantCommand(wakeId: string, decision: 'allow' | 'deny', caller: WakeCommandCaller): GrantDecisionResult {
+  const result = decideWakeGrant({ wakeId, decision, caller });
+  if (result.request && result.runnable) void startAgentDispatch(result.request.id);
+  if (result.request && result.ended) for (const next of continueAfterTerminal(result.request.id)) void startAgentDispatch(next);
+  return result;
+}
+
+// Re-checks a blocked or unavailable Wake (grant, target availability)
+// and dispatches its request once it is queued.
+export function retryWakeCommand(wakeId: string): RoutedWake {
+  const result = retryWake(wakeId);
+  if (result.request?.state === 'queued') void startAgentDispatch(result.request.id);
+  return result;
+}
+
+export function revokeWakeGrantCommand(grantId: string, caller: WakeCommandCaller): { grant: WakeGrant; revoked: boolean } {
+  return revokeWakeGrant(grantId, caller);
 }
 
 const inFlight = new Map<string, Promise<void>>();

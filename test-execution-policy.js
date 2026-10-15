@@ -294,7 +294,26 @@ async function main() {
   const dev = bots.create({ name: 'Dev', title: 'Developer', description: 'Implements.', agent: 'claude', deck_id: 'deck-x', working_directory: workdir });
   bots.create({ name: 'Rev', title: 'Reviewer', description: 'Reviews.', agent: 'cursor', deck_id: 'deck-x', working_directory: workdir });
   const tankConv = conversations.getByBotId(tank.id);
-  const routeFrom = (sender, content) => router.routeAgentWakes({ sourceEventId: messages.create(tankConv.id, 'bot', content, sender.id).id });
+  // NOT-475: Wakes route from a tracked turn: each sender's own direct
+  // owner message in this conversation. The owner already allowed Tank's
+  // edit Wakes to Dev; Dev's self-addressed implementation is the
+  // owner-direct self-wake exemption.
+  const safety = jiti('./lib/wake-safety.ts');
+  safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: dev.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
+  const turns = new Map();
+  const turnOf = sender => {
+    if (!turns.has(sender.id)) {
+      const ask = messages.create(tankConv.id, 'user', `Owner asks ${sender.name}.`);
+      const snapshot = { safety_version: 1, wake_depth: 0, grant_rule: 'readonly_default' };
+      turns.set(sender.id, engine.createOrGetWorkRequest({
+        sourceConversationId: tankConv.id, sourceEventId: ask.id, requester: { kind: 'person', id: 'local-owner' }, targetAgentId: sender.id,
+        intent: ask.content, executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: `owner-turn-${sender.id}`,
+        safety: { principalType: 'human_owner', principal: { kind: 'person', id: 'local-owner' }, decision: 'allowed', grantRule: 'readonly_default', snapshot },
+      }).request);
+    }
+    return turns.get(sender.id);
+  };
+  const routeFrom = (sender, content) => router.routeAgentWakes({ sourceEventId: messages.create(tankConv.id, 'bot', content, sender.id).id, parentRequestId: turnOf(sender).id });
 
   const implWake = routeFrom(tank, block({ version: 1, target: 'Dev', executionKind: 'implementation', objective: 'Add the rate limiter.' }))[0];
   const implementation = implWake.request;

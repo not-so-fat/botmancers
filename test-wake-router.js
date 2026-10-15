@@ -95,6 +95,12 @@ function runMain() {
     toolProfile: 'readonly',
     idempotencyKey: 'ask-1',
   });
+  // NOT-475: edit Wakes need an owner-approved pair grant (lib/wake-safety;
+  // test-wake-safety.js covers asking for one).
+  const safety = jiti('./lib/wake-safety.ts');
+  for (const target of [dev, unconfigured]) {
+    safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: target.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
+  }
 
   console.log('Accepted structured Wake');
   const implEnvelope = fixtures.valid.find(f => f.name === 'tank_wakes_developer').envelope;
@@ -308,10 +314,16 @@ function runMain() {
     block({ version: 1, target: 'Dev', executionKind: 'conversation', objective: 'Look at this.' }),
     block({ version: 1, target: 'Nobody', executionKind: 'conversation', objective: 'Hello?' }),
   ].join('\n'), scout.id);
-  const [scoutRouted, scoutUnrouted] = router.routeAgentWakes({ sourceEventId: mScout.id }).map(entry => entry.wake);
+  const scoutAsk = messages.create(scoutConversation.id, 'user', 'Scout around.');
+  const { request: scoutRoot } = engine.createOrGetWorkRequest({
+    sourceConversationId: scoutConversation.id, sourceEventId: scoutAsk.id, requester: { kind: 'person', id: 'owner' },
+    targetAgentId: scout.id, intent: scoutAsk.content, executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: 'scout-ask',
+  });
+  const [scoutRouted, scoutUnrouted] = router.routeAgentWakes({ sourceEventId: mScout.id, parentRequestId: scoutRoot.id }).map(entry => entry.wake);
   raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForAgent(raw, scout.id))();
-  const survivor = engine.getWorkRequest(scoutRouted.work_request_id);
-  assert(survivor && router.getWake(survivor.wake_event_id), 'deleting the requester keeps the Wake its surviving request references');
+  // NOT-475: a Wake routes only from a tracked turn of the requester, so
+  // its request descends from the requester's own request and goes with it.
+  assert(!engine.getWorkRequest(scoutRouted.work_request_id) && !router.getWake(scoutRouted.id), 'deleting the requester removes its lineage and the Wakes in it');
   assert(!router.getWake(scoutUnrouted.id), "deleting the requester removes its unrouted Wakes");
   raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForConversation(raw, scoutConversation.id))();
   raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForConversation(raw, conversation.id))();

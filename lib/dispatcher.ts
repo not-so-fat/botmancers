@@ -19,6 +19,14 @@
 // Concurrency: a claim is refused while the global or per-target number of
 // leases is at its limit. A refused request stays queued with a durable
 // dispatch_deferred event, so a later drain or restart claims it.
+//
+// NOT-475: authority is checked where Attempts start, so no path (a direct
+// store write, a replayed dispatch, a race with a revocation) can launch
+// work the safety policy did not admit. A claim needs the request's latest
+// wake_safety_decisions row to be allowed and, for a Wake-created request,
+// its Wake to be accepted; otherwise the request fails not_authorized and
+// no Attempt is created. The approved defaults are global 4 and per-target
+// 1 running Attempts (lib/wake-safety).
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import os from 'os';
@@ -88,7 +96,7 @@ export interface DispatchLease {
 // NOT-473: 'not_eligible' is a retry still in its backoff, 'timed_out' a
 // request past its deadline (failed timed_out by the refused claim), and
 // 'exhausted' a request with no Attempt left in its bounded budget.
-export type ClaimRefusal = 'not_queued' | 'attention' | 'global_limit' | 'target_limit' | 'not_eligible' | 'timed_out' | 'exhausted';
+export type ClaimRefusal = 'not_queued' | 'attention' | 'global_limit' | 'target_limit' | 'not_eligible' | 'timed_out' | 'exhausted' | 'not_authorized';
 
 export type ClaimResult =
   | { ok: true; lease: DispatchLease; request: WorkRequest }
@@ -184,6 +192,18 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
   const openAttention = db.prepare('SELECT * FROM dispatch_attention WHERE request_id = ? AND cleared_at IS NULL');
   const lastEvent = db.prepare('SELECT type, data FROM engine_events WHERE request_id = ? ORDER BY sequence DESC LIMIT 1');
   const held = db.prepare('SELECT 1 FROM dispatch_leases WHERE request_id = ? AND token = ?');
+  const latestDecision = db.prepare('SELECT decision FROM wake_safety_decisions WHERE request_id = ? ORDER BY sequence DESC LIMIT 1');
+  const wakeStatus = db.prepare('SELECT status FROM wakes WHERE id = ?');
+
+  function authorityProblem(request: WorkRequest): string | null {
+    const decision = latestDecision.get(request.id) as { decision: string } | undefined;
+    if (decision?.decision !== 'allowed') return 'The request has no allowed safety decision.';
+    if (request.wake_event_id !== null) {
+      const wake = wakeStatus.get(request.wake_event_id) as { status: string } | undefined;
+      if (wake?.status !== 'accepted') return 'The Wake that created this request was not accepted.';
+    }
+    return null;
+  }
 
   function deferClaim(request: WorkRequest, reason: 'global_limit' | 'target_limit', active: { global: number; target: number }): ClaimResult {
     // One deferral event per wait, not one per refused poll.
@@ -231,6 +251,14 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
         }
         if (request.next_eligible_at !== null && at < request.next_eligible_at) return { ok: false, reason: 'not_eligible' };
         if (openAttention.get(requestId)) return { ok: false, reason: 'attention' };
+        const unauthorized = authorityProblem(request);
+        if (unauthorized) {
+          store.transitionWorkRequest(requestId, {
+            from: 'queued', to: 'failed', reason: 'not_authorized', expectedVersion: request.version,
+            errorCode: 'not_authorized', errorMessage: unauthorized, now: at,
+          });
+          return { ok: false, reason: 'not_authorized' };
+        }
         // Defense in depth: the budget is checked where Attempts start, so
         // no path can launch past it.
         const policy = storedRetryPolicy(request.retry_policy);

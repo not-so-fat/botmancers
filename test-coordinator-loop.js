@@ -177,6 +177,10 @@ async function runMain() {
   const reviewer = bots.create({ deck_id: 'deck-review', name: 'Reviewer', title: 'Reviewer', description: 'Reviews.', agent: 'codex' });
   const auditor = bots.create({ deck_id: 'deck-audit', name: 'Auditor', title: 'Second reviewer', description: 'Audits.', agent: 'cursor' });
   const idle = bots.create({ name: 'Idle', title: 'Unconfigured', description: 'No deck yet.', agent: 'codex' });
+  // NOT-475: the owner already allowed Tank's edit Wakes to Dev
+  // (test-wake-safety.js covers the first-use approval).
+  const safety = jiti('./lib/wake-safety.ts');
+  safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: dev.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
 
   let devSessions = 0;
   const devTurns = [];
@@ -394,7 +398,8 @@ async function runMain() {
     assert(wakes.length === 2 && wakes[0].status === 'unavailable' && wakes[1].status === 'blocked', 'missing reviewer unavailable, unconfigured reviewer blocked');
     const blocked = engine.getWorkRequest(wakes[1].work_request_id);
     assert(blocked.state === 'blocked' && engine.listAttempts(blocked.id).length === 0, 'blocked review never ran');
-    assert(notice && /Ghost was unavailable/.test(notice) && /Idle is waiting \(blocked\)/.test(notice), 'Tank is told which reviews did not start');
+    // NOT-475: a blocked Wake waits silently until it runs, is denied, or is stopped.
+    assert(notice && /Ghost was unavailable/.test(notice) && !/Idle/.test(notice), 'Tank is told which reviews did not start; the blocked one waits without a notice');
     assert(/not reviewed yet/.test(messagesIn(convId).pop().content), 'Tank does not claim a review occurred');
     assert(raw.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE requester_kind = 'service' AND idempotency_key LIKE 'continuation:v1:wakes:%' AND source_conversation_id = ?").get(convId).n === 1,
       'one Wake-outcome continuation for the reply');
@@ -441,6 +446,7 @@ async function runMain() {
     // An implementation that reported no session cannot be resumed.
     const noSession = bots.create({ deck_id: 'deck-ns', name: 'NoSession', title: 'Dev', description: 'Forgets sessions.', agent: 'claude' });
     specialists.set(noSession.id, (input, request) => ({ output: `${request.execution_kind} done` }));
+    safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: noSession.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
     let failureNotice = null;
     const plan = [
       () => `NoSession.\n${block({ target: 'NoSession', executionKind: 'implementation', objective: 'Build it.' })}`,
@@ -473,8 +479,9 @@ async function runMain() {
     const continuations = all.filter(r => r.requester_kind === 'service');
     assert(specialistsRun.length === router.WAKE_MAX_SPECIALIST_REQUESTS, `specialist budget stops new Wakes (${specialistsRun.length})`);
     assert(continuations.length === loop.COORDINATOR_MAX_CONTINUATIONS, `continuation budget ends the loop (${continuations.length})`);
-    assert(raw.prepare("SELECT COUNT(*) AS n FROM wakes WHERE source_conversation_id = ? AND reason_code = 'limit_exceeded'").get(convId).n > 0, 'Wakes past the budget are recorded as limit_exceeded');
-    assert(raw.prepare("SELECT COUNT(*) AS n FROM engine_events e JOIN work_requests r ON r.id = e.request_id WHERE r.source_conversation_id = ? AND e.type = 'continuation_limited'").get(convId).n === 1, 'the stop is recorded once');
+    assert(raw.prepare("SELECT COUNT(*) AS n FROM wakes WHERE source_conversation_id = ? AND reason_code = 'root_budget_exhausted' AND limit_value = 12").get(convId).n > 0, 'Wakes past the budget are recorded as root_budget_exhausted (limit 12)');
+    assert(raw.prepare("SELECT COUNT(*) AS n FROM engine_events e JOIN work_requests r ON r.id = e.request_id WHERE r.source_conversation_id = ? AND e.type = 'lineage_stopped'").get(convId).n === 1, 'the stop is recorded once');
+    assert(projector.listConversationEvents(convId).filter(e => e.kind === 'lineage_stopped').map(e => e.text).join('|') === 'Stopped: coordinator continuation limit 24 reached', 'the stop projects once as lineage_stopped');
     assert(all.every(r => r.terminal_at !== null), 'nothing left running');
   }
 

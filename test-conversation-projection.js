@@ -83,6 +83,9 @@ async function runMain() {
     requester: { kind: 'person', id: 'local-owner' }, targetAgentId: tank.id,
     intent: ask.content, executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: 'ask-1',
   });
+  // NOT-475: the owner already allowed Tank's edit Wakes to Dev.
+  const safety = jiti('./lib/wake-safety.ts');
+  safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: dev.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
 
   console.log('Wake accepted and blocked');
   const block = envelope => '```botmancers-wake\n' + JSON.stringify(envelope) + '\n```';
@@ -104,7 +107,7 @@ async function runMain() {
   assert(wakeAccepted.engineEventId === firstAccepted.id && wakeAccepted.requestSequence === 1, 'wake_accepted names its source engine event and sequence');
   assert(kindsOf(views, blocked.request.id).join(',') === 'wake_blocked', 'blocked Wake projects only wake_blocked (never accepted)');
   const wakeBlocked = views.find(view => view.kind === 'wake_blocked');
-  assert(wakeBlocked.state === 'blocked' && wakeBlocked.wakeId === blocked.wake.id && /target_unconfigured/.test(wakeBlocked.data.reason) && /Idle has no Agent Deck selected/.test(wakeBlocked.text), 'wake_blocked carries the persisted reason');
+  assert(wakeBlocked.state === 'blocked' && wakeBlocked.wakeId === blocked.wake.id && wakeBlocked.data.reason_code === 'target_unconfigured' && wakeBlocked.text === 'Wake blocked: Idle — Idle has no Agent Deck selected.' && wakeBlocked.data.actions.length === 0, 'wake_blocked carries the persisted reason');
   assert(kindsOf(views, root.id).join(',') === 'request_queued', 'person request projects as request_queued');
 
   console.log('Stored metadata');
@@ -219,8 +222,10 @@ async function runMain() {
   raw.prepare("UPDATE bots SET deck_id = 'deck-idle', needs_deck_selection = 0 WHERE name = 'Idle'").run();
   router.retryWake(blocked.wake.id);
   views = projector.listConversationEvents(conversation.id);
-  assert(kindsOf(views, blocked.request.id).join(',') === 'wake_blocked,request_queued', 'unblocked Wake projects request_queued after wake_blocked');
-  assert(views.find(view => view.requestId === blocked.request.id && view.kind === 'request_queued').data.reason === 'target_available', 'requeue carries its reason');
+  // NOT-475: a recovered blocked Wake is accepted now (wake-safety fixture
+  // flow_c_target_becomes_available_after_allow).
+  assert(kindsOf(views, blocked.request.id).join(',') === 'wake_blocked,wake_accepted', 'unblocked Wake projects wake_accepted after wake_blocked');
+  assert(views.find(view => view.requestId === blocked.request.id && view.kind === 'wake_accepted').data.reason === 'target_available', 'acceptance carries its reason');
 
   console.log('Interleaved requests');
   const other = bots.create({ deck_id: 'deck-o', name: 'Other', title: 'Other', description: 'Other.', agent: 'hermes' });

@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 43123",
+    "dev": "next dev -H 127.0.0.1 -p 43123",
     "build": "next build",
-    "start": "next start -p 43123",
+    "start": "next start -H 127.0.0.1 -p 43123",
     "lint": "eslint",
     "test:acceptance": "node test-acceptance-steps-1-7.js",
     "test:marketplace-import": "node test-import-marketplace-ui.js",

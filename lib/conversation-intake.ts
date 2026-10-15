@@ -20,10 +20,17 @@
 //
 // Failures use one normalized category (IntakeErrorCode). Each entry
 // point translates it into its documented response shape.
+//
+// NOT-475: every caller is categorized at its boundary (lib/wake-safety):
+// the UI owner is human_owner, an /api/v0 caller an api_principal; an
+// unknown caller is refused before anything is written. Each request
+// records its root principal, depth 0, and an allowed readonly_default
+// safety decision naming that principal. Message text is never a Wake.
 import { createHash, randomUUID } from 'crypto';
 import db, { bots, engine, type Conversation, type Message, type Principal } from './db';
 import { EngineStoreError, type WorkRequest } from './engine-store';
 import { selectExecutionPolicy } from './execution-policy';
+import { WAKE_SAFETY_VERSION, categorizeIntakeCaller } from './wake-safety';
 
 export type IntakeSurface = 'ui' | 'api';
 
@@ -33,6 +40,7 @@ export type IntakeErrorCode =
   | 'conversation_not_writable'
   | 'target_not_found'
   | 'idempotency_conflict'
+  | 'unknown_principal'
   | 'intake_failed';
 
 export const INTAKE_ERROR_STATUS: Record<IntakeErrorCode, number> = {
@@ -41,6 +49,7 @@ export const INTAKE_ERROR_STATUS: Record<IntakeErrorCode, number> = {
   conversation_not_writable: 409,
   target_not_found: 404,
   idempotency_conflict: 409,
+  unknown_principal: 403,
   intake_failed: 500,
 };
 
@@ -249,6 +258,15 @@ function intakeTransaction(input: ConversationIntakeInput, hash: string): Accept
     const selection = selectExecutionPolicy({ entryPoint: surface, executionKind: 'conversation' });
     if (!selection.ok) throw new IntakeError('invalid_request', selection.reason);
     const executionPolicy = selection.policy;
+    const principalType = categorizeIntakeCaller(surface, requester);
+    if (principalType === 'unknown') throw new IntakeError('unknown_principal', 'The caller is not a recognized principal.');
+    const safetySnapshot = {
+      safety_version: WAKE_SAFETY_VERSION,
+      root_principal: { kind: requester.kind, id: requester.id },
+      wake_depth: 0,
+      grant_rule: 'readonly_default',
+      grant_id: null,
+    };
 
     const requestIds: string[] = [];
     for (const delivery of deliveries) {
@@ -270,6 +288,10 @@ function intakeTransaction(input: ConversationIntakeInput, hash: string): Accept
         idempotencyKey,
         policy: { source: 'conversation_intake', surface },
         executionPolicy,
+        rootPrincipal: requester,
+        wakeDepth: 0,
+        safetySnapshot,
+        safety: { principalType, principal: requester, decision: 'allowed', grantRule: 'readonly_default', snapshot: safetySnapshot, now },
         now,
       });
       requestIds.push(request.id);
@@ -309,6 +331,9 @@ function intakeTransaction(input: ConversationIntakeInput, hash: string): Accept
 export function acceptConversationMessage(input: ConversationIntakeInput): AcceptedIntake & { dispatched: Promise<void> } {
   if (!input.requester || !['person', 'bot', 'service'].includes(input.requester.kind) || !nonEmpty(input.requester.id)) {
     throw new IntakeError('invalid_request', 'A requester principal is required.');
+  }
+  if (categorizeIntakeCaller(input.surface, input.requester) === 'unknown') {
+    throw new IntakeError('unknown_principal', 'The caller is not a recognized principal.');
   }
   if (!nonEmpty(input.content)) throw new IntakeError('invalid_request', 'content is required.');
   if (!nonEmpty(input.idempotencyKey) || input.idempotencyKey.length > 200) {
