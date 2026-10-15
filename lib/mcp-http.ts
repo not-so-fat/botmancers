@@ -14,6 +14,11 @@
 // exactly http://<that loopback Host> or an exact entry of
 // BOTMANCERS_MCP_ALLOWED_ORIGINS. Neither is compared with the request's own
 // authority, which a rebound request controls.
+//
+// Rate limit: each service principal may make at most
+// BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE (default 60) tools/call requests in
+// any rolling 60 s window. Calls over the limit are answered 429
+// rate_limited with Retry-After before the tool runs, so they write nothing.
 import type { Principal } from './db';
 import { AgentApiError } from './agent-conversations';
 import { authenticate } from './agent-api';
@@ -24,6 +29,9 @@ const MAX_BODY_BYTES = 256 * 1024;
 
 export const MCP_ALLOWED_HOSTS_ENV = 'BOTMANCERS_MCP_ALLOWED_HOSTS';
 export const MCP_ALLOWED_ORIGINS_ENV = 'BOTMANCERS_MCP_ALLOWED_ORIGINS';
+export const MCP_TOOL_CALLS_PER_MINUTE_ENV = 'BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE';
+const DEFAULT_TOOL_CALLS_PER_MINUTE = 60;
+const RATE_WINDOW_MS = 60_000;
 
 function envelope(status: number, code: string, message: string, headers: Record<string, string> = {}): Response {
   return Response.json({ error: { code, message } }, { status, headers });
@@ -45,6 +53,32 @@ function rebindingRefusal(request: Request): Response | null {
   if (isLoopbackHost(host) && normalized === `http://${host}`) return null;
   if (listEnv(MCP_ALLOWED_ORIGINS_ENV).includes(normalized)) return null;
   return envelope(403, 'origin_not_allowed', 'Cross-origin requests are not accepted.');
+}
+
+function toolCallsPerMinute(): number {
+  const configured = process.env[MCP_TOOL_CALLS_PER_MINUTE_ENV];
+  if (configured === undefined || configured.trim() === '') return DEFAULT_TOOL_CALLS_PER_MINUTE;
+  const value = Number(configured.trim());
+  if (Number.isInteger(value) && value > 0) return value;
+  console.error(`${MCP_TOOL_CALLS_PER_MINUTE_ENV} must be a positive integer; using ${DEFAULT_TOOL_CALLS_PER_MINUTE}.`);
+  return DEFAULT_TOOL_CALLS_PER_MINUTE;
+}
+
+// Admitted tools/call times per service principal, oldest first.
+const toolCallTimes = new Map<string, number[]>();
+
+// Null when the call is admitted (and counted), else the seconds to wait.
+function rateLimitRetryAfter(principal: Principal, now = Date.now()): number | null {
+  const key = `${principal.kind}:${principal.id}`;
+  const times = (toolCallTimes.get(key) ?? []).filter(at => at > now - RATE_WINDOW_MS);
+  const limit = toolCallsPerMinute();
+  if (times.length >= limit) {
+    toolCallTimes.set(key, times);
+    return Math.max(1, Math.ceil((times[times.length - limit] + RATE_WINDOW_MS - now) / 1000));
+  }
+  times.push(now);
+  toolCallTimes.set(key, times);
+  return null;
 }
 
 class BodyTooLarge extends Error {}
@@ -113,6 +147,12 @@ export async function handleMcpPost(request: Request): Promise<Response> {
   }
   if (Array.isArray(message)) {
     return Response.json(jsonRpcError(null, JSON_RPC.invalidRequest, 'Batched messages are not supported.'), { status: 400 });
+  }
+  if ((message as { method?: unknown })?.method === 'tools/call') {
+    const retryAfter = rateLimitRetryAfter(principal);
+    if (retryAfter !== null) {
+      return envelope(429, 'rate_limited', 'Too many tool calls; retry later.', { 'Retry-After': String(retryAfter) });
+    }
   }
   let response;
   try {

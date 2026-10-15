@@ -26,6 +26,7 @@
 import db, { bots, type Principal } from './db';
 import {
   AgentApiError,
+  MCP_IDEMPOTENCY_PREFIX,
   acceptAgentMessage,
   getAgentRequest,
   getAuthorizedWorkRequest,
@@ -363,13 +364,14 @@ function startTask(principal: Principal, raw: unknown) {
   if (!objective) throw new McpToolError('invalid_arguments', 'objective must not be blank.');
   const coordinator = resolveCoordinator(coordinatorName);
   // The shared intake's (principal, key) idempotency, in a namespace of
-  // its own so bridge keys never collide with direct /api/v0 messages.
+  // its own (the REST route refuses the prefix) so bridge keys never
+  // collide with direct /api/v0 messages.
   // Its fingerprint covers coordinator and objective: a different one
   // under the same key is a conflict.
   const { accepted } = acceptAgentMessage(principal, {
     agentId: coordinator.id,
     content: objective,
-    idempotencyKey: `mcp:${key}`,
+    idempotencyKey: `${MCP_IDEMPOTENCY_PREFIX}${key}`,
     conversationId: null,
   });
   const request = getAuthorizedWorkRequest(principal, accepted.requestId);

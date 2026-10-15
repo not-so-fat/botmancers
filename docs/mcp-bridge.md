@@ -117,6 +117,20 @@ does not exist.
 
    Request bodies over 256 KiB are refused with 413.
 
+   Each service may make at most 60 `tools/call` requests in any rolling
+   minute. A call over the limit is refused with 429 `rate_limited` and a
+   `Retry-After` header (seconds) before the tool runs, so nothing is
+   written. To change the limit:
+
+   ```sh
+   BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE="60"   # positive integer; anything else uses 60
+   ```
+
+   Bridge idempotency keys are stored as `mcp:<idempotency_key>`. The REST
+   `POST /api/v0/agents/{agentId}/messages` route therefore refuses keys
+   that start with `mcp:` (400 `invalid_request`), so REST calls cannot
+   occupy or replay a bridge key.
+
 4. **Check the setup.** Call `botmancers_health`. It should return
    `status: "ok"`, your service id, and each coordinator with
    `available: true`.

@@ -13,7 +13,8 @@
 // Routes:
 //   POST /api/v0/agents/{agentId}/messages   open or continue a conversation
 //     body: { content, conversationId?, idempotencyKey?, principal?, wait? }
-//     header: Idempotency-Key (alternative to body idempotencyKey)
+//     header: Idempotency-Key (alternative to body idempotencyKey); keys
+//     starting with "mcp:" are reserved for the MCP bridge (invalid_request)
 //   GET  /api/v0/conversations/{id}          participants, origin, ordered messages,
 //                                            projected lifecycle events (NOT-470)
 //   GET  /api/v0/requests/{id}               request state, reply, typed failure
@@ -25,6 +26,7 @@ import type { Principal } from './db';
 import { ServiceTokenConfigError, serviceTokenAuthenticatorFromEnv } from './service-token-auth';
 import {
   AgentApiError,
+  MCP_IDEMPOTENCY_PREFIX,
   acceptAgentMessage,
   getAgentRequest,
   getConversation,
@@ -113,10 +115,14 @@ export async function handleSendAgentMessage(request: Request, agentId: string):
     if (headerKey && bodyKey && headerKey !== bodyKey) {
       throw new AgentApiError('invalid_request', 'Idempotency-Key header and body idempotencyKey differ.');
     }
+    const idempotencyKey = headerKey ?? bodyKey ?? '';
+    if (idempotencyKey.toLowerCase().startsWith(MCP_IDEMPOTENCY_PREFIX)) {
+      throw new AgentApiError('invalid_request', `Idempotency keys starting with "${MCP_IDEMPOTENCY_PREFIX}" are reserved for the MCP bridge.`);
+    }
     const { accepted, dispatched } = acceptAgentMessage(principal, {
       agentId,
       content: typeof body.content === 'string' ? body.content : '',
-      idempotencyKey: headerKey ?? bodyKey ?? '',
+      idempotencyKey,
       conversationId: typeof body.conversationId === 'string' ? body.conversationId : body.conversationId == null ? null : '',
     });
     if (body.wait === true) {

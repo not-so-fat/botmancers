@@ -14,7 +14,8 @@
 // Covers: initialize and tools/list against the captured contract
 // (docs/contracts/mcp-bridge-v1.tools.json); fail-closed authentication
 // with row counts; the allowlist and the forbidden-field table; replay
-// and conflict; the read-only direct request and the separately granted
+// and conflict, including the REST-reserved "mcp:" key prefix; the
+// per-service tool-call rate limit; the read-only direct request and the separately granted
 // internal Wake lineage; the read authorization matrix; and status
 // snapshots for pending, running, succeeded, failed, and cancelled with no
 // session, run, or credential leak.
@@ -171,6 +172,9 @@ async function child() {
   {
     delete process.env.BOTMANCERS_SERVICE_TOKENS;
     process.env.BOTMANCERS_MCP_COORDINATORS = 'Tank, Holder';
+    // This suite makes more tool calls per minute than the default allows;
+    // the rate-limit section lowers it.
+    process.env.BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE = '1000';
     const before = snapshot();
     const startArgs = { coordinator: 'Tank', objective: 'Hello', idempotency_key: 'auth-1' };
     const unconfigured = await call('botmancers_start_task', startArgs);
@@ -339,6 +343,27 @@ async function child() {
     const otherCoordinator = await call('botmancers_start_task', { coordinator: 'Holder', objective: 'What is the build status?', idempotency_key: 'task-1' });
     check(otherCoordinator.result.isError && otherCoordinator.data.error.code === 'idempotency_conflict', 'same key, different coordinator -> idempotency_conflict');
     check(same(afterFirst, snapshot()), 'conflicts write nothing');
+    // Cross-surface: REST cannot occupy (or replay from) the bridge's key namespace.
+    const restPost = (key, { header = false, content = 'Something else entirely' } = {}) => fetch(`${host.origin}/api/v0/agents/${tank.id}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}`, ...(header ? { 'idempotency-key': key } : {}) },
+      body: JSON.stringify({ content, ...(header ? {} : { idempotencyKey: key }) }),
+    }).then(async res => ({ status: res.status, json: await res.json() }));
+    for (const [label, key, header] of [['body key mcp:task-1', 'mcp:task-1', false], ['header key mcp:task-1', 'mcp:task-1', true], ['body key MCP:task-2', 'MCP:task-2', false]]) {
+      const res = await restPost(key, { header });
+      check(res.status === 400 && res.json.error.code === 'invalid_request' && /reserved/.test(res.json.error.message), `REST ${label} -> 400 invalid_request (reserved prefix)`);
+    }
+    const restReplayAttempt = await restPost('mcp:task-1', { content: 'What is the build status?' });
+    check(restReplayAttempt.status === 400 && !JSON.stringify(restReplayAttempt.json).includes(first.data.request_id), 'REST cannot replay the MCP call\'s ids through the prefixed key');
+    check(same(afterFirst, snapshot()), 'reserved-prefix REST calls write nothing');
+    const restPlain = await restPost('task-1');
+    check(restPlain.status === 202 && restPlain.json.requestId !== first.data.request_id, 'REST key task-1 is a separate namespace from MCP key task-1');
+    await ctx.settle([restPlain.json.requestId]);
+    const replayAfterRest = await call('botmancers_start_task', { coordinator: 'Tank', objective: 'What is the build status?', idempotency_key: 'task-1' });
+    check(replayAfterRest.data.request_id === first.data.request_id && replayAfterRest.data.replayed === true, 'MCP task-1 still replays its original ids after REST used task-1');
+    const freshMcp = await call('botmancers_start_task', { coordinator: 'Tank', objective: 'Something else entirely', idempotency_key: 'task-2' });
+    check(!freshMcp.result.isError && freshMcp.data.replayed === false && freshMcp.data.request_id !== restPlain.json.requestId, 'MCP key task-2 is not occupied by any REST call');
+    await ctx.settle([freshMcp.data.request_id]);
     const otherService = await call('botmancers_start_task', { coordinator: 'Tank', objective: 'What is the build status?', idempotency_key: 'task-1' }, { token: OTHER_TOKEN });
     check(!otherService.result.isError && otherService.data.request_id !== first.data.request_id, 'keys are scoped per service principal');
     await ctx.settle([otherService.data.request_id]);
@@ -489,6 +514,38 @@ async function child() {
         `${status}: stable representation`);
     }
     check(typeof failedView.failure.message === 'string' && failedView.failure.message.length > 0, 'failed: a typed failure with a message');
+  }
+
+  section('Per-service rate limit on tool calls');
+  {
+    const BURST_TOKEN = 'bmt_burst_service_fixture_token_1111';
+    const CALM_TOKEN = 'bmt_calm_service_fixture_token_22222';
+    const tokens = process.env.BOTMANCERS_SERVICE_TOKENS;
+    process.env.BOTMANCERS_SERVICE_TOKENS = `${tokens}, burst-svc=${digest(BURST_TOKEN)}, calm-svc=${digest(CALM_TOKEN)}`;
+    process.env.BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE = '3';
+    await ctx.service.waitForAgentDispatchIdle();
+    const before = snapshot();
+    const admitted = [];
+    for (let i = 0; i < 3; i += 1) admitted.push(await call('botmancers_health', {}, { token: BURST_TOKEN }));
+    check(admitted.every(res => res.status === 200 && !res.result.isError), 'calls up to the limit are admitted');
+    const limited = await call('botmancers_start_task', { coordinator: 'Tank', objective: 'Flood', idempotency_key: 'flood-1' }, { token: BURST_TOKEN });
+    const limited2 = await call('botmancers_start_task', { coordinator: 'Tank', objective: 'Flood', idempotency_key: 'flood-2' }, { token: BURST_TOKEN });
+    const retryAfter = Number(limited.headers.get('retry-after'));
+    console.log(`  over limit -> ${limited.status} ${limited.text} Retry-After=${limited.headers.get('retry-after')}`);
+    check(limited.status === 429 && limited.json.error.code === 'rate_limited' && Number.isInteger(retryAfter) && retryAfter >= 1 && retryAfter <= 60,
+      'a tool call over the limit -> 429 rate_limited with Retry-After (1-60 s)');
+    check(limited2.status === 429 && limited2.text === limited.text, 'the refusal is stable');
+    const list = await rpc('tools/list', {}, { token: BURST_TOKEN });
+    check(list.status === 200, 'non-tool messages (tools/list) are not counted');
+    const calm = await call('botmancers_health', {}, { token: CALM_TOKEN });
+    check(calm.status === 200 && !calm.result.isError, 'the limit is per service principal');
+    await ctx.service.waitForAgentDispatchIdle();
+    check(same(before, snapshot()), 'rate-limited start_task calls persist nothing and launch nothing');
+    process.env.BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE = '0';
+    const invalidLimit = await call('botmancers_health', {}, { token: CALM_TOKEN });
+    check(invalidLimit.status === 200, 'an invalid limit setting falls back to the bounded default');
+    process.env.BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE = '1000';
+    process.env.BOTMANCERS_SERVICE_TOKENS = tokens;
   }
 
   section('AC6 no session binding, run id, credential, or deck leak');

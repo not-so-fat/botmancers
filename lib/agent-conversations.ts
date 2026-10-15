@@ -64,6 +64,10 @@ import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, run
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
+// NOT-491: the MCP bridge stores its callers' keys under this prefix; the
+// REST route refuses keys that start with it so the two cannot collide.
+export const MCP_IDEMPOTENCY_PREFIX = 'mcp:';
+
 export type AgentApiErrorCode =
   | 'authentication_unavailable'
   | 'unauthenticated'
