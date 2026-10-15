@@ -17,8 +17,11 @@
 // attention.
 //
 // Concurrency: a claim is refused while the global or per-target number of
-// leases is at its limit. A refused request stays queued with a durable
-// dispatch_deferred event, so a later drain or restart claims it.
+// leases is at its limit, or while an older claimable request whose target
+// has a free slot is still queued (FIFO admission, NOT-475), so a claim by
+// id cannot jump ahead of older waiting work. A refused request stays
+// queued with a durable dispatch_deferred event, so a later drain or
+// restart claims it.
 //
 // NOT-475: authority is checked where Attempts start, so no path (a direct
 // store write, a replayed dispatch, a race with a revocation) can launch
@@ -106,11 +109,13 @@ export interface DispatchLease {
 // NOT-473: 'not_eligible' is a retry still in its backoff, 'timed_out' a
 // request past its deadline (failed timed_out by the refused claim), and
 // 'exhausted' a request with no Attempt left in its bounded budget.
-export type ClaimRefusal = 'not_queued' | 'attention' | 'global_limit' | 'target_limit' | 'not_eligible' | 'timed_out' | 'exhausted' | 'not_authorized';
+// NOT-475: 'older_waiting' is capacity this request could use going to an
+// older claimable request first (FIFO admission); blockedBy names it.
+export type ClaimRefusal = 'not_queued' | 'attention' | 'global_limit' | 'target_limit' | 'older_waiting' | 'not_eligible' | 'timed_out' | 'exhausted' | 'not_authorized';
 
 export type ClaimResult =
   | { ok: true; lease: DispatchLease; request: WorkRequest }
-  | { ok: false; reason: ClaimRefusal };
+  | { ok: false; reason: ClaimRefusal; blockedBy?: string };
 
 export type RecoveryReason = 'lease_expired' | 'owner_exited' | 'unleased_running';
 
@@ -215,18 +220,39 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
     return null;
   }
 
-  function deferClaim(request: WorkRequest, reason: 'global_limit' | 'target_limit', active: { global: number; target: number }): ClaimResult {
+  // The oldest queued request created before this one that its own claim
+  // would admit now: eligible, before its deadline, no open attention, an
+  // allowed latest decision (and an accepted Wake), and a target with a
+  // free slot. Same order as claimNext.
+  const olderClaimable = db.prepare(`
+    SELECT w.id FROM work_requests w
+    WHERE w.state = 'queued' AND w.legacy_agent_request_id IS NULL AND w.id <> ?
+      AND (w.created_at < ? OR (w.created_at = ? AND w.rowid < (SELECT rowid FROM work_requests WHERE id = ?)))
+      AND (w.next_eligible_at IS NULL OR w.next_eligible_at <= ?)
+      AND (w.deadline_at IS NULL OR w.deadline_at > ?)
+      AND NOT EXISTS (SELECT 1 FROM dispatch_attention a WHERE a.request_id = w.id AND a.cleared_at IS NULL)
+      AND (SELECT d.decision FROM wake_safety_decisions d WHERE d.request_id = w.id ORDER BY d.sequence DESC LIMIT 1) = 'allowed'
+      AND (w.wake_event_id IS NULL OR EXISTS (SELECT 1 FROM wakes k WHERE k.id = w.wake_event_id AND k.status = 'accepted'))
+      AND (SELECT COUNT(*) FROM dispatch_leases l WHERE l.target_agent_id = w.target_agent_id) < ?
+    ORDER BY w.created_at ASC, w.rowid ASC
+    LIMIT 1
+  `);
+
+  function deferClaim(request: WorkRequest, reason: 'global_limit' | 'target_limit' | 'older_waiting', active: { global: number; target: number }, blockedBy?: string): ClaimResult {
     // One deferral event per wait, not one per refused poll.
     const last = lastEvent.get(request.id) as { type: string; data: string | null } | undefined;
     const lastReason = last?.type === 'dispatch_deferred' && last.data ? (JSON.parse(last.data) as { reason?: string }).reason : null;
     if (lastReason !== reason) {
       store.appendEvent(request.id, {
         type: 'dispatch_deferred',
-        data: { reason, active_global: active.global, active_target: active.target, max_global: config.maxGlobal, max_per_target: config.maxPerTarget },
+        data: {
+          reason, active_global: active.global, active_target: active.target, max_global: config.maxGlobal, max_per_target: config.maxPerTarget,
+          ...(blockedBy ? { waiting_behind: blockedBy } : {}),
+        },
         now: now(),
       });
     }
-    return { ok: false, reason };
+    return blockedBy ? { ok: false, reason, blockedBy } : { ok: false, reason };
   }
 
   function requireHeld(lease: DispatchLease): void {
@@ -285,6 +311,12 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
         const target = (countTarget.get(request.target_agent_id) as { n: number }).n;
         if (global >= config.maxGlobal) return deferClaim(request, 'global_limit', { global, target });
         if (target >= config.maxPerTarget) return deferClaim(request, 'target_limit', { global, target });
+        // FIFO admission (contract, Limits): a free slot goes to the oldest
+        // claimable request whose target has room, whichever path asked.
+        const older = olderClaimable.get(
+          requestId, request.created_at, request.created_at, requestId, at, at, config.maxPerTarget
+        ) as { id: string } | undefined;
+        if (older) return deferClaim(request, 'older_waiting', { global, target }, older.id);
         const lease: DispatchLease = { requestId, owner, token: randomUUID(), expiresAt: at + config.leaseMs };
         db.prepare(`
           INSERT INTO dispatch_leases (request_id, target_agent_id, owner, token, acquired_at, heartbeat_at, expires_at)
@@ -313,13 +345,13 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
       const ids = candidates ?? (db.prepare(`
         SELECT id FROM work_requests WHERE state = 'queued' AND legacy_agent_request_id IS NULL
           AND (next_eligible_at IS NULL OR next_eligible_at <= ?)
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at ASC, rowid ASC
       `).all(now()) as { id: string }[]).map(row => row.id);
       let refusal: ClaimRefusal = 'not_queued';
       for (const id of ids) {
         const claimed = dispatcher.claim(id);
         if (claimed.ok || claimed.reason === 'global_limit') return claimed;
-        if (claimed.reason === 'target_limit') refusal = 'target_limit';
+        if (claimed.reason === 'target_limit' || claimed.reason === 'older_waiting') refusal = claimed.reason;
       }
       return { ok: false, reason: refusal };
     },

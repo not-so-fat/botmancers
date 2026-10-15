@@ -107,6 +107,22 @@ async function runMain() {
   const latest = requestId => engine.latestSafetyDecision(requestId);
   const policyOf = request => JSON.parse(request.policy_snapshot);
   let keyCounter = 0;
+  // FIFO admission makes every older claimable request a blocker. Fixtures
+  // leave many owner turns queued that nothing here dispatches, so a
+  // controlled claim parks the unrelated ones (an eligibility far in the
+  // future) and restores them afterwards.
+  const PARKED_UNTIL = 8_000_000_000_000_000;
+  function parkQueued(keep) {
+    const ids = raw.prepare("SELECT id FROM work_requests WHERE state = 'queued' AND next_eligible_at IS NULL").all()
+      .map(row => row.id).filter(id => !keep.includes(id));
+    const set = raw.prepare("UPDATE work_requests SET next_eligible_at = ? WHERE id = ? AND state = 'queued'");
+    for (const id of ids) set.run(PARKED_UNTIL, id);
+    return () => { for (const id of ids) set.run(null, id); };
+  }
+  function claimAlone(worker, id) {
+    const restore = parkQueued([id]);
+    try { return worker.claim(id); } finally { restore(); }
+  }
 
   // A direct owner message through the real UI intake (human_owner).
   function ownerMessage(target, content) {
@@ -447,7 +463,7 @@ async function runMain() {
     try { raw.prepare('UPDATE wake_grants SET revoked_at = NULL WHERE id = ?').run(editGrant.id); } catch { regrant = true; }
     assert(rewrite && regrant, 'decisions are append-only and a revoked grant cannot be revived');
     const worker = dispatcherLib.createDispatcher(raw, engine, { owner: 'revocation-worker' });
-    const claim = worker.claim(grantedImpl.id);
+    const claim = claimAlone(worker, grantedImpl.id);
     assert(claim.ok, 'accepted work keeps its frozen decision and still launches after revocation');
     worker.release(claim.lease, 'test');
     engine.transitionWorkRequest(grantedImpl.id, { from: 'running', to: 'completed', result: {} });
@@ -645,6 +661,7 @@ async function runMain() {
     const queued = pool.map(target => ownerMessage(target, `work for ${target.name}`).requests[0]);
     const sameTarget = ownerMessage(pool[0], 'second job for P1').requests[0];
     for (const request of [...queued, sameTarget]) scope.add(request.id);
+    const restoreParked = parkQueued([...scope]);
     const claimAll = () => worker.claimNext(raw.prepare(
       `SELECT id FROM work_requests WHERE state = 'queued' AND id IN (SELECT value FROM json_each(?)) ORDER BY created_at ASC, rowid ASC`
     ).all(JSON.stringify([...scope])).map(row => row.id));
@@ -688,17 +705,61 @@ async function runMain() {
 
     // Global fixture: four running elsewhere.
     const others = ['G1', 'G2', 'G3', 'G4'].map(name => agent(name, 'codex')).map(t => ownerMessage(t, 'fill').requests[0]);
-    const globalLeases = others.map(r => worker.claim(r.id)).filter(c => c.ok).map(c => c.lease);
+    const globalLeases = others.map(r => claimAlone(worker, r.id)).filter(c => c.ok).map(c => c.lease);
     const before2 = viewIds(tankConv.id);
     const globalWake = reply(capTurn, tank, block(fixture('global_capacity_queues_not_denies').action.envelope)).routed[0];
     const globalClaim = worker.claim(globalWake.request.id);
     assert(globalLeases.length === 4 && !globalClaim.ok && globalClaim.reason === 'global_limit', 'global limit defers the Wake-created request');
     expectCase('global_capacity_queues_not_denies', { wake: globalWake.wake, request: engine.getWorkRequest(globalWake.request.id), views: newViews(tankConv.id, before2, { requestId: globalWake.request.id }) });
     globalLeases.forEach(lease => worker.release(lease, 'completed'));
-    const finally_ = worker.claim(globalWake.request.id);
+    const finally_ = claimAlone(worker, globalWake.request.id);
     assert(finally_.ok, 'once capacity frees, the queued Wake runs');
     worker.release(finally_.lease, 'completed');
     clock += 1;
+    restoreParked();
+  }
+
+  // =====================================================================
+  console.log('\nConcurrency: FIFO admission across direct claims');
+  {
+    raw.prepare('DELETE FROM dispatch_leases').run();
+    const restoreParked = parkQueued([]);
+    const one = dispatcherLib.createDispatcher(raw, engine, { owner: 'fifo-worker', config: { maxGlobal: 1, maxPerTarget: 1 } });
+    const [f1, f2, f3] = ['F1', 'F2', 'F3'].map(name => agent(name, 'codex'));
+    const first = ownerMessage(f1, 'first').requests[0];
+    const held = one.claim(first.id);
+    const older = ownerMessage(f2, 'older waiting').requests[0];
+    const olderRefused = one.claim(older.id);
+    assert(held.ok && !olderRefused.ok && olderRefused.reason === 'global_limit', 'the global slot is taken; the older request waits');
+    one.release(held.lease, 'completed');
+    const younger = ownerMessage(f3, 'younger, on a free target').requests[0];
+    const jump = one.claim(younger.id);
+    const deferral = engine.listEvents(younger.id).filter(e => e.type === 'dispatch_deferred').map(e => JSON.parse(e.data)).pop();
+    assert(!jump.ok && jump.reason === 'older_waiting' && jump.blockedBy === older.id && engine.getWorkRequest(younger.id).state === 'queued'
+      && attempts(younger.id) === 0 && deferral && deferral.reason === 'older_waiting' && deferral.waiting_behind === older.id,
+    'a direct claim of a newer request cannot take the free slot from older waiting work (durable older_waiting deferral, no Attempt)');
+    const next = one.claimNext([younger.id, older.id]);
+    assert(next.ok && next.lease.requestId === older.id, 'the freed slot goes to the oldest waiting request');
+    one.release(next.lease, 'completed');
+    const later = one.claim(younger.id);
+    assert(later.ok && engine.getWorkRequest(younger.id).attempt_count === 1, 'the younger request runs next, not lost or failed');
+    one.release(later.lease, 'completed');
+
+    // A busy target does not block other targets.
+    const wide = dispatcherLib.createDispatcher(raw, engine, { owner: 'fifo-wide', config: { maxGlobal: 4, maxPerTarget: 1 } });
+    const running = ownerMessage(f1, 'running on F1').requests[0];
+    const runningLease = wide.claim(running.id);
+    const behindBusy = ownerMessage(f1, 'second for F1').requests[0];
+    const busyRefused = wide.claim(behindBusy.id);
+    const otherTarget = ownerMessage(f2, 'F2 work').requests[0];
+    const otherClaim = wide.claim(otherTarget.id);
+    assert(runningLease.ok && !busyRefused.ok && busyRefused.reason === 'target_limit' && otherClaim.ok,
+      'an older request whose target is busy does not hold back a request on a free target');
+    for (const lease of [runningLease.lease, otherClaim.lease]) wide.release(lease, 'completed');
+    const resumed = wide.claim(behindBusy.id);
+    assert(resumed.ok, 'the per-target waiter runs once its target frees');
+    wide.release(resumed.lease, 'completed');
+    restoreParked();
   }
 
   // =====================================================================

@@ -405,7 +405,9 @@ class DeferCommit extends Error {
 // capacity stays queued and is drained when a lease is released.
 async function runDispatch(requestId: string): Promise<void> {
   const claimed = await runTurn(requestId);
-  afterRequest(requestId, claimed);
+  // A request that left the queue without a claim (failed before launch)
+  // may have been holding back younger deferred work: drain it too.
+  afterRequest(requestId, claimed || engine.getWorkRequest(requestId)?.state !== 'queued');
 }
 
 function afterRequest(requestId: string, released: boolean): void {
@@ -493,10 +495,14 @@ async function runTurn(requestId: string): Promise<boolean> {
   // (its own timeout or the request deadline, whichever is first) is
   // recorded in the launch snapshot and passed to the adapter.
   const controller = new AbortController();
+  let waitingBehind: string | undefined;
   try {
     started = engine.transaction(() => {
       const claim = dispatcher.claim(requestId, { expectedVersion: request.version, data: { agent } });
-      if (!claim.ok) return null;
+      if (!claim.ok) {
+        waitingBehind = claim.blockedBy;
+        return null;
+      }
       if (prepared) {
         const startedAt = dispatcher.now();
         const deadlineAt = dispatcher.control.attemptDeadlineFor(claim.request, startedAt);
@@ -519,7 +525,13 @@ async function runTurn(requestId: string): Promise<boolean> {
     if (error instanceof EngineStoreError && error.code === 'stale_state') return false;
     throw error;
   }
-  if (!started) return false;
+  if (!started) {
+    // NOT-475: the slot belongs to older queued work; make sure it is
+    // dispatched (joined when already running). This request stays
+    // deferred and drains when a lease is released.
+    if (waitingBehind) void startAgentDispatch(waitingBehind);
+    return false;
+  }
   const { lease } = started;
   if (!prepared || typeof started.attempt === 'string') {
     const failure = unprepared ?? new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');

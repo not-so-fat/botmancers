@@ -348,10 +348,16 @@ async function main() {
   console.log('\nDispatching explicit Wakes launches their mapped profile');
   for (const [label, routed, , profile] of WAKES.slice(0, 2)) {
     launches = [];
+    // FIFO admission (NOT-475) would run the other routed Wakes first; park
+    // them (eligible only in the far future) while this one dispatches.
+    const parked = raw.prepare("SELECT id FROM work_requests WHERE state = 'queued' AND next_eligible_at IS NULL AND id <> ?").all(routed.request.id).map(row => row.id);
+    const park = raw.prepare("UPDATE work_requests SET next_eligible_at = ? WHERE id = ? AND state = 'queued'");
+    for (const id of parked) park.run(8_000_000_000_000_000, id);
     await conversationsApi.startAgentDispatch(routed.request.id);
     // NOT-472: the result then returns to the waking Agent as one
     // read-only continuation turn; it launches after the request's own.
     await conversationsApi.waitForAgentDispatchIdle();
+    for (const id of parked) park.run(null, id);
     const attempts = engine.listAttempts(routed.request.id);
     assert(launches.length >= 1 && flag(launches[0], '--tools') === profile && attempts.length === 1 && attempts[0].tool_profile === profile,
       `${label}: one Attempt launched with --tools ${profile}`);

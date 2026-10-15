@@ -121,26 +121,33 @@ async function raceWorker() {
   }
   const won = [];
   const errors = [];
-  for (const id of order) {
-    try {
-      if (process.env.RACE_PHASE === 'claim') {
-        const claimed = engine.transaction(() => {
-          const claim = worker.claim(id);
-          if (!claim.ok) return false;
-          const attempt = engine.createAttempt(id, { kind: 'launch', adapter: 'race', toolProfile: 'readonly', launchSnapshot: { owner } });
-          worker.recordLaunchIntent(claim.lease, attempt.id, 'race', null);
-          return true;
-        });
-        if (claimed) won.push(id);
-        // Yield so the workers interleave instead of one sweeping all.
-        await sleep(1);
-      } else {
-        const item = worker.recoverable().find(entry => entry.requestId === id);
-        if (item && worker.takeOver(item)) won.push(id);
-        await sleep(1);
+  // FIFO admission refuses a younger claim while an older request is still
+  // queued, so claim workers sweep their shuffled order until none is left.
+  const passes = process.env.RACE_PHASE === 'claim' ? 400 : 1;
+  for (let pass = 0; pass < passes; pass++) {
+    if (pass > 0 && !ids.some(id => engine.getWorkRequest(id).state === 'queued')) break;
+    for (const id of order) {
+      if (process.env.RACE_PHASE === 'claim' && engine.getWorkRequest(id).state !== 'queued') continue;
+      try {
+        if (process.env.RACE_PHASE === 'claim') {
+          const claimed = engine.transaction(() => {
+            const claim = worker.claim(id);
+            if (!claim.ok) return false;
+            const attempt = engine.createAttempt(id, { kind: 'launch', adapter: 'race', toolProfile: 'readonly', launchSnapshot: { owner } });
+            worker.recordLaunchIntent(claim.lease, attempt.id, 'race', null);
+            return true;
+          });
+          if (claimed) won.push(id);
+          // Yield so the workers interleave instead of one sweeping all.
+          await sleep(1);
+        } else {
+          const item = worker.recoverable().find(entry => entry.requestId === id);
+          if (item && worker.takeOver(item)) won.push(id);
+          await sleep(1);
+        }
+      } catch (error) {
+        errors.push(String(error && error.message));
       }
-    } catch (error) {
-      errors.push(String(error && error.message));
     }
   }
   process.stdout.write(JSON.stringify({ owner, won, errors }));
