@@ -1,0 +1,70 @@
+(8 empty starting/running event polls omitted)
+launch s0c-baseline: work request 3868a108-40f9-41fa-a00c-275e2ada1ed7 (implementation, edit) crash-at=none
+→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-0a2947ec-3c42-4cab-bc48-e3bc147bb425]
+    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:174e9ae04c4a len:1308>","tools":"edit","prepareFinalization":true}
+  ← 202 {"success":true,"data":{"runId":"run-20261014T152325-371e48","state":"starting"}}
+→ GET /api/agent-runs/run-20261014T152325-371e48
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152325-371e48","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"starting","sessionId":null,"startedAt":"2026-10-14T15:23:25.152Z","lastEventAt":null,"finalization":{"baselineRef":"bl_363a580474409676601de8e1","baselineDigest":"3d8cad9083f691f83e26363b4d222999ed30c603ba8121de370fe179d4ef7533","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152325-371e48/events?after=0
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152325-371e48","state":"running","events":[{"seq":1,"ts":"2026-10-14T15:23:31.035Z","type":"text","text":"I’ll create the requested file with the exact line.\n"}],"nextCursor":"1"}}
+→ GET /api/agent-runs/run-20261014T152325-371e48/events?after=1
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152325-371e48","state":"running","events":[{"seq":2,"ts":"2026-10-14T15:23:32.299Z","type":"tool","name":"command:/bin/zsh -lc \"printf '%s\\\\n' 's0c-baseline ok' > poc-s0c-baseline.md\""}],"nextCursor":"2"}}
+→ GET /api/agent-runs/run-20261014T152325-371e48/events?after=2
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152325-371e48","state":"ended","events":[{"seq":3,"ts":"2026-10-14T15:23:36.046Z","type":"text","text":"DONE-s0c-baseline"},{"seq":4,"ts":"2026-10-14T15:23:36.158Z","type":"result","subtype":"success","result":"DONE-s0c-baseline","sessionId":"<S:01a13b02…f33dcc>"},{"seq":5,"ts":"2026-10-14T15:23:36.977Z","type":"end","sessionId":"<S:01a13b02…f33dcc>"}],"nextCursor":"5"}}
+→ GET /api/agent-runs/run-20261014T152325-371e48/events?after=5
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152325-371e48","state":"ended","events":[],"nextCursor":"5"}}
+→ GET /api/agent-runs/run-20261014T152325-371e48
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152325-371e48","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"ended","sessionId":"<S:01a13b02…f33dcc>","startedAt":"2026-10-14T15:23:25.152Z","lastEventAt":"2026-10-14T15:23:36.977Z","finalization":{"baselineRef":"bl_363a580474409676601de8e1","baselineDigest":"3d8cad9083f691f83e26363b4d222999ed30c603ba8121de370fe179d4ef7533","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152325-371e48/changes
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152325-371e48","baselineRef":"bl_363a580474409676601de8e1","baselineDigest":"3d8cad9083f691f83e26363b4d222999ed30c603ba8121de370fe179d4ef7533","baseCommit":"dba6624c41572c3a55f02f01d80bc2e377e3b923","files":[{"path":"poc-s0c-baseline.md","sha256":"77a1f5f6e415781a539061e69a19f8c0add3d38e2bce93ef45d4629ccb82b43c","mode":"100644"}],"manifestDigest":"1a7d0a520af570419d14aa9c0f1f1884c368b1e5b573c6685e677466120fa712"}}
+[after launch] Botmancers durable state:
+{
+  "request": {
+    "id": "3868a108-40f9-41fa-a00c-275e2ada1ed7",
+    "kind": "implementation",
+    "state": "completed",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "0a2947ec-3c42-4cab-bc48-e3bc147bb425",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152325-371e48",
+      "external_session_id": "<S:01a13b02…f33dcc>",
+      "outcome": "succeeded",
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "f8558a22be3b"
+    }
+  ],
+  "bindings": [
+    {
+      "id": "908cddc9-1f7d-4322-a22e-631a1ddc0a10",
+      "agent_id": "48127f5e-b198-4056-80de-2e62846a6d6f",
+      "adapter": "codex",
+      "external_session_id": "<S:01a13b02…f33dcc>",
+      "source_attempt_id": "0a2947ec-3c42-4cab-bc48-e3bc147bb425",
+      "request_id": "3868a108-40f9-41fa-a00c-275e2ada1ed7"
+    }
+  ],
+  "baselines": [
+    {
+      "attempt_id": "0a2947ec-3c42-4cab-bc48-e3bc147bb425",
+      "baseline_ref": "bl_363a580474409676601de8e1"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress",
+    "attempt_finished",
+    "candidate_manifest_recorded",
+    "session_bound",
+    "state_changed"
+  ]
+}

@@ -329,11 +329,19 @@ requirements:
 - the web UI and `/api/v0` use different queue and lifecycle models;
 - implementation and revision launches currently inherit read-only tools;
 - delegation-chain continuity is held in process memory;
-- cancellation, timeout, recovery, grants, and complete provenance are incomplete;
+- grants and complete provenance are incomplete;
 - UI routes trust any caller as the owner and the server listens on every
   interface;
 - Wake depth counts continuations, limits use placeholder values, and canonical
   dispatch has no global or per-target concurrency bound.
+
+Since NOT-473, Work Requests carry a durable cancellation intent, an absolute
+deadline, and a bounded retry policy fixed at intake (`lib/request-policy.ts`,
+`lib/work-request-control.ts`). Cancel and retry are idempotent transactional
+commands; a request past its deadline is failed with reason `timed_out` and never
+launched; retryable failures retry within the policy's attempt budget with
+deterministic backoff. Where a runtime cannot stop an external run, the Attempt is
+abandoned and recorded as such, and any later result is kept as evidence only.
 
 Since NOT-472, canonical requests no longer reach the composite review path:
 Wake-created requests return to their coordinator through one read-only

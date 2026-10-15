@@ -1,0 +1,68 @@
+restart s1-start-response: new Botmancers process pid 65456; request bbd99367-c7bf-49c0-ac4b-b76598640f8e
+[on restart, before recovery] Botmancers durable state:
+{
+  "request": {
+    "id": "bbd99367-c7bf-49c0-ac4b-b76598640f8e",
+    "kind": "implementation",
+    "state": "running",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "3d72377d-75ee-4eca-8220-dc1af3ab3637",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": null,
+      "external_session_id": null,
+      "outcome": null,
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "aae295e7d1ce"
+    }
+  ],
+  "bindings": [],
+  "baselines": [],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started"
+  ]
+}
+[after recoverCoordinatorLoops()] Botmancers durable state:
+{
+  "request": {
+    "id": "bbd99367-c7bf-49c0-ac4b-b76598640f8e",
+    "kind": "implementation",
+    "state": "running",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "3d72377d-75ee-4eca-8220-dc1af3ab3637",
+      "kind": "launch",
+      "adapter": "codex",
+      "external_run_id": null,
+      "external_session_id": null,
+      "outcome": null,
+      "error_category": null,
+      "resumed_session_binding_id": null,
+      "transport": "agent-deck-api",
+      "prompt_hash": "aae295e7d1ce"
+    }
+  ],
+  "bindings": [],
+  "baselines": [],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started"
+  ]
+}
+  PASS: recoverCoordinatorLoops made no Agent Deck call (0)
+  PASS: recoverCoordinatorLoops launched no run
+  PASS: recoverCoordinatorLoops left the open Attempt untouched (no reconciler exists today)
+  persisted Attempt has NO external run id: status/events cannot be read without a run id.
+  decision: reattach:idempotent_restart_with_same_key

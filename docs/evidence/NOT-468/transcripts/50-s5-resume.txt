@@ -1,0 +1,81 @@
+(6 empty starting/running event polls omitted)
+resume s4-terminal -> s5-resume: Botmancers pid 66920; binding 9af43bee-0047-4c33-8106-9b66a8425484 session <S:01a13b03…325161>
+  PASS: the reconciled implementation has a persisted Session Binding
+→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-785d6ef1-4656-449d-848f-eb7a4a82b47c]
+    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:d410bb3b0f87 len:2786>","tools":"edit","resumeSessionId":"<S:01a13b03…325161>","prepareFinalization":true}
+  ← 202 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","state":"running"}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"running","sessionId":"<S:01a13b03…325161>","startedAt":"2026-10-14T15:24:41.637Z","lastEventAt":"2026-10-14T15:24:41.641Z","finalization":{"baselineRef":"bl_5f27fab50df1ddcfe6b8ab74","baselineDigest":"8d46c4480c83e2d534490e2fbf74506dfbe860bf645f8876ecbc8a88a10d27ee","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e/events
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","state":"running","events":[{"seq":1,"ts":"2026-10-14T15:24:41.641Z","type":"notice","message":"Resuming codex thread <S:01a13b03…325161> started by run run-20261014T152424-74465e: the thread keeps its original sandbox (--tools edit, workspace-write).","sessionId":"<S:01a13b03…325161>"}],"nextCursor":"1"}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e/events?after=1
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","state":"running","events":[{"seq":2,"ts":"2026-10-14T15:24:45.898Z","type":"text","text":"I’ll create `poc-s5-resume.md` with the requested line.\n"}],"nextCursor":"2"}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e/events?after=2
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","state":"running","events":[{"seq":3,"ts":"2026-10-14T15:24:47.119Z","type":"tool","name":"command:/bin/zsh -lc \"printf '%s\\\\n' 's5-resume ok' > poc-s5-resume.md\""}],"nextCursor":"3"}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e/events?after=3
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","state":"running","events":[{"seq":4,"ts":"2026-10-14T15:24:48.775Z","type":"text","text":"poc-s4-terminal.md"},{"seq":5,"ts":"2026-10-14T15:24:48.821Z","type":"result","subtype":"success","result":"poc-s4-terminal.md","sessionId":"<S:01a13b03…325161>"}],"nextCursor":"5"}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e/events?after=5
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","state":"ended","events":[{"seq":6,"ts":"2026-10-14T15:24:49.563Z","type":"end","sessionId":"<S:01a13b03…325161>"}],"nextCursor":"6"}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e/events?after=6
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","state":"ended","events":[],"nextCursor":"6"}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"ended","sessionId":"<S:01a13b03…325161>","startedAt":"2026-10-14T15:24:41.637Z","lastEventAt":"2026-10-14T15:24:49.563Z","finalization":{"baselineRef":"bl_5f27fab50df1ddcfe6b8ab74","baselineDigest":"8d46c4480c83e2d534490e2fbf74506dfbe860bf645f8876ecbc8a88a10d27ee","state":"prepared","commit":null}}}
+→ GET /api/agent-runs/run-20261014T152441-e8430e/changes
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","baselineRef":"bl_5f27fab50df1ddcfe6b8ab74","baselineDigest":"8d46c4480c83e2d534490e2fbf74506dfbe860bf645f8876ecbc8a88a10d27ee","baseCommit":"dba6624c41572c3a55f02f01d80bc2e377e3b923","files":[{"path":"poc-s5-resume.md","sha256":"146ba44fb3cc9faab803826fc371c84548237eed7028e3475b6eb642cc7445a7","mode":"100644"}],"manifestDigest":"96eeeef988b596dca9500791bdfc1183a966cfeab9d9d96111e13278911727d8"}}
+[after resume] Botmancers durable state:
+{
+  "request": {
+    "id": "ec0b6512-37fe-4ebc-9516-596e86096513",
+    "kind": "revision",
+    "state": "completed",
+    "error_code": null
+  },
+  "attempts": [
+    {
+      "id": "785d6ef1-4656-449d-848f-eb7a4a82b47c",
+      "kind": "resume",
+      "adapter": "codex",
+      "external_run_id": "run-20261014T152441-e8430e",
+      "external_session_id": "<S:01a13b03…325161>",
+      "outcome": "succeeded",
+      "error_category": null,
+      "resumed_session_binding_id": "9af43bee-0047-4c33-8106-9b66a8425484",
+      "transport": "agent-deck-api",
+      "prompt_hash": "5cf2e491670b"
+    }
+  ],
+  "bindings": [
+    {
+      "id": "aeb003b5-e534-490a-9f6a-bfb68ba93b02",
+      "agent_id": "48127f5e-b198-4056-80de-2e62846a6d6f",
+      "adapter": "codex",
+      "external_session_id": "<S:01a13b03…325161>",
+      "source_attempt_id": "785d6ef1-4656-449d-848f-eb7a4a82b47c",
+      "request_id": "ec0b6512-37fe-4ebc-9516-596e86096513"
+    }
+  ],
+  "baselines": [
+    {
+      "attempt_id": "785d6ef1-4656-449d-848f-eb7a4a82b47c",
+      "baseline_ref": "bl_5f27fab50df1ddcfe6b8ab74"
+    }
+  ],
+  "events": [
+    "accepted",
+    "policy_selected",
+    "state_changed",
+    "attempt_started",
+    "runtime_started",
+    "runtime_progress",
+    "attempt_finished",
+    "candidate_manifest_recorded",
+    "session_bound",
+    "state_changed"
+  ]
+}
+  PASS: the Attempt is a resume of the persisted binding
+  PASS: the resumed run reports the SAME opaque session id as the binding
+→ GET /api/agent-runs/run-20261014T152441-e8430e
+  ← 200 {"success":true,"data":{"runId":"run-20261014T152441-e8430e","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"ended","sessionId":"<S:01a13b03…325161>","startedAt":"2026-10-14T15:24:41.637Z","lastEventAt":"2026-10-14T15:24:49.563Z","finalization":{"baselineRef":"bl_5f27fab50df1ddcfe6b8ab74","baselineDigest":"8d46c4480c83e2d534490e2fbf74506dfbe860bf645f8876ecbc8a88a10d27ee","state":"prepared","commit":null}}}
+  PASS: GET status sessionId equals the binding session id byte-for-byte
+  PASS: exactly one start POST (the resume) was sent

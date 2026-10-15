@@ -1,0 +1,7 @@
+/tmp/not468/bin/scenario-cancel.sh: line 7: 69496 Killed: 9               $P launch $SC --crash-at=running --task="$TASK" > $L/90-c1-launch.txt 2>&1
+launch exit 137
+restart exit 0
+host: codex processes before cancel: 1
+cancel exit 0
+host: codex processes after cancel: 0
+host: poc-s9-cancel-after-restart.md not created

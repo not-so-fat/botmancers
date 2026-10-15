@@ -47,7 +47,9 @@
     "test:wake-router": "node test-wake-router.js",
     "test:coordinator-loop": "node test-coordinator-loop.js",
     "test:conversation-projection": "node test-conversation-projection.js",
-    "test:execution-policy": "node test-execution-policy.js"
+    "test:execution-policy": "node test-execution-policy.js",
+    "test:dispatcher": "node test-dispatcher.js",
+    "test:request-control": "node test-request-control.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

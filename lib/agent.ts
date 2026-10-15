@@ -59,7 +59,7 @@ import {
   parseDeckRuntime,
   type DeckRuntime,
 } from './agent-deck-run';
-import { recoverCoordinatorLoops, startAgentDispatch } from './agent-conversations';
+import { recoverCoordinatorLoops, startAgentDispatch, sweepDispatch } from './agent-conversations';
 import { selectExecutionPolicy } from './execution-policy';
 import {
   agentTransport,
@@ -2300,5 +2300,7 @@ if (AUTO_PROCESS) {
     bots.touchSeen();
     resumeLoopTimers();
     processQueue().catch(console.error);
+    // NOT-469: reconcile expired dispatch leases and drain deferred work.
+    sweepDispatch().catch(console.error);
   }, 2000);
 }

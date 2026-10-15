@@ -646,6 +646,60 @@ function dialogSection() {
   assert(wrap([], 'Name', false) === null, 'no focusable controls: no wrap');
 }
 
+function runtimeFailureSection() {
+  log('\n(8) NOT-449 runtime setup failures render as status, not bot speech');
+  const failureLib = jiti('./lib/runtime-failure.ts');
+  const preview = jiti('./lib/message-preview.ts');
+  const Notice = jiti('./app/components/RuntimeFailureNotice.tsx').default;
+  const raw = agent.HERMES_MISSING_CONFIG_MESSAGE;
+
+  const failure = failureLib.classifyRuntimeFailure(raw);
+  assert(!!failure && failure.kind === 'hermes-config-missing' && failure.severity === 'error', 'classify: the stored missing-Hermes-key sentinel is a known error');
+  assert(!!failure && failure.detail === raw, 'classify: detail is the exact stored diagnostic');
+  assert(!!failure && failure.title === 'Hermes needs configuration' && !/[[\]]|HERMES_API_SERVER_KEY/.test(failure.title + failure.recovery), 'classify: primary copy is short and free of the bracketed sentinel and env-var name');
+  const turn = failureLib.classifyRuntimeFailure(agent.hermesTurnFailureMessage('Chief', new Error('connect ECONNREFUSED 127.0.0.1:8642')));
+  assert(!!turn && turn.kind === 'hermes-turn-failed' && turn.detail.includes('ECONNREFUSED'), 'classify: a Hermes turn failure is a known error with its detail kept');
+  const untouched = [
+    'plain reply',
+    `Here is the error you saw: ${raw}`,
+    agent.deckNeedsSelectionMessage('Relay', null),
+    '[Deck run] runId=run-1 sessionId=ses-1',
+    '[Some unknown failure: boom]',
+  ];
+  assert(untouched.every(text => failureLib.classifyRuntimeFailure(text) === null), 'classify: bot prose, quoted sentinels, Agent Deck events, and unknown failures are not classified');
+
+  const line = preview.latestLine(raw);
+  log(`  roster preview: ${JSON.stringify(line)}`);
+  assert(line === 'Hermes needs configuration', 'roster: latestLine shows the short stable state');
+  assert(!line.includes('[') && !line.includes(']') && !line.includes('HERMES_API_SERVER_KEY'), 'roster: no square-bracketed sentinel or env-var diagnostic');
+  assert(preview.latestLine('  hello\n  there ') === 'hello there', 'roster: ordinary bot text previews as before');
+  assert(preview.latestLine('[Deck run] runId=run-1') === 'Agent Deck run runId=run-1', 'roster: Agent Deck events preview as before');
+  assert(preview.latestLine(agent.deckNeedsSelectionMessage('Relay', null)).startsWith('Agent Deck needs a deck'), 'roster: the deck-needs-selection notice keeps its Agent Deck event preview');
+
+  const chief = bots.create({ name: 'Chief', title: '', description: '', deck_id: 'planner' });
+  const chiefConv = conversations.getByBotId(chief.id);
+  messages.create(chiefConv.id, 'user', 'hello chief');
+  messages.create(chiefConv.id, 'bot', raw, chief.id);
+  const stored = messages.getByConversation(chiefConv.id);
+  assert(stored.length === 2 && stored[0].content === 'hello chief' && stored[1].sender_type === 'bot' && stored[1].content === raw, 'history: the stored failure keeps its exact text, sender, and order');
+  assert(messages.latestFromBot(chief.id) === raw && preview.latestLine(messages.latestFromBot(chief.id)) === 'Hermes needs configuration', 'history: the roster reads the raw stored row and presents only the status');
+
+  const html = render(Notice, { failure });
+  log(`  notice: ${html.slice(0, 160)}…`);
+  assert(has(html, 'role="status"') && /aria-labelledby="([^"]+)"[^]*<p class="runtime-failure-title" id="\1">/.test(html) && has(html, 'data-runtime-failure="hermes-config-missing"'), 'thread: the notice is a status named by its severity + title');
+  assert(has(html, '>Error<') && has(html, 'Hermes needs configuration') && has(html, escapeHtml(failure.recovery)), 'thread: severity, title, and recovery copy are visible');
+  assert(/<details[^>]*><summary>Details<\/summary>/.test(html) && has(html, escapeHtml(raw)) && has(html, '>Copy details</button>'), 'thread: the exact diagnostic sits behind a labelled Details disclosure with Copy');
+  assert(!has(html, 'msg-bot') && !has(html, 'msg-name') && !has(html, 'Chief'), 'thread: no bot card, speaker name, or agent attribution');
+
+  const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
+  const loop = page.slice(page.indexOf('{messages.map((msg) => {'));
+  const classifyAt = loop.indexOf('classifyRuntimeFailure(');
+  assert(classifyAt > 0 && classifyAt < loop.indexOf("'msg-bot'") && /if \(failure\) \{\s*return \(\s*<div key=\{msg\.id\} className="msg-status">\s*<RuntimeFailureNotice failure=\{failure\} \/>/.test(loop),
+    'thread: page classifies bot messages before normal rendering and returns the status callout instead of a bot card');
+  assert(/mine \? null : classifyRuntimeFailure/.test(loop), 'thread: user messages are never classified');
+  assert(/import \{ latestLine \} from '@\/lib\/message-preview'/.test(page) && !/function latestLine/.test(page), 'roster: page uses the shared latestLine');
+}
+
 async function main() {
   log('NOT-445/NOT-456/NOT-457 agent + Agent Deck UI test (real handlers, isolated DB, mocked Agent Deck server, react-dom/server)');
   log(`DB: ${DB_PATH}`);
@@ -656,6 +710,7 @@ async function main() {
   await traceSection();
   await hierarchySection();
   dialogSection();
+  runtimeFailureSection();
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
 }
