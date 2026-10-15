@@ -82,6 +82,7 @@ async function runMain() {
   const api = jiti('./lib/agent-api.ts');
   const dispatcherLib = jiti('./lib/dispatcher.ts');
   const boundary = jiti('./lib/owner-boundary.ts');
+  const wakeNotice = jiti('./lib/wake-notice.ts');
   const raw = db.default;
   const { bots, conversations, messages, engine, projector, UI_OWNER_PRINCIPAL } = db;
 
@@ -151,6 +152,8 @@ async function runMain() {
     engine.transitionWorkRequest(request.id, { from: 'running', to: 'completed', result: { reply_message_id: message.id } });
     return message;
   }
+  // The thread's Wake notices (app/page.tsx) for one Wake, from the real read model.
+  const noticesFor = (conversationId, wakeId) => wakeNotice.wakeNotices(projector.listConversationEvents(conversationId)).filter(n => n.wakeId === wakeId);
   const viewIds = conversationId => new Set(projector.listConversationEvents(conversationId).map(view => view.eventId));
   function newViews(conversationId, before, subject) {
     return projector.listConversationEvents(conversationId).filter(view => !before.has(view.eventId)
@@ -326,6 +329,9 @@ async function runMain() {
     pendingWake = routed[0].wake;
     const request = routed[0].request;
     expectCase('coordinator_edit_wake_without_grant_waits_for_owner', { wake: pendingWake, request, views: newViews(tankConv.id, before, { wakeId: pendingWake.id, requestId: request.id }) });
+    const blockedNotices = noticesFor(tankConv.id, pendingWake.id);
+    assert(blockedNotices.length === 1 && blockedNotices[0].tone === 'blocked' && blockedNotices[0].actionable
+      && /needs your approval for edit work/.test(blockedNotices[0].text), 'thread: the blocked Wake shows with Allow / Deny');
     const blockedDecision = latest(request.id);
     assert(blockedDecision.principal_type === 'agent_principal' && blockedDecision.principal_id === tank.id && blockedDecision.decision === 'blocked'
       && blockedDecision.reason_code === 'grant_required' && blockedDecision.grant_id === null, 'blocked decision names the Agent caller and no grant');
@@ -381,6 +387,8 @@ async function runMain() {
     assert(allowed.decision === 'allowed' && allowed.grant_rule === 'edit_grant' && allowed.grant_id === editGrant.id && allowed.principal_type === 'agent_principal'
       && allowed.principal_id === tank.id && allowed.target_agent_id === dev.id, 'Agent caller: principal, target, matched grant persisted on acceptance');
     assert(decisions(request.id).map(d => d.decision).join(',') === 'blocked,allowed', 'the blocked evaluation is kept beside the allowed one');
+    const allowedNotices = noticesFor(tankConv.id, pendingWake.id);
+    assert(allowedNotices.map(n => `${n.tone}:${n.actionable}`).join(',') === 'blocked:false,allowed:false', 'thread: after Allow the block keeps no actions and the Wake shows allowed');
     const replayed = router.decideWakeGrant({ wakeId: pendingWake.id, decision: 'allow', caller: OWNER });
     assert(!replayed.runnable && safety.listWakeGrants().length === 1 && decisions(request.id).length === 2, 'repeating Allow changes nothing');
     let late = null;
@@ -418,6 +426,7 @@ async function runMain() {
       wake: router.getWake(routed[0].wake.id), request: engine.getWorkRequest(request.id),
       views: newViews(helperConv.id, before, { requestId: request.id }), auditBefore, continuation: resultContinuation,
     });
+    assert(noticesFor(helperConv.id, routed[0].wake.id).map(n => `${n.tone}:${n.actionable}`).join(',') === 'blocked:false,denied:false', 'thread: after Deny the block keeps no actions and the Wake shows denied');
     assert(queuedNext.includes(resultContinuation.id) && /grant_denied/.test(resultContinuation.intent), 'the coordinator is told, in one continuation, that no work ran');
     assert(latest(request.id).decision === 'denied' && latest(request.id).principal_type === 'human_owner', 'the denial is a recorded owner decision');
     assert(loop.continueAfterTerminal(request.id).length === 0 && !router.decideWakeGrant({ wakeId: routed[0].wake.id, decision: 'deny', caller: OWNER }).runnable, 'duplicate delivery and a repeated Deny create nothing');
@@ -562,6 +571,8 @@ async function runMain() {
     const outcome = continuationKey('wakes', deep.message.id);
     assert(outcome && outcome.target_agent_id === codex.id && /deep \(limit 3\)/.test(outcome.intent), "[depth_limit_rejects_without_work] continuation 'wake_outcome'");
     const wakeView = projector.listConversationEvents(tankConv.id).find(v => v.wakeId === deepWake.id);
+    const rejectedNotices = noticesFor(tankConv.id, deepWake.id);
+    assert(rejectedNotices.length === 1 && rejectedNotices[0].tone === 'rejected' && !rejectedNotices[0].actionable, 'thread: a rejected Wake shows, with no actions');
     assert(wakeView.requestId === null && wakeView.engineEventId === null && wakeView.data.limit === 3 && wakeView.data.observed === 4, 'wake_rejected projects from the Wake row with limit and observed');
 
     // Budget: 12 Wake-created requests in one root, then refusal.
