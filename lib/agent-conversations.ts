@@ -1164,14 +1164,21 @@ function publicRequestId(request: WorkRequest): string {
   return request.legacy_agent_request_id ?? request.id;
 }
 
-export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {
+// The canonical Work Request behind a public request id, when the principal
+// participates in its source conversation (NOT-491: the MCP bridge reads
+// the lifecycle state through this same check).
+export function getAuthorizedWorkRequest(principal: Principal, requestId: string): WorkRequest {
   assertKnownPrincipal(principal);
   const migrated = db.prepare('SELECT id FROM work_requests WHERE legacy_agent_request_id = ?').get(requestId) as { id: string } | undefined;
   const request = engine.getWorkRequest(migrated ? migrated.id : requestId);
   if (!request || !isParticipant(request.source_conversation_id, principal)) {
     throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
   }
-  return workRequestView(request);
+  return request;
+}
+
+export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {
+  return workRequestView(getAuthorizedWorkRequest(principal, requestId));
 }
 
 const CONVERSATION_TYPE_VIEW: Record<string, ConversationView['type']> = {
