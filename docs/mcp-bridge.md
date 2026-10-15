@@ -112,8 +112,14 @@ does not exist.
 
    ```sh
    BOTMANCERS_MCP_ALLOWED_HOSTS="mcp.example.com"            # comma-separated host[:port]
-   BOTMANCERS_MCP_ALLOWED_ORIGINS="https://mcp.example.com"  # only for browser-based clients
+   BOTMANCERS_MCP_ALLOWED_ORIGINS="https://mcp.example.com"  # only if a client sends this Origin
    ```
+
+   The endpoint does not implement CORS: it has no `OPTIONS` preflight
+   handler and sends no `Access-Control-Allow-*` headers, so cross-origin
+   browser clients are not supported even when their origin is listed.
+   `BOTMANCERS_MCP_ALLOWED_ORIGINS` only stops the guard from refusing a
+   server-side client that sends an `Origin` header.
 
    Request bodies over 256 KiB are refused with 413.
 
