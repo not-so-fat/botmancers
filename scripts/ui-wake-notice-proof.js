@@ -11,11 +11,12 @@
 // - clicking Allow on Dev's Wake shows it allowed (no actions left);
 // - clicking Deny on Builder's Wake shows it denied (no actions left);
 // - the Wake rows read back allowed/denied through the API.
-// Agents are Hermes with no HERMES_API_SERVER_KEY, so the allowed turn
-// stops at the stored missing-configuration failure; nothing external runs.
+// Dev is an Agent Deck (codex) Agent and the server runs with no
+// AGENT_DECK_RUN_TOKEN, so the allowed turn fails locally at token_missing;
+// the others are Hermes with no HERMES_API_SERVER_KEY. Nothing external runs.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/wake-notice.db node scripts/ui-wake-notice-proof.js --seed
-//        env -u HERMES_API_SERVER_KEY BOTMANCERS_DB_PATH=.temporal/wake-notice.db npx next dev -H 127.0.0.1 -p 43219   (other shell)
+//        env -u HERMES_API_SERVER_KEY -u AGENT_DECK_RUN_TOKEN BOTMANCERS_DB_PATH=.temporal/wake-notice.db npx next dev -H 127.0.0.1 -p 43219   (other shell)
 //        node scripts/ui-wake-notice-proof.js [--url http://127.0.0.1:43219] [--out .agent-dealer-visual-qa]
 'use strict';
 
@@ -50,9 +51,11 @@ function seed() {
   const { bots, conversations, messages, UI_OWNER_PRINCIPAL } = db;
   router.setWakeAvailabilityProbe(() => ({ available: true }));
 
-  const agent = name => bots.create({ deck_id: `deck-${name.toLowerCase()}`, name, title: name, description: name, agent: 'hermes' });
+  const agent = (name, kind = 'hermes') => bots.create({ deck_id: `deck-${name.toLowerCase()}`, name, title: name, description: name, agent: kind });
   const tank = agent('Tank');
-  agent('Dev');
+  // An Agent Deck target is launchable, so Allow admits it; with no
+  // AGENT_DECK_RUN_TOKEN its launch stops locally at token_missing.
+  agent('Dev', 'codex');
   agent('Builder');
   const helper = agent('Helper');
   const reviewer = agent('Reviewer');
@@ -148,7 +151,7 @@ async function drive() {
   };
   const noticeFor = (target, tone) => `[...document.querySelectorAll('.messages [data-wake-notice${tone ? `="${tone}"` : ''}]')].filter(n => n.textContent.includes(${JSON.stringify(target)}))`;
   const notices = () => evaluate(`[...document.querySelectorAll('.messages [data-wake-notice]')].map(n => ({
-    tone: n.dataset.wakeNotice, role: n.getAttribute('role'), text: n.querySelector('.wake-notice-line').textContent.replace(/\\s+/g, ' ').trim(),
+    tone: n.dataset.wakeNotice, role: n.getAttribute('role'), label: n.querySelector('.wake-notice-label').textContent, text: n.querySelector('.wake-notice-line').lastChild.textContent.trim(),
     buttons: [...n.querySelectorAll('button')].map(b => b.textContent.trim()), inBotCard: !!n.closest('.msg-bot'),
     fits: n.getBoundingClientRect().right <= window.innerWidth + 0.5,
   }))`);
@@ -211,7 +214,7 @@ async function drive() {
     const list = await notices();
     console.log(`  ${JSON.stringify(list)}`);
     check(list.every(n => n.buttons.length === 0), 'no actions left after Allow and Deny');
-    check(list.some(n => n.tone === 'denied' && /owner denied edit Wake/.test(n.text)), 'Builder shows denied');
+    check(list.some(n => n.tone === 'denied' && n.text === 'Wake denied: Builder — no work ran'), 'Builder shows denied');
     await shot(vp, 'denied');
   }
 

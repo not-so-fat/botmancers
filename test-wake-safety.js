@@ -426,7 +426,8 @@ async function runMain() {
       wake: router.getWake(routed[0].wake.id), request: engine.getWorkRequest(request.id),
       views: newViews(helperConv.id, before, { requestId: request.id }), auditBefore, continuation: resultContinuation,
     });
-    assert(noticesFor(helperConv.id, routed[0].wake.id).map(n => `${n.tone}:${n.actionable}`).join(',') === 'blocked:false,denied:false', 'thread: after Deny the block keeps no actions and the Wake shows denied');
+    assert(noticesFor(helperConv.id, routed[0].wake.id).map(n => `${n.tone}:${n.actionable}`).join(',') === 'blocked:false,denied:false'
+      && noticesFor(helperConv.id, routed[0].wake.id)[1].text === 'Wake denied: Dev — no work ran', 'thread: after Deny the block keeps no actions and the Wake shows denied, naming the target');
     assert(queuedNext.includes(resultContinuation.id) && /grant_denied/.test(resultContinuation.intent), 'the coordinator is told, in one continuation, that no work ran');
     assert(latest(request.id).decision === 'denied' && latest(request.id).principal_type === 'human_owner', 'the denial is a recorded owner decision');
     assert(loop.continueAfterTerminal(request.id).length === 0 && !router.decideWakeGrant({ wakeId: routed[0].wake.id, decision: 'deny', caller: OWNER }).runnable, 'duplicate delivery and a repeated Deny create nothing');
