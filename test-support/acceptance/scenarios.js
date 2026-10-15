@@ -13,6 +13,9 @@
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
 
+const path = require('path');
+const { spawn } = require('child_process');
+
 const lastEntry = input => input.prompt.history[input.prompt.history.length - 1];
 const startsFor = (fakeDeck, deckId) => fakeDeck.calls('POST', '/api/agent-runs').filter(call => call.body.deckId === deckId);
 
@@ -358,5 +361,79 @@ scenario('lifecycle-controls', 'Cancellation, deadline timeout, and bounded retr
   ctx.engineCheck(late.outcome === 'already_terminal' && lateCancel.outcome === 'already_terminal' && ctx.counts().work_attempts === before.work_attempts,
     `retry/cancel of completed work change nothing (got ${late.outcome}/${lateCancel.outcome})`);
 });
+
+// ---------------------------------------------------------------------
+// A separate Botmancers process, sharing this scenario's database and
+// environment (both inside the harness root).
+function runWorker(role, env) {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, [path.join(__dirname, 'restart-worker.js')], {
+      env: { ...process.env, BOTMANCERS_RESTART_ROLE: role, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', chunk => { out += chunk; });
+    child.stderr.on('data', chunk => { err += chunk; });
+    child.on('exit', code => resolve({ code, out, err }));
+  });
+}
+
+scenario('restart-recovery', 'A worker crashes mid-run; a restarted process reattaches without a duplicate launch', [
+  'fake Agent Deck served over loopback HTTP (ephemeral port) and stored as the harness database\'s Agent Deck URL',
+  'worker 1: person -> Codex (codex); exits right after the run id is persisted (held run)',
+  'worker 2: fresh process; startup recovery (recoverCoordinatorLoops) after the run ended',
+], async ctx => {
+  const codex = ctx.agent('Codex', 'codex');
+  ctx.deckScripts.set(codex.deck_id, () => ({ result: 'Recovered answer: the cache is warm.', hold: true }));
+  const url = await ctx.fakeDeck.listen();
+  ctx.lib('agent-deck-settings.ts').setAgentDeckServerUrl(url);
+  try {
+    const crash = await runWorker('crash', { BOTMANCERS_RESTART_AGENT_ID: codex.id, BOTMANCERS_RESTART_CONTENT: 'Is the cache warm?' });
+    ctx.engineCheck(crash.code === 70, `worker 1 crashed at the injected point (exit ${crash.code}${crash.err ? `; ${crash.err.slice(-300)}` : ''})`);
+    const [request] = ctx.all('SELECT * FROM work_requests WHERE target_agent_id = ?', codex.id);
+    const [attempt] = request ? ctx.attemptsOf(request.id) : [];
+    ctx.engineCheck(request && request.state === 'running' && attempt && attempt.finished_at === null && !!attempt.external_run_id,
+      `after the crash: request running, one open Attempt with its run id (got ${request && request.state})`);
+    const lease = ctx.one('SELECT owner FROM dispatch_leases WHERE request_id = ?', request.id);
+    ctx.engineCheck(lease && lease.owner.split(':')[1] !== String(process.pid), 'the crashed worker still holds the lease');
+    ctx.conversationCheck(!ctx.projectedKinds(request.source_conversation_id).includes('request_completed') && ctx.messagesIn(request.source_conversation_id).length === 1,
+      'before recovery the conversation shows the question and running work, no answer');
+
+    // The run finishes while no Botmancers process is alive.
+    ctx.fakeDeck.release(attempt.external_run_id);
+    const recover = await runWorker('recover', {});
+    ctx.engineCheck(recover.code === 0, `worker 2 recovered and exited cleanly (exit ${recover.code}${recover.err ? `; ${recover.err.slice(-300)}` : ''})`);
+
+    const after = ctx.engine.getWorkRequest(request.id);
+    const attempts = ctx.attemptsOf(request.id);
+    ctx.engineCheck(after.state === 'completed' && attempts.length === 1 && attempts[0].outcome === 'succeeded', `request completed on the original Attempt (got ${after.state}, ${attempts.length} Attempt(s))`);
+    ctx.engineCheck(startsFor(ctx.fakeDeck, codex.deck_id).length === 1, 'Agent Deck saw exactly one launch (no duplicate)');
+    const decided = ctx.engine.listEvents(request.id).filter(event => event.type === 'reconcile_decided').map(event => JSON.parse(event.data).action);
+    ctx.engineCheck(ctx.eventTypes(request.id).includes('dispatch_lease_taken_over') && decided.includes('reattach'), `recovery took the lease over and reattached (decisions: ${decided.join(',')})`);
+    ctx.engineCheck(!ctx.one('SELECT 1 AS x FROM dispatch_leases WHERE request_id = ?', request.id), 'no lease is left behind');
+    const messages = ctx.messagesIn(request.source_conversation_id);
+    ctx.conversationCheck(messages.length === 2 && messages[1].content === 'Recovered answer: the cache is warm.' && messages[1].request_id === request.id,
+      'the thread shows the answer exactly once');
+    const kinds = ctx.projectedKinds(request.source_conversation_id, view => view.requestId === request.id);
+    ctx.conversationCheck(ctx.inOrder(kinds, ['request_queued', 'request_running', 'request_completed', 'result']) && kinds.filter(kind => kind === 'result').length === 1,
+      `projection: queued > running > completed > one result (got ${kinds.join(',')})`);
+  } finally {
+    await ctx.fakeDeck.close();
+  }
+});
+
+// ---------------------------------------------------------------------
+// Harness self-test only (never in the default run): a scenario that
+// fails on purpose, so test-acceptance-harness.js can prove a failing
+// root is preserved with a useful FAILED.txt.
+scenario('self-test-failure', 'Deliberately failing scenario (harness self-test only)', [
+  'person -> Codex; then one assertion that is false on purpose',
+], async ctx => {
+  const codex = ctx.agent('Codex', 'codex');
+  const accepted = await ctx.ask(codex, 'Hello?', 'self-test-1');
+  ctx.engineCheck(ctx.engine.getWorkRequest(accepted.requestId).state === 'completed', 'the request completed');
+  ctx.conversationCheck(ctx.messagesIn(accepted.conversationId).length === 99, 'deliberate failure: the thread has 99 messages');
+}, { selfTestOnly: true });
 
 module.exports = { SCENARIOS };

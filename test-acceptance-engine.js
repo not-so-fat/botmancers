@@ -48,8 +48,9 @@ async function runScenarioChild(name) {
   await ctx.service.waitForAgentDispatchIdle();
   await ctx.close();
   ctx.isolationCheck(ctx.guards.blockedConnections.length === 0, `no non-loopback network connection was attempted (${ctx.guards.blockedConnections.join(', ') || 'none'})`);
-  const runtimes = ctx.guards.spawned.filter(command => command !== 'git');
-  ctx.isolationCheck(runtimes.length === 0, `no runtime process was spawned (${runtimes.join(', ') || 'none'})`);
+  // node: the harness's own worker processes (restart-recovery).
+  const runtimes = ctx.guards.spawned.filter(command => command !== 'git' && command !== 'node');
+  ctx.isolationCheck(runtimes.length === 0, `no coding runtime process was spawned (${runtimes.join(', ') || 'none'})`);
   const { results } = ctx;
   process.stdout.write(`\nACCEPTANCE_RESULT ${JSON.stringify(results)}\n`);
   return results.failed === 0 && results.engine > 0 && results.conversation > 0 ? 0 : 1;
