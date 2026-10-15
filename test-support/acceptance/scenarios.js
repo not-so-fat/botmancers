@@ -16,6 +16,14 @@
 const lastEntry = input => input.prompt.history[input.prompt.history.length - 1];
 const startsFor = (fakeDeck, deckId) => fakeDeck.calls('POST', '/api/agent-runs').filter(call => call.body.deckId === deckId);
 
+async function waitFor(predicate, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
 const SCENARIOS = [];
 function scenario(name, title, fixtures, run, extra = {}) {
   SCENARIOS.push({ name, title, fixtures, run, ...extra });
@@ -272,6 +280,83 @@ scenario('composed-review', 'Implementation, independent review, and revision co
   const accepts = ctx.projection(conv).filter(view => view.kind === 'wake_accepted').map(view => view.data.execution_kind);
   ctx.conversationCheck(JSON.stringify(accepts) === JSON.stringify(['implementation', 'review', 'revision', 'review']), `projection: four Wakes accepted in order (got ${accepts.join(',')})`);
   ctx.conversationCheck(ctx.projectedKinds(conv, view => view.requestId === impl.id).includes('wake_blocked'), 'projection keeps the implementation Wake\'s wait for the owner');
+});
+
+// ---------------------------------------------------------------------
+scenario('lifecycle-controls', 'Cancellation, deadline timeout, and bounded retry of running work', [
+  'Holdout (codex): held Agent Deck run, cancelled by the person through the Agent API service',
+  'Slowpoke (codex): held run under BOTMANCERS_REQUEST_DEADLINE_MS=300, enforced by the recovery sweep',
+  'Flaky (codex): BOTMANCERS_RETRY_MAX_ATTEMPTS=2; first run errors, second succeeds',
+], async ctx => {
+  const send = (agent, content, key) => ctx.service.acceptAgentMessage(ctx.PERSON, { agentId: agent.id, content, idempotencyKey: key }).accepted;
+  const launched = requestId => () => ctx.attemptsOf(requestId).some(a => a.external_run_id && a.finished_at === null);
+
+  // Cancellation of a running request.
+  const holdout = ctx.agent('Holdout', 'codex');
+  ctx.deckScripts.set(holdout.deck_id, () => ({ result: 'This answer must never be shown.', hold: true }));
+  const cancelled = send(holdout, 'Start a long analysis.', 'cancel-1');
+  await waitFor(launched(cancelled.requestId), 'the Holdout run to start');
+  const cancel = await ctx.service.cancelAgentRequest(ctx.PERSON, cancelled.requestId, 'No longer needed.');
+  ctx.engineCheck(cancel.outcome === 'cancel_requested' || cancel.outcome === 'cancelled', `cancel accepted for running work (got ${cancel.outcome})`);
+  await ctx.settle([cancelled.requestId]);
+  const c = ctx.engine.getWorkRequest(cancelled.requestId);
+  const cAttempts = ctx.attemptsOf(c.id);
+  ctx.engineCheck(c.state === 'cancelled' && c.cancel_requested_at !== null, `request cancelled with its intent recorded (got ${c.state})`);
+  ctx.engineCheck(cAttempts.length === 1 && cAttempts[0].finished_at !== null && cAttempts[0].outcome !== 'succeeded', `the Attempt ended without success (got ${cAttempts.map(a => a.outcome)})`);
+  ctx.engineCheck(ctx.fakeDeck.calls('POST', '/cancel').some(call => call.path.includes(cAttempts[0].external_run_id)), 'Agent Deck was asked to cancel the run');
+  const cKinds = ctx.projectedKinds(cancelled.conversationId, view => view.requestId === c.id);
+  ctx.conversationCheck(cKinds.includes('request_cancel_requested') && !cKinds.includes('request_completed') && !cKinds.includes('result'),
+    `projection: cancel requested, never completed (got ${cKinds.join(',')})`);
+  ctx.conversationCheck(!ctx.messagesIn(cancelled.conversationId).some(m => /never be shown/.test(m.content)), 'the cancelled run\'s answer is not in the thread');
+
+  // A request deadline passes while its run is held.
+  const slowpoke = ctx.agent('Slowpoke', 'codex');
+  ctx.deckScripts.set(slowpoke.deck_id, () => ({ result: 'Too late.', hold: true }));
+  process.env.BOTMANCERS_REQUEST_DEADLINE_MS = '300';
+  const timed = send(slowpoke, 'Answer within the deadline.', 'deadline-1');
+  delete process.env.BOTMANCERS_REQUEST_DEADLINE_MS;
+  await waitFor(launched(timed.requestId), 'the Slowpoke run to start');
+  const t0 = ctx.engine.getWorkRequest(timed.requestId);
+  ctx.engineCheck(t0.deadline_at !== null && t0.deadline_at - t0.created_at === 300, 'the request stored its 300ms deadline at intake');
+  await waitFor(() => Date.now() > t0.deadline_at + 20, 'the deadline to pass');
+  await ctx.service.sweepDispatch();
+  await ctx.settle([timed.requestId]);
+  const t = ctx.engine.getWorkRequest(timed.requestId);
+  ctx.engineCheck(t.state === 'failed' && t.error_code === 'timed_out', `request failed timed_out (got ${t.state}/${t.error_code})`);
+  ctx.engineCheck(ctx.attemptsOf(t.id).length === 1 && ctx.attemptsOf(t.id)[0].outcome === 'timed_out', `its Attempt ended timed_out (got ${ctx.attemptsOf(t.id).map(a => a.outcome)})`);
+  const tRun = ctx.attemptsOf(t.id)[0].external_run_id;
+  ctx.engineCheck(ctx.fakeDeck.calls('POST', '/cancel').some(call => call.path.includes(tRun)) && ctx.fakeDeck.runs.get(tRun).state === 'canceled',
+    'the run past its deadline was cancelled in Agent Deck');
+  const tKinds = ctx.projectedKinds(timed.conversationId, view => view.requestId === t.id);
+  ctx.conversationCheck(tKinds.includes('request_timed_out') && !tKinds.includes('result'), `projection: timed out, no result (got ${tKinds.join(',')})`);
+
+  // A retryable failure is retried once under the stored policy.
+  const flaky = ctx.agent('Flaky', 'codex');
+  let flakyRuns = 0;
+  ctx.deckScripts.set(flaky.deck_id, () => (++flakyRuns === 1 ? { state: 'error', errorMessage: 'transient failure' } : { result: 'Second time lucky.' }));
+  process.env.BOTMANCERS_RETRY_MAX_ATTEMPTS = '2';
+  process.env.BOTMANCERS_RETRY_BASE_DELAY_MS = '20';
+  const retried = send(flaky, 'Try the flaky thing.', 'retry-1');
+  delete process.env.BOTMANCERS_RETRY_MAX_ATTEMPTS;
+  delete process.env.BOTMANCERS_RETRY_BASE_DELAY_MS;
+  await ctx.settle([retried.requestId]);
+  const r = ctx.engine.getWorkRequest(retried.requestId);
+  const rAttempts = ctx.attemptsOf(r.id);
+  ctx.engineCheck(r.state === 'completed' && JSON.parse(r.retry_policy).max_attempts === 2, `request completed under a stored 2-Attempt policy (got ${r.state})`);
+  ctx.engineCheck(rAttempts.length === 2 && rAttempts[0].outcome === 'failed' && rAttempts[1].outcome === 'succeeded' && flakyRuns === 2,
+    `two Attempts: failed, then succeeded (got ${rAttempts.map(a => a.outcome)})`);
+  const rKinds = ctx.projectedKinds(retried.conversationId, view => view.requestId === r.id);
+  ctx.conversationCheck(ctx.inOrder(rKinds, ['request_queued', 'request_running', 'request_retry_scheduled', 'request_running', 'request_completed', 'result']),
+    `projection: running > retry scheduled > running > completed (got ${rKinds.join(',')})`);
+  ctx.conversationCheck(ctx.messagesIn(retried.conversationId).map(m => m.content).join('|') === 'Try the flaky thing.|Second time lucky.', 'the thread shows only the successful answer');
+
+  // A finished request cannot be retried or cancelled into new work.
+  const before = ctx.counts();
+  const late = await ctx.service.retryAgentRequest(ctx.PERSON, r.id);
+  const lateCancel = await ctx.service.cancelAgentRequest(ctx.PERSON, r.id, 'too late');
+  await ctx.service.waitForAgentDispatchIdle();
+  ctx.engineCheck(late.outcome === 'already_terminal' && lateCancel.outcome === 'already_terminal' && ctx.counts().work_attempts === before.work_attempts,
+    `retry/cancel of completed work change nothing (got ${late.outcome}/${lateCancel.outcome})`);
 });
 
 module.exports = { SCENARIOS };
