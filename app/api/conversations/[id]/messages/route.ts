@@ -6,7 +6,6 @@ import {
   IntakeError,
   acceptConversationMessage,
   getAcceptedMessage,
-  type AcceptedIntake,
   type IntakeDelivery,
   type IntakeRouting,
 } from '@/lib/conversation-intake';
@@ -176,7 +175,7 @@ function uiRouting(conversation: Conversation, content: string, mentionedBotId: 
 // them in order (NOT-471: a coding-Agent turn is handed to the dispatcher
 // as one read-only Attempt). A replay only re-kicks the executor, which
 // finds any turn still queued.
-function startUiTurns(_accepted: AcceptedIntake): void {
+function startUiTurns(): void {
   processUiTurns().catch(console.error);
 }
 
