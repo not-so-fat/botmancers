@@ -1420,7 +1420,9 @@ export const ENGINE_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 // Applies pending versioned migrations, then the idempotent legacy
 // backfill. Safe to call on every open and from concurrent processes:
 // each step runs in an IMMEDIATE transaction and rechecks its version.
-export function migrateEngineSchema(db: Db): void {
+// `through` stops after that version and skips the backfill; migration
+// tests use it to build a database as an older release left it.
+export function migrateEngineSchema(db: Db, options: { through?: number } = {}): void {
   purgeSet(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1432,6 +1434,7 @@ export function migrateEngineSchema(db: Db): void {
   const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE version = ?');
   const record = db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)');
   for (const migration of MIGRATIONS) {
+    if (options.through !== undefined && migration.version > options.through) return;
     db.transaction(() => {
       if (applied.get(migration.version)) return;
       migration.up(db);
@@ -1892,6 +1895,22 @@ export function createEngineStore(db: Db) {
         if (terminal && current.legacy_agent_request_id === null) {
           db.prepare('INSERT OR IGNORE INTO terminal_followups (request_id, created_at) VALUES (?, ?)').run(id, now);
         }
+        return requireRequest(id);
+      }).immediate();
+    },
+
+    // NOT-475: a blocked request whose reason changed without a state
+    // change (a Wake now waiting on its target instead of the owner, or the
+    // reverse). Compare-and-set on the blocked state; the reason and its
+    // event commit together.
+    reblockWorkRequest(id: string, input: { reason: string; type: string; data?: Record<string, unknown>; now?: number }): WorkRequest {
+      return db.transaction(() => {
+        const now = input.now ?? Date.now();
+        const changed = db.prepare(
+          "UPDATE work_requests SET state_reason = ?, version = version + 1, updated_at = ? WHERE id = ? AND state = 'blocked'"
+        ).run(input.reason, now, id);
+        if (changed.changes !== 1) throw new EngineStoreError('stale_state', `Work request ${id} is not blocked.`);
+        insertEvent(id, input.type, input.data ?? {}, null, now);
         return requireRequest(id);
       }).immediate();
     },

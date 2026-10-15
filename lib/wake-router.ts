@@ -432,7 +432,7 @@ function grantRequested(request: WorkRequest, wakeId: string, now: number): void
 // owner allowed but the target cannot launch, or a retry found the grant
 // revoked): the conversation shows the current reason.
 function reblocked(request: WorkRequest, code: WakeReasonCode, reason: string, now: number): void {
-  engine.appendEvent(request.id, { type: 'wake_reblocked', data: { reason_code: code, reason }, now });
+  engine.reblockWorkRequest(request.id, { reason: `${code}: ${reason}`, type: 'wake_reblocked', data: { reason_code: code, reason }, now });
 }
 
 function routeCandidate(candidate: WakeCandidate, source: Message, requesterId: string, parent: WorkRequest | null, now: number): RoutedWake {
