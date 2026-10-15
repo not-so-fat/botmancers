@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+// Historical live-server walkthrough (steps 1-7 of ACCEPTANCE.md), kept as
+// evidence. It is not part of the deterministic suite; the current engine
+// and its acceptance coverage are described in docs/core-engine.md and
+// docs/acceptance-harness.md.
+
 const http = require('http');
 const fs = require('fs');
 
@@ -239,7 +244,8 @@ async function runAcceptanceSteps1to7() {
     console.log('  1. Set HERMES_API_SERVER_KEY');
     console.log('  2. Run this test again');
     console.log('  3. Step 6 will show peer wake if bot generates WAKE command');
-    console.log('  4. Check lib/agent.ts processQueueItem() for WAKE detection logic\n');
+    console.log('  4. Check WAKE detection: processUiTurn() in lib/agent.ts (UI thread turns) and lib/wake-router.ts');
+    console.log('     (Agent replies of dispatcher-owned requests). processQueueItem() was removed by NOT-477.\n');
   } else {
     console.log('✓ Hermes key present - peer wake was tested in Step 6 above\n');
   }

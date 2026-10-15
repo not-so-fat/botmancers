@@ -27,11 +27,26 @@ Botmancers execution architecture and has no replacement generic-model role.
 ## Architecture
 
 [`docs/core-engine.md`](docs/core-engine.md) is the only current product and
-architecture contract: conversations, Wakes, Work Requests, Attempts, Session
+architecture authority: conversations, Wakes, Work Requests, Attempts, Session
 Bindings, the safety policy, the persistent schema, and the remaining
-convergence work. Other documents under `docs/` are dated history or evidence
-and are labeled as such. The acceptance suite is described in
-[`docs/acceptance-harness.md`](docs/acceptance-harness.md).
+convergence work. Where another document disagrees with it, it wins.
+
+Some current documents are subordinate to it and stay in force within their
+scope:
+
+- contracts it adopts: the Wake contract
+  ([`docs/wake-contract-v1.md`](docs/wake-contract-v1.md), with its schema and
+  fixtures in [`docs/contracts/`](docs/contracts)), the Wake safety contract
+  ([`docs/design/2026-10-14-wake-safety-contract.md`](docs/design/2026-10-14-wake-safety-contract.md)),
+  and the git finalization contract
+  ([`docs/design/2026-10-13-git-finalization-contract.md`](docs/design/2026-10-13-git-finalization-contract.md));
+- operational runbooks and compatibility records: the acceptance harness
+  ([`docs/acceptance-harness.md`](docs/acceptance-harness.md)) and the `[run]`
+  payload migration record
+  ([`docs/run-payload-migration.md`](docs/run-payload-migration.md)).
+
+Every other document under `docs/` is dated history or evidence, labeled as
+such at its top, and is not a current contract.
 
 ## Current status
 

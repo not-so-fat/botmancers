@@ -14,7 +14,6 @@ import { getApprovalByCode } from '@/lib/approvals';
 import { parseDraft, parseApprovalCode } from '@/lib/draft';
 import { resumeBotIdsForConversation } from '@/lib/ask';
 import { processUiTurns } from '@/lib/agent';
-import { uiTurns } from '@/lib/ui-turns';
 
 export async function GET(
   request: Request,
