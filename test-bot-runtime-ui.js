@@ -677,9 +677,11 @@ function runtimeFailureSection() {
   assert(!has(html, 'msg-bot') && !has(html, 'msg-name') && !has(html, 'Chief'), 'thread: no bot card, speaker name, or agent attribution');
 
   const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
+  // NOT-470: each row is a Fragment so the Wake notices recorded before it
+  // render above it; a failure row keeps those notices and nothing else.
   const loop = page.slice(page.indexOf('{messages.map((msg) => {'));
   const classifyAt = loop.indexOf('classifyRuntimeFailure(');
-  assert(classifyAt > 0 && classifyAt < loop.indexOf("'msg-bot'") && /if \(failure\) \{\s*return \(\s*<div key=\{msg\.id\} className="msg-status">\s*<RuntimeFailureNotice failure=\{failure\} \/>/.test(loop),
+  assert(classifyAt > 0 && classifyAt < loop.indexOf("'msg-bot'") && /if \(failure\) \{\s*return \(\s*<Fragment key=\{msg\.id\}>\s*\{before\.map\(wakeNoticeRow\)\}\s*<div className="msg-status">\s*<RuntimeFailureNotice failure=\{failure\} \/>/.test(loop),
     'thread: page classifies bot messages before normal rendering and returns the status callout instead of a bot card');
   assert(/mine \? null : classifyRuntimeFailure/.test(loop), 'thread: user messages are never classified');
   assert(/import \{ latestLine \} from '@\/lib\/message-preview'/.test(page) && !/function latestLine/.test(page), 'roster: page uses the shared latestLine');
