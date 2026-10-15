@@ -281,6 +281,10 @@ async function child() {
     check(captured.contract === 'botmancers.mcp.v1' && JSON.stringify(captured.tools) === JSON.stringify(tools), `tools/list equals the captured schemas in ${path.relative(ROOT, CONTRACT_FILE)}`);
     const unknownTool = await call('botmancers_run_anything', {});
     check(unknownTool.json.error && unknownTool.json.error.code === -32602, 'an unknown tool name is a JSON-RPC invalid params error');
+    for (const inherited of ['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', '__defineGetter__']) {
+      const res = await call(inherited, {});
+      check(res.json.error && res.json.error.code === -32602 && !res.json.result, `inherited Object.prototype name "${inherited}" is rejected as invalid params`);
+    }
   }
 
   // ---- AC3: allowlist and forbidden fields -------------------------------

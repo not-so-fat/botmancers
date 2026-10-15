@@ -554,7 +554,8 @@ export function handleMcpMessage(principal: Principal, message: unknown): JsonRp
       return { jsonrpc: '2.0', id: requestId, result: { tools: MCP_TOOLS } };
     case 'tools/call': {
       const name = p.name;
-      if (typeof name !== 'string' || !(name in HANDLERS)) {
+      // Own-property check: `in` would admit inherited Object.prototype names (toString, constructor, ...).
+      if (typeof name !== 'string' || !Object.prototype.hasOwnProperty.call(HANDLERS, name)) {
         return jsonRpcError(requestId, JSON_RPC.invalidParams, `Unknown tool: ${typeof name === 'string' ? name.slice(0, 100) : String(name)}`);
       }
       return { jsonrpc: '2.0', id: requestId, result: callMcpTool(principal, name as McpToolName, p.arguments) };
