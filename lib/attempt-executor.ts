@@ -177,7 +177,9 @@ export interface LocallyAbandonedAttempt {
   attemptId: string;
   externalRunId: string | null;
   transport: string;
-  reason: 'cancelled' | 'timed_out';
+  // observation_lost: this process lost sight of the run and could not
+  // stop it.
+  reason: 'cancelled' | 'timed_out' | 'observation_lost';
   // 'failed': the transport asked the runtime to stop the run and was
   // refused or could not reach it. null: the transport cannot ask.
   externalCancel: 'failed' | null;
@@ -245,18 +247,15 @@ export function abandonedLocally(
 ): LocallyAbandonedAttempt | null {
   if (result.status !== 'failed') return null;
   const category = result.failure?.category;
-  if (category !== 'cancelled' && category !== 'timed_out') return null;
-  if (category === 'cancelled' && !signal?.aborted) return null;
   const cancelFailed = result.externalCancel === 'failed';
+  const base = { requestId: attempt.request_id, attemptId: attempt.id, externalRunId: result.externalRunId, transport: adapter.name };
+  if (category !== 'cancelled' && category !== 'timed_out') {
+    // Any other failure whose cleanup cancel failed left the run going.
+    return cancelFailed ? { ...base, reason: 'observation_lost', externalCancel: 'failed' } : null;
+  }
+  if (category === 'cancelled' && !signal?.aborted) return null;
   if (adapter.externalCancel && !cancelFailed) return null;
-  return {
-    requestId: attempt.request_id,
-    attemptId: attempt.id,
-    externalRunId: result.externalRunId,
-    transport: adapter.name,
-    reason: category,
-    externalCancel: cancelFailed ? 'failed' : null,
-  };
+  return { ...base, reason: category, externalCancel: cancelFailed ? 'failed' : null };
 }
 
 // Finished the way enforcement abandons an Attempt (lib/work-request-

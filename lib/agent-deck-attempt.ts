@@ -266,9 +266,11 @@ async function followRun(runId: string, input: AttemptFollowInput, onEvent: Atte
     }
     if ('error' in settled) {
       // Stop the run we can no longer observe rather than let it edit
-      // unwatched; failure to reach the API is reported as is.
-      try { await cancelAgentDeckRun(runId); } catch { /* unreachable */ }
-      return failed(failureOf(settled.error, 'runtime_failed'), ids);
+      // unwatched. A refused or unreachable cancel is reported: the run
+      // may continue, so the Attempt is recorded abandoned, not failed.
+      let externalCancel: 'requested' | 'failed' = 'requested';
+      try { await cancelAgentDeckRun(runId); } catch { externalCancel = 'failed'; }
+      return failed(failureOf(settled.error, 'runtime_failed'), { ...ids, externalCancel });
     }
     const { observed } = settled;
     let status: AgentDeckRunStatus | null = null;

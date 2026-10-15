@@ -91,6 +91,16 @@ export interface RetryResult {
   abandoned: AbandonedAttempt | null;
 }
 
+export interface SettleInput {
+  category: string | null;
+  code: string | null;
+  errorCode: string;
+  errorMessage: string;
+  // Set when a retry must not launch automatically: the attention reason
+  // recorded instead of scheduling the retry.
+  attention?: string;
+}
+
 export type SettleOutcome = 'retry_scheduled' | 'retries_exhausted' | 'timed_out' | 'attention' | 'failed';
 
 export interface SettleResult {
@@ -229,11 +239,14 @@ export function createRequestControl(db: Db, store: EngineStore, options: Reques
   // The failure outcome of the latest Attempt of a running request, under
   // its bounded policy. Writes the transition (and the attention flag);
   // the caller owns the lease. Call inside a transaction.
-  function settle(request: WorkRequest, input: { category: string | null; code: string | null; errorCode: string; errorMessage: string }, at: number): SettleResult {
+  // input.attention: a failure that must not be retried automatically
+  // (its run may still be live) waits for an operator instead.
+  function settle(request: WorkRequest, input: SettleInput, at: number): SettleResult {
     const policy = storedRetryPolicy(request.retry_policy);
     const disposition = classifyFailure(input.category, input.code);
     const used = attemptsUsed(request);
-    const decision = decideRetry({ policy, attemptCount: used, disposition, deadlineAt: request.deadline_at, now: at });
+    const decided = decideRetry({ policy, attemptCount: used, disposition, deadlineAt: request.deadline_at, now: at });
+    const decision: RetryDecision = input.attention && decided.action === 'retry' ? { action: 'attention' } : decided;
     const base = { category: input.category, disposition, attempt_count: used, max_attempts: policy.max_attempts };
     switch (decision.action) {
       case 'retry': {
@@ -248,12 +261,13 @@ export function createRequestControl(db: Db, store: EngineStore, options: Reques
       case 'deadline':
         return { outcome: 'timed_out', decision, request: finishTimedOut(request, at, base) };
       case 'attention': {
+        const reason = input.attention ?? `failure:${input.category ?? 'unknown'}`;
         db.prepare(
           'INSERT INTO dispatch_attention (id, request_id, attempt_id, reason, detail, created_at) VALUES (?, ?, NULL, ?, ?, ?)'
-        ).run(randomUUID(), request.id, `failure:${input.category ?? 'unknown'}`, input.code, at);
-        store.appendEvent(request.id, { type: 'attention_set', data: { reason: `failure:${input.category ?? 'unknown'}`, detail: input.code }, now: at });
+        ).run(randomUUID(), request.id, reason, input.code, at);
+        store.appendEvent(request.id, { type: 'attention_set', data: { reason, detail: input.code }, now: at });
         const next = store.transitionWorkRequest(request.id, {
-          from: 'running', to: 'waiting', reason: `manual_attention:${input.category ?? 'unknown'}`, data: base, now: at,
+          from: 'running', to: 'waiting', reason: `manual_attention:${input.attention ?? input.category ?? 'unknown'}`, data: base, now: at,
         });
         return { outcome: 'attention', decision, request: next };
       }
@@ -355,7 +369,7 @@ export function createRequestControl(db: Db, store: EngineStore, options: Reques
 
     // Called by the worker holding the lease, inside the transaction that
     // finishes the Attempt: decides what the failure leads to.
-    settleFailure(requestId: string, input: { category: string | null; code: string | null; errorCode: string; errorMessage: string }, now?: number): SettleResult {
+    settleFailure(requestId: string, input: SettleInput, now?: number): SettleResult {
       return store.transaction(() => {
         const request = requireRequest(requestId);
         if (request.state !== 'running') {

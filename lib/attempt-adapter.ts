@@ -144,7 +144,8 @@ export interface AttemptResult {
   // Attempt open and reconciles it under the same idempotency key.
   launchUnconfirmed?: boolean;
   // NOT-473: set by an externalCancel transport when its signal or deadline
-  // ended the wait: whether the runtime accepted the cancel request. On
+  // ended the wait, or when it lost sight of the run and asked the runtime
+  // to stop it: whether the runtime accepted the cancel request. On
   // 'failed' the run may continue and the Attempt is abandoned, not stopped.
   externalCancel?: 'requested' | 'failed';
 }

@@ -38,7 +38,7 @@ import {
 } from './agent-dispatch';
 import { abandonedLocally, beginAttempt, recordAbandonedResult, recordAttemptResult, recordLateResult, runAttempt, type LocallyAbandonedAttempt, type PreparedAttempt } from './attempt-executor';
 import { EngineStoreError, TERMINAL_STATES, type EngineEvent, type WorkAttempt, type WorkRequest, type WorkRequestState } from './engine-store';
-import { ControlError, type AbandonedAttempt, type CancelResult, type ControlActor, type ControlAuthorizer, type RetryResult } from './work-request-control';
+import { ControlError, type AbandonedAttempt, type CancelResult, type ControlActor, type ControlAuthorizer, type EnforcedRequest, type RetryResult } from './work-request-control';
 import type { AttemptEvent, AttemptResult, RunObservation } from './attempt-adapter';
 import {
   LeaseLostError,
@@ -603,7 +603,8 @@ async function stopAbandoned(abandoned: AbandonedAttempt): Promise<void> {
 // run even without a run id (a transport like Hermes has none), so a
 // missing id means the run cannot be addressed, not that none exists.
 async function recordExternalCancel(
-  abandoned: Pick<AbandonedAttempt, 'requestId' | 'attemptId' | 'externalRunId' | 'transport' | 'reason'> & { externalCancel?: 'failed' | null },
+  abandoned: Pick<AbandonedAttempt, 'requestId' | 'attemptId' | 'externalRunId' | 'transport'>
+    & { reason: AbandonedAttempt['reason'] | LocallyAbandonedAttempt['reason']; externalCancel?: 'failed' | null },
   options: { localSignalled: boolean; launched: boolean },
 ): Promise<void> {
   const reconciler = abandoned.transport ? adapterForTransport(abandoned.transport)?.reconciler ?? null : null;
@@ -652,7 +653,7 @@ async function withHeartbeat<T>(lease: DispatchLease, fn: () => Promise<T>, cont
 
 // A commit that did not happen: the lease moved to another worker (which
 // reconciles the same run), or the run may still be live (DeferCommit).
-function handleUncommitted(lease: DispatchLease, attemptId: string, error: unknown): void {
+function handleUncommitted(lease: DispatchLease, attemptId: string | null, error: unknown): void {
   if (error instanceof LeaseLostError) return;
   if (error instanceof DeferCommit) {
     try {
@@ -707,11 +708,15 @@ function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAtt
   }
   if (result.status !== 'completed' || result.output === null) {
     const failure = dispatchFailureFor(result);
+    // A run the runtime would not stop may still be working: never
+    // retried automatically (a second Attempt would race it); an operator
+    // decides.
     const settled = dispatcher.control.settleFailure(requestId, {
       category: result.status === 'completed' ? 'result_contract' : result.failure?.category ?? 'runtime_failed',
       code: result.failure?.code ?? null,
       errorCode: failure.code,
       errorMessage: failure.message,
+      ...(result.externalCancel === 'failed' ? { attention: 'external_cancel_failed' } : {}),
     }, now);
     dispatcher.release(lease, settled.outcome);
     return { retryAt: settled.decision.action === 'retry' ? settled.decision.nextEligibleAt : null };
@@ -744,108 +749,130 @@ function observationData(observation: RunObservation | null): Record<string, unk
 // NOT-469: reconciles one taken-over request from its persisted Attempt and
 // public runtime evidence, through the accepted NOT-468 decision table
 // (lib/dispatcher). Never relaunches an ambiguous run.
+//
+// NOT-473: a cancellation intent or a passed deadline wins at every
+// boundary, not only on entry: each reconciliation write (and each step
+// after runtime I/O) runs under controlled(), which in the same
+// transaction asserts the lease and re-runs forced enforcement. When
+// enforcement ends the request, nothing more is decided here: the
+// abandoned run is stopped where the runtime can stop it.
 async function reconcileRequest(lease: DispatchLease): Promise<void> {
   const request = engine.getWorkRequest(lease.requestId);
   if (!request || request.state !== 'running') {
     dispatcher.release(lease, 'stale');
     return;
   }
-  // NOT-473: a request whose cancellation was requested (its worker is
-  // gone: this sweep took the lease over) or whose deadline passed is not
-  // reconciled into a result: its Attempt is abandoned.
-  const enforced = dispatcher.control.enforceRequest(request.id, dispatcher.now(), { force: true });
-  if (enforced) {
-    if (enforced.abandoned) await stopAbandoned(enforced.abandoned);
-    return;
-  }
-  const attempt = engine.listAttempts(request.id).find(row => row.finished_at === null);
-  if (!attempt) {
-    // A running request with no open Attempt never launched under it.
-    engine.transaction(() => {
+  const controlled = async <T>(write: () => T, won?: () => void): Promise<{ won: true } | { won: false; value: T }> => {
+    const outcome = engine.transaction((): { enforced: EnforcedRequest } | { value: T } => {
       dispatcher.assertHeld(lease);
-      engine.transitionWorkRequest(request.id, {
-        from: 'running', to: 'failed', reason: 'retryable', errorCode: 'interrupted',
-        errorMessage: 'The request was interrupted before its Attempt was recorded.',
-      });
-      dispatcher.release(lease, 'interrupted');
+      const enforced = dispatcher.control.enforceRequest(request.id, dispatcher.now(), { force: true });
+      if (enforced) {
+        won?.();
+        return { enforced };
+      }
+      return { value: write() };
     });
-    return;
-  }
-  let snapshot: Record<string, unknown> = {};
-  try { snapshot = JSON.parse(attempt.launch_snapshot) as Record<string, unknown>; } catch { /* no transport: unobservable */ }
-  const adapter = typeof snapshot.transport === 'string' ? adapterForTransport(snapshot.transport) : null;
-  const reconciler = adapter?.reconciler ?? null;
-  const decided = (phase: 'launch' | 'run', decision: ReconcileDecision, observation: RunObservation | null, runId: string | null) => {
-    engine.transaction(() => {
-      dispatcher.assertHeld(lease);
+    if ('enforced' in outcome) {
+      if (outcome.enforced.abandoned) await stopAbandoned(outcome.enforced.abandoned);
+      return { won: true };
+    }
+    return { won: false, value: outcome.value };
+  };
+  let openAttemptId: string | null = null;
+  try {
+    // A request whose cancellation was requested (its worker is gone:
+    // this sweep took the lease over) or whose deadline passed is not
+    // reconciled into a result: its Attempt is abandoned.
+    if ((await controlled(() => undefined)).won) return;
+    const attempt = engine.listAttempts(request.id).find(row => row.finished_at === null);
+    if (!attempt) {
+      // A running request with no open Attempt never launched under it.
+      engine.transaction(() => {
+        dispatcher.assertHeld(lease);
+        engine.transitionWorkRequest(request.id, {
+          from: 'running', to: 'failed', reason: 'retryable', errorCode: 'interrupted',
+          errorMessage: 'The request was interrupted before its Attempt was recorded.',
+        });
+        dispatcher.release(lease, 'interrupted');
+      });
+      return;
+    }
+    openAttemptId = attempt.id;
+    let snapshot: Record<string, unknown> = {};
+    try { snapshot = JSON.parse(attempt.launch_snapshot) as Record<string, unknown>; } catch { /* no transport: unobservable */ }
+    const adapter = typeof snapshot.transport === 'string' ? adapterForTransport(snapshot.transport) : null;
+    const reconciler = adapter?.reconciler ?? null;
+    const decidedEvent = (phase: 'launch' | 'run', decision: ReconcileDecision, observation: RunObservation | null, runId: string | null) => {
       engine.appendEvent(request.id, {
         type: 'reconcile_decided', attemptId: attempt.id,
         data: { phase, ...decision, external_run_id: runId, observation: observationData(observation) },
       });
-    });
-  };
+    };
+    const decided = async (phase: 'launch' | 'run', decision: ReconcileDecision, observation: RunObservation | null, runId: string | null) =>
+      !(await controlled(() => decidedEvent(phase, decision, observation, runId))).won;
 
-  let runId = attempt.external_run_id;
-  let decision: ReconcileDecision;
-  let observation: RunObservation | null = null;
-  if (!runId) {
-    const intent = dispatcher.launchIntent(attempt.id);
-    decision = decideWithoutRunId({ reconcilable: !!reconciler, intent, currentGrantFingerprint: reconciler?.currentGrantFingerprint() ?? null });
-    if (decision.action === 'repost' && reconciler && intent?.body && intent.idempotency_key) {
-      // The decision to re-POST is durable before the POST; its answer
-      // is recorded as a second decision below.
-      decided('launch', decision, null, null);
-      observation = await reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
-      decision = decideRepostResult(observation);
-      if (observation.kind === 'accepted') {
-        const accepted = observation.runId;
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
-          engine.recordAttemptExternalIds(attempt.id, { externalRunId: accepted });
-          engine.appendEvent(request.id, {
-            type: 'runtime_started', attemptId: attempt.id,
-            data: { adapter: adapter?.name ?? null, external_run_id: accepted, recovered: true },
-          });
-        });
-        runId = accepted;
+    let runId = attempt.external_run_id;
+    let decision: ReconcileDecision;
+    let observation: RunObservation | null = null;
+    if (!runId) {
+      const intent = dispatcher.launchIntent(attempt.id);
+      decision = decideWithoutRunId({ reconcilable: !!reconciler, intent, currentGrantFingerprint: reconciler?.currentGrantFingerprint() ?? null });
+      if (decision.action === 'repost' && reconciler && intent?.body && intent.idempotency_key) {
+        // The decision to re-POST is durable before the POST; its answer
+        // is recorded as a second decision below. Nothing is POSTed once
+        // the request was cancelled or passed its deadline.
+        if (!(await decided('launch', decision, null, null))) return;
+        observation = await reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
+        decision = decideRepostResult(observation);
+        if (observation.kind === 'accepted') {
+          const accepted = observation.runId;
+          // The accepted run id is persisted before any control decision,
+          // so a cancellation or deadline can address the run it names.
+          const late = acceptRepostedRun(lease, request.id, attempt.id, accepted, adapter?.name ?? null);
+          if (late) {
+            await recordExternalCancel(late, { localSignalled: false, launched: true });
+            return;
+          }
+          runId = accepted;
+        }
       }
+      if (!(await decided('launch', decision, observation, runId))) return;
+    } else if (!reconciler) {
+      decision = { action: 'interrupted', reason: 'runtime_unobservable' };
+      if (!(await decided('run', decision, null, runId))) return;
+    } else {
+      observation = await reconciler.inspect(runId);
+      decision = decideWithRunId(observation);
+      if (!(await decided('run', decision, observation, runId))) return;
     }
-    decided('launch', decision, observation, runId);
-  } else if (!reconciler) {
-    decision = { action: 'interrupted', reason: 'runtime_unobservable' };
-    decided('run', decision, null, runId);
-  } else {
-    observation = await reconciler.inspect(runId);
-    decision = decideWithRunId(observation);
-    decided('run', decision, observation, runId);
-  }
 
-  const prepare = snapshot.prepare_finalization === true;
-  try {
+    const prepare = snapshot.prepare_finalization === true;
     switch (decision.action) {
       case 'defer':
-        dispatcher.defer(lease, decision.reason, attempt.id);
+        await controlled(() => dispatcher.defer(lease, decision.reason, attempt.id));
         return;
       case 'attention':
-        dispatcher.setAttention(lease, { attemptId: attempt.id, reason: decision.reason, detail: observation ? JSON.stringify(observationData(observation)) : null });
+        await controlled(() => dispatcher.setAttention(lease, {
+          attemptId: attempt.id, reason: decision.reason, detail: observation ? JSON.stringify(observationData(observation)) : null,
+        }));
         return;
       case 'interrupted_attention': {
         // Keep what the dead run left for the operator, then end the
         // Attempt interrupted and stop automation (never auto-retry).
         const evidence = prepare && reconciler && runId ? await reconciler.evidence(runId) : null;
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
-          const finished = engine.finishAttempt(attempt.id, {
+        const keepEvidence = (finished: WorkAttempt | null | undefined) => {
+          if (evidence && finished) recordPreparedEvidence(request, finished, { finalization: evidence } as AttemptResult);
+        };
+        await controlled(() => {
+          keepEvidence(engine.finishAttempt(attempt.id, {
             outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: `Agent Deck run ${runId} died.`,
-          });
-          if (evidence) recordPreparedEvidence(request, finished, { finalization: evidence } as AttemptResult);
+          }));
           dispatcher.setAttention(lease, { attemptId: attempt.id, reason: decision.reason });
-        });
+        }, () => keepEvidence(engine.getAttempt(attempt.id)));
         return;
       }
       case 'fail':
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
+        await controlled(() => {
           engine.finishAttempt(attempt.id, { outcome: 'failed', errorCategory: decision.category, errorMessage: `Agent Deck refused the launch (${decision.code}).` });
           engine.transitionWorkRequest(request.id, {
             from: 'running', to: 'failed', reason: 'retryable', errorCode: 'runtime_failed', errorMessage: 'The agent runtime did not start the turn.',
@@ -854,8 +881,7 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
         });
         return;
       case 'interrupted':
-        engine.transaction(() => {
-          dispatcher.assertHeld(lease);
+        await controlled(() => {
           engine.finishAttempt(attempt.id, {
             outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: 'The runtime cannot be observed after a restart; the outcome is unknown.',
           });
@@ -877,7 +903,9 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
       ? db.prepare('SELECT external_session_id FROM session_bindings WHERE id = ?').get(bindingId) as { external_session_id: string } | undefined
       : undefined;
     const controller = new AbortController();
-    localWork.set(request.id, { attemptId: attempt.id, controller });
+    // Registered with the last control check, so a cancel command from
+    // here on signals the follow.
+    if ((await controlled(() => localWork.set(request.id, { attemptId: attempt.id, controller }))).won) return;
     await withHeartbeat(lease, async () => {
       const result = await reconciler.follow(followRunId, {
         resumeSessionId: binding?.external_session_id ?? null,
@@ -907,8 +935,37 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
       if (localWork.get(request.id)?.attemptId === attempt.id) localWork.delete(request.id);
     });
   } catch (error) {
-    handleUncommitted(lease, attempt.id, error);
+    handleUncommitted(lease, openAttemptId, error);
   }
+}
+
+// Persists the run id a reconcile re-POST was answered with. When the
+// Attempt was abandoned while the POST was in flight (a deadline enforced
+// by another sweep), the run is recorded on it as evidence and returned so
+// the caller asks the runtime to stop it; otherwise null.
+function acceptRepostedRun(lease: DispatchLease, requestId: string, attemptId: string, runId: string, adapterName: string | null): AbandonedAttempt | null {
+  return engine.transaction((): AbandonedAttempt | null => {
+    const current = engine.getAttempt(attemptId);
+    if (!current) return null;
+    if (current.finished_at === null) {
+      dispatcher.assertHeld(lease);
+      engine.recordAttemptExternalIds(attemptId, { externalRunId: runId });
+      engine.appendEvent(requestId, {
+        type: 'runtime_started', attemptId,
+        data: { adapter: adapterName, external_run_id: runId, recovered: true },
+      });
+      return null;
+    }
+    db.prepare('UPDATE work_attempts SET external_run_id = ? WHERE id = ? AND external_run_id IS NULL').run(runId, attemptId);
+    engine.appendEvent(requestId, {
+      type: 'runtime_started', attemptId,
+      data: { adapter: adapterName, external_run_id: runId, recovered: true, after_abandon: true },
+    });
+    const reason = current.outcome === 'timed_out' ? 'timed_out' : current.outcome === 'cancelled' ? 'cancelled' : 'retried';
+    let transport: string | null = null;
+    try { const snapshot = JSON.parse(current.launch_snapshot) as { transport?: unknown }; transport = typeof snapshot.transport === 'string' ? snapshot.transport : null; } catch { /* none */ }
+    return { requestId, attemptId, externalRunId: runId, transport, reason, launched: true };
+  });
 }
 
 // NOT-469: one recovery sweep. Takes over expired leases, leases of
