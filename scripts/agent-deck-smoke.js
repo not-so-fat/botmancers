@@ -110,7 +110,9 @@ async function main(args) {
   const childEvidence = line ? JSON.parse(line.slice('SMOKE_EVIDENCE '.length)) : null;
   const workdirAfter = gitState(workdir);
   const changes = harnessLib.diffSnapshots(before, harnessLib.snapshotProductionState());
-  const ok = run.code === 0 && !!childEvidence && childEvidence.request.state === 'completed' && changes.length === 0;
+  // The turn is read-only: a dirtied workdir or a moved HEAD fails the smoke.
+  const workdirUnchanged = workdirAfter.status === '' && workdirAfter.head === workdirBefore.head;
+  const ok = run.code === 0 && !!childEvidence && childEvidence.request.state === 'completed' && changes.length === 0 && workdirUnchanged;
   const evidence = guard.redact({
     smoke: 'botmancers-agent-deck-smoke/v1',
     result: ok ? 'passed' : 'failed',
@@ -124,7 +126,7 @@ async function main(args) {
     server,
     deck: options.deck,
     agent: options.agent || 'codex',
-    workdir: { path: workdir, headBefore: workdirBefore.head, headAfter: workdirAfter.head, cleanAfter: workdirAfter.status === '' },
+    workdir: { path: workdir, headBefore: workdirBefore.head, headAfter: workdirAfter.head, cleanAfter: workdirAfter.status === '', unchanged: workdirUnchanged },
     run: childEvidence,
     productionStateUnchanged: changes.length === 0,
     exitCode: run.code,

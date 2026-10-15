@@ -6,7 +6,8 @@
 // route modules are loaded through the caller's jiti instance (sharing its
 // database module), and each HTTP request becomes a standard Request:
 // proxy() runs first exactly as Next's middleware would, then the matched
-// handler with its awaited dynamic params. Never binds a fixed port.
+// handler with its awaited dynamic params. Listens on port 0 and reports the
+// port the OS assigned, so no port is reserved, released, and re-bound.
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
@@ -37,12 +38,13 @@ function discoverRoutes(apiDir) {
   }).sort((a, b) => a.dynamic - b.dynamic);
 }
 
-async function startRouteHost({ jiti, repoRoot, port }) {
+async function startRouteHost({ jiti, repoRoot }) {
   const { NextRequest } = require('next/server');
   const proxy = jiti(path.join(repoRoot, 'proxy.ts'));
   const routes = discoverRoutes(path.join(repoRoot, 'app', 'api'));
   const modules = new Map();
   const requests = [];
+  let port = 0;
 
   async function handle(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || `127.0.0.1:${port}`}`);
@@ -88,12 +90,13 @@ async function startRouteHost({ jiti, repoRoot, port }) {
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', resolve);
+    server.listen(0, '127.0.0.1', resolve);
   });
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  port = server.address().port;
+  const origin = `http://127.0.0.1:${port}`;
   return {
     origin,
-    port: server.address().port,
+    port,
     requests,
     // A same-origin owner request, as the Botmancers page sends it.
     async owner(method, pathname, body) {

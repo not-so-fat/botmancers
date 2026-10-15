@@ -6,7 +6,8 @@
 // Proves, without network, credentials, or a coding runtime:
 // - a harness root holds its own database, data root, HOME, Git workspace,
 //   and node/git-only PATH under the temp directory; its environment
-//   inherits no credentials; its port is ephemeral;
+//   inherits no credentials; its route host binds an OS-assigned port;
+// - the spawn guard refuses a forbidden command before it starts;
 // - success removes the root, failure keeps it with FAILED.txt;
 // - the runner (test-acceptance-engine.js) cleans up a passing scenario,
 //   preserves and names a failing one, ignores a hostile environment
@@ -21,7 +22,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const net = require('net');
 const { spawn, execFileSync } = require('child_process');
 const harnessLib = require('./test-support/acceptance/harness.js');
 const guard = require('./test-support/acceptance/real-deck-guard.js');
@@ -80,11 +80,43 @@ async function main() {
   assert(fs.readdirSync(path.join(harness.root, 'bin')).sort().join(',') === 'git,node', 'PATH directory holds only node and git');
   const log = execFileSync('git', ['log', '--format=%s'], { cwd: harness.workspace, env, encoding: 'utf8' }).trim();
   assert(log === 'acceptance baseline' && fs.existsSync(path.join(harness.workspace, guard.DISPOSABLE_MARKER)), 'disposable Git workspace: one baseline commit and the disposable marker');
-  const port = await harness.allocatePort();
-  const bindable = await new Promise(resolve => {
-    const server = net.createServer().once('error', () => resolve(false)).listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
-  });
-  assert(port > 0 && port !== 43123 && bindable, `allocated an ephemeral loopback port (${port}), not the developer server port`);
+  // Inside the root's environment: the route host binds an OS-assigned
+  // port directly, and the spawn guard refuses forbidden commands before
+  // they start (each would create a marker file if it ran).
+  const marker = path.join(harness.root, 'forbidden-ran');
+  const probe = `
+    const { createContext } = require(${JSON.stringify(path.join(__dirname, 'test-support/acceptance/engine-context.js'))});
+    const cp = require('child_process');
+    const ctx = createContext('selftest-guards');
+    const marker = ${JSON.stringify(marker)};
+    const attempts = {
+      spawnSync: () => cp.spawnSync('/usr/bin/touch', [marker]),
+      spawn: () => cp.spawn('/usr/bin/touch', [marker]),
+      execFile: () => cp.execFile('/usr/bin/touch', [marker]),
+      execFileSync: () => cp.execFileSync('/usr/bin/touch', [marker]),
+      exec: () => cp.exec('touch ' + marker),
+      execSync: () => cp.execSync('git --version; touch ' + marker),
+      nodeViaShell: () => cp.spawnSync(process.execPath, ['-e', 'require("fs").writeFileSync(' + JSON.stringify(marker) + ', "")'], { shell: true }),
+    };
+    const refused = {};
+    for (const [name, fn] of Object.entries(attempts)) { try { fn(); refused[name] = false; } catch (e) { refused[name] = /refused/.test(e.message); } }
+    const git = cp.execFileSync('git', ['--version'], { encoding: 'utf8' }).startsWith('git version');
+    ctx.routeHost().then(async host => {
+      const port = host.port;
+      await host.close();
+      setTimeout(() => {
+        process.stdout.write('GUARDS ' + JSON.stringify({ port, refused, git, recorded: ctx.guards.refusedSpawns.length, spawned: ctx.guards.spawned }) + '\\n');
+        process.exit(0);
+      }, 200);
+    });
+  `;
+  const probed = await run(process.execPath, ['-e', probe], harness.env(), harness.root);
+  const guards = (() => { try { return JSON.parse(probed.out.split('\n').find(line => line.startsWith('GUARDS ')).slice(7)); } catch { return null; } })();
+  assert(guards && guards.port > 0 && guards.port !== 43123, `the route host listens on an OS-assigned loopback port (${guards && guards.port}), not the developer server port${guards ? '' : `: ${probed.err.slice(-800)}`}`);
+  assert(guards && Object.values(guards.refused).every(Boolean) && guards.recorded === Object.keys(guards.refused).length,
+    `spawn guard refuses every non-git/node process and shell command (${guards && JSON.stringify(guards.refused)})`);
+  assert(!fs.existsSync(marker), 'no refused command ever started (its marker file does not exist)');
+  assert(guards && guards.git && guards.spawned.join(',') === 'git', 'git is still allowed and recorded');
   assert(harness.finish(true) === null && !fs.existsSync(harness.root), 'finish(success) removes the root');
 
   const failing = harnessLib.createHarness('selftest');
@@ -195,6 +227,29 @@ async function main() {
   assert(!evidenceText.includes(secret) && !smokeRun.out.includes(secret) && !smokeRun.err.includes(secret) && evidenceText.includes('Bearer [REDACTED]'),
     'the token never appears in the evidence or output (the echoed bearer is redacted)');
   assert(evidence && evidence.workdir.cleanAfter && evidence.workdir.headBefore === evidence.workdir.headAfter && evidence.productionStateUnchanged, 'workdir and production state unchanged');
+
+  console.log('\nSmoke fails when the read-only turn modifies its workdir');
+  const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.invalid' };
+  const mutations = [
+    ['dirties the workdir', cwd => fs.writeFileSync(path.join(cwd, 'written-by-agent.txt'), 'x'), ev => ev.workdir.cleanAfter === false],
+    ['commits a new HEAD', cwd => execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'agent commit'], { cwd, env: gitEnv }), ev => ev.workdir.cleanAfter && ev.workdir.headBefore !== ev.workdir.headAfter],
+  ];
+  for (const [label, mutate, shape] of mutations) {
+    const repo = gitRepo(scratchDir('mutated'), { [guard.DISPOSABLE_MARKER]: 'yes\n' });
+    const mutating = createFakeAgentDeck({ token: secret });
+    mutating.onStart = body => { mutate(body.cwd); return { result: 'Done.' }; };
+    const mutatingUrl = await mutating.listen();
+    const mutatedEvidencePath = path.join(scratchDir('evidence'), 'evidence.json');
+    const mutated = await smoke(['--workdir', repo, '--deck', 'deck-smoke', '--server', mutatingUrl, '--evidence', mutatedEvidencePath], { AGENT_DECK_RUN_TOKEN: secret });
+    await mutating.close();
+    const mutatedEvidence = fs.existsSync(mutatedEvidencePath) ? JSON.parse(fs.readFileSync(mutatedEvidencePath, 'utf8')) : null;
+    assert(mutated.code === 1 && /SMOKE RESULT: FAIL/.test(mutated.out) && mutatedEvidence && mutatedEvidence.result === 'failed'
+      && mutatedEvidence.run.request.state === 'completed' && mutatedEvidence.workdir.unchanged === false && shape(mutatedEvidence),
+      `a completed run that ${label} fails the smoke (exit ${mutated.code})`);
+    const keptRoot = (/harness root preserved: (\S+)/.exec(mutated.out) || [])[1];
+    if (keptRoot) fs.rmSync(keptRoot, { recursive: true, force: true });
+  }
+
   console.log('    sample redacted evidence excerpt:');
   console.log(JSON.stringify({ run: evidence && { request: evidence.run.request, attempts: evidence.run.attempts, replyPreview: evidence.run.replyPreview }, versions: evidence && evidence.versions }, null, 2).split('\n').map(line => `      ${line}`).join('\n'));
   const redacted = guard.redact({ authorization: 'Bearer abc.def', apiKey: 'k-123456', nested: [{ note: 'token adg_live_123 and sk-abcdefghij' }], keep: 'hello' }, ['k-123456']);

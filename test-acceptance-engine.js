@@ -51,6 +51,7 @@ async function runScenarioChild(name) {
   // node: the harness's own worker processes (restart-recovery).
   const runtimes = ctx.guards.spawned.filter(command => command !== 'git' && command !== 'node');
   ctx.isolationCheck(runtimes.length === 0, `no coding runtime process was spawned (${runtimes.join(', ') || 'none'})`);
+  ctx.isolationCheck(ctx.guards.refusedSpawns.length === 0, `no forbidden process was attempted (${ctx.guards.refusedSpawns.join(', ') || 'none'})`);
   const { results } = ctx;
   process.stdout.write(`\nACCEPTANCE_RESULT ${JSON.stringify(results)}\n`);
   return results.failed === 0 && results.engine > 0 && results.conversation > 0 ? 0 : 1;

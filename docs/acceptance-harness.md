@@ -43,8 +43,10 @@ any engine module loads:
 
 - It refuses every network connection that is not to loopback and records the
   attempt. The run fails if any such attempt was made.
-- It records every child process. The run fails if anything other than `git`
-  or the harness's own `node` workers was spawned.
+- It refuses to start any child process other than `git` or the harness's own
+  `node` workers, and any shell command (`exec`, or `shell: true`). A refused
+  process never starts; the call throws, the attempt is recorded, and the run
+  fails.
 - It drives coding Agents through the real Agent Deck run adapter, pointed at
   the deterministic fake Agent Deck API (`test-support/fake-agent-deck-api.js`).
 - It runs coordinator (Hermes transport) turns from per-conversation scripts.
@@ -139,6 +141,10 @@ records:
 - The outcome, the projection kinds, and a preview of the reply.
 - The workdir's HEAD and clean state before and after the run, and whether
   production state stayed unchanged.
+
+The smoke passes only if the request completed, production state is unchanged,
+and the workdir is still clean at the same HEAD. A run that dirties the workdir
+or commits to it prints `SMOKE RESULT: FAIL`.
 
 Before anything is printed or written, the evidence is redacted:
 

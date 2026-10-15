@@ -21,7 +21,6 @@
 
 const fs = require('fs');
 const os = require('os');
-const net = require('net');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
@@ -81,19 +80,6 @@ function diffSnapshots(before, after) {
   }
   if (before.gitStatus !== after.gitStatus) changes.push(`repository git status changed:\n${before.gitStatus}---\n${after.gitStatus}`);
   return changes;
-}
-
-// A free loopback port, chosen by the OS. Never a developer server's port.
-function allocatePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
 }
 
 function which(command) {
@@ -179,7 +165,6 @@ function createHarness(name, options = {}) {
   const harness = {
     ...layout,
     env: (extra = {}) => isolatedEnvFor(layout, extra),
-    allocatePort,
     // Removes the root after success; after failure keeps it and records
     // why, returning the preserved path.
     finish(ok, details = '') {
@@ -208,7 +193,6 @@ function createHarness(name, options = {}) {
 module.exports = {
   REPO_ROOT,
   ROOT_PREFIX,
-  allocatePort,
   createHarness,
   diffSnapshots,
   isInsideTmp,

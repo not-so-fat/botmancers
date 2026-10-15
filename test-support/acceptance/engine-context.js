@@ -6,7 +6,8 @@
 //
 // - refuses every non-loopback socket connection (and records the attempt),
 //   so a scenario cannot reach a network service by accident;
-// - records every child process the engine spawns.
+// - refuses (before it starts) every child process other than git or node,
+//   and records the processes it does start.
 //
 // Runtimes are controlled: coordinator (Hermes-transport) turns follow a
 // per-conversation script, and coding Agents run through the real Agent
@@ -34,6 +35,8 @@ function assertIsolatedEnvironment() {
 const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const blockedConnections = [];
 const spawned = [];
+const refusedSpawns = [];
+const ALLOWED_PROGRAMS = new Set(['git', 'node', path.basename(process.execPath)]);
 
 function installGuards(allowHosts = []) {
   for (const host of allowHosts) ALLOWED_HOSTS.add(String(host).toLowerCase());
@@ -52,10 +55,22 @@ function installGuards(allowHosts = []) {
     }
     return original.apply(this, args);
   };
+  // Only git and node (the harness's own workers) may start; anything else
+  // is refused before child_process is called, so it never runs. A shell
+  // (exec/execSync, or shell: true) could chain any command, so it is
+  // refused outright.
   for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'exec', 'execSync']) {
     const fn = childProcess[name];
-    childProcess[name] = function recorded(command, ...rest) {
-      spawned.push(path.basename(String(command).split(' ')[0]));
+    const viaShell = name === 'exec' || name === 'execSync';
+    childProcess[name] = function guardedSpawn(command, ...rest) {
+      const program = path.basename(String(command).trim().split(/\s+/)[0]);
+      const options = rest.find(arg => arg && typeof arg === 'object' && !Array.isArray(arg));
+      const allowed = !viaShell && !(options && options.shell) && ALLOWED_PROGRAMS.has(program);
+      if (!allowed) {
+        refusedSpawns.push(String(command));
+        throw new Error(`acceptance harness: refused to start ${viaShell || (options && options.shell) ? 'a shell command' : 'process'} "${command}" (only ${[...ALLOWED_PROGRAMS].join(', ')} may run)`);
+      }
+      spawned.push(program);
       return fn.call(this, command, ...rest);
     };
   }
@@ -203,9 +218,8 @@ function createContext(scenarioName, options = {}) {
   let host = null;
   async function routeHost() {
     if (!host) {
-      const { allocatePort } = require('./harness.js');
       const { startRouteHost } = require('./route-host.js');
-      host = await startRouteHost({ jiti, repoRoot: REPO_ROOT, port: await allocatePort() });
+      host = await startRouteHost({ jiti, repoRoot: REPO_ROOT });
     }
     return host;
   }
@@ -222,7 +236,7 @@ function createContext(scenarioName, options = {}) {
     check, engineCheck, conversationCheck, isolationCheck, results,
     one, all, requestsIn, attemptsOf, wakesIn, messagesIn, eventTypes, counts, sameCounts, projection, projectedKinds, inOrder,
     agent, block, ask, settle, routeHost, close,
-    guards: { blockedConnections, spawned },
+    guards: { blockedConnections, spawned, refusedSpawns },
   };
 }
 
