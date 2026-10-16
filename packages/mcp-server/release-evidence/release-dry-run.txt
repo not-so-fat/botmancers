@@ -1,20 +1,20 @@
 botmancers release check (dry run, no registry mutation): botmancers@0.1.0
-commit 173f2c0d25663bf34679a370ccd2ac137a8d8161
+commit f2bcd8887fb31d02dab4b717acda99808900f16d
 
 PASS  version consistency — package.json, CHANGELOG, README pin, CLI all 0.1.0
 PASS  changelog entry — ## [0.1.0] has 5 item(s)
 PASS  clean git state — no uncommitted or untracked files
 PASS  locked build toolchain — package-lock.json committed, workflow uses npm ci, installed @types/node@20.19.43, typescript@5.9.3 match the lock
-PASS  tests — npm test: 19 passed, 0 failed
+PASS  tests — npm test: 24 passed, 0 failed
 PASS  package contents — 19 files, allowlist only: CHANGELOG.md LICENSE README.md dist/cli.d.ts dist/cli.js dist/config.d.ts dist/config.js dist/contract.d.ts dist/contract.js dist/index.d.ts dist/index.js dist/redact.d.ts dist/redact.js dist/server.d.ts dist/server.js dist/upstream.d.ts dist/upstream.js package.json schemas/botmancers.mcp.v1.tools.json
-PASS  provenance and attestation support — publishConfig provenance/public/canary, repository matches origin, workflow has id-token: write and --provenance
+PASS  provenance and attestation support — publishConfig provenance/public/canary, repository matches origin, workflow has id-token: write, publishes with --provenance via publish-ci.sh (OIDC unless a bootstrap token is present)
 PASS  trusted publishing toolchain — workflow node 24 with npm floor 11.5.1; this run: node v26.10.0, npm 11.19.1
 PASS  npm publish --dry-run — would publish + botmancers@0.1.0 with dist-tag canary
 PASS  canary install of the exact tarball — botmancers-0.1.0.tgz sha512-uESqsRUPlkQpOuU+0bbrujZsRKgbgcfo9FHBPx0e316h7qMkjjXPnncNdrcJLq1yMU6MtEcanPLRQtfkjPLcng== installed into a clean project; npx botmancers served health, tools/list, tools/call
 
 Release check PASSED for botmancers@0.1.0. Nothing was published.
 Operator steps (see packages/mcp-server/RELEASING.md):
-  1. git tag botmancers-v0.1.0 173f2c0d2566 && git push origin botmancers-v0.1.0
+  1. git tag botmancers-v0.1.0 f2bcd8887fb3 && git push origin botmancers-v0.1.0
      -> CI re-runs this check and publishes with provenance to dist-tag "canary"
   2. node packages/mcp-server/scripts/smoke-install.mjs --registry 0.1.0
   3. npm dist-tag add botmancers@0.1.0 latest     (2FA; promotes the verified canary to stable)

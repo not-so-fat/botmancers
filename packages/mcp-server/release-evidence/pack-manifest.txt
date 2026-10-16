@@ -1,4 +1,4 @@
-commit 173f2c0d25663bf34679a370ccd2ac137a8d8161
+commit f2bcd8887fb31d02dab4b717acda99808900f16d
 botmancers@0.1.0  botmancers-0.1.0.tgz
 size 18287 B, unpacked 65045 B, 19 files
 shasum 47fe252a635044d26002eb7d1d2d332230ae43b9
