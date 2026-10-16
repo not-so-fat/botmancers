@@ -36,13 +36,18 @@ jobs:
             npm install -g npm@11.6.2
           fi
           npm --version
+      - name: Install the app's locked dependencies (repository root)
+        # The package bundles the Next.js app built from the repository root
+        # (scripts/build-app.mjs), so its exact package-lock.json is installed too.
+        working-directory: .
+        run: npm ci --no-audit --no-fund
       - name: Install the locked package-local build tools
         # npm ci installs exactly packages/mcp-server/package-lock.json (and
         # fails if it disagrees with package.json), so the tagged commit always
         # compiles with the same TypeScript and @types/node as its dry run.
         run: npm ci --no-audit --no-fund
-      - name: Release check (version, changelog, clean tree, tests, contents, provenance, canary install)
-        run: npm run build && npm run release:check -- --tag "$GITHUB_REF_NAME"
+      - name: Release check (version, changelog, clean tree, app build, tests, contents, provenance, canary installs)
+        run: npm run build && npm run build:app && npm run release:check -- --tag "$GITHUB_REF_NAME"
       - name: Publish to the canary dist-tag with provenance
         # scripts/publish-ci.sh runs `npm publish --provenance --access public
         # --tag canary`. With the NPM_TOKEN environment secret present (first
