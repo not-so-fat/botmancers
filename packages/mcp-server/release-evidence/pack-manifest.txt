@@ -1,9 +1,9 @@
-commit f222480af99b57110da5a5510fb6baba9f02ff19
+commit 00259bec22ab3c59eefcd08cdb8449da2ac246ed
 botmancers@0.2.0  botmancers-0.2.0.tgz
-size 13728646 B, unpacked 38970465 B, 1540 files
-shasum de38ac2c53bf24bc85072f1e277f0bb1dad99121
-integrity sha512-v4U72act7BP8LoBlQfGjIK/0lF8Yqg/gAPC0RyYmrAQH6qxpX5F0WMnjDPspOAhVDCBvir+u9fUCIKdbgrDuvQ==
-app build 0.2.0 commit f222480af99b57110da5a5510fb6baba9f02ff19, next 16.3.8
+size 13728777 B, unpacked 38971723 B, 1540 files
+shasum 67a68b7e3f874f3781f71285267c8d0ac5d845e0
+integrity sha512-qu1350VHuQTt6o/mTkqFkG7Xab4NppdsFzp2EYWlFvL21EyiypvBNN/9QxqTGPIYz82mIDn+NkY53xbGbCvoLQ==
+app build 0.2.0 commit 00259bec22ab3c59eefcd08cdb8449da2ac246ed, next 16.3.8
      143  app/BUILD_INFO.json
       94  app/package.json
     7455  app/server.js
@@ -18,8 +18,8 @@ app build 0.2.0 commit f222480af99b57110da5a5510fb6baba9f02ff19, next 16.3.8
     5076  dist/home.js
      697  dist/index.d.ts
      732  dist/index.js
-    3787  dist/product.d.ts
-   40252  dist/product.js
+    3907  dist/product.d.ts
+   41390  dist/product.js
      181  dist/redact.d.ts
      762  dist/redact.js
     1003  dist/server.d.ts
