@@ -9,6 +9,16 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { PACKAGE_DIR, makeFakeApp } from './product-harness.mjs';
 
+// The package.json inside a tarball, as the registry serves it per version.
+const manifests = new Map();
+function manifestOf(tarball) {
+  if (!manifests.has(tarball)) {
+    const { name, version, bin, engines, type, main, exports } = JSON.parse(execFileSync('tar', ['-xzOf', tarball, 'package/package.json'], { encoding: 'utf8' }));
+    manifests.set(tarball, { name, version, bin, engines, type, main, exports });
+  }
+  return manifests.get(tarball);
+}
+
 export const integrityOf = file => `sha512-${createHash('sha512').update(readFileSync(file)).digest('base64')}`;
 
 // A publishable package directory for botmancers@version. With `app`, that
@@ -68,6 +78,7 @@ export async function startRegistry({ releases = {}, latest } = {}) {
     }
     const base = `http://127.0.0.1:${server.address().port}`;
     const meta = version => ({
+      ...manifestOf(state.releases[version]),
       name: 'botmancers',
       version,
       dist: { tarball: `${base}/botmancers/-/botmancers-${version}.tgz`, integrity: integrityOf(state.releases[version]) },

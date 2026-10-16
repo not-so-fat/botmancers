@@ -562,10 +562,11 @@ export function activatablePending(env: NodeJS.ProcessEnv, cliPath?: string): st
 // Reporting.
 
 // Every executable `botmancers` on PATH, in order. The first one is what a
-// shell runs.
+// shell runs. npx's temporary bin directories (prepended only while npx runs
+// a command, e.g. the install.sh bootstrap) are not a user's PATH.
 export function botmancersOnPath(env: NodeJS.ProcessEnv): string[] {
   const found: string[] = [];
-  for (const dir of (env.PATH ?? '').split(delimiter).filter(Boolean)) {
+  for (const dir of (env.PATH ?? '').split(delimiter).filter(dir => dir && !dir.includes(`${sep}_npx${sep}`))) {
     const candidate = join(dir, 'botmancers');
     try {
       accessSync(candidate, fsConstants.X_OK);

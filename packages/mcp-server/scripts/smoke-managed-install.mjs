@@ -60,10 +60,34 @@ function repackNext(tarball, version, workdir) {
   mkdirSync(dir, { recursive: true });
   execFileSync('tar', ['-xzf', tarball, '-C', dir]);
   const pkg = join(dir, 'package');
-  for (const file of ['package.json', 'app/BUILD_INFO.json']) {
+  const previous = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version;
+  for (const file of ['package.json', 'app/BUILD_INFO.json', 'app/package.json']) {
     const path = join(pkg, file);
     writeFileSync(path, `${JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), version }, null, 2)}\n`);
   }
+  // next build inlines the release version (BOTMANCERS_BUILD_VERSION) into the
+  // health route and the server config; rewrite exactly those literals.
+  const inlined = [
+    [`service:"botmancers-core",version:"${previous}"`, `service:"botmancers-core",version:"${version}"`],
+    [`"BOTMANCERS_BUILD_VERSION":"${previous}"`, `"BOTMANCERS_BUILD_VERSION":"${version}"`],
+  ];
+  let rewritten = 0;
+  const visit = path => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (/\.(?:js|json)$/.test(entry.name)) {
+        const text = readFileSync(full, 'utf8');
+        const next = inlined.reduce((acc, [from, to]) => acc.split(from).join(to), text);
+        if (next !== text) {
+          writeFileSync(full, next);
+          rewritten += 1;
+        }
+      }
+    }
+  };
+  visit(join(pkg, 'app'));
+  if (!rewritten) throw new Error(`could not find the inlined core version ${previous} to bump`);
   return pack(pkg, join(workdir, 'tgz'));
 }
 
@@ -182,6 +206,14 @@ export async function smoke({ tarball } = {}) {
     // 3. Publish N+1; the background updater stages it beside the live N.
     registry.latest = N1;
     const supervisorPid = record().supervisor.pid;
+    const statePath = join(home, 'update-state.json');
+    const checked = JSON.parse(readFileSync(statePath, 'utf8'));
+    check(checked.latest === N && checked.pendingVersion === null, `the product's own daily check already ran at ${checked.checkedAt} (latest ${checked.latest}); nothing pending`);
+    const quiet = await botmancers(['status']);
+    check(quiet.code === 0 && JSON.parse(readFileSync(statePath, 'utf8')).checkedAt === checked.checkedAt, 'within 24 hours no second check runs, even though N+1 is now on latest');
+    // The next day: age the last check past 24 hours.
+    writeFileSync(statePath, JSON.stringify({ ...checked, checkedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() }));
+    log(`(simulating the next day: checkedAt set to 25 hours ago)`);
     const trigger = await botmancers(['status']);
     check(trigger.code === 0, 'botmancers status (schedules the daily update check) exits 0 at once');
     const staged = await waitFor(() => {
@@ -212,7 +244,6 @@ export async function smoke({ tarball } = {}) {
     await stateIntact(`after rollback to ${N}`);
 
     // 6. The kill switch: no automatic registry traffic or state change at all.
-    const statePath = join(home, 'update-state.json');
     writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), checkedAt: '2000-01-01T00:00:00.000Z', declinedVersion: null }));
     const frozen = readFileSync(statePath, 'utf8');
     const hits = registry.hits.length;
