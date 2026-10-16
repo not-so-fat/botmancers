@@ -10,6 +10,31 @@ Fill this in by following the steps in
 digest, and public hostname you do not want published. Replace them with
 `<redacted>`. Never paste an `Authorization` value.
 
+## Preflight blocker (recorded 2026-10-15)
+
+The smoke must run against the exact published package, but that package is
+not on the registry yet:
+
+```
+$ npm view botmancers versions --json
+npm error code E404
+npm error 404 Not Found - GET https://registry.npmjs.org/botmancers - Not found
+```
+
+Before running the steps below, the operator must:
+
+1. Publish `botmancers@0.1.0` through the NOT-492 release flow. Then confirm that
+   `npm view botmancers@0.1.0 version` prints `0.1.0`, and that
+   `npm run test:grok-handoff -- --registry 0.1.0` passes.
+2. Open an authenticated HTTPS or approved private-network route to
+   `127.0.0.1:43124/mcp`. This publishes an endpoint outside the machine, so it
+   needs an operator's approval. An automated session must not open it on its own.
+3. Connect the bridge in Cursor's Grok Bot plugin settings. This needs an
+   interactive Cursor account session.
+
+No real Grok Bot evidence below has been filled in. Every `<...>` placeholder
+is still unfilled.
+
 ## Environment
 
 - Botmancers commit: `<git rev-parse HEAD>`
