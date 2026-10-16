@@ -9,9 +9,11 @@
 // Checks, in order: version consistency (package.json, CHANGELOG, README pin,
 // tag), clean git state, locked build toolchain (committed package-lock.json,
 // exact devDependency pins, `npm ci` in the workflow, installed tools match
-// the lock), tests, package contents, provenance/attestation
-// support (including the npm/Node floor for trusted publishing), `npm publish --dry-run`, and a canary install of the exact tarball
-// into a clean temporary project.
+// the lock), the packaged app build (app/ built from this commit and
+// version), tests, package contents, provenance/attestation
+// support (including the npm/Node floor for trusted publishing), `npm publish --dry-run`, and canary installs of the exact tarball
+// into clean temporary projects: bridge-only and the full product.
+// Run `npm run build && npm run build:app` first.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -143,6 +145,21 @@ step('locked build toolchain', () => {
   return `package-lock.json committed, workflow uses npm ci, installed ${pinned.join(', ')} match the lock`;
 });
 
+step('packaged app build', () => {
+  const infoPath = join(PACKAGE_DIR, 'app/BUILD_INFO.json');
+  assert(existsSync(infoPath), 'app/ is not built; run npm run build:app');
+  const info = JSON.parse(readFileSync(infoPath, 'utf8'));
+  assert(info.version === version, `app/ was built as ${info.version}, package is ${version}; run npm run build:app`);
+  if (!allowDirty) {
+    assert(info.commit === commit, `app/ was built from ${info.commit}, HEAD is ${commit}; run npm run build:app`);
+    assert(!info.dirty, 'app/ was built from a dirty tree; commit, then run npm run build:app');
+  }
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  assert(/npm run build:app/.test(workflow), 'release workflow must build the packaged app (npm run build:app)');
+  assert(/working-directory:\s*\.\s*\n\s*run:\s*npm ci\b/.test(workflow), 'release workflow must install the app\'s locked dependencies with npm ci at the repository root');
+  return `app/ ${info.version} from ${info.commit.slice(0, 12)}${info.dirty ? ' (dirty)' : ''}, next ${info.next}`;
+});
+
 step('tests', () => {
   const out = run('npm', ['test']);
   const pass = /ℹ pass (\d+)/.exec(out)?.[1];
@@ -189,19 +206,21 @@ step('trusted publishing toolchain', () => {
 });
 
 step('npm publish --dry-run', () => {
-  const out = run('npm', ['publish', '--dry-run', '--ignore-scripts', '--provenance=false'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const out = run('npm', ['publish', '--dry-run', '--ignore-scripts', '--provenance=false'], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   return `would publish ${out.trim().split('\n').pop()} with dist-tag canary`;
 });
 
 step('canary install of the exact tarball', () => {
   const dir = mkdtempSync(join(tmpdir(), 'botmancers-release-'));
   try {
-    const [entry] = JSON.parse(run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', dir]));
+    const [entry] = JSON.parse(run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', dir], { maxBuffer: 64 * 1024 * 1024 }));
     const tarball = join(dir, entry.filename);
     const integrity = `sha512-${createHash('sha512').update(readFileSync(tarball)).digest('base64')}`;
     const out = run(process.execPath, ['scripts/smoke-install.mjs', '--tarball', tarball]);
     assert(/^PASS clean-install smoke/m.test(out), out);
-    return `${entry.filename} ${integrity} installed into a clean project; npx botmancers served health, tools/list, tools/call`;
+    const product = run(process.execPath, ['scripts/smoke-product-install.mjs', '--tarball', tarball], { maxBuffer: 16 * 1024 * 1024 });
+    assert(/^PASS product install smoke/m.test(product), product);
+    return `${entry.filename} ${integrity} installed into clean projects; npx botmancers served health, tools/list, tools/call; botmancers setup/start --daemon served the UI, /api/v0, and the bridge against the same engine, kept state across stop/start, and stopped cleanly`;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -217,6 +236,7 @@ Operator steps (see packages/mcp-server/RELEASING.md):
   1. git tag botmancers-v${version} ${commit.slice(0, 12)} && git push origin botmancers-v${version}
      -> CI re-runs this check and publishes with provenance to dist-tag "canary"
   2. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
+     node packages/mcp-server/scripts/smoke-product-install.mjs --registry ${version}
   3. npm dist-tag add botmancers@${version} latest     (2FA; promotes the verified canary to stable)
 `);
 finish(0);

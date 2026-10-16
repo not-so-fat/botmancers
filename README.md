@@ -89,8 +89,18 @@ Deck, model, grant, or target. The contract is in
 [`docs/mcp-bridge.md`](docs/mcp-bridge.md).
 
 The [`botmancers`](packages/mcp-server/README.md) npm package
-(`packages/mcp-server`, published as `botmancers@0.1.0`) is a standalone
-bridge that clients connect to with their own token:
+(`packages/mcp-server`) ships the whole product: the UI, API, core engine,
+and the bridge, run by one supervisor with no checkout needed:
+
+```bash
+npx botmancers setup
+npx botmancers start --daemon --open    # UI 127.0.0.1:43123, MCP 127.0.0.1:43124/mcp
+```
+
+Its state lives under `BOTMANCERS_HOME` (default `~/.botmancers`);
+`botmancers status`, `doctor`, `open`, and `stop` manage it. Bare
+`botmancers` (or `botmancers mcp`) is still the standalone bridge in front of
+an app you run yourself, such as this checkout:
 
 ```bash
 BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers
@@ -98,7 +108,8 @@ BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers
 
 Setup of the service token and coordinator allowlist is in the package README.
 [`docs/integrations/grok-bot/README.md`](docs/integrations/grok-bot/README.md)
-connects Cursor's Grok Bot. Its fixture smoke passes; the real Grok Bot smoke is
+connects Cursor's Grok Bot through the bridge-only command pinned to
+`botmancers@0.1.0`, which 0.2.0 keeps unchanged. Its fixture smoke passes; the real Grok Bot smoke is
 still a pending operator step
 ([record](docs/integrations/grok-bot/evidence/operator-smoke.md)).
 Maintainers release the package as described in
@@ -132,6 +143,11 @@ npm run dev
 ```
 
 4. Open http://localhost:43123
+
+A checkout keeps its state in `./botmancers.db`, `./files`, `./skills`, and
+`./.temporal` unless `BOTMANCERS_HOME` (or an explicit `BOTMANCERS_DB_PATH`,
+`BOTMANCERS_FILES_ROOT`, `BOTMANCERS_SKILLS_ROOT`, `HERMES_WAIT_LOG_PATH`) is
+set; see `lib/home.ts`.
 
 Conversational turns require Hermes configuration: without
 `HERMES_API_SERVER_KEY`, a turn posts an explicit Hermes error instead of a

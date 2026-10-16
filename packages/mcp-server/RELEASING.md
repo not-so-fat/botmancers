@@ -43,16 +43,22 @@ registry smoke test before announcing that release.
 2. **Dry run.** From a clean checkout of the merge commit, run:
 
    ```sh
+   npm ci                      # repository root: the app the package bundles
    cd packages/mcp-server
    npm ci
    npm run build
+   npm run build:app           # next build (standalone) assembled into app/
    npm run release:check
    ```
 
    This checks version consistency, the changelog entry, a clean git tree,
-   the tests, package contents against the allowlist, provenance support,
-   `npm publish --dry-run`, and a canary install of the exact tarball into a
-   clean temporary project. It also checks that the release workflow runs on
+   that `app/` was built from this commit and version, the tests, package
+   contents against the allowlist (including the bundled UI/core runtime),
+   provenance support, `npm publish --dry-run`, and canary installs of the
+   exact tarball into clean temporary projects: bridge-only
+   (`smoke-install.mjs`) and the full product (`smoke-product-install.mjs`:
+   `setup`, `start --daemon`, UI, `/api/v0`, bridge against the same engine,
+   restart, `status`/`doctor`/`stop`). It also checks that the release workflow runs on
    Node 24 and enforces npm 11.5.1 or newer, and that the local toolchain
    meets the same floor: npm trusted publishing (OIDC) needs npm >= 11.5.1
    and Node >= 22.14. It never writes to the registry.
@@ -61,11 +67,16 @@ registry smoke test before announcing that release.
    (the transcripts record the commit SHA and exact version):
 
    ```sh
-   mkdir -p release-evidence
-   npm run release:check -- --out release-evidence/release-dry-run.txt
+   npm run release:check -- --out /tmp/release-dry-run.txt     # needs the clean tree, so first
+   npm pack --ignore-scripts --pack-destination /tmp           # the exact tarball, no rebuild
+   mkdir -p release-evidence && cp /tmp/release-dry-run.txt release-evidence/
    npm run check:pack -- --out release-evidence/pack-manifest.txt
-   npm run smoke:install -- --out release-evidence/clean-install-smoke.txt
+   npm run smoke:install -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/clean-install-smoke.txt
+   npm run smoke:product -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/product-install-smoke.txt
    ```
+
+   Pass `--tarball` to the smokes: without it they run `npm pack`, whose
+   `prepack` rebuilds `app/` from the (now dirty) tree.
 
    `release-evidence/` is outside the package `files` allowlist, so it is
    never published. Commit it in a follow-up commit that touches only that
@@ -85,6 +96,7 @@ registry smoke test before announcing that release.
 
    ```sh
    node packages/mcp-server/scripts/smoke-install.mjs --registry X.Y.Z --out smoke.txt
+   node packages/mcp-server/scripts/smoke-product-install.mjs --registry X.Y.Z --out product-smoke.txt
    npm view botmancers@X.Y.Z dist.integrity
    npm audit signatures            # inside the smoke project, or any project that installed it
    ```
@@ -95,7 +107,14 @@ registry smoke test before announcing that release.
    npm dist-tag add botmancers@X.Y.Z latest
    ```
 
-6. Record the npm URL (`https://www.npmjs.com/package/botmancers/v/X.Y.Z`),
+6. **Operator friend-path check** (0.2.0 onward), from a clean macOS user
+   account with Node 20+: `npm install -g botmancers@X.Y.Z` (canary),
+   `botmancers setup`, `botmancers start --daemon --open`, create and reopen a
+   conversation in the UI, call MCP `botmancers_health` and `tools/list`
+   against the same installation, `botmancers stop && botmancers start --daemon`,
+   and confirm the conversation remains. Keep the transcript, a UI screenshot,
+   and the MCP transcript.
+7. Record the npm URL (`https://www.npmjs.com/package/botmancers/v/X.Y.Z`),
    the integrity value, and the redacted smoke transcript on the release
    ticket.
 

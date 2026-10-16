@@ -1,7 +1,9 @@
-// Clean-install smoke: install the package into an empty temporary project
-// with an empty HOME and npm cache, then run it the way a user does:
-// `npx botmancers --help`, the installed `botmancers` binary, and a served
-// bridge against a fake Botmancers, driven by an MCP client.
+// Clean-install smoke for bridge-only mode: install the package into an empty
+// temporary project with an empty HOME and npm cache, then run it the way an
+// existing MCP configuration does: `npx botmancers --help`, the installed
+// `botmancers` binary, and a served bridge against a fake Botmancers, driven
+// by an MCP client. The full product (UI/core plus bridge) is covered by
+// smoke-product-install.mjs.
 //
 //   node scripts/smoke-install.mjs                    pack this directory and install the tarball (offline)
 //   node scripts/smoke-install.mjs --tarball f.tgz    install a given tarball (offline)
@@ -66,7 +68,9 @@ export async function smoke({ tarball, registryVersion } = {}) {
       log(`source: registry ${spec}`);
     } else {
       if (!tarball) {
-        const [entry] = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', root], { cwd: PACKAGE_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+        // prepack (build + build:app) prints progress to stdout ahead of the JSON.
+        const out = execFileSync('npm', ['pack', '--json', '--pack-destination', root], { cwd: PACKAGE_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+        const [entry] = JSON.parse(out.slice(out.lastIndexOf('\n[\n') + 1));
         tarball = join(root, entry.filename);
       }
       spec = resolve(tarball);
@@ -85,7 +89,7 @@ export async function smoke({ tarball, registryVersion } = {}) {
     if (registryVersion) check(installed.version === registryVersion, `registry version is ${registryVersion}`);
 
     const shipped = readdirSync(join(project, 'node_modules/botmancers')).sort();
-    check(shipped.every(name => ['CHANGELOG.md', 'LICENSE', 'README.md', 'dist', 'package.json', 'schemas'].includes(name)), `installed files are only ${shipped.join(', ')}`);
+    check(shipped.every(name => ['CHANGELOG.md', 'LICENSE', 'README.md', 'app', 'dist', 'package.json', 'schemas'].includes(name)), `installed files are only ${shipped.join(', ')}`);
     check(Object.keys(installed.dependencies ?? {}).length === 0 && readdirSync(join(project, 'node_modules')).filter(n => !n.startsWith('.')).join(',') === 'botmancers', 'no transitive dependencies installed');
 
     const help = await runBridge('npx', ['botmancers', '--help'], { env, cwd: project });

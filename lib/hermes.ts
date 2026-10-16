@@ -16,10 +16,12 @@
 // profile uses the root chat path; a bot with one uses /p/<profile>/.... The
 // profile is never derived from name, title or role.
 // - HERMES_MODEL: model name sent in the chat body. Defaults to 'hermes'.
-// - HERMES_WAIT_LOG_PATH: wait-log file. Defaults to the .temporal JSONL log.
+// - HERMES_WAIT_LOG_PATH: wait-log file. Defaults to logs/ under BOTMANCERS_HOME,
+//   or the .temporal JSONL log in a checkout (./home).
 
 import fs from 'fs';
 import path from 'path';
+import { waitLogPath } from './home';
 
 // Documented default base URL for a local Hermes gateway.
 export const HERMES_DEFAULT_BASE_URL = 'http://127.0.0.1:8642';
@@ -219,9 +221,7 @@ export async function hermesChat(args: {
 export type HermesWaitEvent = 'wait_start' | 'wait_finish' | 'wait_failed';
 
 export function hermesWaitLogPath(env: NodeJS.ProcessEnv = process.env): string {
-  const override = (env.HERMES_WAIT_LOG_PATH || '').trim();
-  if (override) return override;
-  return path.join(process.cwd(), '.temporal', 'specialist-waits.jsonl');
+  return waitLogPath(env);
 }
 
 // One JSON object per line. Never throws: logging must not fail a turn.

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { skillsRootPath } from './home';
 
 export type SkillStatus = 'present' | 'absent' | 'unsupported';
 
@@ -14,7 +15,7 @@ export interface SkillState {
 // They are not MCP servers and they are not logins.
 export function localSkillForBot(botName: string): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(botName)) return null;
-  const root = path.resolve(process.cwd(), 'skills');
+  const root = skillsRootPath();
   const file = path.resolve(root, botName, 'SKILL.md');
   if (!file.startsWith(root + path.sep)) return null;
   try {
@@ -81,7 +82,7 @@ export function writeSkillForBot(botName: string, content: string): SkillState {
   if (!skillPath) {
     throw new Error('Skill files need a bot name matching /^[A-Za-z0-9_-]+$/');
   }
-  const root = path.resolve(process.cwd(), 'skills');
+  const root = skillsRootPath();
   const file = path.resolve(root, botName, 'SKILL.md');
   if (!file.startsWith(root + path.sep)) {
     throw new Error('Skill files need a bot name matching /^[A-Za-z0-9_-]+$/');

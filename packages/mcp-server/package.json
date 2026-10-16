@@ -1,13 +1,15 @@
 {
   "name": "botmancers",
-  "version": "0.1.0",
-  "description": "Botmancers MCP bridge: a Streamable HTTP MCP server that hands tasks to a Botmancers coordinator (contract botmancers.mcp.v1).",
+  "version": "0.2.0",
+  "description": "Botmancers: the UI, core engine, and authenticated MCP bridge (contract botmancers.mcp.v1) as one CLI-managed product. `botmancers start` runs it all; bare `botmancers` runs the bridge only.",
   "keywords": [
     "botmancers",
     "mcp",
     "model-context-protocol",
     "streamable-http",
-    "agents"
+    "agents",
+    "ui",
+    "supervisor"
   ],
   "license": "MIT",
   "author": "Yusuke Muraoka",
@@ -38,6 +40,7 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "schemas/*.json",
+    "app/",
     "CHANGELOG.md"
   ],
   "engines": {
@@ -51,12 +54,14 @@
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "build:app": "node scripts/build-app.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/",
+    "test": "npm run build && npm run build:app && node --test test/",
     "check:pack": "node scripts/check-pack.mjs",
     "smoke:install": "node scripts/smoke-install.mjs",
+    "smoke:product": "node scripts/smoke-product-install.mjs",
     "release:check": "node scripts/release.mjs",
-    "prepack": "npm run build"
+    "prepack": "npm run build && npm run build:app"
   },
   "devDependencies": {
     "@types/node": "20.19.43",

@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
 import { randomUUID } from 'crypto';
 import { applyAgentUpdate, DEFAULT_AGENT, migrateLegacyAgentFields, type AgentUpdateFields } from './bot-definition';
 import { isChiefOfStaffName } from './avatar';
@@ -6,9 +8,12 @@ import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } 
 import { createEngineStore, deleteEngineRecordsForAgent, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
 import { createConversationProjector } from './conversation-projection';
 import { AgentNameConflictError, agentDisplayName, agentNameKey, planNameMigration, type NameMigrationRow } from './agent-names';
+import { dbPath } from './home';
 
-// Overridable so the stub-model delegation test uses an isolated file.
-const DB_PATH = process.env.BOTMANCERS_DB_PATH || 'botmancers.db';
+// BOTMANCERS_DB_PATH overrides (tests use isolated files); otherwise the
+// file lives under BOTMANCERS_HOME, or ./botmancers.db in a checkout (./home).
+const DB_PATH = dbPath();
+if (DB_PATH !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(DB_PATH)), { recursive: true });
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
