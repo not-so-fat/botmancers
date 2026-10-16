@@ -56,7 +56,8 @@
     "test:request-control": "node test-request-control.js",
     "test:ui-turn-restart": "node test-ui-turn-restart.js",
     "test:mcp-bridge": "node test-mcp-bridge.js",
-    "test:mcp-server": "npm --prefix packages/mcp-server test"
+    "test:mcp-server": "npm --prefix packages/mcp-server test",
+    "test:grok-handoff": "node test-grok-handoff.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
