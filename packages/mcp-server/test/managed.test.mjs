@@ -596,7 +596,7 @@ test('an activating start killed before it records the successor: the announced 
   const a = spawn(process.execPath, ['--input-type=module', '-e', `
     const m = await import(${JSON.stringify(moduleUrl)});
     const lock = m.acquireFileLock(${JSON.stringify(path)});
-    m.beginHandOff(${JSON.stringify(path)}, lock.token, 600);
+    m.beginHandOff(${JSON.stringify(path)}, lock.token, 20000);
     process.stdout.write(JSON.stringify({ token: lock.token }) + '\\n');
     setInterval(() => {}, 1000);
   `], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -617,13 +617,13 @@ test('an activating start killed before it records the successor: the announced 
   assert.equal(existsSync(path), false);
 
   // If no successor ever adopts it, the lease expires and the lock is recoverable.
-  const orphan = managed.acquireFileLock(path);
-  managed.beginHandOff(path, orphan.token, 150);
   const dead = spawn(process.execPath, ['-e', '']);
   await new Promise(resolve => dead.on('exit', resolve));
+  const orphan = managed.acquireFileLock(path);
+  managed.beginHandOff(path, orphan.token, 1500);
   writeFileSync(path, JSON.stringify({ ...readLockFile(path), pid: dead.pid, started: undefined }));
   assert.equal(managed.acquireFileLock(path), null, 'still within the lease');
-  await new Promise(resolve => setTimeout(resolve, 250));
+  await new Promise(resolve => setTimeout(resolve, 1700));
   const recovered = managed.acquireFileLock(path);
   assert.ok(recovered, 'an abandoned announced hand-off is recoverable after the lease');
   recovered.release();
