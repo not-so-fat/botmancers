@@ -43,7 +43,12 @@ scope:
 - operational runbooks and compatibility records: the acceptance harness
   ([`docs/acceptance-harness.md`](docs/acceptance-harness.md)) and the `[run]`
   payload migration record
-  ([`docs/run-payload-migration.md`](docs/run-payload-migration.md)).
+  ([`docs/run-payload-migration.md`](docs/run-payload-migration.md));
+- the external-agent intake: the MCP bridge contract
+  ([`docs/mcp-bridge.md`](docs/mcp-bridge.md), tool schemas in
+  [`docs/contracts/mcp-bridge-v1.tools.json`](docs/contracts/mcp-bridge-v1.tools.json))
+  and the Cursor Grok Bot runbook
+  ([`docs/integrations/grok-bot/README.md`](docs/integrations/grok-bot/README.md)).
 
 Every other document under `docs/` is dated history or evidence, labeled as
 such at its top, and is not a current contract.
@@ -66,11 +71,39 @@ The application can:
   approval requests, and write file artifacts from chat;
 - run taught one-shots and recurring routines, and park a turn on one
   ask-and-wait question;
+- accept tasks from external agents, such as Cursor's Grok Bot, through an
+  authenticated MCP bridge (see "External agents" below);
 - import bot identity from the Grok marketplace boundary;
 - persist state in SQLite.
 
 Web UI thread turns are Work Requests run by the UI turn executor. See
 "Current code and convergence" in `docs/core-engine.md`.
+
+## External agents (MCP bridge)
+
+An external MCP client can hand a task to an allowlisted coordinator Agent and
+poll the result. The app serves the `botmancers.mcp.v1` tools at
+`POST /api/v0/mcp`, behind a service token. The caller supplies only a
+coordinator, an objective, and an idempotency key; it cannot choose a runtime,
+Deck, model, grant, or target. The contract is in
+[`docs/mcp-bridge.md`](docs/mcp-bridge.md).
+
+The [`botmancers`](packages/mcp-server/README.md) npm package
+(`packages/mcp-server`, published as `botmancers@0.1.0`) is a standalone
+bridge that clients connect to with their own token:
+
+```bash
+BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers
+```
+
+Setup of the service token and coordinator allowlist is in the package README.
+[`docs/integrations/grok-bot/README.md`](docs/integrations/grok-bot/README.md)
+connects Cursor's Grok Bot. Its fixture smoke passes; the real Grok Bot smoke is
+still a pending operator step
+([record](docs/integrations/grok-bot/evidence/operator-smoke.md)).
+Maintainers release the package as described in
+[`packages/mcp-server/RELEASING.md`](packages/mcp-server/RELEASING.md); never
+publish from the repository root.
 
 ## Run the app
 
