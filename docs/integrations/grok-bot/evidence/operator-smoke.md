@@ -1,6 +1,11 @@
 # Real Cursor Grok Bot smoke: operator record (NOT-493)
 
-Status: **pending operator run**. Fill this in by following the steps in
+Status: **pending operator run**. The real Cursor Grok Bot smoke needs a
+human operator with a Cursor Grok Bot workspace and an authenticated HTTPS or
+private-network route to the bridge. The automated builder sandbox has neither,
+so it cannot perform this run. NOT-493's three `[operator]` acceptance criteria
+and its exit predicate stay open until this record is filled in and committed.
+Fill this in by following the steps in
 [`../README.md`](../README.md#real-grok-bot-smoke-operator). Redact every token,
 digest, and public hostname you do not want published. Replace them with
 `<redacted>`. Never paste an `Authorization` value.
@@ -45,7 +50,7 @@ Correlation (`node scripts/mcp-handoff-correlate.js --request-id <request_id> --
 <paste /tmp/grok-smoke-1.json>
 ```
 
-- [ ] `verdict.no_external_elevation` is `true`
+- [ ] `verdict.no_external_elevation` is `true`, and every other `verdict` field is `true`, including `direct_requester_is_expected_service`, `direct_request_is_lineage_root`, `lineage_root_principal_is_expected_service`, and `intake_is_expected_service`
 - [ ] only the direct request (`origin: "external"`) names `service:grok-bot`, and every other request in `lineage` has `origin` `wake` or `engine_continuation`
 
 ## 3. Repeat with the same invocation id

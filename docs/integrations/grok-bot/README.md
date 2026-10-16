@@ -265,7 +265,13 @@ digest redacted.
    node scripts/mcp-handoff-correlate.js --request-id <request_id> --key grok-smoke-<date>-1 > /tmp/grok-smoke-1.json
    ```
 
-   `verdict.no_external_elevation` must be `true`. In `lineage`, only the first
+   The script checks against `--service grok-bot` by default; pass `--service
+   <id>` if you configured a different service id.
+   `verdict.no_external_elevation` must be `true`. It is `true` only when the
+   direct request is a read-only conversation, is the root of its lineage, and
+   was requested by the expected service principal. Its intake must belong to
+   that same principal and key, every request in the lineage must carry that
+   principal as `root_principal`, and every other request must be internal. In `lineage`, only the first
    request (`origin: "external"`) may name `service:grok-bot` as its requester.
    Every other request must have `origin: "wake"` (requester `bot:<coordinator>`)
    or `origin: "engine_continuation"` (requester `service:botmancers-engine`),

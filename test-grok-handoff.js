@@ -110,7 +110,9 @@ function installBridge(dir, version) {
   if (installed.name !== 'botmancers' || installed.version !== version) {
     throw new Error(`installed ${installed.name}@${installed.version}, but the runbook pins botmancers@${version}`);
   }
-  return { cli: path.join(project, 'node_modules', 'botmancers', installed.bin.botmancers), version: installed.version, source };
+  // npm records the installed artifact's sha512 for both tarball and registry installs.
+  const integrity = (JSON.parse(fs.readFileSync(path.join(project, 'node_modules', '.package-lock.json'), 'utf8')).packages['node_modules/botmancers'] || {}).integrity || null;
+  return { cli: path.join(project, 'node_modules', 'botmancers', installed.bin.botmancers), version: installed.version, source, integrity };
 }
 
 async function parent() {
@@ -144,7 +146,7 @@ async function parent() {
     const bridge = installBridge(installDir, version);
     log(`\nBridge package\n  source: ${bridge.source}\n  installed: botmancers@${bridge.version}`);
     const recorded = (fs.readFileSync(path.join(PACKAGE_DIR, 'release-evidence', 'clean-install-smoke.txt'), 'utf8').match(/integrity (sha512-\S+?)\)/) || [])[1];
-    if (recorded && bridge.source.includes(recorded)) log(`  the tarball is byte-identical to the one recorded in packages/mcp-server/release-evidence for botmancers@${version}`);
+    check(!!recorded && bridge.integrity === recorded, `the installed package is byte-identical to the one recorded in packages/mcp-server/release-evidence for botmancers@${version}${recorded ? '' : ' (no recorded integrity found)'}`);
     run = await new Promise(resolve => {
       const proc = spawn(process.execPath, [__filename], {
         cwd: harness.root,
@@ -576,6 +578,34 @@ async function child() {
     check(report.counts.intakes_for_key === 1 && report.counts.direct_work_requests === 1, 'correlation counts: one intake, one direct Work Request');
     check(report.verdict.no_external_elevation && report.verdict.terminal && report.lineage.length === 1 && report.lineage[0].origin === 'external' && report.lineage[0].requester === `service:${SERVICE_ID}`,
       'verdict: one read-only conversation turn from service:grok-bot; no other work attributed to the external principal');
+  }
+
+  section('The elevation verdict fails closed on unexpected provenance');
+  {
+    const correlate = (db, extra = []) => JSON.parse(execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'mcp-handoff-correlate.js'), '--db', db, '--request-id', started.request_id, '--key', INVOCATION_ID, ...extra], { encoding: 'utf8' })).verdict;
+    const tampered = (name, sql) => {
+      const file = path.join(path.dirname(process.env.BOTMANCERS_DB_PATH), `correlate-${name}.db`);
+      raw.prepare('VACUUM INTO ?').run(file);
+      const Database = require('better-sqlite3');
+      const copy = new Database(file);
+      // The copy simulates provenance the engine would never write, so lift its integrity guards.
+      copy.pragma('foreign_keys = OFF');
+      for (const { name: trigger } of copy.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()) copy.exec(`DROP TRIGGER "${trigger}"`);
+      copy.prepare(sql).run(started.request_id);
+      copy.close();
+      return file;
+    };
+    const cases = [
+      ['another service principal is expected', correlate(process.env.BOTMANCERS_DB_PATH, ['--service', 'other-bot'])],
+      ['the direct read-only turn was requested by an Agent', correlate(tampered('bot-requester', `UPDATE work_requests SET requester_kind = 'bot', requester_id = '${tank.id}' WHERE id = ?`))],
+      ['the direct turn was requested by the engine principal', correlate(tampered('engine-requester', "UPDATE work_requests SET requester_id = 'botmancers-engine' WHERE id = ?"))],
+      ['the direct turn is not the lineage root', correlate(tampered('not-root', "UPDATE work_requests SET root_request_id = 'elsewhere' WHERE id = ?"))],
+      ['the intake belongs to another principal', correlate(tampered('intake', "UPDATE conversation_intakes SET requester_id = 'other-bot' WHERE work_request_ids LIKE '%' || ? || '%'"))],
+    ];
+    for (const [why, verdict] of cases) {
+      console.log(`  ${why} -> ${JSON.stringify(verdict)}`);
+      check(verdict.no_external_elevation === false, `no_external_elevation is false when ${why}`);
+    }
   }
 
   section('Coordinator Wakes stay internal');
