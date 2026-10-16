@@ -67,13 +67,16 @@ registry smoke test before announcing that release.
    (the transcripts record the commit SHA and exact version):
 
    ```sh
-   mkdir -p release-evidence
-   npm run release:check -- --out release-evidence/release-dry-run.txt
+   npm run release:check -- --out /tmp/release-dry-run.txt     # needs the clean tree, so first
+   npm pack --ignore-scripts --pack-destination /tmp           # the exact tarball, no rebuild
+   mkdir -p release-evidence && cp /tmp/release-dry-run.txt release-evidence/
    npm run check:pack -- --out release-evidence/pack-manifest.txt
-   npm run smoke:install -- --out release-evidence/clean-install-smoke.txt
-   npm pack --ignore-scripts --pack-destination /tmp
+   npm run smoke:install -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/clean-install-smoke.txt
    npm run smoke:product -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/product-install-smoke.txt
    ```
+
+   Pass `--tarball` to the smokes: without it they run `npm pack`, whose
+   `prepack` rebuilds `app/` from the (now dirty) tree.```
 
    `release-evidence/` is outside the package `files` allowlist, so it is
    never published. Commit it in a follow-up commit that touches only that
