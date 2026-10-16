@@ -347,6 +347,22 @@ test('stale run metadata is repaired, and a recycled PID is never signalled', as
   for (const pid of [running.supervisor.pid, running.ui.pid, running.mcp.pid]) assert.ok(pidAlive(pid), `pid ${pid} still running`);
   const after = await s.run(['status']);
   assert.equal(after.code, 0, after.stdout);
+
+  // A present but failing ps (permission error, unsupported option) is not
+  // proof that the processes are gone: status and stop both fail closed.
+  const failingPs = join(s.root, 'failing-ps');
+  mkdirSync(failingPs);
+  writeFileSync(join(failingPs, 'ps'), '#!/bin/sh\necho "ps: operation not permitted" >&2\nexit 1\n', { mode: 0o755 });
+  const failingStatus = await s.run(['status'], { PATH: failingPs });
+  assert.equal(failingStatus.code, 1, failingStatus.stdout);
+  assert.match(failingStatus.stdout, /problem {5}cannot verify that supervisor pid \d+, core pid \d+, bridge pid \d+ are botmancers/);
+  assert.doesNotMatch(failingStatus.stdout, /removed stale run metadata/);
+  const failingStop = await s.run(['stop'], { PATH: failingPs });
+  assert.equal(failingStop.code, 1);
+  assert.match(failingStop.stderr, /cannot verify that supervisor pid \d+, core pid \d+, bridge pid \d+ are botmancers/);
+  assert.deepEqual(record(s.runFile).supervisor, running.supervisor);
+  for (const pid of [running.supervisor.pid, running.ui.pid, running.mcp.pid]) assert.ok(pidAlive(pid), `pid ${pid} still running`);
+
   const stop2 = await s.run(['stop']);
   assert.equal(stop2.code, 0, stop2.stderr);
   assert.ok(await waitFor(() => ![running.supervisor.pid, running.ui.pid, running.mcp.pid].some(pidAlive)));

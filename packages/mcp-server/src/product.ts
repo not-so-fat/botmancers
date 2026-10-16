@@ -144,16 +144,17 @@ export interface ProcessIdentity {
 }
 
 // The start time and command line of a live process, null when it is gone,
-// or 'unverifiable' when this platform cannot tell (no ps, unparseable output).
+// or 'unverifiable' when this platform cannot tell (no ps, a failing ps,
+// unparseable output). Fails closed: a ps failure only means "gone" when an
+// independent liveness check also says the pid is not running.
 export function processIdentity(pid: number): ProcessIdentity | null | 'unverifiable' {
   let out: string;
   try {
     out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart=', '-o', 'command='], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C' },
     });
-  } catch (error) {
-    // ps exits 1 for a vanished pid; a missing ps (Windows) cannot verify.
-    return (error as { code?: string }).code === 'ENOENT' ? 'unverifiable' : null;
+  } catch {
+    return pidAlive(pid) ? 'unverifiable' : null;
   }
   const match = /^\s*(\w{3} \w{3} +\d+ \d\d:\d\d:\d\d \d{4})\s+(.*)$/.exec(out.trim());
   return match ? { started: match[1].replace(/ +/g, ' '), command: match[2] } : 'unverifiable';

@@ -120,7 +120,9 @@ export async function smoke({ tarball, registryVersion } = {}) {
       log(`source: registry ${spec}`);
     } else {
       if (!tarball) {
-        const [entry] = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', root], { cwd: PACKAGE_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }));
+        // prepack (build + build:app) prints progress to stdout ahead of the JSON.
+        const out = execFileSync('npm', ['pack', '--json', '--pack-destination', root], { cwd: PACKAGE_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+        const [entry] = JSON.parse(out.slice(out.lastIndexOf('\n[\n') + 1));
         tarball = join(root, entry.filename);
       }
       spec = resolve(tarball);
