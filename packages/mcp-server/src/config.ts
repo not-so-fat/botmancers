@@ -203,4 +203,8 @@ Example:
 
 Exit codes: 0 stopped by signal, 2 configuration, 3 cannot listen,
 4 Botmancers unreachable or incompatible, 5 credentials rejected.
+
+\`botmancers mcp [options]\` is the same bridge-only command. To run the whole
+product (UI, API, core engine, and this bridge) instead:
+  botmancers setup && botmancers start --daemon     (see: botmancers start --help)
 `;
