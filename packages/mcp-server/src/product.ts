@@ -17,7 +17,7 @@
 // when its start time and command line both still match the record. When the
 // identity cannot be verified nothing is signalled and the metadata is kept.
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync, accessSync, constants as fsConstants } from 'node:fs';
+import { closeSync, existsSync, linkSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, accessSync, constants as fsConstants } from 'node:fs';
 import { createServer } from 'node:net';
 import { delimiter, join } from 'node:path';
 import { DEFAULT_PORT, ENV } from './config.js';
@@ -124,8 +124,20 @@ export function readRun(paths: HomePaths): RunRecord | null {
   }
 }
 
-function writeRun(paths: HomePaths, record: RunRecord, exclusive = false): void {
-  writeFileSync(paths.runFile, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, flag: exclusive ? 'wx' : 'w' });
+// The run record is replaced atomically (owner-only temp file, then rename),
+// so a concurrent status, doctor, open, or start never reads a truncated
+// file and mistakes it for stale metadata. Start creates it exclusively the
+// same way: link() publishes the finished file and fails with EEXIST when
+// another start already owns the home.
+export function writeRun(paths: HomePaths, record: RunRecord, exclusive = false): void {
+  const temp = `${paths.runFile}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  try {
+    if (exclusive) linkSync(temp, paths.runFile);
+    else renameSync(temp, paths.runFile);
+  } finally {
+    rmSync(temp, { force: true });
+  }
 }
 
 export function pidAlive(pid: number | null | undefined): boolean {

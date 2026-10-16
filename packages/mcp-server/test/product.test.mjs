@@ -482,3 +482,39 @@ test('product commands reject unknown arguments with exit 2 and never echo value
   assert.equal(help.code, 0);
   assert.match(help.stdout, /start \[--daemon\] \[--open\]/);
 });
+
+test('the run record is replaced atomically: a concurrent reader never sees a partial file', async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'botmancers-runfile-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { writeRun, readRun } = await import('../dist/product.js');
+  const paths = { runFile: join(root, 'product.json') };
+  const record = padding => ({
+    schema: 1, version: VERSION, home: root, appDir: root, state: 'running', startedAt: new Date().toISOString(), padding,
+    supervisor: { pid: process.pid }, ui: { pid: null, port: 1, url: 'http://127.0.0.1:1' }, mcp: { pid: null, port: 2, url: 'http://127.0.0.1:2/mcp' },
+  });
+  writeRun(paths, record('x'));
+  const writer = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { writeRun } from ${JSON.stringify(new URL('../dist/product.js', import.meta.url).href)};
+    const paths = { runFile: ${JSON.stringify(paths.runFile)} };
+    const record = padding => ({ schema: 1, version: ${JSON.stringify(VERSION)}, home: '/', appDir: '/', state: 'running', startedAt: 'x', padding,
+      supervisor: { pid: process.pid }, ui: { pid: null, port: 1, url: 'u' }, mcp: { pid: null, port: 2, url: 'm' } });
+    for (let i = 0; i < 4000; i++) writeRun(paths, record('y'.repeat(200000 + (i % 7))));
+  `], { stdio: 'ignore' });
+  const exited = new Promise(resolve => writer.on('exit', resolve));
+  let reads = 0;
+  let finished = false;
+  exited.then(() => { finished = true; });
+  while (!finished) {
+    assert.ok(readRun(paths), `a reader saw a missing or partial run record after ${reads} reads`);
+    reads++;
+    if (reads % 50 === 0) await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.ok(reads > 100, `the reader overlapped the writer (${reads} reads)`);
+  // Exclusive creation publishes a complete file or fails with EEXIST.
+  assert.throws(() => writeRun(paths, record('z'), true), { code: 'EEXIST' });
+  assert.ok(readRun(paths));
+  rmSync(paths.runFile);
+  writeRun(paths, record('z'), true);
+  assert.ok(readRun(paths));
+  assert.deepEqual(readdirSync(root), ['product.json'], 'no temp file left behind');
+});
