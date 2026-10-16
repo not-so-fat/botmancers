@@ -1,15 +1,15 @@
-commit 00259bec22ab3c59eefcd08cdb8449da2ac246ed
-botmancers@0.2.0  botmancers-0.2.0.tgz
-size 13728777 B, unpacked 38971723 B, 1540 files
-shasum 67a68b7e3f874f3781f71285267c8d0ac5d845e0
-integrity sha512-qu1350VHuQTt6o/mTkqFkG7Xab4NppdsFzp2EYWlFvL21EyiypvBNN/9QxqTGPIYz82mIDn+NkY53xbGbCvoLQ==
-app build 0.2.0 commit 00259bec22ab3c59eefcd08cdb8449da2ac246ed, next 16.3.8
+commit b1be3d0cf1f316be179ed3da39952dc425d47910
+botmancers@0.3.0  botmancers-0.3.0.tgz
+size 13759179 B, unpacked 39072676 B, 1544 files
+shasum 283411e02189584f801a6a697f0a7841ab39ff90
+integrity sha512-ECSjsdWC7uQWeN1z7VIMXFsUGN8JEr0FtneTfr7DKnvbcULL0eJXHHsSWHguqiQY3QEDkmlA/KguvAt6yRVJWQ==
+app build 0.3.0 commit b1be3d0cf1f316be179ed3da39952dc425d47910, next 16.3.8
      143  app/BUILD_INFO.json
       94  app/package.json
     7455  app/server.js
-    2532  CHANGELOG.md
-    2021  dist/cli.d.ts
-    8547  dist/cli.js
+    4912  CHANGELOG.md
+    2686  dist/cli.d.ts
+    9940  dist/cli.js
     1071  dist/config.d.ts
     8203  dist/config.js
      839  dist/contract.d.ts
@@ -18,19 +18,23 @@ app build 0.2.0 commit 00259bec22ab3c59eefcd08cdb8449da2ac246ed, next 16.3.8
     5076  dist/home.js
      697  dist/index.d.ts
      732  dist/index.js
-    3907  dist/product.d.ts
-   41390  dist/product.js
+    6308  dist/managed.d.ts
+   34176  dist/managed.js
+    4096  dist/product.d.ts
+   50000  dist/product.js
      181  dist/redact.d.ts
      762  dist/redact.js
     1003  dist/server.d.ts
    11543  dist/server.js
      687  dist/setup.d.ts
     7246  dist/setup.js
+    2092  dist/upgrade.d.ts
+   13974  dist/upgrade.js
     1018  dist/upstream.d.ts
     5815  dist/upstream.js
     1071  LICENSE
-    2062  package.json
-   14467  README.md
+    2125  package.json
+   19081  README.md
    14714  schemas/botmancers.mcp.v1.tools.json
     2212  app/.next/app-path-routes-manifest.json  (1 files)
       21  app/.next/BUILD_ID  (1 files)
@@ -40,8 +44,8 @@ app build 0.2.0 commit 00259bec22ab3c59eefcd08cdb8449da2ac246ed, next 16.3.8
     3250  app/.next/prerender-manifest.json  (1 files)
    10124  app/.next/required-server-files.json  (1 files)
     8996  app/.next/routes-manifest.json  (1 files)
- 4232985  app/.next/server/  (399 files)
-  898103  app/.next/static/  (26 files)
+ 4259226  app/.next/server/  (399 files)
+  898351  app/.next/static/  (26 files)
    11000  app/node_modules/@next/env@16.3.8  (2 files)
    30691  app/node_modules/@swc/helpers@0.5.23  (5 files)
 16927356  app/node_modules/better-sqlite3@13.0.3  (33 files)
