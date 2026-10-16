@@ -22,6 +22,7 @@ import {
   accessSync, closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync,
   readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
+import { homedir } from 'node:os';
 import { delimiter, dirname, join, sep } from 'node:path';
 import { CLI_PATH, REQUIRED_APP_FILES, resolveHome } from './home.js';
 
@@ -52,7 +53,7 @@ export interface ManagedPaths {
 
 export function managedPaths(env: NodeJS.ProcessEnv): ManagedPaths {
   const home = resolveHome(env);
-  const localBin = (env[LOCAL_BIN_ENV] ?? '').trim() || join(env.HOME?.trim() || dirname(home), '.local', 'bin');
+  const localBin = (env[LOCAL_BIN_ENV] ?? '').trim() || join(env.HOME?.trim() || homedir(), '.local', 'bin');
   return {
     home,
     versions: join(home, 'versions'),
