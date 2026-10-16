@@ -27,6 +27,7 @@ import path from 'path';
 import { isSafeFileName } from './draft';
 import { validateDraftRequest } from './draft-producer';
 import type { DraftRequest } from './draft-producer';
+import { filesRootPath } from './home';
 
 export class ArtifactRefused extends Error {}
 
@@ -43,9 +44,7 @@ export type TypedProducerResult =
   | { kind: 'file'; file: FileRequest };
 
 export function filesRoot(): string {
-  const override = (process.env.BOTMANCERS_FILES_ROOT || '').trim();
-  if (override) return path.resolve(override);
-  return path.resolve(process.cwd(), 'files');
+  return filesRootPath();
 }
 
 export function resolveArtifactPath(name: string): string {

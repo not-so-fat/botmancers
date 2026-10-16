@@ -3,6 +3,7 @@ import path from 'path';
 import https from 'https';
 import { messages } from './db';
 import { parseRun, serializeRun } from './run';
+import { filesRootPath } from './home';
 import {
   COMMAND_OUTPUT_MAX_BYTES,
   commandRunPage,
@@ -44,7 +45,7 @@ function drop(messageId: string, child: ChildProcess) {
 }
 
 function fileMint6Path(): string | null {
-  const root = path.resolve(process.cwd(), 'files');
+  const root = filesRootPath();
   const file = path.resolve(root, 'filemint6.txt');
   const rel = path.relative(root, file);
   if (rel !== 'filemint6.txt') return null;
