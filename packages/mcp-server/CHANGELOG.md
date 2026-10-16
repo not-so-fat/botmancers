@@ -22,7 +22,12 @@ versioned separately, as `botmancers.mcp.v1`.
   running release, and activation only at the next `botmancers start` once no
   Botmancers process from the home is live. `status`, `open`, `doctor`, the
   bridge, and a running product never switch releases.
-  `BOTMANCERS_DISABLE_AUTOUPDATER=1` turns all of it off.
+  `BOTMANCERS_DISABLE_AUTOUPDATER=1` turns all of it off. Explicit installs,
+  upgrades, and rollbacks wait for a background download (`update.lock`), and
+  a start's stopped check, any release switch, and the supervisor's claim on
+  the home are serialized (`run/start.lock`). A release is made current only
+  when every module its CLI loads and this platform's better-sqlite3 binary
+  are present.
 - `botmancers upgrade [--check] [--to VERSION] [--yes]`: managed installs
   download, verify, and activate (or stage while the product runs).
   npm-global installs keep the prompted `npm install -g botmancers@<version>`.

@@ -19,9 +19,9 @@ import { packageVersion } from './contract.js';
 import {
   MANAGED_INSTALL_COMMAND, PACKAGE_NAME, RESTART_ACTION, activateRelease, botmancersOnPath, compareSemver, currentManagedVersion,
   detectInstallKind, fetchLatestVersion, isAutoupdaterDisabled, isSemver, managedPaths, readUpdateState, runNpm, stageRelease,
-  writeLauncher, writeUpdateState, type ManagedPaths, type NpmRunner, type StageDeps,
+  waitForFileLock, writeLauncher, writeUpdateState, type ManagedPaths, type NpmRunner, type StageDeps,
 } from './managed.js';
-import { inspect, productContext } from './product.js';
+import { inspect, productContext, startLockTimeout } from './product.js';
 
 export interface UpgradeIo {
   stdout: (text: string) => void;
@@ -33,7 +33,12 @@ export interface UpgradeDeps extends StageDeps {
   // npm commands that act on the user's global install (install -g, uninstall -g).
   globalNpm?: NpmRunner;
   confirm?: (question: string) => Promise<boolean>;
+  // How long an explicit install/upgrade waits for a background update (or
+  // another install) holding update.lock.
+  updateLockTimeoutMs?: number;
 }
+
+const UPDATE_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 
 export const INSTALL_HELP = `Usage: botmancers install [--to VERSION] [--migrate-cli] [--purge-global]
 
@@ -102,26 +107,60 @@ async function productLive(env: NodeJS.ProcessEnv): Promise<boolean> {
 type Placement = 'activated' | 'pending' | 'blocked';
 
 // Makes a complete staged release current, or records it as pending while
-// the product runs. Rolling back marks the newer version declined, so the
-// auto-updater does not reinstate it at the next start.
+// the product runs. Rolling back marks the newer version declined (and drops
+// a newer pending release), so the auto-updater does not reinstate it at the
+// next start. The caller holds update.lock; the stopped proof and the switch
+// happen inside start.lock, so no start can launch the old release between
+// them.
 async function placeRelease(paths: ManagedPaths, env: NodeJS.ProcessEnv, version: string, io: UpgradeIo, clearDeclined: boolean): Promise<Placement> {
   const previous = currentManagedVersion(paths);
   const state = readUpdateState(paths);
   const newest = [previous, state.pendingVersion, state.declinedVersion].filter(isSemver).sort(compareSemver).pop() ?? null;
   const declinedVersion = newest && compareSemver(version, newest) < 0 ? newest : clearDeclined ? null : state.declinedVersion;
-  if (previous && previous !== version && await productLive(env)) {
-    if (isAutoupdaterDisabled(env)) {
-      io.stderr(`botmancers: ${version} is downloaded, but botmancers ${previous} is running and automatic activation is off (BOTMANCERS_DISABLE_AUTOUPDATER). Run \`botmancers stop\`, then \`botmancers upgrade --to ${version}\`.\n`);
-      return 'blocked';
+  const supersedesPending = isSemver(state.pendingVersion) && state.pendingVersion !== version
+    ? { pendingVersion: null, pendingIntegrity: null, stagedAt: null } : {};
+  const startLock = previous && previous !== version
+    ? await waitForFileLock(paths.startLock, {
+      timeoutMs: startLockTimeout(env),
+      onWait: () => io.stdout('botmancers: waiting for a botmancers start in progress...\n'),
+    })
+    : null;
+  try {
+    // Without start.lock a start is in progress: as good as live.
+    if (previous && previous !== version && (!startLock || await productLive(env))) {
+      if (isAutoupdaterDisabled(env)) {
+        io.stderr(`botmancers: ${version} is downloaded, but botmancers ${previous} is running and automatic activation is off (BOTMANCERS_DISABLE_AUTOUPDATER). Run \`botmancers stop\`, then \`botmancers upgrade --to ${version}\`.\n`);
+        return 'blocked';
+      }
+      writeUpdateState(paths, { pendingVersion: version, pendingIntegrity: null, stagedAt: new Date().toISOString(), declinedVersion });
+      io.stdout(`botmancers: ${version} is staged; botmancers ${previous} keeps running. Restart once to activate it: ${RESTART_ACTION}\n`);
+      return 'pending';
     }
-    writeUpdateState(paths, { pendingVersion: version, pendingIntegrity: null, stagedAt: new Date().toISOString(), declinedVersion });
-    io.stdout(`botmancers: ${version} is staged; botmancers ${previous} keeps running. Restart once to activate it: ${RESTART_ACTION}\n`);
-    return 'pending';
+    writeUpdateState(paths, { ...supersedesPending, declinedVersion });
+    activateRelease(paths, version);
+    io.stdout(`botmancers: activated ${version}${previous && previous !== version ? ` (was ${previous})` : ''}; ${paths.current} -> versions/${version}\n`);
+    return 'activated';
+  } finally {
+    startLock?.release();
   }
-  activateRelease(paths, version);
-  writeUpdateState(paths, { declinedVersion });
-  io.stdout(`botmancers: activated ${version}${previous && previous !== version ? ` (was ${previous})` : ''}; ${paths.current} -> versions/${version}\n`);
-  return 'activated';
+}
+
+// Serializes an explicit staging and placement with the background updater
+// and any other install/upgrade of this home (update.lock).
+async function withUpdateLock<T>(paths: ManagedPaths, io: UpgradeIo, deps: UpgradeDeps, body: () => Promise<T>): Promise<T | null> {
+  const lock = await waitForFileLock(paths.lock, {
+    timeoutMs: deps.updateLockTimeoutMs ?? UPDATE_LOCK_TIMEOUT_MS,
+    onWait: () => io.stdout(`botmancers: waiting for a background update or another install to finish (${paths.lock})...\n`),
+  });
+  if (!lock) {
+    io.stderr(`botmancers: another update of ${paths.home} is still running (${paths.lock}); try again when it finishes.\n`);
+    return null;
+  }
+  try {
+    return await body();
+  } finally {
+    lock.release();
+  }
 }
 
 async function stage(paths: ManagedPaths, env: NodeJS.ProcessEnv, version: string, io: UpgradeIo, deps: UpgradeDeps): Promise<boolean> {
@@ -169,9 +208,13 @@ export async function runInstall(argv: string[], env: NodeJS.ProcessEnv, io: Upg
     return 1;
   }
   io.stdout(`botmancers: installing ${PACKAGE_NAME}@${version} into ${paths.versions} (data under ${paths.home} is left unchanged)\n`);
-  if (!await stage(paths, env, version, io, deps)) return 1;
-  const placed = await placeRelease(paths, env, version, io, !flags.to);
-  writeLauncher(paths);
+  const placed = await withUpdateLock(paths, io, deps, async () => {
+    if (!await stage(paths, env, version, io, deps)) return null;
+    const placement = await placeRelease(paths, env, version, io, !flags.to);
+    writeLauncher(paths);
+    return placement;
+  });
+  if (!placed) return 1;
   pathAdvice(paths, env, io, flags.set.has('--migrate-cli'));
   if (flags.set.has('--purge-global')) {
     const result = await (deps.globalNpm ?? runNpm)(['uninstall', '-g', PACKAGE_NAME], env);
@@ -221,9 +264,8 @@ export async function runUpgrade(argv: string[], env: NodeJS.ProcessEnv, io: Upg
   }
 
   if (install.kind === 'managed') {
-    if (!await stage(paths, env, target, io, deps)) return 1;
-    const placed = await placeRelease(paths, env, target, io, true);
-    return placed === 'blocked' ? 1 : 0;
+    const placed = await withUpdateLock(paths, io, deps, async () => (await stage(paths, env, target, io, deps) ? placeRelease(paths, env, target, io, true) : null));
+    return !placed || placed === 'blocked' ? 1 : 0;
   }
 
   if (install.kind === 'npm-global') {

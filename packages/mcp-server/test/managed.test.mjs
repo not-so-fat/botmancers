@@ -7,6 +7,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, renameSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { cli, freePort, run, waitFor, pidAlive } from '../scripts/product-harness.mjs';
@@ -105,7 +106,7 @@ async function installed(t, version = N) {
 }
 
 // Fake npm for in-process staging: lays out a release in the --prefix dir.
-function fakeNpm({ integrity = 'sha512-fake', version, fail = null, calls = [] } = {}) {
+function fakeNpm({ integrity = 'sha512-fake', version, fail = null, remove = [], calls = [] } = {}) {
   return async args => {
     calls.push(args);
     const prefix = args[args.indexOf('--prefix') + 1];
@@ -117,6 +118,7 @@ function fakeNpm({ integrity = 'sha512-fake', version, fail = null, calls = [] }
     }
     makePackage(join(prefix, 'node_modules', 'botmancers'), v);
     if (fail === 'incomplete') rmSync(join(prefix, 'node_modules', 'botmancers', 'app', 'server.js'));
+    for (const rel of remove) rmSync(join(prefix, 'node_modules', 'botmancers', rel), { recursive: true });
     writeFileSync(join(prefix, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/botmancers': { integrity } } }));
     return { code: 0, stderr: '' };
   };
@@ -231,6 +233,12 @@ test('integrity failures and interrupted downloads leave no release, no pending 
     ['integrity mismatch', { integrity: async () => 'sha512-expected', npm: fakeNpm({ integrity: 'sha512-other' }) }, /integrity mismatch/],
     ['interrupted download', { integrity: async () => 'sha512-x', npm: fakeNpm({ fail: 'interrupt' }) }, /network aborted/],
     ['incomplete package', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', fail: 'incomplete' }) }, /incomplete: packaged app is missing server\.js/],
+    // The release-gate fixtures: no updater module, a module cli.js imports
+    // that no fixed list names, and no loadable native SQLite payload.
+    ['no updater', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', remove: ['dist/upgrade.js'] }) }, /incomplete: missing dist\/upgrade\.js/],
+    ['no imported module', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', remove: ['dist/redact.js'] }) }, /incomplete: missing dist\/redact\.js/],
+    ['no native binary', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', remove: [`app/node_modules/better-sqlite3/prebuilds/${process.platform}-${process.arch}.node`] }) }, new RegExp(`incomplete: packaged app has no better-sqlite3 native binary for ${process.platform}-${process.arch}`)],
+    ['no native loader', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', remove: ['app/node_modules/better-sqlite3/lib'] }) }, /incomplete: packaged app is missing node_modules\/better-sqlite3\/lib\/index\.js/],
   ];
   for (const [name, deps, error] of cases) {
     now += 25 * 60 * 60 * 1000;
@@ -350,6 +358,135 @@ test('a stopped product activates a pending release at start; corrupt pending tr
   assert.equal(next.code, 0, next.stderr);
   assert.match(next.stdout, new RegExp(`activated ${N2} \\(was ${N}\\)`));
   assert.equal(await health(s), N2);
+});
+
+test('releases missing the updater or the native SQLite binary are never activated', async t => {
+  const s = await installed(t);
+  assert.equal((await s.bm(['setup'])).code, 0);
+  for (const [rel, problem] of [
+    ['dist/upgrade.js', /missing dist\/upgrade\.js/],
+    [`app/node_modules/better-sqlite3/prebuilds/${process.platform}-${process.arch}.node`, /no better-sqlite3 native binary/],
+  ]) {
+    const dir = seedRelease(s.home, N1);
+    rmSync(join(dir, 'node_modules/botmancers', rel));
+    assert.match(managed.releaseProblem(dir, N1), problem);
+    assert.throws(() => managed.activateRelease(s.paths, N1), problem);
+    writeFileSync(join(s.home, 'update-state.json'), JSON.stringify({ checkedAt: new Date().toISOString(), latest: N1, pendingVersion: N1 }));
+    const start = await s.bm(['start', '--daemon'], on);
+    assert.equal(start.code, 0, start.stderr);
+    assert.doesNotMatch(start.stdout, /activated/);
+    assert.equal(s.current(), `versions/${N}`);
+    const upgrade = await s.bm(['upgrade', '--to', N1]);
+    assert.equal(upgrade.code, 1, 'the incomplete tree is re-downloaded only when complete, never activated as is');
+    assert.equal(s.current(), `versions/${N}`);
+    assert.equal((await s.bm(['stop'])).code, 0);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// What a concurrent `start` that won start.lock does next: run the supervisor
+// of the active release until it claims the home and is running.
+async function launchSupervisor(s, version) {
+  const child = spawn(process.execPath, [join(s.home, 'versions', version, 'node_modules/botmancers/dist/cli.js'), 'start', '--supervise'], { env: s.env(off), cwd: s.home, detached: true, stdio: 'ignore' });
+  child.unref();
+  assert.ok(await waitFor(() => existsSync(join(s.home, 'run/product.json')) && runFile(s).state === 'running', 20_000), 'the supervisor is running');
+  return child.pid;
+}
+
+test('explicit install/upgrade waits for the background updater; a rollback is not undone by its pending release', async t => {
+  const s = await installed(t, N1);
+  assert.equal((await s.bm(['setup'])).code, 0);
+  // The daily worker holds update.lock while it stages N+2.
+  const worker = managed.acquireLock(s.paths);
+  assert.ok(worker);
+  const rollback = s.bm(['install', '--to', N]);
+  await sleep(1500);
+  assert.ok(!existsSync(join(s.home, 'versions', N)), 'the rollback does not stage while the worker holds the lock');
+  assert.deepEqual(readdirSync(join(s.home, 'versions')), [N1], 'no partial tree beside the worker');
+  assert.equal(s.current(), `versions/${N1}`);
+  // The worker finishes: N+2 staged and recorded as pending, then the lock is released.
+  seedRelease(s.home, N2);
+  managed.writeUpdateState(s.paths, { pendingVersion: N2, pendingIntegrity: `sha512-seeded-${N2}`, stagedAt: new Date().toISOString() });
+  worker();
+  const back = await rollback;
+  assert.equal(back.code, 0, back.stderr);
+  assert.match(back.stdout, /waiting for a background update or another install to finish/);
+  assert.equal(s.current(), `versions/${N}`);
+  const state = s.state();
+  assert.equal(state.pendingVersion, null, 'the rollback dropped the newer pending release');
+  assert.equal(state.declinedVersion, N2);
+  assert.deepEqual(readdirSync(join(s.home, 'versions')).filter(name => name.startsWith('.')), [], 'no partial trees');
+  assert.ok(!existsSync(s.paths.lock));
+  assert.equal(managed.activatablePending(s.env(on), join(s.home, 'versions', N, 'node_modules/botmancers/dist/cli.js')), null);
+  // The next start runs N, not the release staged beneath the rollback.
+  const start = await s.bm(['start', '--daemon'], on);
+  assert.equal(start.code, 0, start.stderr);
+  assert.doesNotMatch(start.stdout, /activated/);
+  assert.equal(s.current(), `versions/${N}`);
+  assert.equal(await health(s), N);
+});
+
+test('concurrent installs of one version share no partial tree: one downloads, the other reuses it', async t => {
+  const s = await sandbox(t);
+  const hold = managed.acquireLock(s.paths);
+  const a = s.dev(['install', '--to', N]);
+  const b = s.dev(['install', '--to', N]);
+  await sleep(1000);
+  hold();
+  const results = await Promise.all([a, b]);
+  for (const result of results) assert.equal(result.code, 0, result.stderr);
+  const out = results.map(result => result.stdout).join('\n');
+  assert.equal(count(out, `downloaded botmancers@${N}`), 1, out);
+  assert.equal(count(out, `${N} is already installed`), 1, out);
+  assert.deepEqual(readdirSync(join(s.home, 'versions')), [N]);
+  assert.equal(s.current(), `versions/${N}`);
+});
+
+test('start.lock: a concurrent start that claims the home first keeps a pending release (and an upgrade) from switching current', async t => {
+  const s = await installed(t);
+  assert.equal((await s.bm(['setup'])).code, 0);
+  seedRelease(s.home, N1);
+  managed.writeUpdateState(s.paths, { checkedAt: new Date().toISOString(), latest: N1, pendingVersion: N1 });
+
+  // Start A holds start.lock (its stopped proof is done); start B arrives.
+  const a = managed.acquireFileLock(s.paths.startLock);
+  assert.ok(a);
+  const b = s.bm(['start', '--daemon'], on);
+  await sleep(1500);
+  assert.equal(s.current(), `versions/${N}`, 'B does not activate while A owns the start');
+  assert.ok(!existsSync(join(s.home, 'run/product.json')));
+  // A launches N and its supervisor claims the home, then A lets go.
+  const supervisor = await launchSupervisor(s, N);
+  a.release();
+  const started = await b;
+  assert.equal(started.code, 0, started.stdout + started.stderr);
+  assert.match(started.stdout, /already running/);
+  assert.doesNotMatch(started.stdout, /activated/);
+  assert.equal(s.current(), `versions/${N}`);
+  assert.equal(s.state().pendingVersion, N1);
+  assert.equal(runFile(s).supervisor.pid, supervisor);
+  assert.equal(await health(s), N);
+  assert.equal((await s.bm(['stop'])).code, 0);
+
+  // An explicit upgrade's stopped proof and switch are inside start.lock too.
+  managed.writeUpdateState(s.paths, { pendingVersion: null });
+  const c = managed.acquireFileLock(s.paths.startLock);
+  const upgrade = s.bm(['upgrade', '--to', N2], on);
+  await waitFor(() => existsSync(join(s.home, 'versions', N2)), 60_000);
+  await sleep(500);
+  assert.equal(s.current(), `versions/${N}`);
+  await launchSupervisor(s, N);
+  c.release();
+  const upgraded = await upgrade;
+  assert.equal(upgraded.code, 0, upgraded.stderr);
+  assert.match(upgraded.stdout, /waiting for a botmancers start in progress/);
+  assert.match(upgraded.stdout, new RegExp(`${N2} is staged; botmancers ${N} keeps running`));
+  assert.equal(s.current(), `versions/${N}`);
+  assert.equal(s.state().pendingVersion, N2);
+  assert.equal(await health(s), N);
+  assert.ok(!existsSync(s.paths.startLock));
 });
 
 test('NOT-279: a launcher switched to N under a live N-1 reports the running N-1, degraded, with restart guidance', async t => {

@@ -5,7 +5,11 @@
 //   <home>/versions/.partial-<v>    a download in progress (never made current)
 //   <home>/current -> versions/<v>  the active release, replaced atomically
 //   <home>/update-state.json        updater metadata (last check, pending release)
-//   <home>/update.lock              held while a check or download runs
+//   <home>/update.lock              held while a check, download, install, or upgrade runs
+//   <home>/run/start.lock           held from a start's stopped proof until its
+//                                   supervisor claims the home (and by an
+//                                   explicit activation), so `current` never
+//                                   moves beneath a starting product
 //   ~/.local/bin/botmancers         stable launcher: exec node <home>/current/...
 //
 // Everything else under <home> (config, data, files, skills, logs, run, bot
@@ -18,8 +22,9 @@
 // Botmancers-owned process is live, makes a pending release current (NOT-279):
 // status, open, doctor, the bridge, and a running daemon never flip it.
 import { spawn, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
-  accessSync, closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync,
+  accessSync, constants as fsConstants, existsSync, linkSync, lstatSync, mkdirSync, readFileSync,
   readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -36,6 +41,9 @@ export const RESTART_ACTION = 'botmancers stop && botmancers start --daemon';
 export const MANAGED_INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash';
 const REGISTRY_TIMEOUT_MS = 2500;
 const LOCK_STALE_MS = 60 * 60 * 1000;
+// Set by a start that activated a release for the new release's `start`, which
+// inherits the start lock instead of waiting on its own parent.
+export const START_LOCK_ENV = 'BOTMANCERS_START_LOCK_TOKEN';
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 // ---------------------------------------------------------------------
@@ -47,6 +55,7 @@ export interface ManagedPaths {
   current: string;
   state: string;
   lock: string;
+  startLock: string;
   localBin: string;
   launcher: string;
 }
@@ -60,6 +69,7 @@ export function managedPaths(env: NodeJS.ProcessEnv): ManagedPaths {
     current: join(home, 'current'),
     state: join(home, 'update-state.json'),
     lock: join(home, 'update.lock'),
+    startLock: join(home, 'run', 'start.lock'),
     localBin,
     launcher: join(localBin, 'botmancers'),
   };
@@ -210,14 +220,59 @@ export function isAutoupdaterDisabled(env: NodeJS.ProcessEnv): boolean {
 // ---------------------------------------------------------------------
 // Release trees.
 
+// Startup-critical package files. Every dist module cli.js reaches through
+// relative imports is checked too, so a release missing any of them (the
+// updater included) can never become current and break the launcher.
+const REQUIRED_RELEASE_FILES = [
+  'package.json', 'dist/cli.js', 'dist/managed.js', 'dist/upgrade.js', 'dist/product.js', 'dist/server.js', 'dist/setup.js', 'dist/home.js',
+  'schemas/botmancers.mcp.v1.tools.json',
+];
+const RELATIVE_IMPORT = /\bfrom\s*['"]\.\/([\w.-]+\.js)['"]|\bimport\s*\(\s*['"]\.\/([\w.-]+\.js)['"]\s*\)/g;
+
+function missingDistModule(dist: string): string | null {
+  const seen = new Set<string>();
+  const queue = ['cli.js'];
+  while (queue.length) {
+    const file = queue.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    let text: string;
+    try {
+      text = readFileSync(join(dist, file), 'utf8');
+    } catch {
+      return `missing dist/${file}`;
+    }
+    for (const match of text.matchAll(RELATIVE_IMPORT)) queue.push(match[1] ?? match[2]);
+  }
+  return null;
+}
+
+// The better-sqlite3 binary this platform loads (the prebuild its
+// lib/binding.js selects, or a node-gyp build), or why there is none.
+export function nativeBindingProblem(appDir: string): string | null {
+  const sqlite = join(appDir, 'node_modules', 'better-sqlite3');
+  if (!existsSync(join(sqlite, 'lib', 'index.js'))) return 'packaged app is missing node_modules/better-sqlite3/lib/index.js';
+  const musl = process.platform === 'linux' && !(process.report?.getReport() as { header?: { glibcVersionRuntime?: string } } | undefined)?.header?.glibcVersionRuntime;
+  const target = `${musl ? 'linuxmusl' : process.platform}-${process.arch}`;
+  for (const candidate of [join('prebuilds', `${target}.node`), join('build', 'Release', 'better_sqlite3.node')]) {
+    try {
+      if (statSync(join(sqlite, candidate)).size > 0) return null;
+    } catch { /* try the next */ }
+  }
+  return `packaged app has no better-sqlite3 native binary for ${target} (node_modules/better-sqlite3/prebuilds/${target}.node)`;
+}
+
 // Why a release tree cannot run, or null when it is complete: the CLI and
-// update support, the bridge schema, and the packaged UI/core runtime with
-// its native driver, all at the directory's version.
+// every module it loads (update support included), the bridge schema, and the
+// packaged UI/core runtime with this platform's native driver, all at the
+// directory's version.
 export function releaseProblem(dir: string, version: string): string | null {
   const pkg = packageDirIn(dir);
-  for (const file of ['package.json', 'dist/cli.js', 'dist/managed.js', 'dist/product.js', 'dist/server.js', 'schemas/botmancers.mcp.v1.tools.json']) {
+  for (const file of REQUIRED_RELEASE_FILES) {
     if (!existsSync(join(pkg, file))) return `missing ${file}`;
   }
+  const module = missingDistModule(join(pkg, 'dist'));
+  if (module) return module;
   try {
     const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')) as { name?: string; version?: string };
     if (manifest.name !== PACKAGE_NAME || manifest.version !== version) return `package.json is ${manifest.name}@${manifest.version}, expected ${PACKAGE_NAME}@${version}`;
@@ -227,6 +282,8 @@ export function releaseProblem(dir: string, version: string): string | null {
   const app = join(pkg, 'app');
   const missing = REQUIRED_APP_FILES.filter(entry => !existsSync(join(app, entry)));
   if (missing.length) return `packaged app is missing ${missing.join(', ')}`;
+  const native = nativeBindingProblem(app);
+  if (native) return native;
   try {
     const info = JSON.parse(readFileSync(join(app, 'BUILD_INFO.json'), 'utf8')) as { version?: string };
     if (info.version !== version) return `packaged app is version ${info.version}, expected ${version}`;
@@ -430,33 +487,114 @@ export function lockedIntegrity(dir: string): string | null {
 }
 
 // ---------------------------------------------------------------------
-// The update lock: one check or download per home at a time.
+// Locks. update.lock: one check, download, install, or upgrade per home at a
+// time (they share versions/.partial-<v> and update-state.json). start.lock:
+// a start's stopped proof, any `current` switch, and the supervisor's claim
+// on the home happen inside it. A lock whose holder is gone is stale.
 
-function lockHeld(paths: ManagedPaths): boolean {
+interface LockInfo {
+  pid?: number;
+  at?: number;
+  token?: string;
+}
+
+function readLock(path: string): LockInfo | null {
   try {
-    const { pid, at } = JSON.parse(readFileSync(paths.lock, 'utf8')) as { pid?: number; at?: number };
-    if (!pid || Date.now() - (at ?? 0) > LOCK_STALE_MS) return false;
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as { code?: string }).code === 'EPERM';
+    return JSON.parse(readFileSync(path, 'utf8')) as LockInfo;
+  } catch {
+    return null;
   }
 }
 
-export function acquireLock(paths: ManagedPaths): (() => void) | null {
-  mkdirSync(paths.home, { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const fd = openSync(paths.lock, 'wx', 0o600);
-      writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
-      closeSync(fd);
-      return () => rmSync(paths.lock, { force: true });
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'EEXIST' || lockHeld(paths)) return null;
-      rmSync(paths.lock, { force: true });
-    }
+function lockLive(path: string): LockInfo | null {
+  const info = readLock(path);
+  if (!info?.pid || Date.now() - (info.at ?? 0) > LOCK_STALE_MS) return null;
+  try {
+    process.kill(info.pid, 0);
+    return info;
+  } catch (error) {
+    return (error as { code?: string }).code === 'EPERM' ? info : null;
   }
-  return null;
+}
+
+function lockHeld(paths: ManagedPaths): boolean {
+  return !!lockLive(paths.lock);
+}
+
+export type Unlock = () => void;
+
+// Takes the lock at `path`, or null when a live holder has it. `inherit`
+// accepts a lock its live holder handed to this process by token; the holder
+// still releases it.
+export function acquireFileLock(path: string, options: { inherit?: string } = {}): { release: Unlock; token: string } | null {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  if (options.inherit) {
+    const held = lockLive(path);
+    if (held?.token === options.inherit) return { release: () => {}, token: options.inherit };
+  }
+  const token = randomUUID();
+  // Published complete with link(), so a waiter never reads a half-written
+  // lock and mistakes it for stale.
+  const temp = `${path}.${process.pid}.${token}.tmp`;
+  writeFileSync(temp, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { mode: 0o600 });
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        linkSync(temp, path);
+        let released = false;
+        return {
+          token,
+          release: () => {
+            if (released) return;
+            released = true;
+            if (readLock(path)?.token === token) rmSync(path, { force: true });
+          },
+        };
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'EEXIST' || lockLive(path) || !removeStaleLock(path)) return null;
+      }
+    }
+    return null;
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+
+// Moves a stale lock aside, and puts it back if another process replaced it
+// with a live one in between. True when the path is free to take.
+function removeStaleLock(path: string): boolean {
+  const stale = readLock(path);
+  const aside = `${path}.${process.pid}.${randomUUID()}.stale`;
+  try {
+    renameSync(path, aside);
+  } catch {
+    return true;
+  }
+  const moved = readLock(aside);
+  if (moved?.token !== stale?.token || lockLive(aside)) {
+    try { linkSync(aside, path); } catch { /* someone else holds it now */ }
+    rmSync(aside, { force: true });
+    return false;
+  }
+  rmSync(aside, { force: true });
+  return true;
+}
+
+// Polls for the lock until `timeoutMs`; calls onWait once if it has to wait.
+export async function waitForFileLock(path: string, options: { timeoutMs: number; inherit?: string; onWait?: () => void }): Promise<{ release: Unlock; token: string } | null> {
+  const deadline = Date.now() + options.timeoutMs;
+  let waited = false;
+  for (;;) {
+    const lock = acquireFileLock(path, options);
+    if (lock || Date.now() >= deadline) return lock;
+    if (!waited) options.onWait?.();
+    waited = true;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
+export function acquireLock(paths: ManagedPaths): Unlock | null {
+  return acquireFileLock(paths.lock)?.release ?? null;
 }
 
 // ---------------------------------------------------------------------
@@ -553,8 +691,8 @@ export function activatablePending(env: NodeJS.ProcessEnv, cliPath?: string): st
   if (isAutoupdaterDisabled(env)) return null;
   if (detectInstallKind(env, { cliPath }).kind !== 'managed') return null;
   const paths = managedPaths(env);
-  const pending = readUpdateState(paths).pendingVersion;
-  if (!isSemver(pending) || pending === currentManagedVersion(paths)) return null;
+  const { pendingVersion: pending, declinedVersion } = readUpdateState(paths);
+  if (!isSemver(pending) || pending === currentManagedVersion(paths) || pending === declinedVersion) return null;
   return releaseProblem(versionDir(paths, pending), pending) ? null : pending;
 }
 
@@ -597,6 +735,6 @@ export function managedReport(env: NodeJS.ProcessEnv, cliPath?: string): Managed
   const shadowedBy = launcher && resolved && realOrNull(resolved) !== realOrNull(paths.launcher) ? resolved : null;
   const state = readUpdateState(paths);
   const current = currentManagedVersion(paths);
-  const pending = isSemver(state.pendingVersion) && state.pendingVersion !== current && !releaseProblem(versionDir(paths, state.pendingVersion), state.pendingVersion) ? state.pendingVersion : null;
+  const pending = isSemver(state.pendingVersion) && state.pendingVersion !== current && state.pendingVersion !== state.declinedVersion && !releaseProblem(versionDir(paths, state.pendingVersion), state.pendingVersion) ? state.pendingVersion : null;
   return { install, paths, launcher, resolved, shadowedBy, current, pending, autoupdate: !isAutoupdaterDisabled(env), state };
 }

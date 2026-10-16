@@ -26,7 +26,7 @@ import {
   CLI_PATH, HOME_DIRS, PRODUCT_HOST, UI_PORT_ENV, DEFAULT_UI_PORT, type HomePaths,
   appDir, homePaths, missingAppFiles, modeOf, portFrom, readBuildInfo, readEnvFile, resolveHome,
 } from './home.js';
-import { RESTART_ACTION, activateRelease, activatablePending, cliEntryIn, managedPaths, managedReport, scheduleAutoUpdate, versionDir, writeUpdateState, type ManagedReport } from './managed.js';
+import { RESTART_ACTION, START_LOCK_ENV, activateRelease, activatablePending, cliEntryIn, managedPaths, managedReport, scheduleAutoUpdate, versionDir, waitForFileLock, writeUpdateState, type ManagedReport, type Unlock } from './managed.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { BRIDGE_SERVICE_ID, SERVICE_TOKENS_ENV, credentialState } from './setup.js';
 
@@ -91,6 +91,12 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function startupTimeout(env: NodeJS.ProcessEnv): number {
   const value = Number(env[STARTUP_TIMEOUT_ENV]);
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_STARTUP_TIMEOUT_MS;
+}
+
+// How long a start (or an explicit activation) waits for another start to
+// claim the home: as long as a daemon start waits for its supervisor.
+export function startLockTimeout(env: NodeJS.ProcessEnv): number {
+  return startupTimeout(env) * 2 + 5000;
 }
 
 // ---------------------------------------------------------------------
@@ -543,7 +549,7 @@ const logSize = (path: string) => { try { return statSync(path).size; } catch { 
 // Runs the product in this process until a signal. Resolves with an exit
 // code when startup fails or after a signal-initiated shutdown; calls
 // onReady once both children are healthy.
-export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void): Promise<number> {
+export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void, onClaim: () => void = () => {}): Promise<number> {
   const log = (line: string) => ctx.io.stderr(`[${new Date().toISOString()}] botmancers supervisor: ${line}\n`);
   const record: RunRecord = {
     schema: 1,
@@ -563,6 +569,8 @@ export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void):
     if ((error as { code?: string }).code !== 'EEXIST') throw error;
     log('another botmancers start owns this home; leaving it alone.');
     return PRODUCT_EXIT.degraded;
+  } finally {
+    onClaim();
   }
   const owned = () => readRun(ctx.paths)?.supervisor.pid === process.pid;
   const save = () => { if (owned()) writeRun(ctx.paths, record); };
@@ -714,6 +722,26 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
     return code;
   }
 
+  // The stopped proof, a pending release's activation, and the supervisor's
+  // claim on the home (its run record) happen under start.lock, so neither a
+  // concurrent start nor an explicit upgrade can act between them.
+  const lock = await waitForFileLock(managedPaths(ctx.env).startLock, {
+    timeoutMs: startLockTimeout(ctx.env),
+    inherit: ctx.env[START_LOCK_ENV],
+    onWait: () => ctx.io.stderr('botmancers: waiting for another botmancers start or upgrade of this home...\n'),
+  });
+  if (!lock) {
+    ctx.io.stderr(`botmancers: another botmancers start or upgrade of ${ctx.paths.home} did not finish; run \`botmancers status\`.\n`);
+    return PRODUCT_EXIT.degraded;
+  }
+  try {
+    return await startLocked(ctx, options, lock);
+  } finally {
+    lock.release();
+  }
+}
+
+async function startLocked(ctx: Ctx, options: StartOptions, lock: { release: Unlock; token: string }): Promise<number> {
   const view = await inspect(ctx);
   if (view.repaired) ctx.io.stderr(`botmancers: ${view.repaired}\n`);
   if (view.state === 'healthy') {
@@ -728,8 +756,9 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
   }
 
   // Nothing from this home is live (inspect proved every recorded process is
-  // gone), so a staged managed release can become current now (NOT-279).
-  const activated = await activatePendingAndRestart(ctx, options);
+  // gone) and no other start can begin until this one's supervisor claims the
+  // home, so a staged managed release can become current now (NOT-279).
+  const activated = await activatePendingAndRestart(ctx, options, lock);
   if (activated !== null) return activated;
 
   for (const [port, what] of [[ctx.uiPort, 'UI/core'], [ctx.mcpPort, 'MCP bridge']] as const) {
@@ -747,15 +776,16 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
   };
 
   if (!options.daemon) {
-    const code = await supervise({ ...ctx, io: { stdout: ctx.io.stdout, stderr: ctx.io.stderr } }, record => { void announce(record); });
+    const code = await supervise({ ...ctx, io: { stdout: ctx.io.stdout, stderr: ctx.io.stderr } }, record => { void announce(record); }, lock.release);
     return code;
   }
 
+  const { [START_LOCK_ENV]: _inherited, ...childEnv } = ctx.env;
   const from = logSize(ctx.paths.supervisorLog);
   const fd = openSync(ctx.paths.supervisorLog, 'a', 0o600);
   const child = spawn(process.execPath, [CLI_PATH, 'start', '--supervise'], {
     cwd: ctx.paths.home,
-    env: { ...ctx.env, BOTMANCERS_HOME: ctx.paths.home },
+    env: { ...childEnv, BOTMANCERS_HOME: ctx.paths.home },
     detached: true,
     stdio: ['ignore', fd, fd],
   });
@@ -767,6 +797,8 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
     await sleep(250);
     if (exitCode !== null) break;
     const record = readRun(ctx.paths);
+    // The supervisor has claimed the home: later starts see it as live.
+    if (record?.supervisor.pid === child.pid) lock.release();
     if (record?.state === 'running' && record.supervisor.pid === child.pid) {
       child.unref();
       await announce(record);
@@ -783,8 +815,9 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
 }
 
 // Switches `current` to the staged release and hands this start over to the
-// new release's CLI. Returns null when there is nothing to activate.
-async function activatePendingAndRestart(ctx: Ctx, options: StartOptions): Promise<number | null> {
+// new release's CLI, which inherits start.lock (by token) until its
+// supervisor claims the home. Returns null when there is nothing to activate.
+async function activatePendingAndRestart(ctx: Ctx, options: StartOptions, lock: { release: Unlock; token: string }): Promise<number | null> {
   const pending = activatablePending(ctx.env);
   if (!pending) return null;
   const paths = managedPaths(ctx.env);
@@ -797,7 +830,8 @@ async function activatePendingAndRestart(ctx: Ctx, options: StartOptions): Promi
   }
   ctx.io.stdout(`botmancers: activated ${pending} (was ${ctx.version}).\n`);
   const args = [cliEntryIn(versionDir(paths, pending)), 'start', ...(options.daemon ? ['--daemon'] : []), ...(options.open ? ['--open'] : [])];
-  const child = spawn(process.execPath, args, { env: ctx.env, stdio: 'inherit' });
+  const child = spawn(process.execPath, args, { env: { ...ctx.env, [START_LOCK_ENV]: lock.token }, stdio: 'inherit' });
+  const claimed = setInterval(() => { if (readRun(ctx.paths)) lock.release(); }, 200);
   const forward = (signal: NodeJS.Signals) => () => child.kill(signal);
   const onInt = forward('SIGINT');
   const onTerm = forward('SIGTERM');
@@ -805,10 +839,12 @@ async function activatePendingAndRestart(ctx: Ctx, options: StartOptions): Promi
   process.on('SIGTERM', onTerm);
   return new Promise(resolve => {
     child.once('error', error => {
+      clearInterval(claimed);
       ctx.io.stderr(`botmancers: could not run ${pending}: ${error.message}\n`);
       resolve(PRODUCT_EXIT.childFailed);
     });
     child.once('exit', (code, signal) => {
+      clearInterval(claimed);
       process.off('SIGINT', onInt);
       process.off('SIGTERM', onTerm);
       resolve(code ?? (signal ? PRODUCT_EXIT.childFailed : PRODUCT_EXIT.ok));

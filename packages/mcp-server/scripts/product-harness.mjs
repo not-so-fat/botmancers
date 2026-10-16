@@ -122,6 +122,8 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME || '127.0.0.1');
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 `;
 
+export const FAKE_PREBUILD_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'linuxmusl-x64', 'linuxmusl-arm64', 'win32-x64', 'win32-arm64'];
+
 export function makeFakeApp(dir, { version, commit = 'fake' }) {
   for (const sub of ['.next/static/chunks', 'public', 'node_modules/next', 'node_modules/better-sqlite3']) mkdirSync(join(dir, sub), { recursive: true });
   writeFileSync(join(dir, 'server.js'), FAKE_SERVER.replace('__SCHEMA__', JSON.stringify(SCHEMA_PATH)));
@@ -131,5 +133,10 @@ export function makeFakeApp(dir, { version, commit = 'fake' }) {
   writeFileSync(join(dir, 'node_modules/next/package.json'), JSON.stringify({ name: 'next', version: '0.0.0' }));
   writeFileSync(join(dir, 'node_modules/better-sqlite3/package.json'), JSON.stringify({ name: 'better-sqlite3', version: '0.0.0', main: 'index.js' }));
   writeFileSync(join(dir, 'node_modules/better-sqlite3/index.js'), 'module.exports = class { prepare() { return { get: () => ({ 1: 1 }) }; } };\n');
+  // The layout the release check requires: lib/ plus a binary per platform.
+  mkdirSync(join(dir, 'node_modules/better-sqlite3/lib'), { recursive: true });
+  mkdirSync(join(dir, 'node_modules/better-sqlite3/prebuilds'), { recursive: true });
+  writeFileSync(join(dir, 'node_modules/better-sqlite3/lib/index.js'), "module.exports = require('../index.js');\n");
+  for (const platform of FAKE_PREBUILD_PLATFORMS) writeFileSync(join(dir, `node_modules/better-sqlite3/prebuilds/${platform}.node`), 'fake native binary');
   return dir;
 }
