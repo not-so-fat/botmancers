@@ -7,12 +7,15 @@
 //   node scripts/release.mjs --out file       also save the transcript
 //
 // Checks, in order: version consistency (package.json, CHANGELOG, README pin,
-// tag), clean git state, tests, package contents, provenance/attestation
+// tag), clean git state, locked build toolchain (committed package-lock.json,
+// exact devDependency pins, `npm ci` in the workflow, installed tools match
+// the lock), tests, package contents, provenance/attestation
 // support (including the npm/Node floor for trusted publishing), `npm publish --dry-run`, and a canary install of the exact tarball
 // into a clean temporary project.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PACKAGE_DIR, checkManifest, packManifest } from './check-pack.mjs';
@@ -102,6 +105,42 @@ step('clean git state', () => {
   const status = run('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: REPO_ROOT }).trim();
   assert(status === '', `uncommitted changes:\n${status}`);
   return 'no uncommitted or untracked files';
+});
+
+step('locked build toolchain', () => {
+  const lockPath = join(PACKAGE_DIR, 'package-lock.json');
+  assert(existsSync(lockPath), 'packages/mcp-server/package-lock.json is missing; the release build must be reproducible');
+  try {
+    run('git', ['ls-files', '--error-unmatch', 'package-lock.json']);
+  } catch {
+    throw new Error('package-lock.json is not committed');
+  }
+  const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+  assert(lock.lockfileVersion >= 2, `package-lock.json lockfileVersion ${lock.lockfileVersion} is too old for npm ci`);
+  const root = lock.packages?.[''] ?? {};
+  for (const field of ['dependencies', 'devDependencies']) {
+    assert(JSON.stringify(root[field] ?? {}) === JSON.stringify(pkg[field] ?? {}),
+      `package-lock.json ${field} do not match package.json; regenerate the lockfile`);
+  }
+  const require = createRequire(join(PACKAGE_DIR, 'package.json'));
+  const pinned = [];
+  for (const [name, spec] of Object.entries(pkg.devDependencies ?? {})) {
+    assert(SEMVER.test(spec), `devDependency ${name}@${spec} must be pinned to an exact version`);
+    const locked = lock.packages[`node_modules/${name}`]?.version;
+    assert(locked === spec, `package-lock.json locks ${name}@${locked}, package.json pins ${spec}`);
+    const installed = JSON.parse(readFileSync(require.resolve(`${name}/package.json`), 'utf8')).version;
+    assert(installed === locked, `installed ${name}@${installed} differs from the locked ${locked}; run npm ci`);
+    pinned.push(`${name}@${locked}`);
+  }
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    if (!path) continue;
+    assert(/^sha512-/.test(entry.integrity ?? ''), `${path} has no sha512 integrity in package-lock.json`);
+    assert((entry.resolved ?? '').startsWith('https://registry.npmjs.org/'), `${path} does not resolve from registry.npmjs.org`);
+  }
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  assert(/^\s*run:\s*npm ci\b/m.test(workflow), 'release workflow must install build tools with npm ci');
+  assert(!/npm install(?! -g npm@)/.test(workflow), 'release workflow must not use npm install for build tools');
+  return `package-lock.json committed, workflow uses npm ci, installed ${pinned.join(', ')} match the lock`;
 });
 
 step('tests', () => {

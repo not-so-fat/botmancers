@@ -18,6 +18,14 @@ private Botmancers app, which has the same name and `"private": true`.
   `## [x.y.z] - YYYY-MM-DD` entry in `CHANGELOG.md`, every
   `npx botmancers@x.y.z` example in `README.md`, and the git tag
   `botmancers-vx.y.z`. `release:check` verifies that they agree.
+- The build tools (`typescript`, `@types/node`) are pinned to exact versions
+  and locked in this directory's `package-lock.json`, which is committed.
+  The release workflow installs them with `npm ci`, so a tagged commit
+  compiles with the same tools as its dry run. `release:check` fails if the
+  lockfile is missing, uncommitted, or out of sync with `package.json`, if a
+  build tool is not pinned exactly, if the workflow does not use `npm ci`, or
+  if the installed tools differ from the lock. To change a tool version, edit
+  the pin, run `npm install` in this directory, and commit both files.
 
 ## Dist-tags: canary, then stable
 
@@ -36,6 +44,7 @@ registry smoke test before announcing that release.
 
    ```sh
    cd packages/mcp-server
+   npm ci
    npm run build
    npm run release:check
    ```
@@ -103,15 +112,30 @@ The release ticket records these actions:
 2. Confirm that `botmancers` is still unclaimed: `npm view botmancers` should
    return 404.
 3. The first publish cannot use trusted publishing, because npm configures it
-   per existing package. Create a **granular access token** with read and
-   write access to packages, an expiry of 1 day, and an IP allowlist if your
-   CI supports one. Store it only as the `NPM_TOKEN` secret of the
-   `npm-publish` GitHub environment. Then run steps 2 to 5 above.
+   per existing package. It runs in GitHub Actions, where nobody can answer
+   an OTP prompt, so the token must be allowed to publish without one. Create
+   a **granular access token** on npmjs.com with:
+   - Packages and scopes: **Read and write**. The package does not exist
+     yet, so it cannot be selected individually; use the account that will
+     own it, grant no organization access, and rely on the short expiry.
+   - **Bypass two-factor authentication** enabled. Without it, npm rejects a
+     noninteractive publish from an account that has 2FA for writes.
+   - An expiry of 1 day, and an IP allowlist if your CI supports one.
+
+   Store it only as the `NPM_TOKEN` secret of the `npm-publish` GitHub
+   environment. Then run steps 2 to 5 above. Delete and revoke it right after
+   the first publish (step 4 below); it is the only 2FA-bypassing credential
+   and must not outlive that release.
 4. After the package exists, configure it on npmjs.com under **Settings →
    Trusted publishing** with GitHub Actions, repository
    `not-so-fat/botmancers`, workflow `release-botmancers.yml`, and
-   environment `npm-publish`. Then delete the `NPM_TOKEN` secret and revoke
-   the token. Later releases authenticate through OIDC only.
+   environment `npm-publish`. Under the allowed actions, **select the direct
+   `npm publish` action**. New trusted-publisher configurations default to
+   staged publishing only, and the workflow runs `npm publish`, so without
+   this setting every later release is rejected. Save, then confirm the
+   configuration lists `npm publish` as allowed. Then delete the `NPM_TOKEN`
+   secret and revoke the token. Later releases authenticate through OIDC
+   only.
 5. Under package settings, set **Publishing access** to "Require two-factor
    authentication and disallow tokens", and add the org as a maintainer.
 6. From a clean directory, run

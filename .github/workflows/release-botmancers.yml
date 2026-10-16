@@ -36,14 +36,17 @@ jobs:
             npm install -g npm@11.6.2
           fi
           npm --version
-      - name: Install package-local build tools
-        # No lockfile is written, so the clean-tree check still holds.
-        run: npm install --no-package-lock --no-audit --no-fund
+      - name: Install the locked package-local build tools
+        # npm ci installs exactly packages/mcp-server/package-lock.json (and
+        # fails if it disagrees with package.json), so the tagged commit always
+        # compiles with the same TypeScript and @types/node as its dry run.
+        run: npm ci --no-audit --no-fund
       - name: Release check (version, changelog, clean tree, tests, contents, provenance, canary install)
         run: npm run build && npm run release:check -- --tag "$GITHUB_REF_NAME"
       - name: Publish to the canary dist-tag with provenance
-        # Trusted publishing (OIDC) when configured on npmjs.com; otherwise the
-        # short-lived, publish-only NPM_TOKEN environment secret is used.
+        # Trusted publishing (OIDC) when configured on npmjs.com with the direct
+        # "npm publish" action allowed; otherwise (first publish only) the
+        # short-lived, bypass-2FA granular NPM_TOKEN environment secret is used.
         run: npm publish --provenance --access public --tag canary
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
