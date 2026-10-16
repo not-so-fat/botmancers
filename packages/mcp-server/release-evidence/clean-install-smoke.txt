@@ -1,5 +1,5 @@
-source: tarball botmancers-0.2.0.tgz (integrity sha512-aAe7Jof5HNsfbzXRjSI1W1qSPwZI2CCIZGFUhSqC49fCCphnmkXaGJdoTBujAyYpwIh+xlK7XKs4v7tcaoi+vw==)
-commit: 6640a9658ce3feae60c249dc5f763f8dce2ba128
+source: tarball botmancers-0.2.0.tgz (integrity sha512-fkvJkh9YGX4cA203ZIWDy9WTZi4wGUCpU9er5gX7JIvsvyLd7XLDl5a32KNMCfrmTf1SKYSxFv7GZQkKYb4vbQ==)
+commit: e4efecad9aa9d1f08ce7f8921824c53cfbaa317c
 node: v26.10.0, npm: 11.19.1
 ok  temporary project is empty apart from package.json
 installed: botmancers@0.2.0
@@ -9,7 +9,7 @@ ok  no transitive dependencies installed
 ok  `npx botmancers --help` exits 0 and prints usage
 ok  installed `botmancers --version` prints 0.2.0
 ok  installed binary without configuration exits 2 with guidance
-ok  `npx botmancers` serves: botmancers 0.2.0: MCP bridge listening on http://127.0.0.1:55039/mcp (health: /healthz) -> http://127.0.0.1:55036
+ok  `npx botmancers` serves: botmancers 0.2.0: MCP bridge listening on http://127.0.0.1:58357/mcp (health: /healthz) -> http://127.0.0.1:58354
 ok  GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v1","version":"0.2.0"}
 ok  MCP initialize -> botmancers 0.2.0, protocol 2025-06-18
 ok  tools/list -> botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health
@@ -17,4 +17,4 @@ ok  tools/call botmancers_health -> {"contract":"botmancers.mcp.v1","status":"ok
 ok  fake Botmancers received the service token
 ok  SIGTERM stops the bridge with exit 0
 ok  bridge output contains no token
-PASS clean-install smoke for botmancers@0.2.0 at 6640a9658ce3feae60c249dc5f763f8dce2ba128
+PASS clean-install smoke for botmancers@0.2.0 at e4efecad9aa9d1f08ce7f8921824c53cfbaa317c

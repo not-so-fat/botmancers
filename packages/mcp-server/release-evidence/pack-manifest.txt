@@ -1,9 +1,9 @@
-commit 6640a9658ce3feae60c249dc5f763f8dce2ba128
+commit e4efecad9aa9d1f08ce7f8921824c53cfbaa317c
 botmancers@0.2.0  botmancers-0.2.0.tgz
-size 13723206 B, unpacked 38890376 B, 1540 files
-shasum f0433b110432b5b8c15d8b8132d4ee365abc2c2c
-integrity sha512-aAe7Jof5HNsfbzXRjSI1W1qSPwZI2CCIZGFUhSqC49fCCphnmkXaGJdoTBujAyYpwIh+xlK7XKs4v7tcaoi+vw==
-app build 0.2.0 commit 6640a9658ce3feae60c249dc5f763f8dce2ba128, next 16.3.8
+size 13728322 B, unpacked 38969778 B, 1540 files
+shasum 727e93e0bc37e18dbd1146dc3f51c10d3a3d5c6e
+integrity sha512-fkvJkh9YGX4cA203ZIWDy9WTZi4wGUCpU9er5gX7JIvsvyLd7XLDl5a32KNMCfrmTf1SKYSxFv7GZQkKYb4vbQ==
+app build 0.2.0 commit e4efecad9aa9d1f08ce7f8921824c53cfbaa317c, next 16.3.8
      143  app/BUILD_INFO.json
       94  app/package.json
     7455  app/server.js
@@ -19,7 +19,7 @@ app build 0.2.0 commit 6640a9658ce3feae60c249dc5f763f8dce2ba128, next 16.3.8
      697  dist/index.d.ts
      732  dist/index.js
     3689  dist/product.d.ts
-   39578  dist/product.js
+   39663  dist/product.js
      181  dist/redact.d.ts
      762  dist/redact.js
     1003  dist/server.d.ts
@@ -29,7 +29,7 @@ app build 0.2.0 commit 6640a9658ce3feae60c249dc5f763f8dce2ba128, next 16.3.8
     1018  dist/upstream.d.ts
     5815  dist/upstream.js
     1071  LICENSE
-    2041  package.json
+    2062  package.json
    14467  README.md
    14714  schemas/botmancers.mcp.v1.tools.json
     2212  app/.next/app-path-routes-manifest.json  (1 files)
@@ -40,7 +40,7 @@ app build 0.2.0 commit 6640a9658ce3feae60c249dc5f763f8dce2ba128, next 16.3.8
     3250  app/.next/prerender-manifest.json  (1 files)
    10124  app/.next/required-server-files.json  (1 files)
     8996  app/.next/routes-manifest.json  (1 files)
- 4153689  app/.next/server/  (399 files)
+ 4232985  app/.next/server/  (399 files)
   898103  app/.next/static/  (26 files)
    11000  app/node_modules/@next/env@16.3.8  (2 files)
    30691  app/node_modules/@swc/helpers@0.5.23  (5 files)
