@@ -1,0 +1,41 @@
+# Publishes the botmancers npm package (packages/mcp-server) with provenance
+# when an operator pushes a botmancers-v<version> tag. It always publishes to
+# the "canary" dist-tag. Promotion to "latest" is a separate operator step,
+# taken after the registry smoke passes (see packages/mcp-server/RELEASING.md).
+name: release-botmancers
+
+on:
+  push:
+    tags:
+      - 'botmancers-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write   # npm provenance / trusted publishing (OIDC)
+    defaults:
+      run:
+        working-directory: packages/mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install package-local build tools
+        # No lockfile is written, so the clean-tree check still holds.
+        run: npm install --no-package-lock --no-audit --no-fund
+      - name: Release check (version, changelog, clean tree, tests, contents, provenance, canary install)
+        run: npm run build && npm run release:check -- --tag "$GITHUB_REF_NAME"
+      - name: Publish to the canary dist-tag with provenance
+        # Trusted publishing (OIDC) when configured on npmjs.com; otherwise the
+        # short-lived, publish-only NPM_TOKEN environment secret is used.
+        run: npm publish --provenance --access public --tag canary
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

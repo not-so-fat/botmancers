@@ -141,5 +141,16 @@ does not exist.
    `status: "ok"`, your service id, and each coordinator with
    `available: true`.
 
-Out of scope here: package publication, hosted or multi-tenant operation,
+## Standalone bridge (`npx botmancers`)
+
+The npm package `botmancers` (source in
+[`packages/mcp-server`](../packages/mcp-server/README.md)) runs this same
+contract as a standalone Streamable HTTP server. It answers `tools/list`
+from a bundled copy of the captured schemas and forwards `tools/call` to
+this endpoint with a service token. MCP clients authenticate to it with a
+separate token. Use it when a consumer needs its own reachable endpoint.
+Release steps are in
+[`packages/mcp-server/RELEASING.md`](../packages/mcp-server/RELEASING.md).
+
+Out of scope here: hosted or multi-tenant operation,
 push completion callbacks, and any particular client's account setup.
