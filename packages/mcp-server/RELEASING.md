@@ -76,7 +76,7 @@ registry smoke test before announcing that release.
    ```
 
    Pass `--tarball` to the smokes: without it they run `npm pack`, whose
-   `prepack` rebuilds `app/` from the (now dirty) tree.```
+   `prepack` rebuilds `app/` from the (now dirty) tree.
 
    `release-evidence/` is outside the package `files` allowlist, so it is
    never published. Commit it in a follow-up commit that touches only that
