@@ -6,6 +6,7 @@
 //   botmancers setup|start|stop|status|doctor|open
 //                               the full product: UI, API, core engine, and
 //                               bridge under one supervisor (./product)
+//   botmancers install|upgrade  the managed install and its updates (./upgrade)
 //
 // Bridge mode: validate configuration, check that Botmancers is reachable
 // and accepts the service token, then serve the MCP bridge until a signal.
@@ -18,6 +19,8 @@ import { HEALTH_PATH, MCP_PATH, createBridge } from './server.js';
 import { UpstreamError } from './upstream.js';
 import { PRODUCT_EXIT, UsageError, doctor, open, parseStartArgs, productContext, start, status, stop } from './product.js';
 import { SetupError, runSetup } from './setup.js';
+import { DISABLE_AUTOUPDATER_ENV, runUpdateCheck, scheduleAutoUpdate } from './managed.js';
+import { runInstall, runUpgrade } from './upgrade.js';
 
 export const EXIT = { ok: 0, config: 2, listen: 3, unavailable: 4, credentials: 5 } as const;
 
@@ -36,6 +39,9 @@ function urlHost(url: string): string {
 }
 
 export const PRODUCT_COMMANDS = ['setup', 'start', 'stop', 'status', 'doctor', 'open'] as const;
+export const INSTALL_COMMANDS = ['install', 'upgrade'] as const;
+// The detached auto-update worker (./managed scheduleAutoUpdate); not for people.
+export const UPDATE_WORKER_COMMAND = '__update-check';
 
 export const PRODUCT_HELP = `Usage: botmancers <command>
 
@@ -50,6 +56,14 @@ Run Botmancers (UI, API, core engine, and MCP bridge) from this package:
   doctor                    Check the installation, home, ports, Hermes, Agent Deck
   open                      Open the UI in a browser
   mcp [options]             Run only the MCP bridge (same as bare \`botmancers\`)
+  install [--to VERSION]    Managed install into ~/.botmancers/versions with the
+                            ~/.local/bin/botmancers launcher (--help for options)
+  upgrade [--check] [--to VERSION] [--yes]
+                            Update this installation (managed or npm-global)
+
+Managed installs update themselves: at most one npm check a day, a background
+download, activation at the next \`botmancers start\` once nothing is running.
+${DISABLE_AUTOUPDATER_ENV}=1 turns that off; \`botmancers upgrade\` still works.
 
 Environment: BOTMANCERS_HOME (default ~/.botmancers), BOTMANCERS_UI_PORT,
 BOTMANCERS_MCP_PORT. Variables exported in your shell (HERMES_*, BOTMANCERS_DB_PATH,
@@ -69,6 +83,8 @@ export async function productMain(command: typeof PRODUCT_COMMANDS[number], argv
   }
   try {
     const ctx = productContext(env, io);
+    // The running supervisor schedules its own checks; `start` reaches it.
+    if (command !== 'start') scheduleAutoUpdate(env);
     if (command !== 'start' && argv.length) throw new UsageError(`${command} takes no arguments.`);
     switch (command) {
       case 'setup': {
@@ -100,6 +116,12 @@ export async function productMain(command: typeof PRODUCT_COMMANDS[number], argv
 export async function main(argv: string[], env: NodeJS.ProcessEnv, io: CliIo = processIo): Promise<number | 'serving'> {
   const [first, ...rest] = argv;
   if (first === 'mcp') return bridgeMain(rest, env, io);
+  if (first === 'install') return runInstall(rest, env, io);
+  if (first === 'upgrade') return runUpgrade(rest, env, io);
+  if (first === UPDATE_WORKER_COMMAND) {
+    await runUpdateCheck(env);
+    return EXIT.ok;
+  }
   if ((PRODUCT_COMMANDS as readonly string[]).includes(first)) return productMain(first as typeof PRODUCT_COMMANDS[number], rest, env, io);
   return bridgeMain(argv, env, io);
 }
@@ -190,7 +212,7 @@ if (invokedDirectly()) {
       if (outcome !== 'serving') {
         process.exitCode = outcome;
         // A finished product command must not linger on open handles.
-        if (process.argv[2] && (PRODUCT_COMMANDS as readonly string[]).includes(process.argv[2])) process.exit(outcome);
+        if (process.argv[2] && ([...PRODUCT_COMMANDS, ...INSTALL_COMMANDS, UPDATE_WORKER_COMMAND] as readonly string[]).includes(process.argv[2])) process.exit(outcome);
       }
     },
     error => {

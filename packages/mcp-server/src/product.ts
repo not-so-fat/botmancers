@@ -26,6 +26,7 @@ import {
   CLI_PATH, HOME_DIRS, PRODUCT_HOST, UI_PORT_ENV, DEFAULT_UI_PORT, type HomePaths,
   appDir, homePaths, missingAppFiles, modeOf, portFrom, readBuildInfo, readEnvFile, resolveHome,
 } from './home.js';
+import { RESTART_ACTION, START_LOCK_ENV, activateRelease, activatablePending, cliEntryIn, beginHandOff, handOffFileLock, managedPaths, managedReport, scheduleAutoUpdate, versionDir, waitForFileLock, writeUpdateState, type ManagedReport, type Unlock } from './managed.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { BRIDGE_SERVICE_ID, SERVICE_TOKENS_ENV, credentialState } from './setup.js';
 
@@ -92,6 +93,12 @@ function startupTimeout(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_STARTUP_TIMEOUT_MS;
 }
 
+// How long a start (or an explicit activation) waits for another start to
+// claim the home: as long as a daemon start waits for its supervisor.
+export function startLockTimeout(env: NodeJS.ProcessEnv): number {
+  return startupTimeout(env) * 2 + 5000;
+}
+
 // ---------------------------------------------------------------------
 // Run metadata and process identity.
 
@@ -111,6 +118,7 @@ export interface RunRecord {
   state: 'starting' | 'running' | 'stopping';
   startedAt: string;
   supervisor: { pid: number; started?: string };
+  cli?: string;  // the dist/cli.js the supervisor and bridge run (a managed release tree)
   ui: ChildRecord;
   mcp: ChildRecord;
 }
@@ -194,9 +202,11 @@ export function ownership(pid: number | null | undefined, started: string | unde
   return identity.started === started ? 'owned' : 'gone';
 }
 
-// A foreground `botmancers start` may run through the npm bin link.
-const supervisorMarkers = () => [CLI_PATH, 'botmancers'];
-const bridgeMarkers = () => [`${CLI_PATH} mcp`];
+// A foreground `botmancers start` may run through the npm bin link. The
+// recorded CLI path matters after a managed release switch: a product started
+// from versions/N must still be recognized by the CLI of versions/N+1.
+const supervisorMarkers = (record: RunRecord) => [record.cli ?? CLI_PATH, 'botmancers'];
+const bridgeMarkers = (record: RunRecord) => [`${record.cli ?? CLI_PATH} mcp`];
 // Next renames its process to "next-server (vX)" on some platforms; the
 // recorded start time is what tells ours apart from any other Next server.
 const coreMarkers = (record: RunRecord) => [join(record.appDir, 'server.js'), 'next-server'];
@@ -205,9 +215,9 @@ type Target = { name: 'supervisor' | 'core' | 'bridge'; pid: number | null; owne
 
 function targetsOf(record: RunRecord): Target[] {
   return [
-    { name: 'supervisor', pid: record.supervisor.pid, owner: ownership(record.supervisor.pid, record.supervisor.started, supervisorMarkers()) },
+    { name: 'supervisor', pid: record.supervisor.pid, owner: ownership(record.supervisor.pid, record.supervisor.started, supervisorMarkers(record)) },
     { name: 'core', pid: record.ui.pid, owner: ownership(record.ui.pid, record.ui.started, coreMarkers(record)) },
-    { name: 'bridge', pid: record.mcp.pid, owner: ownership(record.mcp.pid, record.mcp.started, bridgeMarkers()) },
+    { name: 'bridge', pid: record.mcp.pid, owner: ownership(record.mcp.pid, record.mcp.started, bridgeMarkers(record)) },
   ];
 }
 
@@ -345,10 +355,33 @@ export async function inspect(ctx: Ctx): Promise<Inspection> {
   return { state: problems.length ? 'degraded' : 'healthy', record, problems, repaired: null, alive, core, bridge, link };
 }
 
-export function formatStatus(ctx: Ctx, view: Inspection): string {
+// Install kind, launcher, and the versions that are installed, staged, and
+// actually running. The running versions come only from the live health
+// endpoints: a staged release or a moved `current` link never counts.
+function installLines(ctx: Ctx, view: Inspection, report: ManagedReport): string[] {
+  const lines = [`  install     ${report.install.kind} (${report.install.cliPath})`];
+  if (report.launcher) {
+    lines.push(`  launcher    ${report.paths.launcher}${report.shadowedBy ? ` (shadowed on PATH by ${report.shadowedBy})` : report.resolved ? '' : ' (not on PATH)'}`);
+  } else if (report.resolved) {
+    lines.push(`  launcher    PATH resolves botmancers to ${report.resolved}`);
+  }
+  const versions = [`cli ${ctx.version}`];
+  if (report.current) versions.push(`current ${report.current}`);
+  if (report.pending) versions.push(`pending ${report.pending} (staged, not running${report.autoupdate ? '' : '; auto-update disabled'})`);
+  lines.push(`  versions    ${versions.join(', ')}`);
+  if (view.record) {
+    const shown = (probe: Probe | null) => probe?.version ?? (probe?.ok === false ? 'down' : 'unknown');
+    lines.push(`  running     core ${shown(view.core)}, bridge ${shown(view.bridge)} (started by ${view.record.version})`);
+  }
+  return lines;
+}
+
+export function formatStatus(ctx: Ctx, view: Inspection, report: ManagedReport = managedReport(ctx.env)): string {
   const lines = [`botmancers ${ctx.version}: ${view.state}`];
   if (view.repaired) lines.push(`  note        ${view.repaired}`);
   lines.push(`  home        ${ctx.paths.home}`);
+  lines.push(...installLines(ctx, view, report));
+  const activates = report.pending && report.autoupdate ? `   (activates ${report.pending})` : '';
   const record = view.record;
   if (record) {
     const show = (probe: Probe | null) => (probe ? `${probe.ok ? 'ok' : 'DOWN'}${probe.version ? ` version ${probe.version}` : ''}` : '-');
@@ -357,10 +390,12 @@ export function formatStatus(ctx: Ctx, view: Inspection): string {
     if (view.link) lines.push(`  bridge→core ${view.link.detail}`);
     lines.push(`  supervisor  pid ${record.supervisor.pid}${view.alive.supervisor ? '' : ' (not running)'}, started ${record.startedAt}`);
     for (const problem of view.problems) lines.push(`  problem     ${problem}`);
-    if (view.state === 'degraded') lines.push('  fix         botmancers stop && botmancers start --daemon   (logs: ' + ctx.paths.logs + ')');
+    if (view.state === 'degraded') lines.push(`  fix         ${RESTART_ACTION}   (logs: ${ctx.paths.logs})${activates}`);
+    else if (activates) lines.push(`  restart     ${RESTART_ACTION}${activates}`);
   } else {
     lines.push(`  ui/core     ${uiUrl(ctx)}  (not running)`);
     lines.push(`  mcp bridge  ${mcpBase(ctx)}/mcp  (not running)`);
+    if (activates) lines.push(`  next start  botmancers start --daemon${activates}`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -514,7 +549,7 @@ const logSize = (path: string) => { try { return statSync(path).size; } catch { 
 // Runs the product in this process until a signal. Resolves with an exit
 // code when startup fails or after a signal-initiated shutdown; calls
 // onReady once both children are healthy.
-export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void): Promise<number> {
+export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void, onClaim: () => void = () => {}): Promise<number> {
   const log = (line: string) => ctx.io.stderr(`[${new Date().toISOString()}] botmancers supervisor: ${line}\n`);
   const record: RunRecord = {
     schema: 1,
@@ -524,6 +559,7 @@ export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void):
     state: 'starting',
     startedAt: new Date().toISOString(),
     supervisor: { pid: process.pid, started: processStarted(process.pid) },
+    cli: CLI_PATH,
     ui: { pid: null, port: ctx.uiPort, url: uiUrl(ctx) },
     mcp: { pid: null, port: ctx.mcpPort, url: `${mcpBase(ctx)}/mcp` },
   };
@@ -533,6 +569,8 @@ export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void):
     if ((error as { code?: string }).code !== 'EEXIST') throw error;
     log('another botmancers start owns this home; leaving it alone.');
     return PRODUCT_EXIT.degraded;
+  } finally {
+    onClaim();
   }
   const owned = () => readRun(ctx.paths)?.supervisor.pid === process.pid;
   const save = () => { if (owned()) writeRun(ctx.paths, record); };
@@ -592,6 +630,10 @@ export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void):
   record.state = 'running';
   save();
   onReady(record);
+  // The running product checks for updates (at most daily, in a detached
+  // worker); a staged release waits for the next start.
+  scheduleAutoUpdate(ctx.env);
+  setInterval(() => scheduleAutoUpdate(ctx.env), 60 * 60 * 1000).unref();
 
   return new Promise(resolve => {
     const stop = (signal: string) => {
@@ -680,6 +722,26 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
     return code;
   }
 
+  // The stopped proof, a pending release's activation, and the supervisor's
+  // claim on the home (its run record) happen under start.lock, so neither a
+  // concurrent start nor an explicit upgrade can act between them.
+  const lock = await waitForFileLock(managedPaths(ctx.env).startLock, {
+    timeoutMs: startLockTimeout(ctx.env),
+    inherit: ctx.env[START_LOCK_ENV],
+    onWait: () => ctx.io.stderr('botmancers: waiting for another botmancers start or upgrade of this home...\n'),
+  });
+  if (!lock) {
+    ctx.io.stderr(`botmancers: another botmancers start or upgrade of ${ctx.paths.home} did not finish; run \`botmancers status\`.\n`);
+    return PRODUCT_EXIT.degraded;
+  }
+  try {
+    return await startLocked(ctx, options, lock);
+  } finally {
+    lock.release();
+  }
+}
+
+async function startLocked(ctx: Ctx, options: StartOptions, lock: { release: Unlock; token: string }): Promise<number> {
   const view = await inspect(ctx);
   if (view.repaired) ctx.io.stderr(`botmancers: ${view.repaired}\n`);
   if (view.state === 'healthy') {
@@ -689,9 +751,15 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
   }
   if (view.state === 'degraded') {
     ctx.io.stdout(formatStatus(ctx, view));
-    ctx.io.stderr('botmancers: a previous start is degraded; run `botmancers stop`, then start again.\n');
+    ctx.io.stderr('botmancers: a previous start is degraded; see the fix line above.\n');
     return PRODUCT_EXIT.degraded;
   }
+
+  // Nothing from this home is live (inspect proved every recorded process is
+  // gone) and no other start can begin until this one's supervisor claims the
+  // home, so a staged managed release can become current now (NOT-279).
+  const activated = await activatePendingAndRestart(ctx, options, lock);
+  if (activated !== null) return activated;
 
   for (const [port, what] of [[ctx.uiPort, 'UI/core'], [ctx.mcpPort, 'MCP bridge']] as const) {
     if (!(await portFree(port))) {
@@ -708,15 +776,16 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
   };
 
   if (!options.daemon) {
-    const code = await supervise({ ...ctx, io: { stdout: ctx.io.stdout, stderr: ctx.io.stderr } }, record => { void announce(record); });
+    const code = await supervise({ ...ctx, io: { stdout: ctx.io.stdout, stderr: ctx.io.stderr } }, record => { void announce(record); }, lock.release);
     return code;
   }
 
+  const { [START_LOCK_ENV]: _inherited, ...childEnv } = ctx.env;
   const from = logSize(ctx.paths.supervisorLog);
   const fd = openSync(ctx.paths.supervisorLog, 'a', 0o600);
   const child = spawn(process.execPath, [CLI_PATH, 'start', '--supervise'], {
     cwd: ctx.paths.home,
-    env: { ...ctx.env, BOTMANCERS_HOME: ctx.paths.home },
+    env: { ...childEnv, BOTMANCERS_HOME: ctx.paths.home },
     detached: true,
     stdio: ['ignore', fd, fd],
   });
@@ -728,6 +797,8 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
     await sleep(250);
     if (exitCode !== null) break;
     const record = readRun(ctx.paths);
+    // The supervisor has claimed the home: later starts see it as live.
+    if (record?.supervisor.pid === child.pid) lock.release();
     if (record?.state === 'running' && record.supervisor.pid === child.pid) {
       child.unref();
       await announce(record);
@@ -741,6 +812,51 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
   ctx.io.stderr(`botmancers: start failed (exit ${exitCode}). Supervisor log ${ctx.paths.supervisorLog}:\n`);
   for (const line of tail(ctx.paths.supervisorLog, from, 40)) ctx.io.stderr(`  ${line}\n`);
   return exitCode;
+}
+
+// Switches `current` to the staged release and hands this start over to the
+// new release's CLI, which owns start.lock (handed off by token) until its
+// supervisor claims the home. Returns null when there is nothing to activate.
+async function activatePendingAndRestart(ctx: Ctx, options: StartOptions, lock: { release: Unlock; token: string }): Promise<number | null> {
+  const pending = activatablePending(ctx.env);
+  if (!pending) return null;
+  const paths = managedPaths(ctx.env);
+  try {
+    activateRelease(paths, pending);
+  } catch (error) {
+    writeUpdateState(paths, { pendingVersion: null, pendingIntegrity: null, stagedAt: null, lastError: (error as Error).message });
+    ctx.io.stderr(`botmancers: not activating ${pending}: ${(error as Error).message}; starting ${ctx.version}.\n`);
+    return null;
+  }
+  ctx.io.stdout(`botmancers: activated ${pending} (was ${ctx.version}).\n`);
+  const args = [cliEntryIn(versionDir(paths, pending)), 'start', ...(options.daemon ? ['--daemon'] : []), ...(options.open ? ['--open'] : [])];
+  // Announce the hand-off before spawning: if this process dies anywhere
+  // between here and the point where the new CLI owns start.lock, the lock
+  // stays live for the lease and the new CLI can still adopt it by token.
+  beginHandOff(paths.startLock, lock.token);
+  const child = spawn(process.execPath, args, { env: { ...ctx.env, [START_LOCK_ENV]: lock.token }, stdio: 'inherit' });
+  // Once spawned, start.lock lives as long as the new CLI, even if this
+  // process dies before its supervisor claims the home.
+  if (child.pid) handOffFileLock(paths.startLock, lock.token, child.pid);
+  const claimed = setInterval(() => { if (readRun(ctx.paths)) lock.release(); }, 200);
+  const forward = (signal: NodeJS.Signals) => () => child.kill(signal);
+  const onInt = forward('SIGINT');
+  const onTerm = forward('SIGTERM');
+  process.on('SIGINT', onInt);
+  process.on('SIGTERM', onTerm);
+  return new Promise(resolve => {
+    child.once('error', error => {
+      clearInterval(claimed);
+      ctx.io.stderr(`botmancers: could not run ${pending}: ${error.message}\n`);
+      resolve(PRODUCT_EXIT.childFailed);
+    });
+    child.once('exit', (code, signal) => {
+      clearInterval(claimed);
+      process.off('SIGINT', onInt);
+      process.off('SIGTERM', onTerm);
+      resolve(code ?? (signal ? PRODUCT_EXIT.childFailed : PRODUCT_EXIT.ok));
+    });
+  });
 }
 
 // Re-checks identity each round, so a reaped-and-recycled PID counts as gone.
@@ -841,6 +957,22 @@ export async function doctor(ctx: Ctx): Promise<number> {
   else if (build?.version !== ctx.version) add('fail', 'assets', `packaged app is version ${build?.version ?? 'unknown'}, CLI is ${ctx.version}; reinstall botmancers.`);
   else add('ok', 'assets', `packaged UI/core ${build.version} (commit ${build.commit.slice(0, 12)})`);
 
+  const report = managedReport(ctx.env);
+  add('info', 'install', `${report.install.kind} (${report.install.cliPath})`);
+  if (report.install.kind === 'managed' && !report.launcher) add('warn', 'launcher', `${report.paths.launcher} is missing or modified; re-run botmancers install --to ${report.current ?? ctx.version}.`);
+  if (report.shadowedBy) add('warn', 'path', `\`botmancers\` on PATH resolves to ${report.shadowedBy}, not the managed launcher ${report.paths.launcher}; put ${report.paths.localBin} first on PATH (or botmancers install --purge-global).`);
+  else if (report.launcher && !report.resolved) add('warn', 'path', `${report.paths.localBin} is not on PATH; add it: export PATH="${report.paths.localBin}:$PATH"`);
+  else if (report.resolved) add('ok', 'path', `PATH resolves botmancers to ${report.resolved}`);
+  if (report.current || report.pending) {
+    add('info', 'versions', `cli ${ctx.version}, current ${report.current ?? '-'}${report.pending ? `, pending ${report.pending} (staged, not running; activates at the next botmancers start after ${RESTART_ACTION.split(' && ')[0]})` : ''}`);
+  }
+  if (report.install.kind === 'managed') {
+    const when = report.state.checkedAt ? `last check ${report.state.checkedAt}${report.state.latest ? `, npm latest ${report.state.latest}` : ''}` : 'not checked yet';
+    if (!report.autoupdate) add('info', 'updater', 'automatic updates disabled (BOTMANCERS_DISABLE_AUTOUPDATER); botmancers upgrade still works');
+    else if (report.state.lastError) add('warn', 'updater', `${when}; ${report.state.lastError}`);
+    else add('ok', 'updater', `automatic updates on (${when})`);
+  }
+
   if (!existsSync(ctx.paths.home)) {
     add('fail', 'home', `${ctx.paths.home} does not exist; run botmancers setup.`);
   } else {
@@ -871,8 +1003,9 @@ export async function doctor(ctx: Ctx): Promise<number> {
   }
 
   const view = await inspect(ctx);
-  if (view.state === 'healthy') add('ok', 'product', `running and healthy: UI ${view.record!.ui.url}, MCP ${view.record!.mcp.url}`);
-  else if (view.state === 'degraded') add('fail', 'product', `running but degraded: ${view.problems.join('; ')}`);
+  if (view.record) add('info', 'running', `core ${view.core?.version ?? 'unknown'}, bridge ${view.bridge?.version ?? 'unknown'} (started by ${view.record.version})`);
+  if (view.state === 'healthy') add('ok', 'product', `running and healthy: UI ${view.record!.ui.url}, MCP ${view.record!.mcp.url}${report.pending && report.autoupdate ? `; restart to activate ${report.pending}: ${RESTART_ACTION}` : ''}`);
+  else if (view.state === 'degraded') add('fail', 'product', `running but degraded: ${view.problems.join('; ')}; fix: ${RESTART_ACTION}`);
   else {
     const busy: string[] = [];
     for (const port of [ctx.uiPort, ctx.mcpPort]) if (!(await portFree(port))) busy.push(String(port));

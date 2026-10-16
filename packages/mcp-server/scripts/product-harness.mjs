@@ -3,9 +3,10 @@
 // tiny core that answers /api/health and the /api/v0/mcp subset the bridge
 // needs) for the supervisor's failure modes. Not shipped.
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -122,6 +123,14 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME || '127.0.0.1');
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 `;
 
+export const FAKE_PREBUILD_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'linuxmusl-x64', 'linuxmusl-arm64', 'win32-x64', 'win32-arm64'];
+
+const NATIVE_TARGET = `${process.platform === 'linux' && !process.report.getReport().header.glibcVersionRuntime ? 'linuxmusl' : process.platform}-${process.arch}`;
+const nativeBinaryOf = real => {
+  const binding = createRequire(join(real, 'lib', 'binding.js'))('./binding.js');
+  return binding.getPrebuildPath() ?? join(real, 'build', 'Release', 'better_sqlite3.node');
+};
+
 export function makeFakeApp(dir, { version, commit = 'fake' }) {
   for (const sub of ['.next/static/chunks', 'public', 'node_modules/next', 'node_modules/better-sqlite3']) mkdirSync(join(dir, sub), { recursive: true });
   writeFileSync(join(dir, 'server.js'), FAKE_SERVER.replace('__SCHEMA__', JSON.stringify(SCHEMA_PATH)));
@@ -129,7 +138,14 @@ export function makeFakeApp(dir, { version, commit = 'fake' }) {
   writeFileSync(join(dir, 'BUILD_INFO.json'), JSON.stringify({ name: 'botmancers', version, commit }));
   writeFileSync(join(dir, '.next/BUILD_ID'), 'fake');
   writeFileSync(join(dir, 'node_modules/next/package.json'), JSON.stringify({ name: 'next', version: '0.0.0' }));
-  writeFileSync(join(dir, 'node_modules/better-sqlite3/package.json'), JSON.stringify({ name: 'better-sqlite3', version: '0.0.0', main: 'index.js' }));
-  writeFileSync(join(dir, 'node_modules/better-sqlite3/index.js'), 'module.exports = class { prepare() { return { get: () => ({ 1: 1 }) }; } };\n');
+  // The real better-sqlite3 (the files build-app.mjs ships) with this
+  // platform's real prebuild, so release and doctor checks really load it and
+  // run a query; other platforms get placeholder binaries.
+  const sqlite = join(dir, 'node_modules/better-sqlite3');
+  const real = dirname(createRequire(join(PACKAGE_DIR, 'package.json')).resolve('better-sqlite3/package.json'));
+  for (const entry of ['package.json', 'LICENSE', 'lib']) cpSync(join(real, entry), join(sqlite, entry), { recursive: true });
+  mkdirSync(join(sqlite, 'prebuilds'), { recursive: true });
+  for (const platform of FAKE_PREBUILD_PLATFORMS) writeFileSync(join(sqlite, `prebuilds/${platform}.node`), 'fake native binary');
+  cpSync(nativeBinaryOf(real), join(sqlite, `prebuilds/${NATIVE_TARGET}.node`));
   return dir;
 }

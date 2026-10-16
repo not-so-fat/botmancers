@@ -47,6 +47,12 @@ jobs:
         # compiles with the same TypeScript and @types/node as its dry run.
         run: npm ci --no-audit --no-fund
       - name: Release check (version, changelog, clean tree, app build, tests, contents, provenance, canary installs)
+        # The canary installs run the exact tarball through three smokes before
+        # anything is published: bridge-only, the unified product, and the
+        # managed install (scripts/install.sh -> ~/.botmancers/versions, the
+        # ~/.local/bin launcher, background staging of N+1, activation at one
+        # restart, rollback). A tarball missing the launcher/updater code, the
+        # UI/core runtime, the bridge, or the native SQLite driver fails here.
         run: npm run build && npm run build:app && npm run release:check -- --tag "$GITHUB_REF_NAME"
       - name: Publish to the canary dist-tag with provenance
         # scripts/publish-ci.sh runs `npm publish --provenance --access public

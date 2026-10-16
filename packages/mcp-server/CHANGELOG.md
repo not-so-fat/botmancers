@@ -5,6 +5,48 @@ All notable changes to the `botmancers` npm package. It uses
 minor version may change the CLI or configuration. The MCP tool contract is
 versioned separately, as `botmancers.mcp.v1`.
 
+## [0.3.0] - 2026-10-16
+
+### Added
+
+- Managed install, following the Agent Deck / Agent Dealer contract:
+  `curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash`
+  or `botmancers install [--to VERSION] [--migrate-cli] [--purge-global]`
+  installs the exact npm release into `~/.botmancers/versions/<version>`,
+  checks its sha512 integrity and contents, atomically points
+  `~/.botmancers/current` at it, and writes the stable launcher
+  `~/.local/bin/botmancers`. Existing data, configuration, logs, and workdirs
+  are not touched.
+- Safe automatic updates for managed installs, on by default: at most one
+  background npm `latest` check per 24 hours, a verified download next to the
+  running release, and activation only at the next `botmancers start` once no
+  Botmancers process from the home is live. `status`, `open`, `doctor`, the
+  bridge, and a running product never switch releases.
+  `BOTMANCERS_DISABLE_AUTOUPDATER=1` turns all of it off. Explicit installs,
+  upgrades, and rollbacks wait for a background download (`update.lock`), and
+  a start's stopped check, any release switch, and the supervisor's claim on
+  the home are serialized (`run/start.lock`). A release is made current only
+  when every module its CLI loads and this platform's better-sqlite3 binary
+  are present.
+- `botmancers upgrade [--check] [--to VERSION] [--yes]`: managed installs
+  download, verify, and activate (or stage while the product runs).
+  npm-global installs keep the prompted `npm install -g botmancers@<version>`.
+  npx, project-local, and source-checkout copies report how to upgrade and
+  never change themselves.
+- Rollback with `botmancers install --to <older>`. The newer version is then
+  not reinstated automatically. Activation keeps the active release and the
+  two newest other complete releases, and removes incomplete trees.
+- `status` and `doctor` report the install kind, launcher, `PATH` shadowing,
+  the CLI, current, and pending versions, the versions the live core and
+  bridge report, and the restart action.
+
+### Fixed
+
+- After a release switch beneath a running product, the newer CLI reports the
+  old core and bridge versions as degraded instead of treating the old bridge
+  as not running (NOT-279 class). It can still stop that product. The run
+  record now stores the CLI path the product was started from.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

@@ -56,9 +56,16 @@ registry smoke test before announcing that release.
    contents against the allowlist (including the bundled UI/core runtime),
    provenance support, `npm publish --dry-run`, and canary installs of the
    exact tarball into clean temporary projects: bridge-only
-   (`smoke-install.mjs`) and the full product (`smoke-product-install.mjs`:
+   (`smoke-install.mjs`), the full product (`smoke-product-install.mjs`:
    `setup`, `start --daemon`, UI, `/api/v0`, bridge against the same engine,
-   restart, `status`/`doctor`/`stop`). It also checks that the release workflow runs on
+   restart, `status`/`doctor`/`stop`), and the managed install
+   (`smoke-managed-install.mjs`: a local registry serves the exact tarball as
+   N and a version-bumped repack as N+1; `scripts/install.sh` installs N into
+   a temporary `~/.botmancers/versions` with the `~/.local/bin` launcher as the
+   only `botmancers` on `PATH`; the launcher runs `--version`, `doctor`, and the
+   product; the background updater stages N+1 beside the live N; one restart
+   activates it; `install --to N` rolls back; user state and its hashes are
+   unchanged; `BOTMANCERS_DISABLE_AUTOUPDATER=1` makes no registry request). It also checks that the release workflow runs on
    Node 24 and enforces npm 11.5.1 or newer, and that the local toolchain
    meets the same floor: npm trusted publishing (OIDC) needs npm >= 11.5.1
    and Node >= 22.14. It never writes to the registry.
@@ -73,6 +80,7 @@ registry smoke test before announcing that release.
    npm run check:pack -- --out release-evidence/pack-manifest.txt
    npm run smoke:install -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/clean-install-smoke.txt
    npm run smoke:product -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/product-install-smoke.txt
+   npm run smoke:managed -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/managed-install-smoke.txt
    ```
 
    Pass `--tarball` to the smokes: without it they run `npm pack`, whose
@@ -107,13 +115,35 @@ registry smoke test before announcing that release.
    npm dist-tag add botmancers@X.Y.Z latest
    ```
 
-6. **Operator friend-path check** (0.2.0 onward), from a clean macOS user
-   account with Node 20+: `npm install -g botmancers@X.Y.Z` (canary),
-   `botmancers setup`, `botmancers start --daemon --open`, create and reopen a
-   conversation in the UI, call MCP `botmancers_health` and `tools/list`
-   against the same installation, `botmancers stop && botmancers start --daemon`,
-   and confirm the conversation remains. Keep the transcript, a UI screenshot,
-   and the MCP transcript.
+6. **Operator friend-path check** (0.3.0 onward: the managed install), from
+   a clean macOS user account with Node 20.9+ and npm:
+   1. Install N:
+      `curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash`
+      (before N is on `latest`, prefix it with `BOTMANCERS_VERSION=X.Y.Z`).
+      Then run `botmancers setup`, `botmancers start --daemon --open`, create a
+      conversation in the UI, and call MCP `botmancers_health` and
+      `tools/list`. Record `shasum -a 256` of
+      `~/.botmancers/config/core.env`, a file under `~/.botmancers/files/`,
+      and a skill.
+   2. Once N+1 is on `latest`, run `botmancers status` (or wait for the
+      running product's daily check). Within a few minutes
+      `~/.botmancers/update-state.json` shows `pendingVersion` N+1. `status`
+      still shows `running core N, bridge N` and the UI keeps working. If
+      `checkedAt` is less than 24 hours old, wait, or remove that field to
+      force a check.
+   3. Run `botmancers stop && botmancers start --daemon`. It prints
+      `activated N+1 (was N)`. `curl -s 127.0.0.1:43123/api/health` and
+      `curl -s 127.0.0.1:43124/healthz` report N+1, the conversation is
+      still there, and the hashes match.
+   4. Roll back: run `botmancers stop && botmancers install --to N && botmancers start --daemon`.
+      Both health endpoints report N, and the same state and hashes are
+      present.
+   5. Run `BOTMANCERS_DISABLE_AUTOUPDATER=1 botmancers status` and confirm
+      that `doctor` reports the updater as disabled.
+
+   Keep the timestamped, redacted transcript, the health responses, a UI
+   screenshot, `npm view botmancers@N dist.integrity` and the same for N+1,
+   and the before/after hashes.
 7. Record the npm URL (`https://www.npmjs.com/package/botmancers/v/X.Y.Z`),
    the integrity value, and the redacted smoke transcript on the release
    ticket.

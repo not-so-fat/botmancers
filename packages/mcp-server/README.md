@@ -32,6 +32,25 @@ untested there.
 
 ## Quick start: the full product
 
+The recommended install is the **managed install**. It needs Node.js and
+npm, and no global npm package or source checkout:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash
+botmancers setup
+botmancers start --daemon --open
+```
+
+The script runs `npx botmancers@latest install`. That command installs the
+release into `~/.botmancers/versions/<version>`, points `~/.botmancers/current`
+at it, and writes the launcher `~/.local/bin/botmancers`. Add `~/.local/bin`
+to your `PATH` if the script asks you to. Managed installs
+[update themselves safely](#upgrade). To install a specific version, run
+`BOTMANCERS_VERSION=0.3.0 bash install.sh` or
+`npx botmancers@0.3.0 install --to 0.3.0`.
+
+npm-global installs and bare `npx` still work for compatibility:
+
 ```sh
 npx botmancers setup
 npx botmancers start --daemon --open
@@ -62,9 +81,9 @@ Then:
    `BOTMANCERS_MCP_COORDINATORS=Tank` and restart.
 5. **Check everything** with `botmancers doctor`.
 
-For anything long-running, install a pinned release instead of using `npx`:
-`npm install -g botmancers@0.2.0`, then run `botmancers setup` and
-`botmancers start --daemon`.
+For anything long-running, use the managed install, or a pinned global
+release rather than `npx`: `npm install -g botmancers@0.3.0`, then run
+`botmancers setup` and `botmancers start --daemon`.
 
 ### Product commands
 
@@ -73,10 +92,12 @@ For anything long-running, install a pinned release instead of using `npx`:
 | `botmancers setup` | Creates `BOTMANCERS_HOME` and its credentials; re-running keeps them and re-tightens permissions. | `0`; `9` home not writable |
 | `botmancers start [--daemon] [--open]` | Starts the UI/core and the bridge. Without `--daemon` it stays in the foreground until Ctrl-C. Starting a healthy product again changes nothing. | `0` running; `1` a previous start is degraded; `6` a port is in use; `7` the core or bridge failed (both are stopped); `8` packaged app incomplete; `9` home not writable; `10` not set up |
 | `botmancers stop` | Stops the supervisor, the core, and the bridge. Safe to repeat. | `0`; `1` a process would not stop |
-| `botmancers status` | Reports `healthy`, `degraded`, or `stopped`, with the running version, both endpoints, and process ids. | `0` healthy; `1` degraded; `3` stopped |
-| `botmancers doctor` | Checks Node, the packaged app, the home and its permissions, the credentials, the SQLite driver, ports, Hermes, and Agent Deck. Hermes and Agent Deck are optional and only warn. | `0` ok; `1` a check failed |
+| `botmancers status` | Reports `healthy`, `degraded`, or `stopped`, with the install kind, launcher, the CLI, current, and pending versions, the versions the live core and bridge report, both endpoints, process ids, and the restart action. | `0` healthy; `1` degraded; `3` stopped |
+| `botmancers doctor` | Checks the install kind, the launcher and `PATH` shadowing, the updater, Node, the packaged app, the home and its permissions, the credentials, the SQLite driver, ports, Hermes, and Agent Deck. Hermes and Agent Deck are optional and only warn. | `0` ok; `1` a check failed |
 | `botmancers open` | Opens the UI in a browser (`BOTMANCERS_BROWSER` overrides the command). | `0`; `1` no browser; `3` not running |
 | `botmancers mcp [options]` | Runs only the bridge; identical to bare `botmancers`. | see [bridge exit codes](#startup-checks-and-exit-codes) |
+| `botmancers install [--to VERSION] [--migrate-cli] [--purge-global]` | Managed install or rollback: downloads the release into `~/.botmancers/versions/VERSION`, verifies it, makes it current, and writes the launcher. `--purge-global` also runs `npm uninstall -g botmancers`; nothing else uninstalls it. | `0`; `1` download or verification failed; `2` usage |
+| `botmancers upgrade [--check] [--to VERSION] [--yes]` | Updates this install. See [Upgrade](#upgrade). | `0`; `1` failed, or this kind of install cannot update itself; `2` usage |
 
 `healthy` means the supervisor and both processes are alive, the core's
 `GET /api/health` and the bridge's `GET /healthz` report the installed
@@ -104,6 +125,7 @@ Everything the product writes lives under `BOTMANCERS_HOME` (default
 | `files/`, `skills/` | File artifacts and local Agent skills. |
 | `logs/` | `supervisor.log`, `core.log`, `bridge.log`, and the Hermes wait log. |
 | `run/product.json` | Run metadata of the supervised product. |
+| `versions/`, `current`, `update-state.json` | Managed install only: the release trees, the link to the active one, and updater metadata. |
 
 The home and `config/` are created `0700` and the credential files `0600`.
 Existing explicit path variables still win over these defaults:
@@ -155,7 +177,7 @@ newer and a running Botmancers app.
 To pin an exact release, which is recommended for anything long-running:
 
 ```sh
-BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers@0.2.0
+BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers@0.3.0
 ```
 
 ## Bridge configuration
@@ -230,16 +252,76 @@ Botmancers rate-limits a tool call, the bridge answers 429 and passes on
 
 ## Upgrade
 
+### Managed install (automatic)
+
+A managed install checks npm's `latest` tag at most once every 24 hours, in a
+background process, so no command waits on the network. A newer release is
+downloaded next to the running one under a temporary name, checked against
+the registry's sha512 integrity and for a complete package, and then
+recorded as **pending**. The running product is not stopped or changed.
+`botmancers status` shows the versions the live core and bridge report, the
+pending version, and the restart command:
+
+```
+  versions    cli 0.3.0, current 0.3.0, pending 0.3.1 (staged, not running)
+  running     core 0.3.0, bridge 0.3.0 (started by 0.3.0)
+  restart     botmancers stop && botmancers start --daemon   (activates 0.3.1)
+```
+
+The pending release becomes current only when `botmancers start` has checked
+that no Botmancers process from this home is still running. `status`,
+`open`, `doctor`, the bridge, and a running product never switch it. If the
+product is still running, `start` leaves it alone and prints the restart
+command. Restart once to activate the pending release:
+
+```sh
+botmancers stop && botmancers start --daemon
+```
+
+Set `BOTMANCERS_DISABLE_AUTOUPDATER=1` to turn off the automatic checks,
+downloads, and activation completely. `botmancers upgrade` still works when
+it is set.
+
+Explicit commands:
+
+```sh
+botmancers upgrade --check          # installed, latest, and pending versions; changes nothing
+botmancers upgrade                  # download, verify, and activate latest
+botmancers upgrade --to 0.3.0       # a specific version
+botmancers install --to 0.3.0       # roll back (no download if it is still installed)
+```
+
+If the product is running, `upgrade` downloads the release and marks it
+pending. It does not switch versions underneath the running product. After a
+rollback, the newer version is not reinstalled automatically. A later
+`botmancers upgrade` moves forward again. The active release and the two most
+recent other complete releases are kept, and older or incomplete release
+trees are removed when a release is activated. Install, upgrade, rollback,
+and pruning change only `versions/`, `current`, `update-state.json`, and the
+launcher. They never touch your data, configuration, logs, or workdirs.
+
+If `botmancers doctor` reports that another `botmancers` (for example an
+npm-global copy) shadows `~/.local/bin/botmancers` on `PATH`, put
+`~/.local/bin` first, or run `botmancers install --purge-global` to remove
+the global copy.
+
+### npm-global, npx, and project-local installs
+
+These never update themselves automatically. `botmancers upgrade` on an
+npm-global install asks before it runs `npm install -g botmancers@<version>`
+(`--yes` skips the question). On any other kind of install, it explains how
+to upgrade and changes nothing.
+
 `npx botmancers` resolves the newest release on the `latest` tag the first
 time. After that, npx may reuse its cached copy. To move deliberately, name
 the version:
 
 ```sh
-npx botmancers@0.2.0 --version
+npx botmancers@0.3.0 --version
 ```
 
-For the full product, stop it, upgrade, and start it again; your state in
-`BOTMANCERS_HOME` is kept:
+For a global full product, stop it, upgrade, and start it again. Your state
+in `BOTMANCERS_HOME` is kept:
 
 ```sh
 botmancers stop
@@ -267,6 +349,7 @@ SIGTERM), then remove the package:
 npm uninstall botmancers        # project-local
 npm uninstall -g botmancers     # global
 npm cache clean --force         # optional: drops npx's cached copy
+rm -rf ~/.botmancers/versions ~/.botmancers/current ~/.botmancers/update-state.json ~/.local/bin/botmancers   # managed install
 ```
 
 For the full product, delete `~/.botmancers` (or your `BOTMANCERS_HOME`)

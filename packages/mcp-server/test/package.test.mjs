@@ -21,7 +21,7 @@ test('npm pack contains only the allowlisted runtime files', () => {
 });
 
 test('the tarball carries the production UI/core runtime next to the bridge', () => {
-  for (const path of ['app/server.js', 'app/.next/BUILD_ID', 'app/.next/server/app/api/health/route.js', 'app/node_modules/next/package.json', 'app/node_modules/better-sqlite3/prebuilds/darwin-arm64.node', 'app/node_modules/better-sqlite3/prebuilds/linux-x64.node', 'dist/cli.js', 'dist/index.js']) {
+  for (const path of ['dist/managed.js', 'dist/upgrade.js', 'app/server.js', 'app/.next/BUILD_ID', 'app/.next/server/app/api/health/route.js', 'app/node_modules/next/package.json', 'app/node_modules/better-sqlite3/prebuilds/darwin-arm64.node', 'app/node_modules/better-sqlite3/prebuilds/linux-x64.node', 'dist/cli.js', 'dist/index.js']) {
     assert.ok(paths.includes(path), path);
   }
   assert.ok(paths.some(path => path.startsWith('app/.next/static/')), 'static assets');
@@ -95,6 +95,10 @@ test('README documents the install, configuration, exposure, upgrade, and uninst
     [/`botmancers (?:stop|status|doctor|open)`/, 'lifecycle commands'],
     [/`BOTMANCERS_HOME`/, 'BOTMANCERS_HOME'],
     [/`botmancers mcp`/, 'explicit bridge-only command'],
+    [/^curl -fsSL https:\/\/raw\.githubusercontent\.com\/not-so-fat\/botmancers\/main\/scripts\/install\.sh \| bash$/m, 'managed install command'],
+    [/`BOTMANCERS_DISABLE_AUTOUPDATER=1`/, 'auto-updater kill switch'],
+    [/botmancers upgrade --check/, 'upgrade check'],
+    [/botmancers install --to /, 'rollback'],
   ];
   const missing = checklist.filter(([pattern]) => !pattern.test(readme)).map(([, label]) => label);
   assert.deepEqual(missing, []);

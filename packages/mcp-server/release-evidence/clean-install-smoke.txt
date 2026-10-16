@@ -1,20 +1,20 @@
-source: tarball botmancers-0.2.0.tgz (integrity sha512-qu1350VHuQTt6o/mTkqFkG7Xab4NppdsFzp2EYWlFvL21EyiypvBNN/9QxqTGPIYz82mIDn+NkY53xbGbCvoLQ==)
-commit: 00259bec22ab3c59eefcd08cdb8449da2ac246ed
+source: tarball botmancers-0.3.0.tgz (integrity sha512-ECSjsdWC7uQWeN1z7VIMXFsUGN8JEr0FtneTfr7DKnvbcULL0eJXHHsSWHguqiQY3QEDkmlA/KguvAt6yRVJWQ==)
+commit: b1be3d0cf1f316be179ed3da39952dc425d47910
 node: v26.10.0, npm: 11.19.1
 ok  temporary project is empty apart from package.json
-installed: botmancers@0.2.0
+installed: botmancers@0.3.0
 ok  installed package is the public botmancers package
 ok  installed files are only CHANGELOG.md, LICENSE, README.md, app, dist, package.json, schemas
 ok  no transitive dependencies installed
 ok  `npx botmancers --help` exits 0 and prints usage
-ok  installed `botmancers --version` prints 0.2.0
+ok  installed `botmancers --version` prints 0.3.0
 ok  installed binary without configuration exits 2 with guidance
-ok  `npx botmancers` serves: botmancers 0.2.0: MCP bridge listening on http://127.0.0.1:63429/mcp (health: /healthz) -> http://127.0.0.1:63426
-ok  GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v1","version":"0.2.0"}
-ok  MCP initialize -> botmancers 0.2.0, protocol 2025-06-18
+ok  `npx botmancers` serves: botmancers 0.3.0: MCP bridge listening on http://127.0.0.1:55711/mcp (health: /healthz) -> http://127.0.0.1:55708
+ok  GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v1","version":"0.3.0"}
+ok  MCP initialize -> botmancers 0.3.0, protocol 2025-06-18
 ok  tools/list -> botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health
 ok  tools/call botmancers_health -> {"contract":"botmancers.mcp.v1","status":"ok","principal":{"kind":"service","id":"fake-service"},"coordinators":[{"name":"Tank","available":true}]}
 ok  fake Botmancers received the service token
 ok  SIGTERM stops the bridge with exit 0
 ok  bridge output contains no token
-PASS clean-install smoke for botmancers@0.2.0 at 00259bec22ab3c59eefcd08cdb8449da2ac246ed
+PASS clean-install smoke for botmancers@0.3.0 at b1be3d0cf1f316be179ed3da39952dc425d47910

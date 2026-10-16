@@ -1,0 +1,115 @@
+source: tarball botmancers-0.3.0.tgz = botmancers@0.3.0, integrity sha512-ECSjsdWC7uQWeN1z7VIMXFsUGN8JEr0FtneTfr7DKnvbcULL0eJXHHsSWHguqiQY3QEDkmlA/KguvAt6yRVJWQ==
+checkout commit: b1be3d0cf1f316be179ed3da39952dc425d47910
+N+1: botmancers@0.3.1 repacked from the same tarball, integrity sha512-FLDFKkF38Gi769qL+Y8p0KlDS4pOJTe5HfUX4OZUBvLZ/JZkA3rijgmppUe7sNEuV0eliA7+4Zd4aVuAflEdtg==
+node v26.10.0, npm 11.19.1, darwin-arm64; registry http://127.0.0.1:55746; ports ui 55747, mcp 55748
+PATH=/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.local/bin:/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/tools:/usr/bin:/bin
+  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/tools: node, npm, npx
+ok  before install, no botmancers anywhere on PATH
+    | Installing botmancers@latest into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers (existing data kept) ...
+    | botmancers: installing botmancers@0.3.0 into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/versions (data under /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers is left unchanged)
+    | botmancers: downloaded botmancers@0.3.0 (sha512-ECSjsdWC7uQWeN1z7VIMXFsUGN8JEr0FtneTfr7DKnvbcULL0eJXHHsSWHguqiQY3QEDkmlA/KguvAt6yRVJWQ==) into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/versions/0.3.0
+    | botmancers: activated 0.3.0; /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/current -> versions/0.3.0
+    | Launcher: /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.local/bin/botmancers
+    | Next: botmancers doctor && botmancers setup && botmancers start --daemon --open
+    | 
+    | Make sure ~/.local/bin is on your PATH, then:
+    |   botmancers doctor
+    |   botmancers setup
+    |   botmancers start --daemon --open
+ok  scripts/install.sh exits 0
+ok  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/versions holds only 0.3.0
+ok  current -> versions/0.3.0
+ok  versions/0.3.0 was installed from the exact tarball (sha512-ECSjsdWC7uQWeN1z7VIMXFsUGN8JEr0FtneTfr7DKnvbcULL0eJXHHsSWHguqiQY3QEDkmlA/KguvAt6yRVJWQ==)
+ok  PATH resolves botmancers only to the launcher /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.local/bin/botmancers
+launcher:
+    | #!/usr/bin/env bash
+    | # botmancers managed launcher: runs the release <home>/current points at.
+    | # Written by `botmancers install`; safe to re-create with it.
+    | set -euo pipefail
+    | HOME_DIR="${BOTMANCERS_HOME:-$HOME/.botmancers}"
+    | BIN="$HOME_DIR/current/node_modules/botmancers/dist/cli.js"
+    | if [ ! -f "$BIN" ]; then
+    |   echo "botmancers: managed install broken (missing $BIN). Re-run: curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash" >&2
+    |   exit 1
+    | fi
+    | exec node "$BIN" "$@"
+ok  botmancers --version -> 0.3.0
+    | botmancers doctor 0.3.0 (home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers)
+    |   ok    node        Node v26.10.0
+    |   ok    assets      packaged UI/core 0.3.0 (commit b1be3d0cf1f3)
+    |   info  install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/versions/0.3.0/node_modules/botmancers/dist/cli.js)
+    |   ok    path        PATH resolves botmancers to /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.local/bin/botmancers
+    |   info  versions    cli 0.3.0, current 0.3.0
+    |   ok    updater     automatic updates on (not checked yet)
+    |   fail  home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers is not fully set up; run botmancers setup.
+    |   fail  config      /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/config/bridge.env is missing; /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/config/core.env is missing; run botmancers setup.
+    |   ok    native      better-sqlite3 loads on darwin-arm64
+    |   ok    ports       127.0.0.1:55747 and 127.0.0.1:55748 are free (product stopped)
+    |   warn  hermes      Hermes is not configured: conversational turns post a Hermes error until HERMES_API_SERVER_KEY is set in /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/config/core.env.
+    |   warn  agent-deck  Agent Deck is unavailable: `agent-deck` is not on PATH; coding-agent runs cannot launch.
+    | result: FAILED (2 problems, 2 warnings)
+ok  doctor reports a managed install resolved through the launcher
+ok  botmancers setup
+ok  botmancers doctor: result: ok (2 warnings)
+ok  botmancers start --daemon:
+botmancers 0.3.0: running
+  UI   http://127.0.0.1:55747
+  MCP  http://127.0.0.1:55748/mcp
+  home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers
+    | botmancers 0.3.0: healthy
+    |   home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers
+    |   install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/versions/0.3.0/node_modules/botmancers/dist/cli.js)
+    |   launcher    /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.local/bin/botmancers
+    |   versions    cli 0.3.0, current 0.3.0
+    |   running     core 0.3.0, bridge 0.3.0 (started by 0.3.0)
+    |   ui/core     http://127.0.0.1:55747  ok version 0.3.0 (pid 8871)
+    |   mcp bridge  http://127.0.0.1:55748/mcp  ok version 0.3.0 (pid 8876)
+    |   bridge→core ok (service:botmancers-bridge)
+    |   supervisor  pid 8866, started 2026-10-16T21:47:47.167Z
+ok  status: healthy, running 0.3.0
+ok  supervisor and bridge run <tmp>/user/.botmancers/versions/0.3.0/node_modules/botmancers/dist/cli.js
+ok  GET / -> 200, the Botmancers UI
+ok  /api/health and bridge /healthz -> 0.3.0
+ok  created Agent 72da950e-2b14-4f82-96b1-388cd8c9045e and a message in conversation 89eae1a8-e3ad-4011-a890-54c128463c13
+ok  MCP tools/call botmancers_health reaches the same engine
+user-state hashes: {"config/core.env":"1e12740753a5070030ae68b08b8838016660b89b23ccf85ace255d207111f8a3","config/bridge.env":"c388b5f3c790f5f4df22f9bb41d6b884eb2c184e6a967b8d5d83e7b223fab434","files/managed-smoke.txt":"78051faade059d70866df6a3fb83ef348721fd74a87e93ef95c493f87d0d236b","skills/smoke/SKILL.md":"b86ce8a55c116250c2ee939e63bc19ce98b03a4942739c651a77dd223599ac4b"}
+ok  the product's own daily check already ran at 2026-10-16T21:47:46.662Z (latest 0.3.0); nothing pending
+ok  within 24 hours no second check runs, even though N+1 is now on latest
+(simulating the next day: checkedAt set to 25 hours ago)
+ok  botmancers status (schedules the daily update check) exits 0 at once
+ok  the detached updater staged 0.3.1: { "checkedAt": "2026-10-16T21:47:48.385Z", "latest": "0.3.1", "pendingVersion": "0.3.1", "pendingIntegrity": "sha512-FLDFKkF38Gi769qL+Y8p0KlDS4pOJTe5HfUX4OZUBvLZ/JZkA3rijgmppUe7sNEuV0eliA7+4Zd4aVuAflEdtg==", "stagedAt": "2026-10-16T21:47:49.127Z", "declinedVersion": null, "lastError": null } 
+ok  versions/0.3.1 staged; current still -> versions/0.3.0
+ok  the live product was not interrupted: supervisor pid 8866, core and bridge still 0.3.0
+    | botmancers 0.3.0: healthy
+    |   home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers
+    |   install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers/versions/0.3.0/node_modules/botmancers/dist/cli.js)
+    |   launcher    /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.local/bin/botmancers
+    |   versions    cli 0.3.0, current 0.3.0, pending 0.3.1 (staged, not running)
+    |   running     core 0.3.0, bridge 0.3.0 (started by 0.3.0)
+    |   ui/core     http://127.0.0.1:55747  ok version 0.3.0 (pid 8871)
+    |   mcp bridge  http://127.0.0.1:55748/mcp  ok version 0.3.0 (pid 8876)
+    |   bridge→core ok (service:botmancers-bridge)
+    |   supervisor  pid 8866, started 2026-10-16T21:47:47.167Z
+    |   restart     botmancers stop && botmancers start --daemon   (activates 0.3.1)
+ok  status shows 0.3.0 running, 0.3.1 pending, and the restart action
+ok  botmancers stop
+    | botmancers: activated 0.3.1 (was 0.3.0).
+    | botmancers 0.3.1: running
+    |   UI   http://127.0.0.1:55747
+    |   MCP  http://127.0.0.1:55748/mcp
+    |   home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-HsKKtp/user/.botmancers
+ok  botmancers start activated 0.3.1
+ok  core and bridge report 0.3.1; current -> versions/0.3.1
+ok  status healthy after the upgrade
+ok  after upgrade to 0.3.1: the Agent and its message are still there
+ok  after upgrade to 0.3.1: user-state file hashes unchanged
+ok  botmancers stop
+ok  botmancers install --to 0.3.0 (rollback) activated 0.3.0 without a download
+ok  after rollback the product runs 0.3.0
+ok  after rollback to 0.3.0: the Agent and its message are still there
+ok  after rollback to 0.3.0: user-state file hashes unchanged
+ok  BOTMANCERS_DISABLE_AUTOUPDATER=1: no registry request, update-state unchanged, current unchanged across status/doctor/stop/start
+ok  botmancers stop
+ok  BOTMANCERS_HOME holds config,current,data,files,logs,run,skills,update-state.json,versions
+ok  nothing was written to the launch directory
+PASS managed install smoke for botmancers@0.3.0 -> 0.3.1 -> 0.3.0 (integrity sha512-ECSjsdWC7uQWeN1z7VIMXFsUGN8JEr0FtneTfr7DKnvbcULL0eJXHHsSWHguqiQY3QEDkmlA/KguvAt6yRVJWQ==) at checkout b1be3d0cf1f316be179ed3da39952dc425d47910
