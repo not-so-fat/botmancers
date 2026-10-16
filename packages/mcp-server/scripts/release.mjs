@@ -4,14 +4,15 @@
 //   node scripts/release.mjs                  full check (requires a clean git tree)
 //   node scripts/release.mjs --tag <tag>      also require the git tag to be botmancers-v<version> (CI)
 //   node scripts/release.mjs --allow-dirty    skip the clean-tree check (local iteration only)
+//   node scripts/release.mjs --out file       also save the transcript
 //
 // Checks, in order: version consistency (package.json, CHANGELOG, README pin,
 // tag), clean git state, tests, package contents, provenance/attestation
-// support, `npm publish --dry-run`, and a canary install of the exact tarball
+// support (including the npm/Node floor for trusted publishing), `npm publish --dry-run`, and a canary install of the exact tarball
 // into a clean temporary project.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PACKAGE_DIR, checkManifest, packManifest } from './check-pack.mjs';
@@ -20,22 +21,45 @@ const args = process.argv.slice(2);
 const tagAt = args.indexOf('--tag');
 const gitTag = tagAt >= 0 ? args[tagAt + 1] : null;
 const allowDirty = args.includes('--allow-dirty');
+const outAt = args.indexOf('--out');
+const outFile = outAt >= 0 ? args[outAt + 1] : null;
 
 const REPO_ROOT = join(PACKAGE_DIR, '..', '..');
 const WORKFLOW = join(REPO_ROOT, '.github/workflows/release-botmancers.yml');
+// npm trusted publishing (OIDC) requires npm >= 11.5.1 on Node >= 22.14.0.
+const MIN_NPM = [11, 5, 1];
+const MIN_NODE = [22, 14, 0];
+const WORKFLOW_NODE_MAJOR = 24;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 
 const pkg = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'));
 const version = pkg.version;
 let failed = false;
+const transcript = [];
+const print = text => {
+  transcript.push(text);
+  process.stdout.write(text);
+};
+const finish = code => {
+  if (outFile) writeFileSync(outFile, transcript.join(''));
+  process.exit(code);
+};
+
+function atLeast(actual, floor) {
+  const parts = actual.replace(/^v/, '').split(/[.-]/).slice(0, 3).map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (parts[i] !== floor[i]) return parts[i] > floor[i];
+  }
+  return true;
+}
 
 function step(name, fn) {
   try {
     const detail = fn();
-    process.stdout.write(`PASS  ${name}${detail ? ` — ${detail}` : ''}\n`);
+    print(`PASS  ${name}${detail ? ` — ${detail}` : ''}\n`);
   } catch (error) {
     failed = true;
-    process.stdout.write(`FAIL  ${name} — ${error.message.trim().split('\n').slice(-8).join('\n      ')}\n`);
+    print(`FAIL  ${name} — ${error.message.trim().split('\n').slice(-8).join('\n      ')}\n`);
   }
 }
 
@@ -47,10 +71,10 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-process.stdout.write(`botmancers release check (dry run, no registry mutation): ${pkg.name}@${version}\n`);
+print(`botmancers release check (dry run, no registry mutation): ${pkg.name}@${version}\n`);
 let commit = 'unknown';
 try { commit = run('git', ['rev-parse', 'HEAD']).trim(); } catch { /* not a checkout */ }
-process.stdout.write(`commit ${commit}\n\n`);
+print(`commit ${commit}\n\n`);
 
 step('version consistency', () => {
   assert(SEMVER.test(version), `package.json version ${version} is not SemVer`);
@@ -110,6 +134,18 @@ step('provenance and attestation support', () => {
   return 'publishConfig provenance/public/canary, repository matches origin, workflow has id-token: write and --provenance';
 });
 
+step('trusted publishing toolchain', () => {
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const nodeMajor = Number(/node-version:\s*'?(\d+)/.exec(workflow)?.[1]);
+  assert(nodeMajor >= WORKFLOW_NODE_MAJOR, `release workflow must use node-version ${WORKFLOW_NODE_MAJOR} or newer (npm trusted publishing needs npm >= ${MIN_NPM.join('.')})`);
+  assert(/npm --version/.test(workflow) && /npm install -g npm@11\.(?:[5-9]|\d{2,})\.\d+/.test(workflow),
+    `release workflow must enforce npm >= ${MIN_NPM.join('.')} before publishing`);
+  const npmVersion = run('npm', ['--version']).trim();
+  assert(atLeast(npmVersion, MIN_NPM), `npm ${npmVersion} cannot publish through trusted publishing; need >= ${MIN_NPM.join('.')}`);
+  assert(atLeast(process.version, MIN_NODE), `Node ${process.version} is below ${MIN_NODE.join('.')} required by trusted publishing`);
+  return `workflow node ${nodeMajor} with npm floor ${MIN_NPM.join('.')}; this run: node ${process.version}, npm ${npmVersion}`;
+});
+
 step('npm publish --dry-run', () => {
   const out = run('npm', ['publish', '--dry-run', '--ignore-scripts', '--provenance=false'], { stdio: ['ignore', 'pipe', 'pipe'] });
   return `would publish ${out.trim().split('\n').pop()} with dist-tag canary`;
@@ -130,10 +166,10 @@ step('canary install of the exact tarball', () => {
 });
 
 if (failed) {
-  process.stdout.write('\nRelease check FAILED. Nothing was published.\n');
-  process.exit(1);
+  print('\nRelease check FAILED. Nothing was published.\n');
+  finish(1);
 }
-process.stdout.write(`
+print(`
 Release check PASSED for botmancers@${version}. Nothing was published.
 Operator steps (see packages/mcp-server/RELEASING.md):
   1. git tag botmancers-v${version} ${commit.slice(0, 12)} && git push origin botmancers-v${version}
@@ -141,3 +177,4 @@ Operator steps (see packages/mcp-server/RELEASING.md):
   2. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
   3. npm dist-tag add botmancers@${version} latest     (2FA; promotes the verified canary to stable)
 `);
+finish(0);

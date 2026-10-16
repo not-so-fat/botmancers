@@ -43,8 +43,24 @@ registry smoke test before announcing that release.
    This checks version consistency, the changelog entry, a clean git tree,
    the tests, package contents against the allowlist, provenance support,
    `npm publish --dry-run`, and a canary install of the exact tarball into a
-   clean temporary project. It never writes to the registry. To keep the
-   tarball manifest, run `npm run check:pack -- --out pack-manifest.txt`.
+   clean temporary project. It also checks that the release workflow runs on
+   Node 24 and enforces npm 11.5.1 or newer, and that the local toolchain
+   meets the same floor: npm trusted publishing (OIDC) needs npm >= 11.5.1
+   and Node >= 22.14. It never writes to the registry.
+
+   Save the evidence for the release ticket, bound to the commit you will tag
+   (the transcripts record the commit SHA and exact version):
+
+   ```sh
+   mkdir -p release-evidence
+   npm run release:check -- --out release-evidence/release-dry-run.txt
+   npm run check:pack -- --out release-evidence/pack-manifest.txt
+   npm run smoke:install -- --out release-evidence/clean-install-smoke.txt
+   ```
+
+   `release-evidence/` is outside the package `files` allowlist, so it is
+   never published. Commit it in a follow-up commit that touches only that
+   directory, so the recorded SHA is the code that was checked.
 3. **Tag**:
 
    ```sh
