@@ -328,3 +328,41 @@ test('a non-loopback bind and plain-http remote Botmancers print warnings', asyn
   const remote = await run([], { BOTMANCERS_URL: 'http://botmancers.invalid:9', BOTMANCERS_MCP_PORT: '0' });
   assert.match(remote.stderr, /uses plain http:\/\/ to a non-loopback host/);
 });
+
+// NOT-494: the product command router must leave bridge mode untouched.
+test('`botmancers mcp` behaves exactly like bare `botmancers`', async () => {
+  const cases = [
+    [[], { PATH: process.env.PATH }],
+    [['--help'], { PATH: process.env.PATH }],
+    [['--version'], { PATH: process.env.PATH }],
+    [['--port', 'nope'], env({ BOTMANCERS_URL: 'http://127.0.0.1:9' })],
+    [['--token', 'x'], env({ BOTMANCERS_URL: 'http://127.0.0.1:9' })],
+    [[], env({ BOTMANCERS_URL: 'http://127.0.0.1:9' })],
+  ];
+  for (const [args, environment] of cases) {
+    const bare = await runBridge(process.execPath, [CLI, ...args], { env: environment });
+    const explicit = await runBridge(process.execPath, [CLI, 'mcp', ...args], { env: environment });
+    assert.equal(explicit.code, bare.code, `exit code for ${args.join(' ') || '(no args)'}`);
+    assert.equal(explicit.stdout, bare.stdout);
+    assert.equal(explicit.stderr, bare.stderr);
+  }
+
+  const fake = await startFakeBotmancers({ serviceToken: SERVICE_TOKEN });
+  try {
+    for (const prefix of [[], ['mcp']]) {
+      const started = await runBridge(process.execPath, [CLI, ...prefix], { env: env({ BOTMANCERS_URL: fake.url }) });
+      assert.ok(started.port, `${prefix.join(' ') || 'bare'} serves`);
+      const session = await mcpSession(`http://127.0.0.1:${started.port}/mcp`, MCP_TOKEN);
+      assert.equal(session.health.json.result.structuredContent.status, 'ok');
+      assert.equal(await stopBridge(started.child), 0);
+    }
+  } finally {
+    await fake.close();
+  }
+});
+
+test('bare `botmancers --help` points to the product commands without changing bridge usage', async () => {
+  const help = await runBridge(process.execPath, [CLI, '--help'], { env: { PATH: process.env.PATH } });
+  assert.match(help.stdout, /^Usage: botmancers \[options\]/);
+  assert.match(help.stdout, /botmancers setup && botmancers start --daemon/);
+});
