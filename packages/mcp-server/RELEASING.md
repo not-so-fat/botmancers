@@ -77,7 +77,8 @@ registry smoke test before announcing that release.
    ```
 
    The `release-botmancers` workflow then runs `release:check --tag ...`
-   again and runs `npm publish --provenance --access public --tag canary`.
+   again and runs `npm publish --provenance --access public --tag canary`
+   through `scripts/publish-ci.sh` (see "Publish authentication" below).
    That attaches a signed SLSA provenance attestation that links the tarball
    to this repository, workflow, and commit.
 4. **Canary smoke from the registry**, run from any machine:
@@ -102,41 +103,99 @@ If a canary is bad, do not promote it. Fix the problem, then release the
 next patch version. Run `npm deprecate botmancers@X.Y.Z "<reason>"` for a
 version that has already reached users. Unpublishing is a last resort.
 
-## First publication (one-time operator actions)
+## Publish authentication
 
-The release ticket records these actions:
+The workflow's publish step (`scripts/publish-ci.sh`) picks one mode:
+
+- **Bootstrap token**: the `npm-publish` environment has a non-empty
+  `NPM_TOKEN` secret. The script exports it as `NODE_AUTH_TOKEN` and logs a
+  warning that token mode was used.
+- **Trusted publishing (OIDC)**: the secret is absent. The script unsets
+  `NODE_AUTH_TOKEN` (setup-node exports a placeholder for the whole job) and
+  removes setup-node's generated `_authToken=${NODE_AUTH_TOKEN}` npmrc entry.
+  An empty or placeholder token suppresses npm's OIDC exchange and fails
+  with `ENEEDAUTH`/`E404`, so neither may reach `npm publish`. It logs
+  `trusted publishing (OIDC); NODE_AUTH_TOKEN unset`.
+
+The workflow never sets `NODE_AUTH_TOKEN` itself; `release:check` and
+`npm test` fail if it does, and `npm test` runs the script in both modes.
+
+## First publication and the move to trusted publishing (one-time)
+
+The release ticket records these actions. Do them in this order: the
+bootstrap token stays active, unused, as the rollback until a trusted
+publish has succeeded.
 
 1. Create the npm organization `botmancers`, which reserves the
    `@botmancers/*` scope. Enable 2FA for every member, set to "auth and
    writes".
 2. Confirm that `botmancers` is still unclaimed: `npm view botmancers` should
    return 404.
-3. The first publish cannot use trusted publishing, because npm configures it
-   per existing package. It runs in GitHub Actions, where nobody can answer
-   an OTP prompt, so the token must be allowed to publish without one. Create
-   a **granular access token** on npmjs.com with:
+3. **Bootstrap token.** The first publish cannot use trusted publishing,
+   because npm configures it per existing package. It runs in GitHub
+   Actions, where nobody can answer an OTP prompt, so the token must be
+   allowed to publish without one. Create a **granular access token** on
+   npmjs.com with:
    - Packages and scopes: **Read and write**. The package does not exist
      yet, so it cannot be selected individually; use the account that will
-     own it, grant no organization access, and rely on the short expiry.
+     own it, and grant no organization access.
    - **Bypass two-factor authentication** enabled. Without it, npm rejects a
      noninteractive publish from an account that has 2FA for writes.
-   - An expiry of 1 day, and an IP allowlist if your CI supports one.
+   - A short expiry that still covers the first publish, the follow-up
+     release, and npm's two-day trusted-publisher validation window (3 days;
+     never more than 7). Add an IP allowlist if your CI supports one.
 
    Store it only as the `NPM_TOKEN` secret of the `npm-publish` GitHub
-   environment. Then run steps 2 to 5 above. Delete and revoke it right after
-   the first publish (step 4 below); it is the only 2FA-bypassing credential
-   and must not outlive that release.
-4. After the package exists, configure it on npmjs.com under **Settings →
-   Trusted publishing** with GitHub Actions, repository
+   environment.
+4. **Initial publish (token mode).** Run steps 1 to 5 of the procedure
+   above for the initial version (`0.1.0`). The workflow log shows the
+   bootstrap-token warning. Then run step 11 below for that version.
+5. **Prepare the follow-up release before touching trusted publishing.** A
+   published version can never be republished, so the trusted-publishing
+   proof needs a new version: bump to the next patch (for example `0.1.1`),
+   add its CHANGELOG entry, update the README pin, merge to `main`, and run
+   the dry run (procedure step 2) so the release is ready to tag. Do not
+   continue until you can tag it right away.
+6. **Configure the trusted publisher immediately before tagging the
+   follow-up release.** On npmjs.com, under the package's **Settings →
+   Trusted publishing**, add GitHub Actions with repository
    `not-so-fat/botmancers`, workflow `release-botmancers.yml`, and
    environment `npm-publish`. Under the allowed actions, **select the direct
    `npm publish` action**. New trusted-publisher configurations default to
    staged publishing only, and the workflow runs `npm publish`, so without
-   this setting every later release is rejected. Save, then confirm the
-   configuration lists `npm publish` as allowed. Then delete the `NPM_TOKEN`
-   secret and revoke the token. Later releases authenticate through OIDC
-   only.
-5. Under package settings, set **Publishing access** to "Require two-factor
-   authentication and disallow tokens", and add the org as a maintainer.
-6. From a clean directory, run
-   `npx botmancers@<exact version> --version` and the registry smoke test.
+   this setting the release is rejected. Save, then confirm the
+   configuration lists `npm publish` as allowed.
+
+   npm requires a new trusted-publisher configuration to complete its first
+   successful trusted publish **within two days**; otherwise the
+   configuration expires. The clock starts when you save it.
+7. **Withhold the token, keep it as rollback.** Delete the `NPM_TOKEN`
+   secret from the `npm-publish` GitHub environment so the follow-up
+   release cannot fall back to token authentication. Do **not** revoke the
+   token on npmjs.com yet.
+8. **Follow-up release through OIDC, within the two days.** Tag and push the
+   follow-up version (procedure step 3). Confirm in the workflow log that
+   the publish step printed `trusted publishing (OIDC); NODE_AUTH_TOKEN
+   unset` and succeeded, then confirm the version on the registry with its
+   provenance (procedure step 4: `npm view botmancers@X.Y.Z dist.integrity`
+   and `npm audit signatures`).
+
+   **Rollback**, only if that publish fails: fix the trusted-publisher
+   configuration (repository, workflow file name, environment, allowed
+   `npm publish` action) and re-run the failed workflow while the two-day
+   window is open. If it cannot succeed in that window, or the
+   configuration has expired, delete the trusted-publisher configuration,
+   put the still-active bootstrap token back as the `NPM_TOKEN` environment
+   secret, and re-run the workflow to publish the follow-up version in
+   token mode. Then repeat steps 5 to 8 with the next patch version before
+   the token expires; if it expires first, create a new bootstrap token as
+   in step 3.
+9. **Only after a successful OIDC publish**, revoke the bootstrap token on
+   npmjs.com and confirm the `NPM_TOKEN` environment secret is gone. It is
+   the only 2FA-bypassing credential and must not outlive the transition.
+10. Under package settings, set **Publishing access** to "Require two-factor
+    authentication and disallow tokens", and add the org as a maintainer.
+    Trusted publishing is not affected by this setting. Setup is complete
+    only now; later releases authenticate through OIDC only.
+11. From a clean directory, run `npx botmancers@<exact version> --version`
+    and the registry smoke test for each published version.

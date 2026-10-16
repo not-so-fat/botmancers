@@ -168,9 +168,12 @@ step('provenance and attestation support', () => {
   assert(existsSync(WORKFLOW), 'release workflow .github/workflows/release-botmancers.yml is missing');
   const workflow = readFileSync(WORKFLOW, 'utf8');
   assert(/id-token:\s*write/.test(workflow), 'release workflow must grant id-token: write');
-  assert(/npm publish[^\n]*--provenance/.test(workflow), 'release workflow must publish with --provenance');
+  assert(/^\s*run:\s*bash scripts\/publish-ci\.sh\s*$/m.test(workflow), 'release workflow must publish through scripts/publish-ci.sh');
+  assert(!/^\s*NODE_AUTH_TOKEN:/m.test(workflow), 'release workflow must not set NODE_AUTH_TOKEN; an empty value suppresses trusted publishing (OIDC)');
+  const publishScript = readFileSync(join(PACKAGE_DIR, 'scripts/publish-ci.sh'), 'utf8');
+  assert(/^npm publish --provenance --access public --tag canary$/m.test(publishScript), 'scripts/publish-ci.sh must publish with --provenance to canary');
   assert(/release:check[^\n]*--tag/.test(workflow), 'release workflow must run release:check against the tag');
-  return 'publishConfig provenance/public/canary, repository matches origin, workflow has id-token: write and --provenance';
+  return 'publishConfig provenance/public/canary, repository matches origin, workflow has id-token: write, publishes with --provenance via publish-ci.sh (OIDC unless a bootstrap token is present)';
 });
 
 step('trusted publishing toolchain', () => {
