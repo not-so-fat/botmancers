@@ -13,3 +13,5 @@ tsconfig.tsbuildinfo
 botmancers-test-migration.db
 botmancers-test-migration.db-shm
 botmancers-test-migration.db-wal
+/packages/mcp-server/dist
+/packages/mcp-server/*.tgz
