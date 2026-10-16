@@ -93,10 +93,16 @@ The [`botmancers`](packages/mcp-server/README.md) npm package
 and the bridge, run by one supervisor with no checkout needed:
 
 ```bash
-npx botmancers setup
-npx botmancers start --daemon --open    # UI 127.0.0.1:43123, MCP 127.0.0.1:43124/mcp
+curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash
+botmancers setup
+botmancers start --daemon --open    # UI 127.0.0.1:43123, MCP 127.0.0.1:43124/mcp
 ```
 
+That is the recommended managed install: the release lives in
+`~/.botmancers/versions/<version>` behind the `~/.local/bin/botmancers`
+launcher. It updates itself in the background and activates a new release
+only at the next `botmancers start`; `BOTMANCERS_DISABLE_AUTOUPDATER=1` turns
+that off. `npx botmancers ...` and `npm install -g botmancers` still work.
 Its state lives under `BOTMANCERS_HOME` (default `~/.botmancers`);
 `botmancers status`, `doctor`, `open`, and `stop` manage it. Bare
 `botmancers` (or `botmancers mcp`) is still the standalone bridge in front of

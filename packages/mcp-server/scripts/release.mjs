@@ -12,11 +12,12 @@
 // the lock), the packaged app build (app/ built from this commit and
 // version), tests, package contents, provenance/attestation
 // support (including the npm/Node floor for trusted publishing), `npm publish --dry-run`, and canary installs of the exact tarball
-// into clean temporary projects: bridge-only and the full product.
+// into clean temporary projects: bridge-only, the full product, and the
+// managed install (scripts/install.sh, launcher, staged N+1, restart, rollback).
 // Run `npm run build && npm run build:app` first.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -205,6 +206,15 @@ step('trusted publishing toolchain', () => {
   return `workflow node ${nodeMajor} with npm floor ${MIN_NPM.join('.')}; this run: node ${process.version}, npm ${npmVersion}`;
 });
 
+step('managed install entry point', () => {
+  const script = join(REPO_ROOT, 'scripts', 'install.sh');
+  assert(existsSync(script), 'scripts/install.sh (the curl | bash managed install) is missing');
+  const text = readFileSync(script, 'utf8');
+  assert(/npx --yes "\$spec" install/.test(text) && /botmancers@\$\{BOTMANCERS_VERSION:-latest\}/.test(text), 'scripts/install.sh must run `npx botmancers@<latest|BOTMANCERS_VERSION> install`');
+  assert((statSync(script).mode & 0o111) !== 0, 'scripts/install.sh must be executable');
+  return 'scripts/install.sh runs npx botmancers@latest install (version-agnostic)';
+});
+
 step('npm publish --dry-run', () => {
   const out = run('npm', ['publish', '--dry-run', '--ignore-scripts', '--provenance=false'], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   return `would publish ${out.trim().split('\n').pop()} with dist-tag canary`;
@@ -220,7 +230,9 @@ step('canary install of the exact tarball', () => {
     assert(/^PASS clean-install smoke/m.test(out), out);
     const product = run(process.execPath, ['scripts/smoke-product-install.mjs', '--tarball', tarball], { maxBuffer: 16 * 1024 * 1024 });
     assert(/^PASS product install smoke/m.test(product), product);
-    return `${entry.filename} ${integrity} installed into clean projects; npx botmancers served health, tools/list, tools/call; botmancers setup/start --daemon served the UI, /api/v0, and the bridge against the same engine, kept state across stop/start, and stopped cleanly`;
+    const managed = run(process.execPath, ['scripts/smoke-managed-install.mjs', '--tarball', tarball], { maxBuffer: 16 * 1024 * 1024 });
+    assert(/^PASS managed install smoke/m.test(managed), managed);
+    return `${entry.filename} ${integrity} installed into clean projects; npx botmancers served health, tools/list, tools/call; botmancers setup/start --daemon served the UI, /api/v0, and the bridge against the same engine, kept state across stop/start, and stopped cleanly; scripts/install.sh installed it as a managed release whose launcher ran the product, staged N+1 beside it, activated N+1 at one restart, rolled back, and kept user state`;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -237,6 +249,7 @@ Operator steps (see packages/mcp-server/RELEASING.md):
      -> CI re-runs this check and publishes with provenance to dist-tag "canary"
   2. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
      node packages/mcp-server/scripts/smoke-product-install.mjs --registry ${version}
+     BOTMANCERS_VERSION=${version} bash scripts/install.sh   (managed install from the registry, clean account)
   3. npm dist-tag add botmancers@${version} latest     (2FA; promotes the verified canary to stable)
 `);
 finish(0);

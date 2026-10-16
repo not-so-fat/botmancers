@@ -1,6 +1,6 @@
 {
   "name": "botmancers",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Botmancers: the UI, core engine, and authenticated MCP bridge (contract botmancers.mcp.v1) as one CLI-managed product. `botmancers start` runs it all; bare `botmancers` runs the bridge only.",
   "keywords": [
     "botmancers",
@@ -60,6 +60,7 @@
     "check:pack": "node scripts/check-pack.mjs",
     "smoke:install": "node scripts/smoke-install.mjs",
     "smoke:product": "node scripts/smoke-product-install.mjs",
+    "smoke:managed": "node scripts/smoke-managed-install.mjs",
     "release:check": "node scripts/release.mjs",
     "prepack": "npm run build && npm run build:app"
   },
