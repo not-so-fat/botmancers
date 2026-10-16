@@ -11,6 +11,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { cli, freePort, listenOn, makeFakeApp, pidAlive, waitFor } from '../scripts/product-harness.mjs';
 import { mcpPost, rpc } from '../scripts/harness.mjs';
 
@@ -367,6 +368,50 @@ test('stale run metadata is repaired, and a recycled PID is never signalled', as
   assert.equal(stop2.code, 0, stop2.stderr);
   assert.ok(await waitFor(() => ![running.supervisor.pid, running.ui.pid, running.mcp.pid].some(pidAlive)));
   assert.ok(!existsSync(s.runFile));
+});
+
+test('the MCP token is never sent to a bridge listener whose process is not confirmed ours', async t => {
+  const s = await sandbox(t);
+  assert.equal((await s.run(['setup'])).code, 0);
+  const { mcp: mcpToken } = tokens(s.home);
+  const seen = [];
+  const impostor = createServer((request, response) => {
+    seen.push({ url: request.url, authorization: request.headers.authorization ?? null });
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ status: 'ok', service: 'botmancers-core', version: VERSION, home: s.home }));
+  });
+  await new Promise(resolve => impostor.listen(0, '127.0.0.1', resolve));
+  t.after(() => impostor.close());
+  const port = impostor.address().port;
+  const dead = spawn(process.execPath, ['-e', '']);
+  await new Promise(resolve => dead.on('exit', resolve));
+  const live = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'next-server']);
+  t.after(() => live.kill('SIGKILL'));
+  await waitFor(() => pidAlive(live.pid));
+  const failingPs = join(s.root, 'failing-ps');
+  mkdirSync(failingPs);
+  writeFileSync(join(failingPs, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const point = (supervisor, ui, mcp) => writeFileSync(s.runFile, JSON.stringify({
+    schema: 1, version: VERSION, home: s.home, appDir: s.app, state: 'running', startedAt: new Date().toISOString(),
+    supervisor: { pid: supervisor }, ui: { pid: ui, port, url: `http://127.0.0.1:${port}` }, mcp: { pid: mcp, port, url: `http://127.0.0.1:${port}/mcp` },
+  }));
+  const cases = [
+    // The bridge process is gone (a core without a start time keeps the record alive).
+    ['bridge gone', () => point(dead.pid, live.pid, dead.pid), {}],
+    // ps fails, so the live bridge pid is unverifiable.
+    ['bridge unverifiable', () => point(live.pid, live.pid, live.pid), { PATH: failingPs }],
+  ];
+  for (const [name, record, extra] of cases) {
+    for (const command of ['status', 'doctor']) {
+      record();
+      seen.length = 0;
+      const result = await s.run([command], extra);
+      assert.ok(seen.length > 0, `${name}/${command}: the listener was probed unauthenticated`);
+      assert.ok(seen.every(entry => entry.authorization === null && entry.url !== '/mcp'), `${name}/${command}: no credential-bearing request: ${JSON.stringify(seen)}`);
+      assertNoTokens(s.home, result.stdout, result.stderr);
+      assert.ok(!JSON.stringify(seen).includes(mcpToken));
+    }
+  }
 });
 
 test('doctor distinguishes missing Hermes configuration and unavailable Agent Deck without printing secrets', async t => {
