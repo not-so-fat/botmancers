@@ -1,0 +1,20 @@
+source: tarball botmancers-0.1.0.tgz (integrity sha512-uhVYul4jJzv99h2Kn3ksbi9d74BBPKjyr+YcC+wcfkcoeAXtw18u/czyHcHgkQtUvSbePtgD2EZv4b7ry7hqrg==)
+commit: 4664ce36527e873cb219f781e3440ffd546d253f
+node: v26.10.0, npm: 11.19.1
+ok  temporary project is empty apart from package.json
+installed: botmancers@0.1.0
+ok  installed package is the public botmancers package
+ok  installed files are only CHANGELOG.md, LICENSE, README.md, dist, package.json, schemas
+ok  no transitive dependencies installed
+ok  `npx botmancers --help` exits 0 and prints usage
+ok  installed `botmancers --version` prints 0.1.0
+ok  installed binary without configuration exits 2 with guidance
+ok  `npx botmancers` serves: botmancers 0.1.0: MCP bridge listening on http://127.0.0.1:56510/mcp (health: /healthz) -> http://127.0.0.1:56507
+ok  GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v1","version":"0.1.0"}
+ok  MCP initialize -> botmancers 0.1.0, protocol 2025-06-18
+ok  tools/list -> botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health
+ok  tools/call botmancers_health -> {"contract":"botmancers.mcp.v1","status":"ok","principal":{"kind":"service","id":"fake-service"},"coordinators":[{"name":"Tank","available":true}]}
+ok  fake Botmancers received the service token
+ok  SIGTERM stops the bridge with exit 0
+ok  bridge output contains no token
+PASS clean-install smoke for botmancers@0.1.0 at 4664ce36527e873cb219f781e3440ffd546d253f

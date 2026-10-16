@@ -1,0 +1,24 @@
+commit 4664ce36527e873cb219f781e3440ffd546d253f
+botmancers@0.1.0  botmancers-0.1.0.tgz
+size 18282 B, unpacked 65037 B, 19 files
+shasum 5c036b7a8b7bfa75ddb576521ab6e9b789709646
+    1076  CHANGELOG.md
+     388  dist/cli.d.ts
+    4608  dist/cli.js
+    1071  dist/config.d.ts
+    7983  dist/config.js
+     839  dist/contract.d.ts
+    1667  dist/contract.js
+     697  dist/index.d.ts
+     732  dist/index.js
+     181  dist/redact.d.ts
+     762  dist/redact.js
+    1003  dist/server.d.ts
+   11543  dist/server.js
+    1018  dist/upstream.d.ts
+    5815  dist/upstream.js
+    1071  LICENSE
+    1798  package.json
+    8071  README.md
+   14714  schemas/botmancers.mcp.v1.tools.json
+package contents check passed: allowlist only, no secrets.
