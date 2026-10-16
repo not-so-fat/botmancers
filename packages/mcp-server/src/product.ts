@@ -310,10 +310,11 @@ export async function inspect(ctx: Ctx): Promise<Inspection> {
     };
   }
   const [core, bridge] = await Promise.all([probeCore(record.ui.url), probeBridge(record.mcp.url.replace(/\/mcp$/, ''))]);
-  // The link probe carries the owner-only MCP bearer token, so it goes only
-  // to a bridge whose recorded process is confirmed ours. A listener whose
-  // process is gone or unverifiable may be another program on the port.
-  const link = bridge.ok && core.ok && mcp ? await probeLink(record.mcp.url.replace(/\/mcp$/, ''), readEnvFile(ctx.paths.bridgeEnv)?.[ENV.mcpToken]) : null;
+  // The link probe is the only credential-bearing request: it carries the
+  // owner-only MCP bearer token to the bridge, which forwards the service
+  // token to the core. Both listeners must therefore be confirmed ours; a
+  // process that is gone or unverifiable may be another program on its port.
+  const link = bridge.ok && core.ok && mcp && ui ? await probeLink(record.mcp.url.replace(/\/mcp$/, ''), readEnvFile(ctx.paths.bridgeEnv)?.[ENV.mcpToken]) : null;
   const problems: string[] = [];
   if (unverified.length) problems.push(unverifiedNote(unverified));
   if (record.state === 'starting') problems.push('startup has not finished');

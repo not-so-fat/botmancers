@@ -414,6 +414,26 @@ test('the MCP token is never sent to a bridge listener whose process is not conf
   }
 });
 
+test('the link probe, which forwards the service token to the core, needs the core to be confirmed ours too', async t => {
+  const s = await sandbox(t);
+  assert.equal((await s.run(['setup'])).code, 0);
+  assert.equal((await s.run(['start', '--daemon'])).code, 0);
+  const running = record(s.runFile);
+  assert.match((await s.run(['status'])).stdout, /bridge→core ok/, 'baseline: owned bridge and core are probed');
+  // The recorded core process is no longer ours (its pid is dead) while a
+  // listener still answers on the core port and the owned bridge is alive:
+  // a replacement core would receive the bridge's service token.
+  const dead = spawn(process.execPath, ['-e', '']);
+  await new Promise(resolve => dead.on('exit', resolve));
+  writeFileSync(s.runFile, JSON.stringify({ ...running, ui: { ...running.ui, pid: dead.pid } }));
+  const result = await s.run(['status']);
+  assert.equal(result.code, 1, result.stdout);
+  assert.doesNotMatch(result.stdout, /bridge→core/, 'no bridge -> core probe without a confirmed core');
+  assert.match(result.stdout, /problem {5}core \(pid \d+\) is not running/);
+  assertNoTokens(s.home, result.stdout, result.stderr);
+  writeFileSync(s.runFile, JSON.stringify(running));
+});
+
 test('doctor distinguishes missing Hermes configuration and unavailable Agent Deck without printing secrets', async t => {
   const s = await sandbox(t);
   assert.equal((await s.run(['setup'])).code, 0);
