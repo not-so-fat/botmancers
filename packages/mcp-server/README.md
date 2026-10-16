@@ -101,7 +101,7 @@ a token.
 | `0` | Stopped by SIGINT or SIGTERM. | Nothing. |
 | `2` | Configuration error: a missing or invalid variable or flag. Every problem is listed. | Fix the listed settings. |
 | `3` | Cannot listen, for example because the port is already in use. | Stop the other process, or choose another `--port`. |
-| `4` | Botmancers is unreachable, or `BOTMANCERS_URL` is not a Botmancers MCP endpoint. | Start the app, or fix the URL. |
+| `4` | Botmancers is unreachable, or `BOTMANCERS_URL` is not a Botmancers MCP endpoint (the server is not named `botmancers` or lacks a `botmancers.mcp.v1` tool). | Start the app, or fix the URL. |
 | `5` | Botmancers rejected the service token, or the app has no service tokens configured. | Check `BOTMANCERS_SERVICE_TOKEN` against the app's `BOTMANCERS_SERVICE_TOKENS`. |
 
 If Botmancers becomes unavailable after startup, tool calls return a JSON-RPC

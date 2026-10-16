@@ -95,10 +95,14 @@ test('bad tokens, ports, hosts, and secret flags are configuration errors', asyn
     [[], { BOTMANCERS_URL: url, BOTMANCERS_SERVICE_TOKEN: 'two words' }, /single printable token/],
     [['--port', '70000'], { BOTMANCERS_URL: url }, /--port must be an integer port/],
     [[], { BOTMANCERS_URL: url, BOTMANCERS_MCP_PORT: 'abc' }, /BOTMANCERS_MCP_PORT must be an integer port/],
+    // A token pasted into a port setting is never echoed, not even a prefix.
+    [['--port', 'FLAG-SECRET-port-token-0123456789'], { BOTMANCERS_URL: url }, /--port must be an integer port/],
+    [[], { BOTMANCERS_URL: url, BOTMANCERS_MCP_PORT: 'FLAG-SECRET-port-token-0123456789' }, /BOTMANCERS_MCP_PORT must be an integer port/],
     [['--host', 'bad host!'], { BOTMANCERS_URL: url }, /--host must be an IP address or hostname/],
     [['--service-token', 'FLAG-SECRET'], { BOTMANCERS_URL: url }, /--service-token is not accepted/],
     [['--mcp-token=FLAG-SECRET'], { BOTMANCERS_URL: url }, /--mcp-token is not accepted/],
     [['--bogus'], { BOTMANCERS_URL: url }, /Unknown argument "--bogus"/],
+    [['FLAG-SECRET-positional'], { BOTMANCERS_URL: url }, /Unexpected positional argument \(value not shown\)/],
   ];
   for (const [args, overrides, message] of cases) {
     const result = await run(args, overrides);
@@ -124,6 +128,26 @@ test('a URL that is not a Botmancers MCP endpoint exits 4', async () => {
     assertNoSecrets(result.stderr);
   } finally {
     await fake.close();
+  }
+});
+
+test('an unrelated MCP server, or a Botmancers missing contract tools, exits 4', async () => {
+  const cases = [
+    ['generic', /is an MCP endpoint but not a compatible Botmancers \(serverInfo\.name is not "botmancers"\)/],
+    ['partial_tools', /not a compatible Botmancers \(missing botmancers\.mcp\.v1 tools: botmancers_start_task\)/],
+  ];
+  for (const [mode, message] of cases) {
+    const fake = await startFakeBotmancers({ serviceToken: SERVICE_TOKEN, mode });
+    try {
+      const result = await run([], { BOTMANCERS_URL: fake.url });
+      assert.equal(result.code, 4, `${mode}: ${result.stderr}`);
+      assert.match(result.stderr, message);
+      assert.doesNotMatch(result.stderr, /listening/);
+      assertNoSecrets(result.stderr);
+      assert.ok(!fake.received.some(entry => entry.message.method === 'tools/call'), 'preflight never calls a tool');
+    } finally {
+      await fake.close();
+    }
   }
 });
 

@@ -1,7 +1,11 @@
 // A fake Botmancers app for tests and the clean-install smoke: just enough
 // of POST /api/v0/mcp (service-token auth, initialize, tools/call) to drive
-// the bridge. Not shipped in the package.
+// the bridge. Not shipped in the package. mode 'generic' impersonates an
+// unrelated MCP server; 'partial_tools' a Botmancers missing a contract tool.
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+
+const TOOLS = JSON.parse(readFileSync(new URL('../schemas/botmancers.mcp.v1.tools.json', import.meta.url), 'utf8')).tools;
 
 export async function startFakeBotmancers({ serviceToken, mode = 'ok', host = '127.0.0.1' } = {}) {
   const received = [];
@@ -23,12 +27,18 @@ export async function startFakeBotmancers({ serviceToken, mode = 'ok', host = '1
       }
       received.push({ headers: req.headers, message });
       if (mode === 'unconfigured') return json(503, { error: { code: 'authentication_unavailable', message: 'No service tokens.' } });
-      if (mode === 'unauthorized' || req.headers.authorization !== `Bearer ${serviceToken}`) {
+      if (mode === 'unauthorized' || (mode !== 'generic' && req.headers.authorization !== `Bearer ${serviceToken}`)) {
         return json(401, { error: { code: 'unauthenticated', message: 'Unknown credential.' } }, { 'www-authenticate': 'Bearer realm="botmancers"' });
       }
       const { id, method, params } = message;
       if (method === 'initialize') {
-        return json(200, { jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion, capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'botmancers', title: 'Botmancers', version: '1.0.0' } } });
+        const serverInfo = mode === 'generic' ? { name: 'add', version: '0.0.1' } : { name: 'botmancers', title: 'Botmancers', version: '1.0.0' };
+        return json(200, { jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion, capabilities: { tools: { listChanged: false } }, serverInfo } });
+      }
+      if (method === 'tools/list') {
+        const tools = mode === 'generic' ? [{ name: 'add', inputSchema: { type: 'object' } }]
+          : mode === 'partial_tools' ? TOOLS.filter(tool => tool.name !== 'botmancers_start_task') : TOOLS;
+        return json(200, { jsonrpc: '2.0', id, result: { tools } });
       }
       if (method === 'tools/call') {
         if (mode === 'rate_limited') return json(429, { error: { code: 'rate_limited', message: 'Too many tool calls; retry later.' } }, { 'retry-after': '7' });

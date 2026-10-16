@@ -1,7 +1,10 @@
 // The Botmancers side of the bridge: JSON-RPC messages POSTed to the app's
 // /api/v0/mcp endpoint with the service token. Failures are classified so
 // the CLI and the MCP surface can say what to fix, without echoing secrets.
-import { MCP_PROTOCOL_VERSIONS } from './contract.js';
+import { MCP_CONTRACT, MCP_PROTOCOL_VERSIONS, loadToolContract } from './contract.js';
+
+// The serverInfo.name the Botmancers app reports from initialize.
+export const MCP_SERVER_NAME = 'botmancers';
 
 export const UPSTREAM_PATH = '/api/v0/mcp';
 export const UPSTREAM_TIMEOUT_MS = 30_000;
@@ -98,18 +101,31 @@ export function createUpstream(options: UpstreamOptions) {
     return body as Record<string, unknown>;
   }
 
-  // An initialize round trip: authenticates and checks the endpoint without
-  // calling a tool, so it writes nothing and is not rate-limited.
+  // initialize and tools/list round trips: authenticate, then confirm the
+  // endpoint is Botmancers and offers every botmancers.mcp.v1 tool. No tool
+  // is called, so preflight writes nothing and is not rate-limited.
   async function preflight(): Promise<{ serverVersion: string | null }> {
-    const body = await send({
+    const incompatible = (why: string) => new UpstreamError('incompatible',
+      `${options.botmancersUrl}${UPSTREAM_PATH} is an MCP endpoint but not a compatible Botmancers (${why}). Check BOTMANCERS_URL and upgrade Botmancers.`);
+    const init = await send({
       jsonrpc: '2.0',
       id: 'botmancers-bridge-preflight',
       method: 'initialize',
       params: { protocolVersion: MCP_PROTOCOL_VERSIONS[0], capabilities: {}, clientInfo: { name: 'botmancers-bridge', version: '0' } },
     });
-    const result = body.result as { serverInfo?: { version?: unknown } } | undefined;
+    const result = init.result as { serverInfo?: { name?: unknown; version?: unknown }; capabilities?: { tools?: unknown } } | undefined;
     if (!result) throw new UpstreamError('incompatible', `Botmancers at ${options.botmancersUrl} refused MCP initialize.`);
-    const version = result.serverInfo?.version;
+    if (result.serverInfo?.name !== MCP_SERVER_NAME) throw incompatible(`serverInfo.name is not "${MCP_SERVER_NAME}"`);
+    if (!result.capabilities?.tools || typeof result.capabilities.tools !== 'object') throw incompatible('no tools capability');
+
+    const list = await send({ jsonrpc: '2.0', id: 'botmancers-bridge-preflight-tools', method: 'tools/list', params: {} });
+    const offered = (list.result as { tools?: unknown } | undefined)?.tools;
+    if (!Array.isArray(offered)) throw incompatible('tools/list returned no tools');
+    const names = new Set(offered.map(tool => (tool as { name?: unknown } | null)?.name));
+    const missing = loadToolContract().tools.map(tool => tool.name).filter(name => !names.has(name));
+    if (missing.length) throw incompatible(`missing ${MCP_CONTRACT} tools: ${missing.join(', ')}`);
+
+    const version = result.serverInfo.version;
     return { serverVersion: typeof version === 'string' ? version : null };
   }
 

@@ -79,7 +79,8 @@ function parsePort(raw: string, source: string): { port?: number; problem?: stri
   const trimmed = raw.trim();
   const port = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    return { problem: `${source} must be an integer port between 0 and 65535 (got ${JSON.stringify(trimmed.slice(0, 20))}).` };
+    // Never echo the value: a token pasted into the wrong setting must not be printed.
+    return { problem: `${source} must be an integer port between 0 and 65535 (default ${DEFAULT_PORT}, 0 for any free port).` };
   }
   return { port };
 }
@@ -110,7 +111,10 @@ export function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliCommand {
     }
     const key = FLAGS[name];
     if (!key) {
-      problems.push(`Unknown argument ${JSON.stringify(name.slice(0, 40))}. Run botmancers --help for usage.`);
+      // Echo only flag-shaped names; a stray positional value may be a pasted token.
+      problems.push(/^--?[a-z][a-z0-9-]{0,38}$/.test(name)
+        ? `Unknown argument ${JSON.stringify(name)}. Run botmancers --help for usage.`
+        : 'Unexpected positional argument (value not shown). Run botmancers --help for usage.');
       continue;
     }
     const value = eq > 0 ? arg.slice(eq + 1) : argv[++i];
