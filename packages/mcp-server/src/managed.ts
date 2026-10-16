@@ -40,7 +40,11 @@ export const KEEP_PREVIOUS_RELEASES = 2;
 export const RESTART_ACTION = 'botmancers stop && botmancers start --daemon';
 export const MANAGED_INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash';
 const REGISTRY_TIMEOUT_MS = 2500;
-const LOCK_STALE_MS = 60 * 60 * 1000;
+// Only for a lock record without its holder's start time (written by an older
+// release); a recorded holder that is still the same process is never stale.
+const LEGACY_LOCK_STALE_MS = 60 * 60 * 1000;
+// A hung npm download is killed (and its partial tree removed) after this.
+export const NPM_TIMEOUT_MS = 20 * 60 * 1000;
 // Set by a start that activated a release for the new release's `start`, which
 // inherits the start lock instead of waiting on its own parent.
 export const START_LOCK_ENV = 'BOTMANCERS_START_LOCK_TOKEN';
@@ -262,6 +266,30 @@ export function nativeBindingProblem(appDir: string): string | null {
   return `packaged app has no better-sqlite3 native binary for ${target} (node_modules/better-sqlite3/prebuilds/${target}.node)`;
 }
 
+// Loads the app's bundled better-sqlite3 with this Node and runs an in-memory
+// query (the doctor's native check), or says why it cannot: a present but
+// corrupt or incompatible binary fails here.
+export function nativeLoadProblem(appDir: string): string | null {
+  const sqlite = join(appDir, 'node_modules', 'better-sqlite3');
+  try {
+    execFileSync(process.execPath, ['-e', `const D=require(${JSON.stringify(sqlite)});const db=new D(':memory:');if(db.prepare('select 1 as one').get().one!==1)throw new Error('bad result');db.close()`], {
+      cwd: appDir, stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000, encoding: 'utf8',
+    });
+    return null;
+  } catch (error) {
+    const stderr = String((error as { stderr?: string }).stderr ?? '');
+    const reason = stderr.split('\n').find(line => /Error/.test(line)) ?? (error as Error).message;
+    return `packaged app's better-sqlite3 does not load on ${process.platform}-${process.arch}: ${reason.trim().slice(0, 200)}`;
+  }
+}
+
+// releaseProblem plus actually loading the native driver. Used before a tree
+// is renamed into versions/ and before it is made current; the cheap
+// releaseProblem serves listing and reporting.
+export function verifiedReleaseProblem(dir: string, version: string): string | null {
+  return releaseProblem(dir, version) ?? nativeLoadProblem(join(packageDirIn(dir), 'app'));
+}
+
 // Why a release tree cannot run, or null when it is complete: the CLI and
 // every module it loads (update support included), the bridge schema, and the
 // packaged UI/core runtime with this platform's native driver, all at the
@@ -347,7 +375,7 @@ export function launcherInstalled(paths: ManagedPaths): boolean {
 // while a Botmancers process from this home may be live (see product.start).
 export function activateRelease(paths: ManagedPaths, version: string): void {
   const target = versionDir(paths, version);
-  const problem = releaseProblem(target, version);
+  const problem = verifiedReleaseProblem(target, version);
   if (problem) throw new Error(`cannot activate ${version}: ${problem}`);
   try {
     if (!lstatSync(paths.current).isSymbolicLink()) throw new Error(`${paths.current} is not a symlink; remove it and re-run botmancers install`);
@@ -425,9 +453,14 @@ export type NpmRunner = (args: string[], env: NodeJS.ProcessEnv) => Promise<{ co
 export const runNpm: NpmRunner = (args, env) => new Promise(resolve => {
   const child = spawn('npm', args, { env, stdio: ['ignore', 'ignore', 'pipe'], shell: process.platform === 'win32' });
   let stderr = '';
+  const timer = setTimeout(() => {
+    stderr += `\nnpm did not finish in ${NPM_TIMEOUT_MS / 60_000} minutes`;
+    child.kill('SIGKILL');
+  }, NPM_TIMEOUT_MS);
+  timer.unref();
   child.stderr?.on('data', chunk => { stderr += chunk; });
-  child.once('error', error => resolve({ code: 1, stderr: error.message }));
-  child.once('close', code => resolve({ code: code ?? 1, stderr }));
+  child.once('error', error => { clearTimeout(timer); resolve({ code: 1, stderr: error.message }); });
+  child.once('close', code => { clearTimeout(timer); resolve({ code: code ?? 1, stderr }); });
 });
 
 export interface StageDeps {
@@ -450,7 +483,7 @@ export interface Staged {
 export async function stageRelease(paths: ManagedPaths, env: NodeJS.ProcessEnv, version: string, deps: StageDeps = {}): Promise<Staged> {
   if (!isSemver(version)) throw new Error(`not a release version: ${JSON.stringify(version)}`);
   const finalDir = versionDir(paths, version);
-  if (!releaseProblem(finalDir, version)) return { version, dir: finalDir, integrity: lockedIntegrity(finalDir), reused: true };
+  if (!verifiedReleaseProblem(finalDir, version)) return { version, dir: finalDir, integrity: lockedIntegrity(finalDir), reused: true };
   const expected = await (deps.integrity ?? (v => fetchIntegrity(env, v)))(version);
   const partial = partialDir(paths, version);
   mkdirSync(paths.versions, { recursive: true, mode: 0o700 });
@@ -463,7 +496,7 @@ export async function stageRelease(paths: ManagedPaths, env: NodeJS.ProcessEnv, 
     if (result.code !== 0) throw new Error(`npm install ${PACKAGE_NAME}@${version} failed (exit ${result.code}): ${result.stderr.trim().split('\n').slice(-3).join(' ').slice(0, 400)}`);
     const actual = lockedIntegrity(partial);
     if (actual !== expected) throw new Error(`integrity mismatch for ${PACKAGE_NAME}@${version}: registry ${expected}, installed ${actual ?? 'none'}`);
-    const problem = releaseProblem(partial, version);
+    const problem = verifiedReleaseProblem(partial, version);
     if (problem) throw new Error(`downloaded ${PACKAGE_NAME}@${version} is incomplete: ${problem}`);
     rmSync(finalDir, { recursive: true, force: true });
     renameSync(partial, finalDir);
@@ -490,10 +523,13 @@ export function lockedIntegrity(dir: string): string | null {
 // Locks. update.lock: one check, download, install, or upgrade per home at a
 // time (they share versions/.partial-<v> and update-state.json). start.lock:
 // a start's stopped proof, any `current` switch, and the supervisor's claim
-// on the home happen inside it. A lock whose holder is gone is stale.
+// on the home happen inside it. A lock is held for as long as its recorded
+// holder (pid plus start time, so a recycled pid does not count) is alive,
+// however long that takes; a lock whose holder is gone is stale.
 
 interface LockInfo {
   pid?: number;
+  started?: string;
   at?: number;
   token?: string;
 }
@@ -506,50 +542,96 @@ function readLock(path: string): LockInfo | null {
   }
 }
 
+// The start time ps reports for pid, or null when ps cannot tell.
+function startedAt(pid: number): string | null {
+  try {
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C' } });
+    return out.trim().replace(/ +/g, ' ') || null;
+  } catch {
+    return null;
+  }
+}
+
+function pidLive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: string }).code === 'EPERM';
+  }
+}
+
 function lockLive(path: string): LockInfo | null {
   const info = readLock(path);
-  if (!info?.pid || Date.now() - (info.at ?? 0) > LOCK_STALE_MS) return null;
-  try {
-    process.kill(info.pid, 0);
-    return info;
-  } catch (error) {
-    return (error as { code?: string }).code === 'EPERM' ? info : null;
-  }
+  if (!info?.pid || !pidLive(info.pid)) return null;
+  if (!info.started) return Date.now() - (info.at ?? 0) > LEGACY_LOCK_STALE_MS ? null : info;
+  const started = startedAt(info.pid);
+  // A live pid whose start time differs is a recycled pid; when ps cannot
+  // tell, the live holder stays authoritative.
+  return started && started !== info.started ? null : info;
 }
 
 function lockHeld(paths: ManagedPaths): boolean {
   return !!lockLive(paths.lock);
 }
 
+const lockRecord = (pid: number, token: string) => JSON.stringify({ pid, started: startedAt(pid) ?? undefined, at: Date.now(), token });
+
+// Rewrites the lock at `path` (still holding `token`) as owned by `pid`, in
+// one rename, so ownership never lapses between the two processes.
+function recordOwner(path: string, token: string, pid: number): boolean {
+  if (readLock(path)?.token !== token) return false;
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temp, lockRecord(pid, token), { mode: 0o600 });
+  try {
+    renameSync(temp, path);
+    return true;
+  } catch {
+    rmSync(temp, { force: true });
+    return false;
+  }
+}
+
+// Hands a held lock to another live process (the CLI an activating start
+// execs into): from now on the lock lives exactly as long as that process,
+// whether or not this one exits first. The new holder adopts it with
+// acquireFileLock(path, { inherit: token }).
+export function handOffFileLock(path: string, token: string, pid: number): boolean {
+  return recordOwner(path, token, pid);
+}
+
 export type Unlock = () => void;
 
+function releaser(path: string, token: string): Unlock {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (readLock(path)?.token === token) rmSync(path, { force: true });
+  };
+}
+
 // Takes the lock at `path`, or null when a live holder has it. `inherit`
-// accepts a lock its live holder handed to this process by token; the holder
-// still releases it.
+// adopts a lock handed to this process by token (by handOffFileLock, or from
+// a live parent that did not hand it off): the record is rewritten with this
+// process as its owner, and this process releases it.
 export function acquireFileLock(path: string, options: { inherit?: string } = {}): { release: Unlock; token: string } | null {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   if (options.inherit) {
-    const held = lockLive(path);
-    if (held?.token === options.inherit) return { release: () => {}, token: options.inherit };
+    const held = readLock(path);
+    const ours = held?.token === options.inherit && (held.pid === process.pid || lockLive(path));
+    if (ours && recordOwner(path, options.inherit, process.pid)) return { release: releaser(path, options.inherit), token: options.inherit };
   }
   const token = randomUUID();
   // Published complete with link(), so a waiter never reads a half-written
   // lock and mistakes it for stale.
   const temp = `${path}.${process.pid}.${token}.tmp`;
-  writeFileSync(temp, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { mode: 0o600 });
+  writeFileSync(temp, lockRecord(process.pid, token), { mode: 0o600 });
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         linkSync(temp, path);
-        let released = false;
-        return {
-          token,
-          release: () => {
-            if (released) return;
-            released = true;
-            if (readLock(path)?.token === token) rmSync(path, { force: true });
-          },
-        };
+        return { token, release: releaser(path, token) };
       } catch (error) {
         if ((error as { code?: string }).code !== 'EEXIST' || lockLive(path) || !removeStaleLock(path)) return null;
       }

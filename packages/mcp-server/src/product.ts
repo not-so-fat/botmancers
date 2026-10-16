@@ -26,7 +26,7 @@ import {
   CLI_PATH, HOME_DIRS, PRODUCT_HOST, UI_PORT_ENV, DEFAULT_UI_PORT, type HomePaths,
   appDir, homePaths, missingAppFiles, modeOf, portFrom, readBuildInfo, readEnvFile, resolveHome,
 } from './home.js';
-import { RESTART_ACTION, START_LOCK_ENV, activateRelease, activatablePending, cliEntryIn, managedPaths, managedReport, scheduleAutoUpdate, versionDir, waitForFileLock, writeUpdateState, type ManagedReport, type Unlock } from './managed.js';
+import { RESTART_ACTION, START_LOCK_ENV, activateRelease, activatablePending, cliEntryIn, handOffFileLock, managedPaths, managedReport, scheduleAutoUpdate, versionDir, waitForFileLock, writeUpdateState, type ManagedReport, type Unlock } from './managed.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { BRIDGE_SERVICE_ID, SERVICE_TOKENS_ENV, credentialState } from './setup.js';
 
@@ -815,7 +815,7 @@ async function startLocked(ctx: Ctx, options: StartOptions, lock: { release: Unl
 }
 
 // Switches `current` to the staged release and hands this start over to the
-// new release's CLI, which inherits start.lock (by token) until its
+// new release's CLI, which owns start.lock (handed off by token) until its
 // supervisor claims the home. Returns null when there is nothing to activate.
 async function activatePendingAndRestart(ctx: Ctx, options: StartOptions, lock: { release: Unlock; token: string }): Promise<number | null> {
   const pending = activatablePending(ctx.env);
@@ -831,6 +831,9 @@ async function activatePendingAndRestart(ctx: Ctx, options: StartOptions, lock: 
   ctx.io.stdout(`botmancers: activated ${pending} (was ${ctx.version}).\n`);
   const args = [cliEntryIn(versionDir(paths, pending)), 'start', ...(options.daemon ? ['--daemon'] : []), ...(options.open ? ['--open'] : [])];
   const child = spawn(process.execPath, args, { env: { ...ctx.env, [START_LOCK_ENV]: lock.token }, stdio: 'inherit' });
+  // start.lock now lives as long as the new CLI, even if this process dies
+  // before its supervisor claims the home; the new CLI adopts it by token.
+  if (child.pid) handOffFileLock(paths.startLock, lock.token, child.pid);
   const claimed = setInterval(() => { if (readRun(ctx.paths)) lock.release(); }, 200);
   const forward = (signal: NodeJS.Signals) => () => child.kill(signal);
   const onInt = forward('SIGINT');

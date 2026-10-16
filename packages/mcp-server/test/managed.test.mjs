@@ -7,7 +7,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, renameSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { cli, freePort, run, waitFor, pidAlive } from '../scripts/product-harness.mjs';
@@ -18,6 +18,7 @@ const N = '0.9.0';
 const N1 = '0.9.1';
 const N2 = '0.9.2';
 const OLD = '0.8.0';
+const NATIVE = `app/node_modules/better-sqlite3/prebuilds/${process.platform}-${process.arch}.node`;
 
 let shared;
 let registry;
@@ -106,7 +107,7 @@ async function installed(t, version = N) {
 }
 
 // Fake npm for in-process staging: lays out a release in the --prefix dir.
-function fakeNpm({ integrity = 'sha512-fake', version, fail = null, remove = [], calls = [] } = {}) {
+function fakeNpm({ integrity = 'sha512-fake', version, fail = null, remove = [], write = {}, calls = [] } = {}) {
   return async args => {
     calls.push(args);
     const prefix = args[args.indexOf('--prefix') + 1];
@@ -119,6 +120,7 @@ function fakeNpm({ integrity = 'sha512-fake', version, fail = null, remove = [],
     makePackage(join(prefix, 'node_modules', 'botmancers'), v);
     if (fail === 'incomplete') rmSync(join(prefix, 'node_modules', 'botmancers', 'app', 'server.js'));
     for (const rel of remove) rmSync(join(prefix, 'node_modules', 'botmancers', rel), { recursive: true });
+    for (const [rel, content] of Object.entries(write)) writeFileSync(join(prefix, 'node_modules', 'botmancers', rel), content);
     writeFileSync(join(prefix, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/botmancers': { integrity } } }));
     return { code: 0, stderr: '' };
   };
@@ -239,6 +241,8 @@ test('integrity failures and interrupted downloads leave no release, no pending 
     ['no imported module', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', remove: ['dist/redact.js'] }) }, /incomplete: missing dist\/redact\.js/],
     ['no native binary', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', remove: [`app/node_modules/better-sqlite3/prebuilds/${process.platform}-${process.arch}.node`] }) }, new RegExp(`incomplete: packaged app has no better-sqlite3 native binary for ${process.platform}-${process.arch}`)],
     ['no native loader', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', remove: ['app/node_modules/better-sqlite3/lib'] }) }, /incomplete: packaged app is missing node_modules\/better-sqlite3\/lib\/index\.js/],
+    // Present and nonempty, but not a loadable binary: the driver is loaded and queried.
+    ['corrupt native binary', { integrity: async () => 'sha512-x', npm: fakeNpm({ integrity: 'sha512-x', write: { [NATIVE]: 'corrupt native binary' } }) }, new RegExp(`incomplete: packaged app's better-sqlite3 does not load on ${process.platform}-${process.arch}`)],
   ];
   for (const [name, deps, error] of cases) {
     now += 25 * 60 * 60 * 1000;
@@ -360,16 +364,19 @@ test('a stopped product activates a pending release at start; corrupt pending tr
   assert.equal(await health(s), N2);
 });
 
-test('releases missing the updater or the native SQLite binary are never activated', async t => {
+test('releases missing the updater or with a missing or corrupt native SQLite binary are never activated', async t => {
   const s = await installed(t);
   assert.equal((await s.bm(['setup'])).code, 0);
-  for (const [rel, problem] of [
+  assert.equal(managed.verifiedReleaseProblem(join(s.home, 'versions', N), N), null, 'the installed release loads its driver');
+  for (const [rel, problem, corrupt] of [
     ['dist/upgrade.js', /missing dist\/upgrade\.js/],
-    [`app/node_modules/better-sqlite3/prebuilds/${process.platform}-${process.arch}.node`, /no better-sqlite3 native binary/],
+    [NATIVE, /no better-sqlite3 native binary/],
+    [NATIVE, /better-sqlite3 does not load/, 'corrupt native binary'],
   ]) {
     const dir = seedRelease(s.home, N1);
-    rmSync(join(dir, 'node_modules/botmancers', rel));
-    assert.match(managed.releaseProblem(dir, N1), problem);
+    if (corrupt) writeFileSync(join(dir, 'node_modules/botmancers', rel), corrupt);
+    else rmSync(join(dir, 'node_modules/botmancers', rel));
+    assert.match(managed.verifiedReleaseProblem(dir, N1), problem);
     assert.throws(() => managed.activateRelease(s.paths, N1), problem);
     writeFileSync(join(s.home, 'update-state.json'), JSON.stringify({ checkedAt: new Date().toISOString(), latest: N1, pendingVersion: N1 }));
     const start = await s.bm(['start', '--daemon'], on);
@@ -487,6 +494,126 @@ test('start.lock: a concurrent start that claims the home first keeps a pending 
   assert.equal(s.state().pendingVersion, N2);
   assert.equal(await health(s), N);
   assert.ok(!existsSync(s.paths.startLock));
+});
+
+const lstart = pid => execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim().replace(/ +/g, ' ');
+const readLockFile = path => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
+const idler = () => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  return child;
+};
+
+test('locks: a live holder stays authoritative however long it runs; a dead or recycled holder is stale', async t => {
+  const s = await sandbox(t);
+  mkdirSync(s.home, { recursive: true });
+  const holder = idler();
+  t.after(() => holder.kill('SIGKILL'));
+  await waitFor(() => pidAlive(holder.pid));
+  const hold = record => writeFileSync(s.paths.lock, JSON.stringify({ pid: holder.pid, token: 'held', ...record }));
+
+  // A download that has been running for three hours still owns update.lock.
+  hold({ started: lstart(holder.pid), at: Date.now() - 3 * 60 * 60 * 1000 });
+  assert.equal(managed.acquireLock(s.paths), null);
+  assert.equal(managed.scheduleAutoUpdate(s.env(on), { cliPath: join(s.home, 'versions', N, 'node_modules/botmancers/dist/cli.js'), spawnWorker: () => assert.fail('no second worker') }), 'not-managed');
+  // What an explicit install/upgrade does with update.lock: wait, never take it.
+  assert.equal(await managed.waitForFileLock(s.paths.lock, { timeoutMs: 300 }), null);
+  assert.equal(readLockFile(s.paths.lock).token, 'held');
+
+  // The same pid with another start time is a recycled pid: stale.
+  hold({ started: 'Thu Jan 1 00:00:00 2026', at: Date.now() });
+  const recycled = managed.acquireLock(s.paths);
+  assert.ok(recycled);
+  recycled();
+  // A holder that is gone: stale.
+  holder.kill('SIGKILL');
+  await waitFor(() => !pidAlive(holder.pid));
+  hold({ started: 'whatever', at: Date.now() });
+  const dead = managed.acquireLock(s.paths);
+  assert.ok(dead);
+  dead();
+  assert.ok(!existsSync(s.paths.lock));
+});
+
+test('start.lock handed to the new CLI outlives the activating start dying before the supervisor claims the home', async t => {
+  const s = await sandbox(t);
+  mkdirSync(join(s.home, 'run'), { recursive: true });
+  const path = s.paths.startLock;
+  const go = join(s.root, 'go');
+  const result = join(s.root, 'result');
+  const moduleUrl = new URL('../dist/managed.js', import.meta.url).href;
+  // B, the new CLI: once told to, adopts start.lock by token and releases it.
+  const successor = `
+    const m = await import(${JSON.stringify(moduleUrl)});
+    const fs = await import('node:fs');
+    const wait = setInterval(() => {
+      if (!fs.existsSync(${JSON.stringify(go)})) return;
+      clearInterval(wait);
+      const lock = m.acquireFileLock(${JSON.stringify(path)}, { inherit: process.env.TOKEN });
+      const owner = JSON.parse(fs.readFileSync(${JSON.stringify(path)}, 'utf8')).pid;
+      lock?.release();
+      fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify({ adopted: !!lock, token: lock?.token, owner, after: fs.existsSync(${JSON.stringify(path)}) }));
+    }, 50);
+  `;
+  // A, the activating start: takes start.lock, spawns B, hands the lock off,
+  // and is then killed before anything claims the home.
+  const a = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { spawn } from 'node:child_process';
+    const m = await import(${JSON.stringify(moduleUrl)});
+    const lock = m.acquireFileLock(${JSON.stringify(path)});
+    const b = spawn(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(successor)}], { env: { ...process.env, TOKEN: lock.token }, stdio: 'ignore', detached: true });
+    b.unref();
+    m.handOffFileLock(${JSON.stringify(path)}, lock.token, b.pid);
+    process.stdout.write(JSON.stringify({ token: lock.token, b: b.pid }) + '\\n');
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => a.kill('SIGKILL'));
+  const info = await new Promise(resolve => a.stdout.once('data', chunk => resolve(JSON.parse(String(chunk)))));
+  t.after(() => { try { process.kill(info.b, 'SIGKILL'); } catch { /* gone */ } });
+  assert.equal(readLockFile(path).pid, info.b, 'the record names the new CLI as owner');
+  a.kill('SIGKILL');
+  await waitFor(() => !pidAlive(a.pid));
+
+  // The parent is gone, but its successor is alive: no other start or upgrade gets the lock.
+  assert.equal(managed.acquireFileLock(path), null);
+  assert.equal(await managed.waitForFileLock(path, { timeoutMs: 500 }), null);
+  assert.equal(readLockFile(path).token, info.token);
+  // The successor adopts it (as its own) and releases it; then it is free.
+  writeFileSync(go, '');
+  assert.ok(await waitFor(() => existsSync(result), 10_000));
+  assert.deepEqual(JSON.parse(readFileSync(result, 'utf8')), { adopted: true, token: info.token, owner: info.b, after: false });
+  const free = managed.acquireFileLock(path);
+  assert.ok(free);
+  free.release();
+});
+
+test('an activating start killed after handing off: the new release finishes the start alone', async t => {
+  const s = await installed(t);
+  assert.equal((await s.bm(['setup'])).code, 0);
+  seedRelease(s.home, N1);
+  managed.writeUpdateState(s.paths, { checkedAt: new Date().toISOString(), latest: N1, pendingVersion: N1 });
+  const parent = spawn(s.launcher, ['start', '--daemon'], { env: s.env(on), cwd: s.root, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => parent.kill('SIGKILL'));
+  let out = '';
+  parent.stdout.on('data', chunk => { out += chunk; });
+  // Kill it once start.lock belongs to the new CLI and before the home is claimed.
+  assert.ok(await waitFor(() => { const owner = readLockFile(s.paths.startLock)?.pid; return owner && owner !== parent.pid; }, 20_000), out);
+  const handedTo = readLockFile(s.paths.startLock).pid;
+  parent.kill('SIGKILL');
+  await waitFor(() => !pidAlive(parent.pid));
+  assert.match(out, new RegExp(`activated ${N1} \\(was ${N}\\)`));
+  // A start arriving now waits for the new CLI instead of starting a second product.
+  // (It sees the new release's product, still starting or already running.)
+  const second = await s.bm(['start', '--daemon'], on);
+  assert.match(second.stderr, /waiting for another botmancers start or upgrade/);
+  assert.match(second.stdout, second.code === 0 ? /already running/ : /startup has not finished/, second.stdout + second.stderr);
+  assert.doesNotMatch(second.stdout, /activated|: running\n/);
+  const supervisor = runFile(s).supervisor.pid;
+  assert.ok(await waitFor(async () => (await s.bm(['status'])).code === 0, 20_000));
+  assert.equal(runFile(s).supervisor.pid, supervisor, 'one supervisor');
+  assert.equal(s.current(), `versions/${N1}`);
+  assert.equal(await health(s), N1);
+  assert.ok(runFile(s).cli.startsWith(join(s.home, 'versions', N1)));
+  assert.ok(await waitFor(() => !existsSync(s.paths.startLock) && !pidAlive(handedTo), 20_000), 'the new CLI released start.lock and exited');
 });
 
 test('NOT-279: a launcher switched to N under a live N-1 reports the running N-1, degraded, with restart guidance', async t => {
