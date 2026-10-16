@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+// NOT-493: correlate an external MCP handoff (for example a Cursor Grok Bot
+// invocation) with the durable Botmancers records it created.
+//
+//   node scripts/mcp-handoff-correlate.js --request-id <id> [--service grok-bot] [--key <idempotency_key>] [--db botmancers.db]
+//
+// --service names the expected external principal (default grok-bot).
+// Opens the database read-only and prints JSON: the direct request, its
+// intake, the full request lineage with each requester, the coordinator's
+// Wakes, the root request's engine event ids, and the canonical row counts
+// for the service principal. The verdict says whether every request other
+// than the direct read-only turn came from inside the lineage: an Agent's
+// Wake (requester bot:<name>) or an engine continuation turn
+// (service:botmancers-engine), and whether the direct request is the lineage
+// root, requested and taken in by exactly the expected service principal,
+// i.e. the external principal gained no authority. It reads no
+// token, Session Binding, external run/session id, or attempt output.
+'use strict';
+
+/* eslint-disable @typescript-eslint/no-require-imports -- standalone CommonJS operator script. */
+
+const path = require('path');
+const Database = require('better-sqlite3');
+
+const MCP_IDEMPOTENCY_PREFIX = 'mcp:';
+// lib/coordinator-loop.ts ENGINE_REQUESTER: the engine requests coordinator continuation turns.
+const ENGINE_REQUESTER_ID = 'botmancers-engine';
+const DEFAULT_SERVICE_ID = 'grok-bot';
+
+function parseArgs(argv) {
+  const options = { db: process.env.BOTMANCERS_DB_PATH || 'botmancers.db', service: DEFAULT_SERVICE_ID, key: null, requestId: null };
+  const names = { '--db': 'db', '--service': 'service', '--key': 'key', '--request-id': 'requestId' };
+  for (let i = 0; i < argv.length; i += 1) {
+    const name = names[argv[i]];
+    if (!name || argv[i + 1] === undefined) throw new Error(`unknown or incomplete option: ${argv[i]}`);
+    options[name] = argv[i += 1];
+  }
+  if (!options.requestId) throw new Error('--request-id is required');
+  if (options.service === ENGINE_REQUESTER_ID) throw new Error(`--service cannot be the engine principal ${ENGINE_REQUESTER_ID}`);
+  return options;
+}
+
+function correlate({ db: dbPath, requestId, service, key }) {
+  const db = new Database(path.resolve(dbPath), { readonly: true, fileMustExist: true });
+  try {
+    const one = (sql, ...params) => db.prepare(sql).get(...params);
+    const all = (sql, ...params) => db.prepare(sql).all(...params);
+    const agentName = id => (one('SELECT name FROM bots WHERE id = ?', id) || {}).name || id;
+    const who = (kind, id) => `${kind}:${kind === 'bot' ? agentName(id) : id}`;
+
+    const root = one('SELECT * FROM work_requests WHERE id = ?', requestId);
+    if (!root) throw new Error(`request not found: ${requestId}`);
+    const principal = service || DEFAULT_SERVICE_ID;
+    const expected = `service:${principal}`;
+    const intake = one('SELECT requester_kind, requester_id, idempotency_key, surface, conversation_id, work_request_ids, created_at FROM conversation_intakes WHERE conversation_id = ? AND work_request_ids LIKE ?',
+      root.source_conversation_id, `%${requestId}%`);
+    const lineageRows = all('SELECT * FROM work_requests WHERE root_request_id = ? ORDER BY created_at, rowid', root.root_request_id);
+    const wakeRows = all('SELECT * FROM wakes WHERE root_request_id = ? ORDER BY created_at, position', root.root_request_id);
+    const wakeByRequest = new Map(wakeRows.filter(w => w.work_request_id !== null).map(w => [w.work_request_id, w]));
+    const matchingWake = r => {
+      const wake = wakeByRequest.get(r.id);
+      return wake
+        && r.wake_event_id !== null
+        && wake.id === r.wake_event_id
+        && wake.work_request_id === r.id
+        && wake.parent_request_id === r.parent_request_id
+        && wake.root_request_id === r.root_request_id
+        && wake.requester_agent_id === r.requester_id
+        && wake.target_agent_id === r.target_agent_id
+        && wake.execution_kind === r.execution_kind
+        && (wake.status === 'accepted' || wake.status === 'blocked')
+        ? wake
+        : null;
+    };
+    const originOf = r => {
+      if (r.parent_request_id === null) return 'external';
+      if (r.requester_kind === 'bot') return matchingWake(r) ? 'wake' : 'unexpected';
+      if (r.requester_kind === 'service' && r.requester_id === ENGINE_REQUESTER_ID) return 'engine_continuation';
+      return 'unexpected';
+    };
+    const lineage = lineageRows.map(r => {
+      const wake = matchingWake(r);
+      return {
+        request_id: r.id,
+        origin: originOf(r),
+        requester: who(r.requester_kind, r.requester_id),
+        target: agentName(r.target_agent_id),
+        execution_kind: r.execution_kind,
+        tool_profile: r.tool_profile,
+        state: r.state,
+        parent_request_id: r.parent_request_id,
+        wake_id: wake?.id ?? null,
+        root_principal: r.root_principal_kind ? `${r.root_principal_kind}:${r.root_principal_id}` : null,
+      };
+    });
+    const wakes = wakeRows.map(w => ({
+      wake_id: w.id,
+      requester: agentName(w.requester_agent_id),
+      target: w.target_agent_id ? agentName(w.target_agent_id) : w.requested_target,
+      execution_kind: w.execution_kind,
+      status: w.status,
+      reason_code: w.reason_code,
+      parent_request_id: w.parent_request_id,
+      root_request_id: w.root_request_id,
+      work_request_id: w.work_request_id,
+    }));
+    const events = all('SELECT id, sequence, type FROM engine_events WHERE request_id = ? ORDER BY sequence', requestId);
+    const counts = {
+      service: principal,
+      intakes: one("SELECT COUNT(*) AS n FROM conversation_intakes WHERE requester_kind = 'service' AND requester_id = ?", principal).n,
+      intakes_for_key: key === null ? null : one("SELECT COUNT(*) AS n FROM conversation_intakes WHERE requester_kind = 'service' AND requester_id = ? AND idempotency_key = ?", principal, `${MCP_IDEMPOTENCY_PREFIX}${key}`).n,
+      direct_work_requests: one("SELECT COUNT(*) AS n FROM work_requests WHERE requester_kind = 'service' AND requester_id = ?", principal).n,
+      work_requests_for_key: key === null ? null : one("SELECT COUNT(*) AS n FROM work_requests WHERE requester_kind = 'service' AND requester_id = ? AND idempotency_key LIKE ?", principal, `%${MCP_IDEMPOTENCY_PREFIX}${key}%`).n,
+    };
+
+    const internal = lineage.filter(r => r.request_id !== root.id);
+    const verdict = {
+      direct_request_is_readonly_conversation: root.execution_kind === 'conversation' && root.tool_profile === 'readonly',
+      direct_requester_is_expected_service: who(root.requester_kind, root.requester_id) === expected,
+      direct_request_is_lineage_root: root.parent_request_id === null && root.root_request_id === root.id,
+      lineage_root_principal_is_expected_service: lineage.every(r => r.root_principal === expected),
+      intake_is_expected_service: !!intake && `${intake.requester_kind}:${intake.requester_id}` === expected
+        && intake.idempotency_key !== null && intake.idempotency_key.startsWith(MCP_IDEMPOTENCY_PREFIX)
+        && (key === null || intake.idempotency_key === `${MCP_IDEMPOTENCY_PREFIX}${key}`),
+      all_other_requests_internal: internal.every(r => r.origin === 'wake' || r.origin === 'engine_continuation'),
+      terminal: ['completed', 'failed', 'cancelled'].includes(root.state),
+    };
+    verdict.no_external_elevation = verdict.direct_request_is_readonly_conversation
+      && verdict.direct_requester_is_expected_service
+      && verdict.direct_request_is_lineage_root
+      && verdict.lineage_root_principal_is_expected_service
+      && verdict.intake_is_expected_service
+      && verdict.all_other_requests_internal;
+    return {
+      request_id: root.id,
+      conversation_id: root.source_conversation_id,
+      intake: intake && { ...intake, work_request_ids: JSON.parse(intake.work_request_ids) },
+      lineage,
+      wakes,
+      engine_events: events,
+      counts,
+      verdict,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+if (require.main === module) {
+  try {
+    console.log(JSON.stringify(correlate(parseArgs(process.argv.slice(2))), null, 2));
+  } catch (error) {
+    console.error(`mcp-handoff-correlate: ${error.message}`);
+    process.exit(2);
+  }
+}
+
+module.exports = { correlate };

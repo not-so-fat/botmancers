@@ -1,0 +1,109 @@
+Grok Bot templates
+  PASS: runbook and bridge template pin exactly botmancers@0.1.0
+  PASS: secret scan of docs/integrations/grok-bot/README.md, docs/integrations/grok-bot/botmancers.env.template, docs/integrations/grok-bot/bridge.env.template, docs/integrations/grok-bot/cursor-mcp.template.json, docs/integrations/grok-bot/evidence/fixture-smoke.txt, docs/integrations/grok-bot/evidence/operator-smoke.md: no secret values
+  PASS: Grok Bot client template: HTTPS URL placeholder and an env-referenced bearer header, nothing else
+
+Bridge package
+  source: tarball botmancers-0.1.0.tgz (integrity sha512-uESqsRUPlkQpOuU+0bbrujZsRKgbgcfo9FHBPx0e316h7qMkjjXPnncNdrcJLq1yMU6MtEcanPLRQtfkjPLcng==)
+  installed: botmancers@0.1.0
+  PASS: the installed package is byte-identical to the one recorded in packages/mcp-server/release-evidence for botmancers@0.1.0
+
+Fail closed: the bridge does not start without a working route to Botmancers or its credentials
+  PASS: no inbound MCP token: exits 2 without listening (got 2)
+  PASS: no service token: exits 2 without listening (got 2)
+  PASS: Botmancers unreachable (nothing listening at BOTMANCERS_URL): exits 4 without listening (got 4)
+  PASS: service token not registered with Botmancers: exits 5 without listening (got 5)
+  PASS: Botmancers has no service tokens configured: exits 5 without listening (got 5)
+  PASS: no rows written by any refused start
+
+Bridge botmancers@0.1.0 behind the authenticated route
+  PASS: the installed binary listens on loopback: botmancers 0.1.0: MCP bridge listening on
+
+Fail closed: inbound authentication and route checks
+  PASS: no Authorization header: initialize and tools/call -> 401 (got 401/401)
+  PASS: wrong bearer token: initialize and tools/call -> 401 (got 401/401)
+  PASS: the Botmancers service token instead of the MCP token: initialize and tools/call -> 401 (got 401/401)
+  PASS: a route that does not rewrite Host -> 403 host_not_allowed (got 403)
+  PASS: no rows written by any refused request
+
+Handshake and tool surface
+  PASS: initialize -> botmancers 0.1.0, protocol 2025-06-18
+  PASS: notifications/initialized accepted (202)
+  PASS: tools/list -> exactly the four approved tools: botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health
+  PASS: botmancers_start_task accepts only coordinator, objective, idempotency_key
+  botmancers_health -> {"contract":"botmancers.mcp.v1","status":"ok","principal":{"kind":"service","id":"grok-bot"},"coordinators":[{"name":"Tank","available":true}]}
+  PASS: health: ok, principal service:grok-bot, only the allowlisted coordinator
+
+No external elevation of authority
+  PASS: a coordinator outside the allowlist -> coordinator_not_allowed
+  PASS: deck/runtime/model/workspace/target/grant fields -> unsupported_field (["deck","grant","model","runtime","target","workspace"])
+  PASS: no rows written
+
+Handoff: start once, poll to terminal, read the final conversation
+  botmancers_start_task -> {"contract":"botmancers.mcp.v1","request_id":"<request_id>","conversation_id":"<conversation_id>","coordinator":{"agent_id":"<tank>","name":"Tank"},"status":"pending","replayed":false}
+  PASS: start_task returns durable request_id and conversation_id
+  PASS: one intake and one Work Request written
+  poll 1 botmancers_get_request -> {"contract":"botmancers.mcp.v1","request_id":"<request_id>","conversation_id":"<conversation_id>","coordinator":{"agent_id":"<tank>","name":"Tank"},"status":"pending","terminal":false,"result":null,"failure":null,"created_at":"<ms>","updated_at":"<ms>"}
+  PASS: poll: pending while the coordinator is busy
+  poll 2 botmancers_get_request -> {"contract":"botmancers.mcp.v1","request_id":"<request_id>","conversation_id":"<conversation_id>","coordinator":{"agent_id":"<tank>","name":"Tank"},"status":"running","terminal":false,"result":null,"failure":null,"created_at":"<ms>","updated_at":"<ms>"}
+  PASS: poll: running
+  PASS: get_conversation while running: active, one open request
+  retry while running -> {"contract":"botmancers.mcp.v1","request_id":"<request_id>","conversation_id":"<conversation_id>","coordinator":{"agent_id":"<tank>","name":"Tank"},"status":"running","replayed":true}
+  PASS: retry while running replays the original ids
+  PASS: the mid-flight retry writes nothing and launches nothing
+  final botmancers_get_request -> {"contract":"botmancers.mcp.v1","request_id":"<request_id>","conversation_id":"<conversation_id>","coordinator":{"agent_id":"<tank>","name":"Tank"},"status":"succeeded","terminal":true,"result":{"message_id":"<result_message_id>","content":"Final: the README describes a disposable acceptance workspace created by the Botmancers harness. Nothing was changed."},"failure":null,"created_at":"<ms>","updated_at":"<ms>"}
+  PASS: poll reaches terminal succeeded with the coordinator result
+  PASS: observed status sequence: pending -> running -> succeeded
+  botmancers_get_conversation -> status idle, events request_queued, request_queued, request_running, request_running, request_completed, result
+    service:grok-bot: Read-only: summarize README.md of the disposable workspace in one sentence. Do not change anything.
+    Tank: Final: the README describes a disposable acceptance workspace created by the Botmancers harness. Nothing was changed.
+  PASS: the final conversation: the Grok objective, then the coordinator's final result
+  PASS: no Session Binding, run id, Deck, or policy in the conversation view
+
+Retry idempotency and conflict (row counts)
+  retry after terminal -> {"contract":"botmancers.mcp.v1","request_id":"<request_id>","conversation_id":"<conversation_id>","coordinator":{"agent_id":"<tank>","name":"Tank"},"status":"succeeded","replayed":true}
+  PASS: retry of the same invocation id returns the original ids and terminal status
+  changed objective, same invocation id -> {"contract":"botmancers.mcp.v1","error":{"code":"idempotency_conflict","message":"This idempotency_key was already used for a different task."}}
+  PASS: changed objective with the same key -> idempotency_conflict
+  rows for service:grok-bot -> {"intakes":1,"intakes_for_key":1,"work_requests":1}
+  PASS: retry and conflict write nothing (conversations, conversation_intakes, messages, wakes, work_requests, work_attempts, engine_events, conversation_events, session_bindings, coordinator launches)
+  PASS: exactly one intake and one Work Request for the Grok principal and key
+  PASS: the coordinator ran the Grok task exactly once
+
+Durable records correlated with the invocation
+  mcp-handoff-correlate -> {"request_id":"<request_id>","conversation_id":"<conversation_id>","intake":{"requester_kind":"service","requester_id":"grok-bot","idempotency_key":"mcp:grok-run-0001","surface":"api","conversation_id":"<conversation_id>","work_request_ids":["<request_id>"],"created_at":"<ms>"},"lineage":[{"request_id":"<request_id>","origin":"external","requester":"service:grok-bot","target":"Tank","execution_kind":"conversation","tool_profile":"readonly","state":"completed","parent_request_id":null,"wake_id":null,"root_principal":"service:grok-bot"}],"wakes":[],"engine_events":[{"id":"<engine_event_1>","sequence":1,"type":"accepted"},{"id":"<engine_event_2>","sequence":2,"type":"policy_selected"},{"id":"<engine_event_3>","sequence":3,"type":"dispatch_deferred"},{"id":"<engine_event_4>","sequence":4,"type":"dispatch_claimed"},{"id":"<engine_event_5>","sequence":5,"type":"state_changed"},{"id":"<engine_event_6>","sequence":6,"type":"attempt_started"},{"id":"<engine_event_7>","sequence":7,"type":"launch_intent_recorded"},{"id":"<engine_event_8>","sequence":8,"type":"runtime_started"},{"id":"<engine_event_9>","sequence":9,"type":"attempt_finished"},{"id":"<engine_event_10>","sequence":10,"type":"state_changed"},{"id":"<engine_event_11>","sequence":11,"type":"dispatch_released"}],"counts":{"service":"grok-bot","intakes":1,"intakes_for_key":1,"direct_work_requests":1,"work_requests_for_key":1},"verdict":{"direct_request_is_readonly_conversation":true,"direct_requester_is_expected_service":true,"direct_request_is_lineage_root":true,"lineage_root_principal_is_expected_service":true,"intake_is_expected_service":true,"all_other_requests_internal":true,"terminal":true,"no_external_elevation":true}}
+  PASS: the intake row ties the invocation id to the request and conversation
+  PASS: correlation counts: one intake, one direct Work Request
+  PASS: verdict: one read-only conversation turn from service:grok-bot; no other work attributed to the external principal
+
+The elevation verdict fails closed on unexpected provenance
+  another service principal is expected -> {"direct_request_is_readonly_conversation":true,"direct_requester_is_expected_service":false,"direct_request_is_lineage_root":true,"lineage_root_principal_is_expected_service":false,"intake_is_expected_service":false,"all_other_requests_internal":true,"terminal":true,"no_external_elevation":false}
+  PASS: no_external_elevation is false when another service principal is expected
+  the direct read-only turn was requested by an Agent -> {"direct_request_is_readonly_conversation":true,"direct_requester_is_expected_service":false,"direct_request_is_lineage_root":true,"lineage_root_principal_is_expected_service":true,"intake_is_expected_service":true,"all_other_requests_internal":true,"terminal":true,"no_external_elevation":false}
+  PASS: no_external_elevation is false when the direct read-only turn was requested by an Agent
+  the direct turn was requested by the engine principal -> {"direct_request_is_readonly_conversation":true,"direct_requester_is_expected_service":false,"direct_request_is_lineage_root":true,"lineage_root_principal_is_expected_service":true,"intake_is_expected_service":true,"all_other_requests_internal":true,"terminal":true,"no_external_elevation":false}
+  PASS: no_external_elevation is false when the direct turn was requested by the engine principal
+  the direct turn is not the lineage root -> {"direct_request_is_readonly_conversation":true,"direct_requester_is_expected_service":true,"direct_request_is_lineage_root":false,"lineage_root_principal_is_expected_service":true,"intake_is_expected_service":true,"all_other_requests_internal":true,"terminal":true,"no_external_elevation":false}
+  PASS: no_external_elevation is false when the direct turn is not the lineage root
+  the intake belongs to another principal -> {"direct_request_is_readonly_conversation":true,"direct_requester_is_expected_service":true,"direct_request_is_lineage_root":true,"lineage_root_principal_is_expected_service":true,"intake_is_expected_service":false,"all_other_requests_internal":true,"terminal":true,"no_external_elevation":false}
+  PASS: no_external_elevation is false when the intake belongs to another principal
+
+Coordinator Wakes stay internal
+  botmancers_get_conversation -> status idle; service:grok-bot > Tank > Rev > Tank
+  PASS: the direct request succeeds, then the conversation goes idle with the coordinator's final report
+  lineage -> ["external: service:grok-bot -> Tank conversation/readonly completed","wake: bot:Tank -> Rev review/readonly completed","engine_continuation: service:botmancers-engine -> Tank conversation/readonly completed"]
+  wakes -> [{"wake_id":"<wake_id>","requester":"Tank","target":"Rev","execution_kind":"review","status":"accepted","reason_code":null,"parent_request_id":"<request_id_2>","root_request_id":"<request_id_2>","work_request_id":"<wake_request_id>"}]
+  PASS: the review comes from Tank's Wake and the report from an engine continuation; service:grok-bot is only the root principal
+  PASS: one accepted Wake, requested by the coordinator
+  PASS: verdict: no external elevation; the Grok principal opened only its two direct turns
+  PASS: the verdict fails closed when a bot-authored child has no matching durable Wake
+
+Route removed: the client fails closed
+  PASS: with the route gone the client cannot connect
+  PASS: SIGTERM stops the bridge with exit 0
+  PASS: nothing written
+  PASS: bridge output contains no token or digest
+
+scenario passed
+
+TEST RESULT: PASS

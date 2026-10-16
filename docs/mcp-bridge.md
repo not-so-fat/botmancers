@@ -152,5 +152,8 @@ separate token. Use it when a consumer needs its own reachable endpoint.
 Release steps are in
 [`packages/mcp-server/RELEASING.md`](../packages/mcp-server/RELEASING.md).
 
+Consumer runbooks: [Cursor Grok Bot](integrations/grok-bot/README.md)
+(pinned package, network route, token rotation, fixture and operator smokes).
+
 Out of scope here: hosted or multi-tenant operation,
 push completion callbacks, and any particular client's account setup.

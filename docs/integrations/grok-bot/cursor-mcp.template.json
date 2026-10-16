@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "botmancers": {
+      "url": "https://<BRIDGE_PUBLIC_HOST>/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:BOTMANCERS_MCP_TOKEN}"
+      }
+    }
+  }
+}
