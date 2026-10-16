@@ -643,6 +643,19 @@ async function child() {
       'the review comes from Tank\'s Wake and the report from an engine continuation; service:grok-bot is only the root principal');
     check(report.wakes.length === 1 && report.wakes[0].requester === 'Tank' && report.wakes[0].status === 'accepted', 'one accepted Wake, requested by the coordinator');
     check(report.verdict.no_external_elevation && report.counts.direct_work_requests === 2, 'verdict: no external elevation; the Grok principal opened only its two direct turns');
+
+    const missingWakeDb = path.join(path.dirname(process.env.BOTMANCERS_DB_PATH), 'correlate-missing-wake.db');
+    raw.prepare('VACUUM INTO ?').run(missingWakeDb);
+    const Database = require('better-sqlite3');
+    const copy = new Database(missingWakeDb);
+    copy.pragma('foreign_keys = OFF');
+    for (const { name: trigger } of copy.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()) copy.exec(`DROP TRIGGER "${trigger}"`);
+    copy.prepare('DELETE FROM wakes WHERE work_request_id = ?').run(review.request_id);
+    copy.close();
+    const missingWakeReport = JSON.parse(execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'mcp-handoff-correlate.js'), '--db', missingWakeDb, '--request-id', start.request_id, '--key', key], { encoding: 'utf8' }));
+    const missingWakeChild = missingWakeReport.lineage.find(r => r.request_id === review.request_id);
+    check(missingWakeChild.origin === 'unexpected' && missingWakeChild.wake_id === null && missingWakeReport.verdict.no_external_elevation === false,
+      'the verdict fails closed when a bot-authored child has no matching durable Wake');
   }
 
   section('Route removed: the client fails closed');

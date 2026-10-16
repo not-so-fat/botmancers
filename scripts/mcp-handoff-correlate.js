@@ -54,30 +54,54 @@ function correlate({ db: dbPath, requestId, service, key }) {
     const expected = `service:${principal}`;
     const intake = one('SELECT requester_kind, requester_id, idempotency_key, surface, conversation_id, work_request_ids, created_at FROM conversation_intakes WHERE conversation_id = ? AND work_request_ids LIKE ?',
       root.source_conversation_id, `%${requestId}%`);
+    const lineageRows = all('SELECT * FROM work_requests WHERE root_request_id = ? ORDER BY created_at, rowid', root.root_request_id);
+    const wakeRows = all('SELECT * FROM wakes WHERE root_request_id = ? ORDER BY created_at, position', root.root_request_id);
+    const wakeByRequest = new Map(wakeRows.filter(w => w.work_request_id !== null).map(w => [w.work_request_id, w]));
+    const matchingWake = r => {
+      const wake = wakeByRequest.get(r.id);
+      return wake
+        && r.wake_event_id !== null
+        && wake.id === r.wake_event_id
+        && wake.work_request_id === r.id
+        && wake.parent_request_id === r.parent_request_id
+        && wake.root_request_id === r.root_request_id
+        && wake.requester_agent_id === r.requester_id
+        && wake.target_agent_id === r.target_agent_id
+        && wake.execution_kind === r.execution_kind
+        && (wake.status === 'accepted' || wake.status === 'blocked')
+        ? wake
+        : null;
+    };
     const originOf = r => {
       if (r.parent_request_id === null) return 'external';
-      if (r.requester_kind === 'bot') return 'wake';
+      if (r.requester_kind === 'bot') return matchingWake(r) ? 'wake' : 'unexpected';
       if (r.requester_kind === 'service' && r.requester_id === ENGINE_REQUESTER_ID) return 'engine_continuation';
       return 'unexpected';
     };
-    const lineage = all('SELECT * FROM work_requests WHERE root_request_id = ? ORDER BY created_at, rowid', root.root_request_id).map(r => ({
-      request_id: r.id,
-      origin: originOf(r),
-      requester: who(r.requester_kind, r.requester_id),
-      target: agentName(r.target_agent_id),
-      execution_kind: r.execution_kind,
-      tool_profile: r.tool_profile,
-      state: r.state,
-      parent_request_id: r.parent_request_id,
-      root_principal: r.root_principal_kind ? `${r.root_principal_kind}:${r.root_principal_id}` : null,
-    }));
-    const wakes = all('SELECT * FROM wakes WHERE root_request_id = ? ORDER BY created_at, position', root.root_request_id).map(w => ({
+    const lineage = lineageRows.map(r => {
+      const wake = matchingWake(r);
+      return {
+        request_id: r.id,
+        origin: originOf(r),
+        requester: who(r.requester_kind, r.requester_id),
+        target: agentName(r.target_agent_id),
+        execution_kind: r.execution_kind,
+        tool_profile: r.tool_profile,
+        state: r.state,
+        parent_request_id: r.parent_request_id,
+        wake_id: wake?.id ?? null,
+        root_principal: r.root_principal_kind ? `${r.root_principal_kind}:${r.root_principal_id}` : null,
+      };
+    });
+    const wakes = wakeRows.map(w => ({
       wake_id: w.id,
       requester: agentName(w.requester_agent_id),
       target: w.target_agent_id ? agentName(w.target_agent_id) : w.requested_target,
       execution_kind: w.execution_kind,
       status: w.status,
       reason_code: w.reason_code,
+      parent_request_id: w.parent_request_id,
+      root_request_id: w.root_request_id,
       work_request_id: w.work_request_id,
     }));
     const events = all('SELECT id, sequence, type FROM engine_events WHERE request_id = ? ORDER BY sequence', requestId);
