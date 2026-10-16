@@ -27,7 +27,7 @@ import {
   appDir, homePaths, missingAppFiles, modeOf, portFrom, readBuildInfo, readEnvFile, resolveHome,
 } from './home.js';
 import { createRedactor, type Redactor } from './redact.js';
-import { SERVICE_TOKENS_ENV, credentialState } from './setup.js';
+import { BRIDGE_SERVICE_ID, SERVICE_TOKENS_ENV, credentialState } from './setup.js';
 
 export const PRODUCT_EXIT = {
   ok: 0,
@@ -406,6 +406,26 @@ function preconditions(ctx: Ctx): { code: number; message: string } | null {
 // ---------------------------------------------------------------------
 // The supervisor.
 
+// BOTMANCERS_SERVICE_TOKENS is a list of `<service-id>=sha256:<hex>` entries.
+// An operator's explicit entries stay authoritative; the generated internal
+// bridge entry is merged in and always wins its own id, so the bridge can
+// authenticate whatever the shell exports. Later entries replace earlier ones
+// with the same id (config file, then shell, then the generated entry).
+export function mergeServiceTokens(generated: string | undefined, ...explicit: (string | undefined)[]): string {
+  const entries = new Map<string, string>();
+  const add = (list: string | undefined) => {
+    for (const entry of (list ?? '').split(/[,\s]+/).filter(Boolean)) {
+      const id = entry.slice(0, Math.max(entry.indexOf('='), 0));
+      entries.set(id || entry, entry);
+    }
+  };
+  for (const list of explicit) add(list);
+  const bridge = (generated ?? '').split(/[,\s]+/).filter(entry => entry.startsWith(`${BRIDGE_SERVICE_ID}=`));
+  entries.delete(BRIDGE_SERVICE_ID);
+  for (const entry of bridge) entries.set(BRIDGE_SERVICE_ID, entry);
+  return [...entries.values()].join(',');
+}
+
 function childEnvs(ctx: Ctx): { core: NodeJS.ProcessEnv; bridge: NodeJS.ProcessEnv } {
   const coreFile = readEnvFile(ctx.paths.coreEnv) ?? {};
   const bridgeFile = readEnvFile(ctx.paths.bridgeEnv) ?? {};
@@ -417,7 +437,7 @@ function childEnvs(ctx: Ctx): { core: NodeJS.ProcessEnv; bridge: NodeJS.ProcessE
     core: {
       ...coreFile,
       ...shell,
-      [SERVICE_TOKENS_ENV]: coreFile[SERVICE_TOKENS_ENV],
+      [SERVICE_TOKENS_ENV]: mergeServiceTokens(coreFile[SERVICE_TOKENS_ENV], coreFile[SERVICE_TOKENS_ENV], shell[SERVICE_TOKENS_ENV]),
       BOTMANCERS_HOME: home,
       PORT: String(ctx.uiPort),
       HOSTNAME: PRODUCT_HOST,

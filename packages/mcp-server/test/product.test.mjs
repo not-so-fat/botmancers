@@ -434,6 +434,25 @@ test('the link probe, which forwards the service token to the core, needs the co
   writeFileSync(s.runFile, JSON.stringify(running));
 });
 
+test('an operator-exported BOTMANCERS_SERVICE_TOKENS stays usable next to the generated bridge principal', async t => {
+  const s = await sandbox(t);
+  assert.equal((await s.run(['setup'])).code, 0);
+  const generated = /^BOTMANCERS_SERVICE_TOKENS=(.+)$/m.exec(readFileSync(join(s.home, 'config/core.env'), 'utf8'))[1].trim();
+  assert.match(generated, /^botmancers-bridge=sha256:[0-9a-f]{64}$/);
+  const other = `grok-bot=sha256:${'a'.repeat(64)}`;
+  const spoof = `botmancers-bridge=sha256:${'b'.repeat(64)}`;
+  const start = await s.run(['start', '--daemon'], { BOTMANCERS_SERVICE_TOKENS: `${other}, ${spoof}` });
+  assert.equal(start.code, 0, start.stderr);
+  const entries = JSON.parse(readFileSync(join(s.home, 'logs/fake-core-env.json'), 'utf8')).BOTMANCERS_SERVICE_TOKENS.split(',');
+  assert.ok(entries.includes(other), 'the exported principal reaches the core');
+  assert.deepEqual(entries.filter(entry => entry.startsWith('botmancers-bridge=')), [generated], 'one bridge entry, the generated digest');
+  assert.equal(entries.length, 2);
+  const status = await s.run(['status'], { BOTMANCERS_SERVICE_TOKENS: `${other}, ${spoof}` });
+  assert.equal(status.code, 0, status.stdout);
+  assert.match(status.stdout, /bridge→core ok/, 'the bridge still authenticates to the core');
+  assertNoTokens(s.home, start.stdout, start.stderr, status.stdout);
+});
+
 test('doctor distinguishes missing Hermes configuration and unavailable Agent Deck without printing secrets', async t => {
   const s = await sandbox(t);
   assert.equal((await s.run(['setup'])).code, 0);
