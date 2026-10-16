@@ -71,15 +71,22 @@ export function formatManifest(entry) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  let commit = 'unknown';
+  try {
+    commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PACKAGE_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { /* not a git checkout */ }
   const entry = packManifest();
-  const text = formatManifest(entry);
+  const problems = checkManifest(entry);
+  const verdict = problems.length
+    ? `package contents check FAILED:\n${problems.map(p => `  - ${p}`).join('\n')}\n`
+    : 'package contents check passed: allowlist only, no secrets.\n';
+  const text = `commit ${commit}\n${formatManifest(entry)}`;
   process.stdout.write(text);
   const outAt = process.argv.indexOf('--out');
-  if (outAt > 0 && process.argv[outAt + 1]) writeFileSync(process.argv[outAt + 1], text);
-  const problems = checkManifest(entry);
+  if (outAt > 0 && process.argv[outAt + 1]) writeFileSync(process.argv[outAt + 1], text + verdict);
   if (problems.length) {
-    process.stderr.write(`package contents check FAILED:\n${problems.map(p => `  - ${p}`).join('\n')}\n`);
+    process.stderr.write(verdict);
     process.exit(1);
   }
-  process.stdout.write('package contents check passed: allowlist only, no secrets.\n');
+  process.stdout.write(verdict);
 }
