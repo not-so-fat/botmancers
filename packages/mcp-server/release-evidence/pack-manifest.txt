@@ -1,24 +1,55 @@
-commit f2bcd8887fb31d02dab4b717acda99808900f16d
-botmancers@0.1.0  botmancers-0.1.0.tgz
-size 18287 B, unpacked 65045 B, 19 files
-shasum 47fe252a635044d26002eb7d1d2d332230ae43b9
-    1076  CHANGELOG.md
-     388  dist/cli.d.ts
-    4608  dist/cli.js
+commit afb307937e1967505b9f562142fc24675d4aeb04
+botmancers@0.2.0  botmancers-0.2.0.tgz
+size 13729402 B, unpacked 38971165 B, 1540 files
+shasum d3233baab6673d6b98e7c890acd65a5a2c41f26e
+integrity sha512-stflc7C9wlu5kY5EroKdN2lYWh40L2NkxUlep8iKI/KiSBR8CvmTXPCZpcEHPo7ps/8eRpnYxfa5EQc3lmDLcg==
+app build 0.2.0 commit afb307937e1967505b9f562142fc24675d4aeb04, next 16.3.8
+     143  app/BUILD_INFO.json
+      94  app/package.json
+    7455  app/server.js
+    2532  CHANGELOG.md
+    2021  dist/cli.d.ts
+    8547  dist/cli.js
     1071  dist/config.d.ts
-    7983  dist/config.js
+    8203  dist/config.js
      839  dist/contract.d.ts
     1667  dist/contract.js
+    1778  dist/home.d.ts
+    5076  dist/home.js
      697  dist/index.d.ts
      732  dist/index.js
+    3290  dist/product.d.ts
+   36512  dist/product.js
      181  dist/redact.d.ts
      762  dist/redact.js
     1003  dist/server.d.ts
    11543  dist/server.js
+     687  dist/setup.d.ts
+    7246  dist/setup.js
     1018  dist/upstream.d.ts
     5815  dist/upstream.js
     1071  LICENSE
-    1806  package.json
-    8071  README.md
+    2041  package.json
+   14118  README.md
    14714  schemas/botmancers.mcp.v1.tools.json
-package contents check passed: allowlist only, no secrets.
+    2212  app/.next/app-path-routes-manifest.json  (1 files)
+      21  app/.next/BUILD_ID  (1 files)
+     645  app/.next/build-manifest.json  (1 files)
+     120  app/.next/node_modules/  (2 files)
+      20  app/.next/package.json  (1 files)
+    3250  app/.next/prerender-manifest.json  (1 files)
+   10124  app/.next/required-server-files.json  (1 files)
+    8996  app/.next/routes-manifest.json  (1 files)
+ 4238292  app/.next/server/  (399 files)
+  898103  app/.next/static/  (26 files)
+   11000  app/node_modules/@next/env@16.3.8  (2 files)
+   30691  app/node_modules/@swc/helpers@0.5.23  (5 files)
+16927356  app/node_modules/better-sqlite3@13.0.3  (33 files)
+     467  app/node_modules/client-only@0.0.1  (2 files)
+14571161  app/node_modules/next@16.3.8  (988 files)
+   68530  app/node_modules/react@19.2.8  (10 files)
+ 1312757  app/node_modules/react-dom@19.2.8  (12 files)
+     981  app/node_modules/semver@6.3.1  (1 files)
+   22255  app/node_modules/styled-jsx@5.1.6  (4 files)
+  723328  app/public/  (21 files)
+package contents check passed: allowlist only, required runtime present, no source, state, secrets, or checkout paths.
