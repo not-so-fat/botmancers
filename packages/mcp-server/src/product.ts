@@ -26,7 +26,7 @@ import {
   CLI_PATH, HOME_DIRS, PRODUCT_HOST, UI_PORT_ENV, DEFAULT_UI_PORT, type HomePaths,
   appDir, homePaths, missingAppFiles, modeOf, portFrom, readBuildInfo, readEnvFile, resolveHome,
 } from './home.js';
-import { RESTART_ACTION, START_LOCK_ENV, activateRelease, activatablePending, cliEntryIn, handOffFileLock, managedPaths, managedReport, scheduleAutoUpdate, versionDir, waitForFileLock, writeUpdateState, type ManagedReport, type Unlock } from './managed.js';
+import { RESTART_ACTION, START_LOCK_ENV, activateRelease, activatablePending, cliEntryIn, beginHandOff, handOffFileLock, managedPaths, managedReport, scheduleAutoUpdate, versionDir, waitForFileLock, writeUpdateState, type ManagedReport, type Unlock } from './managed.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { BRIDGE_SERVICE_ID, SERVICE_TOKENS_ENV, credentialState } from './setup.js';
 
@@ -830,9 +830,13 @@ async function activatePendingAndRestart(ctx: Ctx, options: StartOptions, lock: 
   }
   ctx.io.stdout(`botmancers: activated ${pending} (was ${ctx.version}).\n`);
   const args = [cliEntryIn(versionDir(paths, pending)), 'start', ...(options.daemon ? ['--daemon'] : []), ...(options.open ? ['--open'] : [])];
+  // Announce the hand-off before spawning: if this process dies anywhere
+  // between here and the point where the new CLI owns start.lock, the lock
+  // stays live for the lease and the new CLI can still adopt it by token.
+  beginHandOff(paths.startLock, lock.token);
   const child = spawn(process.execPath, args, { env: { ...ctx.env, [START_LOCK_ENV]: lock.token }, stdio: 'inherit' });
-  // start.lock now lives as long as the new CLI, even if this process dies
-  // before its supervisor claims the home; the new CLI adopts it by token.
+  // Once spawned, start.lock lives as long as the new CLI, even if this
+  // process dies before its supervisor claims the home.
   if (child.pid) handOffFileLock(paths.startLock, lock.token, child.pid);
   const claimed = setInterval(() => { if (readRun(ctx.paths)) lock.release(); }, 200);
   const forward = (signal: NodeJS.Signals) => () => child.kill(signal);

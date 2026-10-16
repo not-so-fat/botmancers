@@ -532,6 +532,9 @@ interface LockInfo {
   started?: string;
   at?: number;
   token?: string;
+  // A lock about to be handed to a successor stays live until this time even
+  // if its owner dies first (see beginHandOff).
+  handoffUntil?: number;
 }
 
 function readLock(path: string): LockInfo | null {
@@ -563,6 +566,10 @@ function pidLive(pid: number): boolean {
 
 function lockLive(path: string): LockInfo | null {
   const info = readLock(path);
+  // An announced hand-off keeps the lock live for its lease even when the
+  // owner dies before the successor adopts it; the lease bounds how long a
+  // crash can block other starts.
+  if (info?.handoffUntil && info.handoffUntil > Date.now()) return info;
   if (!info?.pid || !pidLive(info.pid)) return null;
   if (!info.started) return Date.now() - (info.at ?? 0) > LEGACY_LOCK_STALE_MS ? null : info;
   const started = startedAt(info.pid);
@@ -575,14 +582,14 @@ function lockHeld(paths: ManagedPaths): boolean {
   return !!lockLive(paths.lock);
 }
 
-const lockRecord = (pid: number, token: string) => JSON.stringify({ pid, started: startedAt(pid) ?? undefined, at: Date.now(), token });
+const lockRecord = (pid: number, token: string, handoffUntil?: number) => JSON.stringify({ pid, started: startedAt(pid) ?? undefined, at: Date.now(), token, handoffUntil });
 
 // Rewrites the lock at `path` (still holding `token`) as owned by `pid`, in
 // one rename, so ownership never lapses between the two processes.
-function recordOwner(path: string, token: string, pid: number): boolean {
+function recordOwner(path: string, token: string, pid: number, handoffUntil?: number): boolean {
   if (readLock(path)?.token !== token) return false;
   const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temp, lockRecord(pid, token), { mode: 0o600 });
+  writeFileSync(temp, lockRecord(pid, token, handoffUntil), { mode: 0o600 });
   try {
     renameSync(temp, path);
     return true;
@@ -590,6 +597,16 @@ function recordOwner(path: string, token: string, pid: number): boolean {
     rmSync(temp, { force: true });
     return false;
   }
+}
+
+export const HANDOFF_LEASE_MS = 30_000;
+
+// Announces, BEFORE the successor is spawned, that this held lock is about to
+// be handed to it by token. From now on the lock stays live for the lease
+// even if this process dies at any point (before or after the spawn); the
+// successor adopts it with acquireFileLock(path, { inherit: token }).
+export function beginHandOff(path: string, token: string, leaseMs = HANDOFF_LEASE_MS): boolean {
+  return recordOwner(path, token, process.pid, Date.now() + leaseMs);
 }
 
 // Hands a held lock to another live process (the CLI an activating start

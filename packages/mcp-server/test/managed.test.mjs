@@ -586,6 +586,49 @@ test('start.lock handed to the new CLI outlives the activating start dying befor
   free.release();
 });
 
+test('an activating start killed before it records the successor: the announced hand-off keeps start.lock for the successor, for a bounded lease', async t => {
+  const s = await sandbox(t);
+  mkdirSync(join(s.home, 'run'), { recursive: true });
+  const path = s.paths.startLock;
+  const moduleUrl = new URL('../dist/managed.js', import.meta.url).href;
+  // A announces the hand-off, then dies at once: it never spawns anything
+  // and never records a successor (the interval between spawn and record).
+  const a = spawn(process.execPath, ['--input-type=module', '-e', `
+    const m = await import(${JSON.stringify(moduleUrl)});
+    const lock = m.acquireFileLock(${JSON.stringify(path)});
+    m.beginHandOff(${JSON.stringify(path)}, lock.token, 600);
+    process.stdout.write(JSON.stringify({ token: lock.token }) + '\\n');
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => a.kill('SIGKILL'));
+  const info = await new Promise(resolve => a.stdout.once('data', chunk => resolve(JSON.parse(String(chunk)))));
+  a.kill('SIGKILL');
+  await waitFor(() => !pidAlive(a.pid));
+  assert.equal(readLockFile(path).pid, a.pid, 'the record still names the dead parent');
+
+  // The parent is dead, but the lease holds: no other start or upgrade takes it ...
+  assert.equal(managed.acquireFileLock(path), null);
+  // ... and the successor can still adopt it by token.
+  const adopted = managed.acquireFileLock(path, { inherit: info.token });
+  assert.ok(adopted, 'the successor adopts a lock whose owner died before recording it');
+  assert.equal(readLockFile(path).pid, process.pid);
+  assert.equal(readLockFile(path).handoffUntil, undefined, 'adoption ends the lease');
+  adopted.release();
+  assert.equal(existsSync(path), false);
+
+  // If no successor ever adopts it, the lease expires and the lock is recoverable.
+  const orphan = managed.acquireFileLock(path);
+  managed.beginHandOff(path, orphan.token, 150);
+  const dead = spawn(process.execPath, ['-e', '']);
+  await new Promise(resolve => dead.on('exit', resolve));
+  writeFileSync(path, JSON.stringify({ ...readLockFile(path), pid: dead.pid, started: undefined }));
+  assert.equal(managed.acquireFileLock(path), null, 'still within the lease');
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const recovered = managed.acquireFileLock(path);
+  assert.ok(recovered, 'an abandoned announced hand-off is recoverable after the lease');
+  recovered.release();
+});
+
 test('an activating start killed after handing off: the new release finishes the start alone', async t => {
   const s = await installed(t);
   assert.equal((await s.bm(['setup'])).code, 0);
