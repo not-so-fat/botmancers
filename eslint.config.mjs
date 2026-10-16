@@ -18,6 +18,8 @@ const eslintConfig = defineConfig([
     "scripts/*.js",
     // Gitignored scratch scripts and logs:
     ".temporal/**",
+    // The published MCP bridge package builds and checks itself:
+    "packages/**",
   ]),
 ]);
 

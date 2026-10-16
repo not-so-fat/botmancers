@@ -1,0 +1,65 @@
+{
+  "name": "botmancers",
+  "version": "0.1.0",
+  "description": "Botmancers MCP bridge: a Streamable HTTP MCP server that hands tasks to a Botmancers coordinator (contract botmancers.mcp.v1).",
+  "keywords": [
+    "botmancers",
+    "mcp",
+    "model-context-protocol",
+    "streamable-http",
+    "agents"
+  ],
+  "license": "MIT",
+  "author": "Yusuke Muraoka",
+  "homepage": "https://github.com/not-so-fat/botmancers/tree/main/packages/mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/not-so-fat/botmancers/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/not-so-fat/botmancers.git",
+    "directory": "packages/mcp-server"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./schemas/botmancers.mcp.v1.tools.json": "./schemas/botmancers.mcp.v1.tools.json",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "botmancers": "dist/cli.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "schemas/*.json",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "tag": "canary"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/",
+    "check:pack": "node scripts/check-pack.mjs",
+    "smoke:install": "node scripts/smoke-install.mjs",
+    "release:check": "node scripts/release.mjs",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5"
+  }
+}
