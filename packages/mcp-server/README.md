@@ -83,8 +83,13 @@ For anything long-running, install a pinned release instead of using `npx`:
 version, and an authenticated bridge call reaches the core. Anything else
 that is running is `degraded` and never reported healthy: one process down,
 a version mismatch, or a start that has not finished. Run metadata whose
-processes are gone is removed automatically; a recorded process id is only
-signalled after its command line is confirmed to be Botmancers.
+processes are gone is removed automatically. Each process is recorded with
+its start time, and a recorded process id is only signalled when both its
+start time and its command line still match, so a recycled PID (even another
+Next.js server) is never touched. When identity cannot be verified (no `ps`,
+or metadata from an older release) nothing is signalled and the metadata is
+kept; the same holds if a process survives `stop`, so `status` keeps
+reporting it and `stop` can be retried.
 
 ### Where state lives
 

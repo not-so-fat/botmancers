@@ -12,8 +12,10 @@
 // core's /api/health and the bridge's /healthz both answer with the installed
 // release version, and an authenticated bridge call reaches the core. Any
 // other running combination is degraded. Run metadata lives in
-// <home>/run/product.json; metadata whose processes are gone is removed, and a
-// PID is only signalled after its command line is confirmed to be ours.
+// <home>/run/product.json and records each process's PID plus its start time;
+// metadata whose processes are gone is removed, and a PID is only signalled
+// when its start time and command line both still match the record. When the
+// identity cannot be verified nothing is signalled and the metadata is kept.
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync, accessSync, constants as fsConstants } from 'node:fs';
 import { createServer } from 'node:net';
@@ -95,6 +97,7 @@ function startupTimeout(env: NodeJS.ProcessEnv): number {
 
 export interface ChildRecord {
   pid: number | null;
+  started?: string;  // process start time from ps; with the command line, the process identity
   port: number;
   url: string;
   exited?: { code: number | null; signal: string | null; at: string };
@@ -107,7 +110,7 @@ export interface RunRecord {
   appDir: string;
   state: 'starting' | 'running' | 'stopping';
   startedAt: string;
-  supervisor: { pid: number };
+  supervisor: { pid: number; started?: string };
   ui: ChildRecord;
   mcp: ChildRecord;
 }
@@ -135,28 +138,67 @@ export function pidAlive(pid: number | null | undefined): boolean {
   }
 }
 
-function commandOf(pid: number): string | null {
+export interface ProcessIdentity {
+  started: string;
+  command: string;
+}
+
+// The start time and command line of a live process, null when it is gone,
+// or 'unverifiable' when this platform cannot tell (no ps, unparseable output).
+export function processIdentity(pid: number): ProcessIdentity | null | 'unverifiable' {
+  let out: string;
   try {
-    return execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart=', '-o', 'command='], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C' },
+    });
   } catch (error) {
     // ps exits 1 for a vanished pid; a missing ps (Windows) cannot verify.
-    return (error as { code?: string }).code === 'ENOENT' ? null : '';
+    return (error as { code?: string }).code === 'ENOENT' ? 'unverifiable' : null;
   }
+  const match = /^\s*(\w{3} \w{3} +\d+ \d\d:\d\d:\d\d \d{4})\s+(.*)$/.exec(out.trim());
+  return match ? { started: match[1].replace(/ +/g, ' '), command: match[2] } : 'unverifiable';
 }
 
-// Alive and, where the platform can tell, running one of our programs (so a
-// recycled PID is never signalled).
-export function ownedProcess(pid: number | null | undefined, markers: string[]): boolean {
-  if (!pidAlive(pid)) return false;
-  const command = commandOf(pid!);
-  if (command === null) return true;
-  return markers.some(marker => command.includes(marker));
+export function processStarted(pid: number | null | undefined): string | undefined {
+  if (!pid) return undefined;
+  const identity = processIdentity(pid);
+  return identity && identity !== 'unverifiable' ? identity.started : undefined;
 }
 
-const supervisorMarkers = () => [CLI_PATH];
-const bridgeMarkers = () => [CLI_PATH];
-// Next renames its process to "next-server (vX)".
+// owned: alive with the recorded start time and one of our command lines.
+// gone: not running, or the PID now belongs to another process (recycled).
+// unverified: alive, but the identity cannot be confirmed (no ps, or the
+// record predates start-time identity); such a PID is never signalled.
+export type Ownership = 'owned' | 'gone' | 'unverified';
+
+export function ownership(pid: number | null | undefined, started: string | undefined, markers: string[]): Ownership {
+  if (!pidAlive(pid)) return 'gone';
+  const identity = processIdentity(pid!);
+  if (identity === 'unverifiable') return 'unverified';
+  if (identity === null) return 'gone';
+  if (!markers.some(marker => identity.command.includes(marker))) return 'gone';
+  if (!started) return 'unverified';
+  return identity.started === started ? 'owned' : 'gone';
+}
+
+// A foreground `botmancers start` may run through the npm bin link.
+const supervisorMarkers = () => [CLI_PATH, 'botmancers'];
+const bridgeMarkers = () => [`${CLI_PATH} mcp`];
+// Next renames its process to "next-server (vX)" on some platforms; the
+// recorded start time is what tells ours apart from any other Next server.
 const coreMarkers = (record: RunRecord) => [join(record.appDir, 'server.js'), 'next-server'];
+
+type Target = { name: 'supervisor' | 'core' | 'bridge'; pid: number | null; owner: Ownership };
+
+function targetsOf(record: RunRecord): Target[] {
+  return [
+    { name: 'supervisor', pid: record.supervisor.pid, owner: ownership(record.supervisor.pid, record.supervisor.started, supervisorMarkers()) },
+    { name: 'core', pid: record.ui.pid, owner: ownership(record.ui.pid, record.ui.started, coreMarkers(record)) },
+    { name: 'bridge', pid: record.mcp.pid, owner: ownership(record.mcp.pid, record.mcp.started, bridgeMarkers()) },
+  ];
+}
+
+const unverifiedNote = (targets: Target[]) => `cannot verify that ${targets.map(t => `${t.name} pid ${t.pid}`).join(', ')} ${targets.length > 1 ? 'are' : 'is'} botmancers (no start-time identity); not signalled`;
 
 // ---------------------------------------------------------------------
 // Probes.
@@ -255,12 +297,11 @@ export async function inspect(ctx: Ctx): Promise<Inspection> {
     if (stray) rmSync(ctx.paths.runFile, { force: true });
     return { state: 'stopped', record: null, problems: [], repaired: stray ? 'removed unreadable run metadata' : null, alive: none, core: null, bridge: null, link: null };
   }
-  const alive = {
-    supervisor: ownedProcess(record.supervisor.pid, supervisorMarkers()),
-    ui: ownedProcess(record.ui.pid, coreMarkers(record)),
-    mcp: ownedProcess(record.mcp.pid, bridgeMarkers()),
-  };
-  if (!alive.supervisor && !alive.ui && !alive.mcp) {
+  const targets = targetsOf(record);
+  const [supervisor, ui, mcp] = targets.map(target => target.owner === 'owned');
+  const alive = { supervisor, ui, mcp };
+  const unverified = targets.filter(target => target.owner === 'unverified');
+  if (targets.every(target => target.owner === 'gone')) {
     rmSync(ctx.paths.runFile, { force: true });
     return {
       state: 'stopped', record: null, problems: [], alive, core: null, bridge: null, link: null,
@@ -270,11 +311,13 @@ export async function inspect(ctx: Ctx): Promise<Inspection> {
   const [core, bridge] = await Promise.all([probeCore(record.ui.url), probeBridge(record.mcp.url.replace(/\/mcp$/, ''))]);
   const link = bridge.ok && core.ok ? await probeLink(record.mcp.url.replace(/\/mcp$/, ''), readEnvFile(ctx.paths.bridgeEnv)?.[ENV.mcpToken]) : null;
   const problems: string[] = [];
+  if (unverified.length) problems.push(unverifiedNote(unverified));
   if (record.state === 'starting') problems.push('startup has not finished');
   if (record.state === 'stopping') problems.push('shutdown in progress');
-  if (!alive.supervisor) problems.push(`supervisor (pid ${record.supervisor.pid}) is not running`);
-  if (!alive.ui) problems.push(`core (pid ${record.ui.pid ?? '-'}) is not running${record.ui.exited ? ` (exited ${record.ui.exited.code ?? record.ui.exited.signal})` : ''}`);
-  if (!alive.mcp) problems.push(`bridge (pid ${record.mcp.pid ?? '-'}) is not running${record.mcp.exited ? ` (exited ${record.mcp.exited.code ?? record.mcp.exited.signal})` : ''}`);
+  const isUnverified = (name: Target['name']) => unverified.some(target => target.name === name);
+  if (!alive.supervisor && !isUnverified('supervisor')) problems.push(`supervisor (pid ${record.supervisor.pid}) is not running`);
+  if (!alive.ui && !isUnverified('core')) problems.push(`core (pid ${record.ui.pid ?? '-'}) is not running${record.ui.exited ? ` (exited ${record.ui.exited.code ?? record.ui.exited.signal})` : ''}`);
+  if (!alive.mcp && !isUnverified('bridge')) problems.push(`bridge (pid ${record.mcp.pid ?? '-'}) is not running${record.mcp.exited ? ` (exited ${record.mcp.exited.code ?? record.mcp.exited.signal})` : ''}`);
   if (!core.ok) problems.push(`core health ${core.detail}`);
   else if (core.version !== ctx.version) problems.push(`version mismatch: core reports ${core.version}, installed ${ctx.version}`);
   else if (core.body?.home !== ctx.paths.home) problems.push(`core is serving another home (${String(core.body?.home)})`);
@@ -443,7 +486,7 @@ export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void):
     appDir: ctx.appDir,
     state: 'starting',
     startedAt: new Date().toISOString(),
-    supervisor: { pid: process.pid },
+    supervisor: { pid: process.pid, started: processStarted(process.pid) },
     ui: { pid: null, port: ctx.uiPort, url: uiUrl(ctx) },
     mcp: { pid: null, port: ctx.mcpPort, url: `${mcpBase(ctx)}/mcp` },
   };
@@ -482,6 +525,7 @@ export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void):
   const ui = spawnLogged([join(ctx.appDir, 'server.js')], { cwd: ctx.appDir, env: envs.core, log: ctx.paths.uiLog });
   children.push(ui);
   record.ui.pid = ui.pid ?? null;
+  record.ui.started = processStarted(ui.pid);
   watch('ui', ui);
   save();
   const coreUp = await waitUntil(ui, async () => (await probeCore(record.ui.url)).ok, timeout);
@@ -497,6 +541,7 @@ export async function supervise(ctx: Ctx, onReady: (record: RunRecord) => void):
   const mcp = spawnLogged([CLI_PATH, 'mcp'], { cwd: ctx.paths.home, env: envs.bridge, log: ctx.paths.mcpLog });
   children.push(mcp);
   record.mcp.pid = mcp.pid ?? null;
+  record.mcp.started = processStarted(mcp.pid);
   watch('mcp', mcp);
   save();
   const bridgeUp = await waitUntil(mcp, async () => (await probeBridge(mcpBase(ctx))).ok, timeout);
@@ -661,13 +706,14 @@ export async function start(ctx: Ctx, options: StartOptions): Promise<number> {
   return exitCode;
 }
 
-async function waitGone(pids: number[], timeoutMs: number): Promise<boolean> {
+// Re-checks identity each round, so a reaped-and-recycled PID counts as gone.
+async function waitGone(record: RunRecord, names: Target['name'][], timeoutMs: number): Promise<Target[]> {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!pids.some(pidAlive)) return true;
+  for (;;) {
+    const left = targetsOf(record).filter(target => names.includes(target.name) && target.owner === 'owned');
+    if (!left.length || Date.now() >= deadline) return left;
     await sleep(150);
   }
-  return !pids.some(pidAlive);
 }
 
 export async function stop(ctx: Ctx): Promise<number> {
@@ -677,40 +723,41 @@ export async function stop(ctx: Ctx): Promise<number> {
     ctx.io.stdout(`botmancers: not running (home ${ctx.paths.home}).\n`);
     return PRODUCT_EXIT.ok;
   }
-  const targets: Array<[string, number | null, string[]]> = [
-    ['supervisor', record.supervisor.pid, supervisorMarkers()],
-    ['core', record.ui.pid, coreMarkers(record)],
-    ['bridge', record.mcp.pid, bridgeMarkers()],
-  ];
-  const owned = targets.filter(([, pid, markers]) => ownedProcess(pid, markers)) as Array<[string, number, string[]]>;
-  if (!owned.length) {
+  const targets = targetsOf(record);
+  const owned = targets.filter(target => target.owner === 'owned');
+  const unverified = targets.filter(target => target.owner === 'unverified');
+  if (!owned.length && !unverified.length) {
     rmSync(ctx.paths.runFile, { force: true });
     ctx.io.stdout(`botmancers: not running; removed stale run metadata (supervisor pid ${record.supervisor.pid} is gone).\n`);
     return PRODUCT_EXIT.ok;
   }
   // The supervisor stops its children; orphans (supervisor gone) are signalled directly.
-  const supervisorAlive = owned.some(([name]) => name === 'supervisor');
-  for (const [name, pid] of owned) {
+  const supervisorAlive = owned.some(target => target.name === 'supervisor');
+  for (const { name, pid } of owned) {
     if (name === 'supervisor' || !supervisorAlive) {
-      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+      try { process.kill(pid!, 'SIGTERM'); } catch { /* already gone */ }
     }
   }
-  const pids = owned.map(([, pid]) => pid);
-  if (!(await waitGone(pids, 15_000))) {
-    for (const [, pid, markers] of owned) {
-      if (ownedProcess(pid, markers)) {
-        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
-      }
-    }
-    await waitGone(pids, 3000);
-  }
-  const survivors = owned.filter(([, pid]) => pidAlive(pid));
-  rmSync(ctx.paths.runFile, { force: true });
+  const names = owned.map(target => target.name);
+  let survivors = await waitGone(record, names, 15_000);
   if (survivors.length) {
-    ctx.io.stderr(`botmancers: could not stop ${survivors.map(([name, pid]) => `${name} (pid ${pid})`).join(', ')}.\n`);
+    for (const { pid } of survivors) {
+      try { process.kill(pid!, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    survivors = await waitGone(record, names, 3000);
+  }
+  const remaining = [...survivors, ...unverified];
+  if (remaining.length) {
+    // Keep the ownership record (the supervisor may have removed it on its way
+    // out) so status reports the survivors and a later stop can retry.
+    writeRun(ctx.paths, owned.length ? { ...record, state: 'stopping' } : record);
+    if (survivors.length) ctx.io.stderr(`botmancers: could not stop ${survivors.map(({ name, pid }) => `${name} (pid ${pid})`).join(', ')}.\n`);
+    if (unverified.length) ctx.io.stderr(`botmancers: ${unverifiedNote(unverified)}. If they are not botmancers, remove ${ctx.paths.runFile}.\n`);
+    ctx.io.stderr(`botmancers: run metadata kept in ${ctx.paths.runFile}; retry with botmancers stop.\n`);
     return PRODUCT_EXIT.degraded;
   }
-  ctx.io.stdout(`botmancers: stopped (${owned.map(([name, pid]) => `${name} pid ${pid}`).join(', ')}).\n`);
+  rmSync(ctx.paths.runFile, { force: true });
+  ctx.io.stdout(`botmancers: stopped (${owned.map(({ name, pid }) => `${name} pid ${pid}`).join(', ')}).\n`);
   return PRODUCT_EXIT.ok;
 }
 

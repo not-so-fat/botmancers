@@ -302,13 +302,55 @@ test('stale run metadata is repaired, and a recycled PID is never signalled', as
   assert.match(stop.stdout, /removed stale run metadata/);
   assert.ok(pidAlive(unrelated.pid), 'unrelated process untouched');
 
+  // Another Next.js server that inherited the recorded core PID: its command
+  // line looks like a core, but its start time is not the recorded one.
+  const next = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'next-server']);
+  t.after(() => next.kill('SIGKILL'));
+  await waitFor(() => pidAlive(next.pid));
+  stale(dead.pid, { ui: { pid: next.pid, started: 'Thu Jan 1 00:00:00 2026', port: s.ui, url: `http://127.0.0.1:${s.ui}` } });
+  const recycled = await s.run(['stop']);
+  assert.equal(recycled.code, 0, recycled.stderr);
+  assert.match(recycled.stdout, /removed stale run metadata/);
+  assert.ok(!existsSync(s.runFile));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.ok(pidAlive(next.pid), 'recycled next-server PID untouched');
+
+  // Without a recorded start time the identity cannot be verified: fail closed.
+  stale(dead.pid, { ui: { pid: next.pid, port: s.ui, url: `http://127.0.0.1:${s.ui}` } });
+  const legacy = await s.run(['stop']);
+  assert.equal(legacy.code, 1);
+  assert.match(legacy.stderr, new RegExp(`cannot verify that core pid ${next.pid} is botmancers .*not signalled`));
+  assert.match(legacy.stderr, /run metadata kept in .*product\.json; retry with botmancers stop/);
+  assert.ok(existsSync(s.runFile), 'metadata kept');
+  const legacyStatus = await s.run(['status']);
+  assert.equal(legacyStatus.code, 1);
+  assert.match(legacyStatus.stdout, /problem {5}cannot verify that core pid/);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.ok(pidAlive(next.pid), 'unverifiable PID untouched');
+  rmSync(s.runFile);
+
   // start repairs stale metadata and proceeds.
   stale(dead.pid);
   const start = await s.run(['start', '--daemon']);
   assert.equal(start.code, 0, start.stderr);
   assert.match(start.stderr, /removed stale run metadata/);
+  const running = record(s.runFile);
+  for (const entry of [running.supervisor, running.ui, running.mcp]) assert.match(entry.started, /^\w{3} \w{3} \d+ \d\d:\d\d:\d\d \d{4}$/);
   assert.equal((await s.run(['status'])).code, 0);
-  assert.equal((await s.run(['stop'])).code, 0);
+
+  // Where process identity cannot be checked (no ps), stop signals nothing
+  // and keeps the run record; the product keeps running and a later stop works.
+  const blind = await s.run(['stop'], { PATH: join(s.root, 'no-ps') });
+  assert.equal(blind.code, 1);
+  assert.match(blind.stderr, /cannot verify that supervisor pid \d+, core pid \d+, bridge pid \d+ are botmancers/);
+  assert.deepEqual(record(s.runFile).supervisor, running.supervisor);
+  for (const pid of [running.supervisor.pid, running.ui.pid, running.mcp.pid]) assert.ok(pidAlive(pid), `pid ${pid} still running`);
+  const after = await s.run(['status']);
+  assert.equal(after.code, 0, after.stdout);
+  const stop2 = await s.run(['stop']);
+  assert.equal(stop2.code, 0, stop2.stderr);
+  assert.ok(await waitFor(() => ![running.supervisor.pid, running.ui.pid, running.mcp.pid].some(pidAlive)));
+  assert.ok(!existsSync(s.runFile));
 });
 
 test('doctor distinguishes missing Hermes configuration and unavailable Agent Deck without printing secrets', async t => {
