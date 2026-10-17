@@ -7,6 +7,7 @@ import { isChiefOfStaffName } from './avatar';
 import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } from './bot-deletion';
 import { createEngineStore, deleteEngineRecordsForAgent, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
 import { createConversationProjector } from './conversation-projection';
+import { createServiceAudit } from './service-audit';
 import { AgentNameConflictError, agentDisplayName, agentNameKey, planNameMigration, type NameMigrationRow } from './agent-names';
 import { dbPath } from './home';
 
@@ -514,6 +515,9 @@ migrateEngineSchema(db);
 export const engine = createEngineStore(db);
 // NOT-470: typed conversation projection of engine lifecycle events.
 export const projector = createConversationProjector(db);
+
+// NOT-499: append-only audit trail of service API calls (lib/service-audit).
+export const serviceAudit = createServiceAudit(db);
 
 export type PrincipalKind = 'person' | 'bot' | 'service';
 

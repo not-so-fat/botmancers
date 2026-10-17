@@ -22,7 +22,8 @@
 // NOT-465: POST accepts through the shared conversation intake, the same
 // service as the web UI message route; requestId is the canonical Work
 // Request id.
-import type { Principal } from './db';
+import { serviceAudit, type Principal } from './db';
+import type { AuditTargetKind } from './service-audit';
 import { ServiceTokenConfigError, serviceTokenAuthenticatorFromEnv } from './service-token-auth';
 import {
   AgentApiError,
@@ -46,14 +47,64 @@ function errorResponse(error: AgentApiError): Response {
   return Response.json({ error: { code: error.code, message: error.message } }, { status: error.status });
 }
 
-async function withErrors(run: () => Promise<Response>): Promise<Response> {
+// NOT-499: a service principal's call is appended to the service audit
+// trail (lib/service-audit) under the narrow participant rule.
+interface NarrowAudit {
+  operation: string;
+  targetKind: AuditTargetKind;
+  targetRef: string;
+}
+
+const DENIED_CODES = ['authentication_unavailable', 'unauthenticated', 'principal_mismatch', 'agent_not_found', 'conversation_not_found', 'request_not_found'];
+
+async function withErrors(
+  run: (setPrincipal: (principal: Principal) => void, commitAudit: () => void) => Promise<Response>,
+  audit?: NarrowAudit,
+): Promise<Response> {
+  let principal: Principal | null = null;
+  // A mutation hands commitAudit to the engine as its pre-commit hook: the
+  // allowed event is appended inside the transaction that records the
+  // mutation, so if the append fails nothing is committed or dispatched.
+  let committed = false;
+  const commitAudit = () => {
+    const caller = principal as Principal | null;
+    if (audit && caller && caller.kind === 'service') {
+      serviceAudit.append({
+        principal: caller, operation: audit.operation, capability: 'participant', targetKind: audit.targetKind, targetRef: audit.targetRef,
+        outcome: 'allowed', code: null,
+      });
+    }
+    committed = true;
+  };
+  let response: Response;
+  let code: string | null = null;
   try {
-    return await run();
+    response = await run(next => { principal = next; }, commitAudit);
   } catch (error) {
-    if (error instanceof AgentApiError) return errorResponse(error);
-    console.error('Agent conversation API error:', error);
-    return Response.json({ error: { code: 'internal_error', message: 'The request could not be processed.' } }, { status: 500 });
+    if (error instanceof AgentApiError) {
+      code = error.code;
+      response = errorResponse(error);
+    } else {
+      console.error('Agent conversation API error:', error);
+      code = 'internal_error';
+      response = Response.json({ error: { code: 'internal_error', message: 'The request could not be processed.' } }, { status: 500 });
+    }
   }
+  const caller = principal as Principal | null;
+  // A committed mutation already holds its allowed event.
+  if (committed && code === null) return response;
+  if (audit && caller && caller.kind === 'service') {
+    try {
+      serviceAudit.append({
+        principal: caller, operation: audit.operation, capability: 'participant', targetKind: audit.targetKind, targetRef: audit.targetRef,
+        outcome: code === null ? 'allowed' : code === 'internal_error' ? 'error' : DENIED_CODES.includes(code) ? 'denied' : 'rejected', code,
+      });
+    } catch (error) {
+      console.error('Service audit append failed:', error instanceof Error ? error.message : 'unknown error');
+      return Response.json({ error: { code: 'internal_error', message: 'The request could not be processed.' } }, { status: 500 });
+    }
+  }
+  return response;
 }
 
 // The installed authenticator, else the configured service tokens.
@@ -96,8 +147,9 @@ function declaredPrincipal(value: unknown): Principal | null {
 }
 
 export async function handleSendAgentMessage(request: Request, agentId: string): Promise<Response> {
-  return withErrors(async () => {
+  return withErrors(async (setPrincipal, commitAudit) => {
     const principal = await authenticate(request);
+    setPrincipal(principal);
     let body: Record<string, unknown>;
     try {
       const parsed = await request.json();
@@ -124,25 +176,27 @@ export async function handleSendAgentMessage(request: Request, agentId: string):
       content: typeof body.content === 'string' ? body.content : '',
       idempotencyKey,
       conversationId: typeof body.conversationId === 'string' ? body.conversationId : body.conversationId == null ? null : '',
-    });
+    }, commitAudit);
     if (body.wait === true) {
       await dispatched;
       return Response.json({ ...getAgentRequest(principal, accepted.requestId), replayed: accepted.replayed });
     }
     return Response.json(accepted, { status: accepted.replayed ? 200 : 202 });
-  });
+  }, { operation: 'agents.message', targetKind: 'agent', targetRef: agentId });
 }
 
 export async function handleGetConversation(request: Request, conversationId: string): Promise<Response> {
-  return withErrors(async () => {
+  return withErrors(async setPrincipal => {
     const principal = await authenticate(request);
+    setPrincipal(principal);
     return Response.json(getConversation(principal, conversationId));
-  });
+  }, { operation: 'conversations.read', targetKind: 'conversation', targetRef: conversationId });
 }
 
 export async function handleGetAgentRequest(request: Request, requestId: string): Promise<Response> {
-  return withErrors(async () => {
+  return withErrors(async setPrincipal => {
     const principal = await authenticate(request);
+    setPrincipal(principal);
     return Response.json(getAgentRequest(principal, requestId));
-  });
+  }, { operation: 'requests.read', targetKind: 'request', targetRef: requestId });
 }

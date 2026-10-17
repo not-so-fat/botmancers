@@ -61,7 +61,9 @@ import { continueAfterFinalization, continueAfterTerminal, pendingCoordinatorWor
 import { decideWakeGrant, retryWake, type GrantDecisionResult, type RoutedWake } from './wake-router';
 import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-safety';
 import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
-import { ExchangeError, createExchangeStore, hopOf, type CreateExchangeInput, type ExchangeView } from './session-exchanges';
+import { ExchangeError, createExchangeStore, hopOf, type CreateExchangeInput, type ExchangeView, type SessionExchange } from './session-exchanges';
+import { serviceRedactor } from './service-redaction';
+import { MESSAGE_KEY_PREFIX, loadServiceGrants } from './service-grants';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -236,7 +238,7 @@ function dispatchAccepted(accepted: AcceptedIntake): Promise<void> {
 
 // Accepts through the shared conversation intake (lib/conversation-intake).
 // A key first used before NOT-465 replays from its migrated intake row.
-export function acceptAgentMessage(principal: Principal, input: SendAgentMessageInput): { accepted: AcceptedAgentRequest; dispatched: Promise<void> } {
+export function acceptAgentMessage(principal: Principal, input: SendAgentMessageInput, beforeCommit?: () => void): { accepted: AcceptedAgentRequest; dispatched: Promise<void> } {
   assertKnownPrincipal(principal);
   if (!nonEmptyString(input.agentId)) throw new AgentApiError('invalid_request', 'agentId is required.');
   if (!nonEmptyString(input.content)) throw new AgentApiError('invalid_request', 'content is required.');
@@ -257,6 +259,7 @@ export function acceptAgentMessage(principal: Principal, input: SendAgentMessage
       content: input.content,
       fingerprint: [input.agentId, input.conversationId ?? null, input.content],
       route: () => ({ deliveries: [{ agentId: input.agentId }] }),
+      beforeCommit,
       dispatch: dispatchAccepted,
     });
   } catch (error) {
@@ -1171,9 +1174,15 @@ function recoverExchanges(): string[] {
 
 export function createExchangeCommand(input: CreateExchangeInput): { exchange: ExchangeView; created: boolean; dispatched: Promise<void> } {
   const { exchange, created } = exchanges.create(input);
-  // An exact replay dispatches whatever is still queued (idempotent).
-  const dispatched = Promise.all(exchanges.advance(exchange.id).map(startAgentDispatch)).then(() => undefined);
+  const dispatched = dispatchExchange(exchange.id);
   return { exchange: exchanges.view(exchange.id), created, dispatched };
+}
+
+// Advances one exchange and dispatches its queued hop. An exact replay
+// dispatches whatever is still queued (idempotent). NOT-499: the service
+// API creates exchanges in its own transaction and dispatches through this.
+export function dispatchExchange(id: string): Promise<void> {
+  return Promise.all(exchanges.advance(id).map(startAgentDispatch)).then(() => undefined);
 }
 
 export function getExchangeView(id: string): ExchangeView {
@@ -1184,10 +1193,18 @@ export function getExchangeView(id: string): ExchangeView {
 // open hop request is cancelled (a running Attempt is signalled and its
 // result discarded), and the exchange ends cancelled once that hop has
 // ended. A queued destination is never launched after it.
+// NOT-499: onRecorded runs inside the transaction recording the intent
+// (the service API appends its audit event there); nothing is cancelled
+// unless both commit.
 export async function cancelExchangeCommand(
   id: string, actor: { kind: string; id: string }, reason: string | null = null,
+  onRecorded?: (row: SessionExchange) => void,
 ): Promise<{ exchange: ExchangeView; replayed: boolean }> {
-  const { hopRequestId, replayed } = exchanges.requestCancel(id, actor, reason);
+  const { hopRequestId, replayed } = db.transaction(() => {
+    const result = exchanges.requestCancel(id, actor, reason);
+    onRecorded?.(result.exchange);
+    return result;
+  }).immediate();
   if (hopRequestId) {
     const request = engine.getWorkRequest(hopRequestId);
     if (request && !TERMINAL_STATES.includes(request.state)) {
@@ -1229,16 +1246,26 @@ function apiEventType(event: EngineEvent): string | null {
 }
 
 function workRequestView(request: WorkRequest): AgentRequestView {
-  const result = request.result ? (JSON.parse(request.result) as { reply_message_id?: string }) : null;
-  const reply = result?.reply_message_id
-    ? (db.prepare('SELECT id, content FROM messages WHERE id = ?').get(result.reply_message_id) as { id: string; content: string } | undefined)
+  const result = request.result ? (JSON.parse(request.result) as { reply_message_id?: string; answer_message_id?: string }) : null;
+  // NOT-499: a service's session message is an Ask hop. Its caller sees it
+  // in the origin conversation it asked from (never the session's own
+  // thread): the accepted message is the one the service sent there and
+  // the reply is the Ask answer.
+  const ask = hopOf(request)?.hop === 'ask' ? exchanges.forHopRequest(request.id) : undefined;
+  const replyId = ask ? result?.answer_message_id : result?.reply_message_id;
+  const reply = replyId
+    ? (db.prepare('SELECT id, content FROM messages WHERE id = ?').get(replyId) as { id: string; content: string } | undefined)
+    : undefined;
+  const askedMessage = ask
+    ? db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND request_id = ? AND sender_kind = ? ORDER BY rowid ASC LIMIT 1")
+      .get(ask.origin_conversation_id, request.id, ask.requester_kind) as { id: string } | undefined
     : undefined;
   const failed = request.state === 'failed' || request.state === 'cancelled';
   return {
     requestId: publicRequestId(request),
-    conversationId: request.source_conversation_id,
+    conversationId: ask ? ask.origin_conversation_id : request.source_conversation_id,
     agentId: request.target_agent_id,
-    acceptedMessageId: request.source_event_id,
+    acceptedMessageId: askedMessage ? askedMessage.id : request.source_event_id,
     state: apiStateOf(request.state),
     reply: reply ? { messageId: reply.id, content: reply.content } : null,
     failure: failed ? { code: request.error_code ?? request.state, message: request.error_message ?? '' } : null,
@@ -1258,19 +1285,50 @@ function publicRequestId(request: WorkRequest): string {
 
 // The canonical Work Request behind a public request id, when the principal
 // participates in its source conversation (NOT-491: the MCP bridge reads
-// the lifecycle state through this same check).
+// the lifecycle state through this same check), or (NOT-499) it is a hop
+// of an exchange the principal requested.
 export function getAuthorizedWorkRequest(principal: Principal, requestId: string): WorkRequest {
   assertKnownPrincipal(principal);
   const migrated = db.prepare('SELECT id FROM work_requests WHERE legacy_agent_request_id = ?').get(requestId) as { id: string } | undefined;
   const request = engine.getWorkRequest(migrated ? migrated.id : requestId);
-  if (!request || !isParticipant(request.source_conversation_id, principal)) {
+  // A service reads an exchange hop only through its current grants: the
+  // hop's conversation can be one the service participates in (a Continue's
+  // destination), which must not outlive a revoked grant.
+  const serviceHop = !!request && principal.kind === 'service' && !!hopOf(request);
+  if (!request || !(serviceHop ? requestedExchangeHop(principal, request) : (isParticipant(request.source_conversation_id, principal) || requestedExchangeHop(principal, request)))) {
     throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
   }
   return request;
 }
 
+function requestedExchangeHop(principal: Principal, request: WorkRequest): boolean {
+  if (!hopOf(request)) return false;
+  const row = exchanges.forHopRequest(request.id);
+  if (!row || row.requester_kind !== principal.kind || row.requester_id !== principal.id) return false;
+  return principal.kind !== 'service' || serviceStillHoldsHop(principal, row);
+}
+
+// NOT-499: a service that started an exchange keeps reading its hops only
+// while its grants still allow it, checked on every read like the granted
+// API's own routes (a rotated or revoked grant ends access on the next call;
+// an absent or unreadable grants document grants nothing): exchanges:read,
+// or sessions:message for a session message, on every Agent involved.
+function serviceStillHoldsHop(principal: Principal, row: SessionExchange): boolean {
+  const loaded = loadServiceGrants();
+  if (loaded.state === 'absent' || loaded.state === 'invalid') return false;
+  const held = loaded.grants.get(principal.id);
+  const capability = row.idempotency_key.startsWith(MESSAGE_KEY_PREFIX) ? 'sessions:message' : 'exchanges:read';
+  const holds = (agentId: string) => !!held?.get(agentId)?.has(capability) && !!bots.getById(agentId);
+  return holds(row.source_agent_id) && (row.destination_agent_id === null || holds(row.destination_agent_id));
+}
+
+// NOT-499: a service principal is shown every reply, failure, and event
+// through the service redactor (lib/service-redaction).
 export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {
-  return workRequestView(getAuthorizedWorkRequest(principal, requestId));
+  const request = getAuthorizedWorkRequest(principal, requestId);
+  const view = workRequestView(request);
+  if (principal.kind !== 'service') return view;
+  return serviceRedactor().deep(view);
 }
 
 const CONVERSATION_TYPE_VIEW: Record<string, ConversationView['type']> = {
@@ -1290,10 +1348,11 @@ export function getConversation(principal: Principal, conversationId: string): C
   const participants = db.prepare(
     'SELECT participant_kind, participant_id, joined_at FROM conversation_participants WHERE conversation_id = ? ORDER BY joined_at ASC, rowid ASC'
   ).all(conversation.id) as { participant_kind: PrincipalKind; participant_id: string; joined_at: number }[];
-  const rows = db.prepare(
+  const withheld = withheldHops(principal);
+  const rows = (db.prepare(
     'SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid ASC'
-  ).all(conversation.id) as MessageRow[];
-  return {
+  ).all(conversation.id) as MessageRow[]).filter(row => !withheld(row.request_id));
+  const view: ConversationView = {
     conversationId: conversation.id,
     type: CONVERSATION_TYPE_VIEW[conversation.type] ?? 'agent',
     origin: conversation.origin_kind && conversation.origin_id
@@ -1308,7 +1367,32 @@ export function getConversation(principal: Principal, conversationId: string): C
       requestId: row.request_id,
       createdAt: row.created_at,
     })),
-    events: projector.listConversationEvents(conversation.id),
+    events: projector.listConversationEvents(conversation.id)
+      .filter(event => !withheld(event.requestId))
+      .map((event, index) => ({ ...event, seq: index + 1 })),
+  };
+  // NOT-499: what a service is shown passes through the service redactor.
+  if (principal.kind !== 'service') return view;
+  return serviceRedactor().deep(view);
+}
+
+// NOT-499: a service's own conversation also carries what its exchanges
+// wrote there (its session-message question, the Ask answer). Those are
+// shown only while it still holds the grant the exchange-hop request read
+// needs (requestedExchangeHop): a revoked grant hides them on the next read,
+// including an answer that lands after revocation.
+function withheldHops(principal: Principal): (requestId: string | null) => boolean {
+  if (principal.kind !== 'service') return () => false;
+  const decided = new Map<string, boolean>();
+  return requestId => {
+    if (!requestId) return false;
+    let hidden = decided.get(requestId);
+    if (hidden === undefined) {
+      const row = exchanges.forHopRequest(requestId);
+      hidden = !!row && !(row.requester_kind === principal.kind && row.requester_id === principal.id && serviceStillHoldsHop(principal, row));
+      decided.set(requestId, hidden);
+    }
+    return hidden;
   };
 }
 

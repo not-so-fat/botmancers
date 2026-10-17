@@ -163,6 +163,9 @@ export interface CreateExchangeInput {
   // A caller asking for other authority is refused; the only kind an
   // exchange runs is a read-only conversation turn.
   executionKind?: unknown;
+  // NOT-499: set only by lib/service-api after it checked the service
+  // principal's owner grants (lib/service-grants). No HTTP body sets it.
+  serviceGrant?: boolean;
   now?: number;
 }
 
@@ -263,9 +266,14 @@ function redactPacket(packet: HandoffPacket, secret: string | null): HandoffPack
 
 const READ_ONLY_RULES = 'This is a read-only turn: do not edit files, change state, start other work, or emit Wakes.';
 
-function askPrompt(exchangeId: string, instruction: string): string {
+// Who asked, in the hop prompts: the owner, or a granted service (NOT-499).
+function requesterLabel(row: Pick<SessionExchange, 'requester_kind' | 'requester_id'>): string {
+  return row.requester_kind === 'service' ? `service ${row.requester_id}` : 'the owner';
+}
+
+function askPrompt(exchangeId: string, instruction: string, from = 'the owner'): string {
   return [
-    `[Session Ask from the owner] Exchange: ${exchangeId}`,
+    `[Session Ask from ${from}] Exchange: ${exchangeId}`,
     `Answer one question from the context of this session. ${READ_ONLY_RULES} Reply with the answer only.`,
     `Question:\n${instruction}`,
   ].join('\n\n');
@@ -436,6 +444,8 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
     return requireExchange(row.id);
   }
 
+  // A granted service (NOT-499) is an api_principal; anything else that
+  // reaches here is the owner.
   function safety(requester: { kind: string; id: string }) {
     const snapshot = {
       safety_version: WAKE_SAFETY_VERSION,
@@ -444,9 +454,10 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       grant_id: null,
       exchange: true,
     };
+    const principalType = requester.kind === 'service' ? 'api_principal' as const : 'human_owner' as const;
     return {
       safetySnapshot: snapshot,
-      safety: { principalType: 'human_owner' as const, principal: requester, decision: 'allowed' as const, grantRule: 'readonly_default', snapshot },
+      safety: { principalType, principal: requester, decision: 'allowed' as const, grantRule: 'readonly_default', snapshot },
     };
   }
 
@@ -501,8 +512,12 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       throw new ExchangeError('invalid_request', 'A requester principal is required.');
     }
     // Only the owner starts an exchange: no Agent, hop turn, or service
-    // can start one from inside another.
-    if (input.requester.kind !== 'person') {
+    // can start one from inside another. NOT-499: a service principal the
+    // owner granted exchanges:create (checked by lib/service-api) may, but
+    // never as this engine's own exchange requester.
+    const grantedService = input.requester.kind === 'service' && input.serviceGrant === true
+      && input.requester.id !== EXCHANGE_REQUESTER.id;
+    if (input.requester.kind !== 'person' && !grantedService) {
       throw new ExchangeError('recursive_exchange', 'Exchanges are started by the owner; an Agent or exchange hop cannot start another exchange.');
     }
     if (!nonEmpty(input.idempotencyKey) || input.idempotencyKey.length > 200) {
@@ -609,6 +624,10 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
           if (input.destinationConversationId) {
             requireVisibleConversation(input.destinationConversationId, input.requester, 'destination');
             destinationConversationId = input.destinationConversationId;
+          } else if (input.requester.kind === 'service') {
+            // The owner's direct thread is the owner's: a granted service
+            // names a destination conversation it participates in.
+            throw new ExchangeError('destination_invalid', 'A service-started Continue names destination.conversation_id.');
           } else {
             const thread = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').get(destination.id) as { id: string } | undefined;
             if (!thread) throw new ExchangeError('destination_invalid', `${destination.name} has no direct thread; name destination.conversation_id.`);
@@ -635,7 +654,9 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
         const request = hopRequest(row, hop, {
           conversationId: scope,
           targetAgentId: input.sourceAgentId,
-          intent: hop === 'ask' ? askPrompt(id, input.instruction) : extractionPrompt(id, destination?.name ?? 'another Agent', input.instruction),
+          intent: hop === 'ask'
+            ? askPrompt(id, input.instruction, requesterLabel(row))
+            : extractionPrompt(id, destination?.name ?? 'another Agent', input.instruction),
           // The resume continues the binding's own lineage (the resume
           // scope triggers require it).
           parentRequestId: binding.request_id,

@@ -62,7 +62,8 @@
     "test:mcp-bridge": "node test-mcp-bridge.js",
     "test:mcp-server": "npm --prefix packages/mcp-server test",
     "test:grok-handoff": "node test-grok-handoff.js",
-    "test:home-paths": "node test-home-paths.js"
+    "test:home-paths": "node test-home-paths.js",
+    "test:service-grants": "node test-service-grants.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

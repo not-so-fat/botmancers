@@ -104,6 +104,10 @@ export interface ConversationIntakeInput {
   // transaction so no other worker can claim them first. Defaults to the
   // dispatcher.
   executor?: RequestExecutor;
+  // Runs last inside the intake transaction of a new (non-replayed) intake:
+  // a throw rolls the whole acceptance back (NOT-499: the service audit
+  // event commits with the message, or neither does).
+  beforeCommit?: () => void;
   // The caller's production runtime path for accepted work. Replaced
   // wholesale by setIntakeDispatcher in tests.
   dispatch: IntakeDispatcher;
@@ -319,6 +323,7 @@ function intakeTransaction(input: ConversationIntakeInput, hash: string): Accept
       requester.kind, requester.id, input.idempotencyKey, hash, surface,
       conversation.id, sourceEvents.get(conversation.id), JSON.stringify(requestIds), now
     );
+    input.beforeCommit?.();
 
     return {
       surface,

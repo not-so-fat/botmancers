@@ -99,6 +99,9 @@ does not exist.
    entry or a duplicate id disables the whole list, and the API fails closed.
    The same tokens also authenticate the REST `/api/v0` routes. Changes take
    effect on the next request.
+   Access beyond this bridge (Agents, sessions, conversations, session
+   messages, exchanges) needs explicit owner grants:
+   [`service-grants.md`](service-grants.md).
 
 3. **Point the MCP client** at `http://127.0.0.1:43123/api/v0/mcp` and send the
    header `Authorization: Bearer $TOKEN`. Botmancers listens on loopback only.
