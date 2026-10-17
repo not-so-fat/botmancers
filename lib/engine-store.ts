@@ -62,7 +62,15 @@ export const EXCHANGE_LIMITS = Object.freeze({
   packetObjectiveChars: 2000,
   packetListItems: 20,
   packetItemChars: 500,
+  // Every hop's persisted output is bounded: the Ask answer and the
+  // delivery reply (truncation marker included), and the raw extraction
+  // output before the packet is parsed (over it, the packet is refused).
   answerChars: 16000,
+  replyChars: 16000,
+  extractionOutputChars: 32000,
+  // A hop prompt is built from the bounded instruction and packet; it is
+  // checked against this ceiling before the hop request is created.
+  promptChars: 24000,
 });
 
 export const WORK_REQUEST_STATES: WorkRequestState[] = ['queued', 'blocked', 'running', 'waiting', 'completed', 'failed', 'cancelled'];
@@ -1466,7 +1474,8 @@ const MIGRATIONS: Migration[] = [
           FOREIGN KEY (source_request_id) REFERENCES work_requests(id),
           FOREIGN KEY (source_attempt_id) REFERENCES work_attempts(id),
           FOREIGN KEY (destination_request_id) REFERENCES work_requests(id),
-          FOREIGN KEY (destination_attempt_id) REFERENCES work_attempts(id)
+          FOREIGN KEY (destination_attempt_id) REFERENCES work_attempts(id),
+          FOREIGN KEY (answer_message_id) REFERENCES messages(id)
         );
         CREATE INDEX idx_session_exchanges_open ON session_exchanges(created_at) WHERE terminal_at IS NULL;
         CREATE INDEX idx_session_exchanges_binding ON session_exchanges(source_binding_id);
@@ -1552,6 +1561,13 @@ const MIGRATIONS: Migration[] = [
             WHERE NEW.destination_binding_id IS NOT NULL AND NOT EXISTS (
               SELECT 1 FROM session_bindings WHERE id = NEW.destination_binding_id AND agent_id = NEW.destination_agent_id
                 AND request_id = NEW.destination_request_id AND id <> NEW.source_binding_id);
+          -- The answer is the source Agent's message in the origin
+          -- conversation, produced by the source hop request.
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.answer_message_id')
+            WHERE NEW.answer_message_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM messages WHERE id = NEW.answer_message_id AND conversation_id = NEW.origin_conversation_id
+                AND sender_type = 'bot' AND sender_id = NEW.source_agent_id
+                AND NEW.source_request_id IS NOT NULL AND request_id = NEW.source_request_id);
         END;
 
         CREATE TRIGGER trg_session_exchange_events_fk BEFORE INSERT ON session_exchange_events
@@ -1597,6 +1613,11 @@ const MIGRATIONS: Migration[] = [
         BEGIN
           SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.request')
             WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE source_request_id = OLD.id OR destination_request_id = OLD.id);
+        END;
+        CREATE TRIGGER trg_messages_exchange_restrict BEFORE DELETE ON messages
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.answer_message_id')
+            WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE answer_message_id = OLD.id);
         END;
         CREATE TRIGGER trg_work_attempts_exchange_restrict BEFORE DELETE ON work_attempts
         BEGIN

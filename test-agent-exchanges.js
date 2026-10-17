@@ -57,6 +57,7 @@ const SECRETS = {
   noDeck: 'prov-nodeck-SECRET-5555',
   scoutFresh: 'prov-scout-FRESH-6666',
   rose: 'prov-rose-SECRET-7777',
+  scoutRestart: 'prov-scout-RESTART-9191',
 };
 const leaks = text => Object.values(SECRETS).filter(id => text.includes(id));
 
@@ -177,7 +178,7 @@ function fixture() {
 // Restart child: a fresh process over the same database file.
 async function restartChild() {
   installAdapter();
-  script = (input, kind) => kind === 'deliver' ? { output: 'Picked up after restart.', session: SECRETS.scoutFresh } : { output: 'unexpected' };
+  script = (input, kind) => kind === 'deliver' ? { output: 'Picked up after restart.', session: SECRETS.scoutRestart } : { output: 'unexpected' };
   const before = JSON.parse(process.env.EXCHANGE_READ_IDS).map(id => exchanges.view(id));
   service.configureDispatcher({ owner: `exchange-restart-child:${process.pid}` });
   await service.recoverCoordinatorLoops();
@@ -262,6 +263,20 @@ async function main() {
     assert(/CHECK constraint/.test(badMode?.message ?? ''), 'an unknown mode is refused');
     assert(/RESTRICT|FOREIGN KEY/.test(threw(() => raw.prepare('DELETE FROM session_bindings WHERE id = ?').run(devSession.binding.id))?.message ?? ''),
       'a binding an exchange names cannot be deleted under it');
+    // The answer reference must be the source Agent's message in the
+    // origin conversation, produced by the source hop request.
+    const message = (id, conversationId, senderId, requestId) => raw.prepare(
+      "INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, 'bot', ?, 'bot', ?, 'x', 1)"
+    ).run(id, conversationId, senderId, requestId);
+    message('m-other-agent', tankConv.id, scout.id, ex.source_request_id);
+    message('m-other-conv', devSession.conv.id, dev.id, ex.source_request_id);
+    message('m-other-request', tankConv.id, dev.id, devSession.request.id);
+    for (const [label, id] of [['a missing message', 'no-such-message'], ['another Agent\'s message', 'm-other-agent'],
+      ['a message in another conversation', 'm-other-conv'], ['a message of another request', 'm-other-request']]) {
+      assert(/answer_message_id/.test(sqlError(`UPDATE session_exchanges SET answer_message_id = '${id}' WHERE id = ?`) ?? ''),
+        `the answer reference cannot name ${label}`);
+    }
+    raw.prepare("DELETE FROM messages WHERE id IN ('m-other-agent', 'm-other-conv', 'm-other-request')").run();
 
     // A Continue never completes straight from extracting.
     const c = exchanges.create(cont({ sourceAgentId: rose.id, sessionRef: roseSession.binding.id, idempotencyKey: 'store-continue' })).exchange;
@@ -311,6 +326,8 @@ async function main() {
     assert(answer.conversation_id === tankConv.id && answer.sender_id === dev.id && answer.request_id === view.hops.source.request_id
       && view.answer.content.includes('dispatcher already owns leases'), 'one answer message in the origin conversation, from the source Agent, linked to the hop request');
     assert(!view.answer.content.includes(SECRETS.dev) && view.answer.content.includes('[redacted session id]'), 'an echoed provider session id is redacted from the answer');
+    assert(/answer_message_id/.test(threw(() => raw.prepare('DELETE FROM messages WHERE id = ?').run(answer.id))?.message ?? ''),
+      'the answer message cannot be deleted under its exchange');
     assert(count("SELECT COUNT(*) AS n FROM messages WHERE request_id = ? AND sender_type = 'bot'", view.hops.source.request_id) === 1
       && count("SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND request_id = ?", devSession.conv.id, view.hops.source.request_id) === 0,
     'nothing was written into the source session\'s own thread');
@@ -463,6 +480,68 @@ async function main() {
   }
 
   // -------------------------------------------------------------------
+  console.log('\n[5b] delivery boundaries: no Wakes, a fresh destination session, bounded outputs');
+  {
+    const run = async (key, behavior, input = cont) => {
+      script = behavior;
+      const created = service.createExchangeCommand(input({ idempotencyKey: key }));
+      await created.dispatched;
+      await service.waitForAgentDispatchIdle();
+      return service.getExchangeView(created.exchange.id);
+    };
+    // A delivery reply that emits a Wake routes nothing: the exchange ends
+    // with its one destination turn (no follow-up, no edit work).
+    const wakesBefore = count('SELECT COUNT(*) AS n FROM wakes');
+    const roseRequestsBefore = count('SELECT COUNT(*) AS n FROM work_requests WHERE target_agent_id = ?', rose.id);
+    const waking = await run('deliver-wake', (input, kind) => kind === 'extract' ? { output: packetJson() }
+      : { output: 'On it.\nWAKE Rose: implement the cards with edit access', session: 'prov-scout-WAKE-1212' });
+    const wakingDelivery = engine.getWorkRequest(waking.hops.destination.request_id);
+    assert(waking.state === 'completed' && count('SELECT COUNT(*) AS n FROM wakes') === wakesBefore
+      && count('SELECT COUNT(*) AS n FROM work_requests WHERE target_agent_id = ?', rose.id) === roseRequestsBefore
+      && JSON.parse(wakingDelivery.result).reply_message_id === undefined && typeof JSON.parse(wakingDelivery.result).destination_message_id === 'string',
+    'a Wake in the delivery reply routes nothing (no Wake, no follow-up Work Request)');
+
+    // No fresh destination session: the hand-off fails visibly, unbound.
+    for (const [label, session, reason] of [
+      ['no session reported', null, 'not_reported'],
+      ['the source session id reported', SECRETS.dev, 'reused'],
+      ['an already-bound session id reported', SECRETS.scout, 'reused'],
+    ]) {
+      const bindingsBefore = count('SELECT COUNT(*) AS n FROM session_bindings WHERE agent_id = ?', scout.id);
+      const view = await run(`deliver-session-${reason}-${label}`, (input, kind) => kind === 'extract' ? { output: packetJson() } : { output: 'Delivered.', session });
+      const rejected = view.events.find(event => event.type === 'destination_session_rejected');
+      assert(view.state === 'failed' && view.failure.code === 'destination_session_invalid' && view.destination.session_ref === null
+        && rejected?.data.reason === reason && count('SELECT COUNT(*) AS n FROM session_bindings WHERE agent_id = ?', scout.id) === bindingsBefore
+        && count("SELECT COUNT(*) AS n FROM messages WHERE request_id = ?", view.hops.destination.request_id) === 0,
+      `${label}: failed destination_session_invalid, no destination binding or reply (${view.failure?.message})`);
+    }
+
+    // Output bounds: at the limit kept whole; over it, cut to the limit
+    // with the marker included; extraction output over its limit refused.
+    const L = lib.EXCHANGE_LIMITS;
+    assert(lib.boundOutput('a'.repeat(40), 40).content.length === 40 && !lib.boundOutput('a'.repeat(40), 40).truncated
+      && lib.boundOutput('a'.repeat(41), 40).content.length === 40 && lib.boundOutput('a'.repeat(41), 40).truncated
+      && lib.boundOutput('a'.repeat(41), 5).content.length === 5, 'boundOutput keeps the limit, marker included');
+    const atLimit = await run('ask-at-limit', () => ({ output: 'a'.repeat(L.answerChars) }), ask);
+    const overLimit = await run('ask-over-limit', () => ({ output: 'b'.repeat(L.answerChars * 2) }), ask);
+    assert(atLimit.answer.content.length === L.answerChars && !atLimit.answer.content.includes('[truncated]'), `an answer of exactly ${L.answerChars} characters is kept whole`);
+    assert(overLimit.answer.content.length === L.answerChars && overLimit.answer.content.endsWith('[truncated]'), `an oversized answer is stored at ${L.answerChars} characters, marker included`);
+    const longReply = await run('deliver-over-limit', (input, kind) => kind === 'extract' ? { output: packetJson() }
+      : { output: 'c'.repeat(L.replyChars * 3), session: 'prov-scout-LONG-1313' });
+    const replyMessage = one("SELECT content FROM messages WHERE request_id = ?", longReply.hops.destination.request_id);
+    assert(longReply.state === 'completed' && replyMessage.content.length === L.replyChars && replyMessage.content.endsWith('[truncated]'),
+      `an oversized delivery reply is stored at ${L.replyChars} characters`);
+    const padded = packetJson() + ' '.repeat(L.extractionOutputChars);
+    assert(padded.length > L.extractionOutputChars, 'fixture: the padded extraction output is over its limit');
+    const oversized = await run('extract-over-limit', (input, kind) => kind === 'extract' ? { output: padded } : { output: 'MUST NOT DELIVER', session: 'prov-scout-NO-1414' });
+    assert(oversized.state === 'failed' && oversized.failure.code === 'packet_invalid' && /extraction output exceeds/.test(oversized.failure.message)
+      && oversized.hops.destination === null, 'an extraction output over its limit is refused before any packet is stored or destination launched');
+    assert(lib.parseHandoffPacket(packetJson() + ' '.repeat(L.extractionOutputChars - packetJson().length)).ok, 'an extraction output exactly at its limit parses');
+    assert(waking.limits.promptChars === L.promptChars && L.instructionChars + L.packetChars + 2000 <= L.promptChars,
+      'the hop prompt ceiling covers the bounded instruction and packet');
+  }
+
+  // -------------------------------------------------------------------
   console.log('\n[6] cancellation of a running hop: truthful state, nothing after it');
   {
     for (const mode of ['ask', 'continue']) {
@@ -536,7 +615,7 @@ async function main() {
       && out.calls[0].agentId === scout.id && out.calls[0].sessionBinding === null && leaks(out.calls[0].input).length === 0,
     '(b) the restarted process launched the queued destination once, fresh, with no provider session id');
     const finalRow = exchanges.get(pending.id);
-    assert(finalRow.state === 'completed' && one('SELECT external_session_id FROM session_bindings WHERE id = ?', finalRow.destination_binding_id).external_session_id === SECRETS.scoutFresh,
+    assert(finalRow.state === 'completed' && one('SELECT external_session_id FROM session_bindings WHERE id = ?', finalRow.destination_binding_id).external_session_id === SECRETS.scoutRestart,
       'the first process sees the completed exchange and its new destination binding');
     held.release();
     await service.waitForAgentDispatchIdle();
@@ -622,6 +701,11 @@ async function main() {
 
     const held = holdAdapter();
     const live = await call('POST', '/api/exchanges', { ...askBody, idempotency_key: 'route-cancel' });
+    for (const [label, body] of [['an array', []], ['a boolean', true], ['a string', 'stop'], ['an unknown field', { reason: 'x', force: true }], ['a non-string reason', { reason: 3 }]]) {
+      const refused = await call('POST', `/api/exchanges/${live.json.exchange.id}/cancel`, body);
+      assert(refused.status === 400 && refused.json.error.code === 'invalid_request' && exchanges.get(live.json.exchange.id).cancel_requested_at === null,
+        `a cancel body that is ${label} is 400 invalid_request and cancels nothing (${refused.json.error.message})`);
+    }
     await waitFor(() => callsFor(live.json.exchange.hops.source.request_id).length === 1, 'route Ask in its adapter');
     const cancel = await call('POST', `/api/exchanges/${live.json.exchange.id}/cancel`, { reason: 'stop' });
     assert(cancel.status === 200 && cancel.json.exchange.cancel.reason === 'stop' && cancel.json.exchange.state === 'extracting', 'cancel of a running Ask is 200 with the recorded intent');

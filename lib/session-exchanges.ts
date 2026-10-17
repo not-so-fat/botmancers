@@ -16,7 +16,7 @@
 // Each hop is a canonical Work Request run by the leased dispatcher
 // (lib/agent-conversations), under the session_exchange_conversation
 // execution policy (read-only only, lib/execution-policy), one Attempt, and
-// no Wake routing from Ask or extraction output. The exchange row is
+// no Wake routing from any hop's output. The exchange row is
 // durable: hop creation, claim, and result projection commit in the same
 // transaction as the exchange state they move, and advanceExchange derives
 // any remaining step from the hops' durable state, so a restart (or a hop
@@ -192,6 +192,15 @@ function redact(text: string, secret: string | null): string {
   return secret && secret.length > 0 ? text.split(secret).join('[redacted session id]') : text;
 }
 
+const TRUNCATED = '\n[truncated]';
+
+// At most `limit` characters, the truncation marker included.
+export function boundOutput(text: string, limit: number): { content: string; truncated: boolean } {
+  if (text.length <= limit) return { content: text, truncated: false };
+  if (limit <= TRUNCATED.length) return { content: text.slice(0, limit), truncated: true };
+  return { content: `${text.slice(0, limit - TRUNCATED.length)}${TRUNCATED}`, truncated: true };
+}
+
 function firstLine(text: string, limit = 80): string {
   const line = text.split('\n').map(part => part.trim()).find(part => part.length > 0) ?? '';
   return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
@@ -202,6 +211,9 @@ function firstLine(text: string, limit = 80): string {
 // non-empty objective and string lists, within EXCHANGE_LIMITS. Unknown
 // fields are dropped. Anything else is refused with an actionable reason.
 export function parseHandoffPacket(output: string): { ok: true; packet: HandoffPacket } | { ok: false; reason: string } {
+  if (output.length > EXCHANGE_LIMITS.extractionOutputChars) {
+    return { ok: false, reason: `The extraction output exceeds ${EXCHANGE_LIMITS.extractionOutputChars} characters.` };
+  }
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(output);
   const body = (fenced ? fenced[1] : output).trim();
   const start = body.indexOf('{');
@@ -456,6 +468,9 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
   }): WorkRequest {
     const requester = { kind: row.requester_kind, id: row.requester_id };
     const key = `exchange:${row.id}:${hop}`;
+    if (fields.intent.length > EXCHANGE_LIMITS.promptChars) {
+      throw new ExchangeError('invalid_request', `The ${hop} prompt exceeds ${EXCHANGE_LIMITS.promptChars} characters.`);
+    }
     return engine.createOrGetWorkRequest({
       sourceConversationId: fields.conversationId,
       sourceEventId: key,
@@ -701,9 +716,7 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       const output = result.output ?? '';
       const sourceSecret = (getBinding.get(row.source_binding_id) as SessionBinding | undefined)?.external_session_id ?? null;
       if (hop.hop === 'ask') {
-        const redacted = redact(output, sourceSecret);
-        const truncated = redacted.length > EXCHANGE_LIMITS.answerChars;
-        const content = truncated ? `${redacted.slice(0, EXCHANGE_LIMITS.answerChars)}\n[truncated]` : redacted;
+        const { content, truncated } = boundOutput(redact(output, sourceSecret), EXCHANGE_LIMITS.answerChars);
         const messageId = randomUUID();
         db.prepare(
           'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -728,27 +741,44 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
         }, at);
         return { exchange_id: row.id, packet: 'stored' };
       }
-      // Delivery: the destination's reply goes to the destination
-      // conversation, and the session it reported is bound as a fresh
-      // binding the destination owns (scoped to its own hop request).
+      // Delivery: the destination must report a session of its own, never
+      // seen before (not the source's, not any bound one); otherwise the
+      // hand-off has no destination-owned session and the exchange fails.
+      const reported = result.externalSessionId ?? null;
+      const fresh = !!reported && reported !== sourceSecret
+        && !db.prepare('SELECT 1 FROM session_bindings WHERE external_session_id = ?').get(reported);
+      if (!fresh) {
+        const reason = reported ? 'reused' : 'not_reported';
+        event(row.id, 'destination_session_rejected', { request_id: request.id, attempt_id: attempt.id, reason }, at);
+        move(row, 'failed', at, {
+          reason: 'destination_session_invalid', failureCode: 'destination_session_invalid',
+          failureMessage: reported
+            ? 'The destination Agent reported a session that is not new; the hand-off needs a fresh destination-owned session.'
+            : 'The destination Agent reported no session; the hand-off needs a fresh destination-owned session.',
+        });
+        return { exchange_id: row.id, destination_session: 'rejected' };
+      }
+      // The reply goes to the destination conversation, and the session is
+      // bound as a fresh binding the destination owns (scoped to its own
+      // hop request).
       const replyId = randomUUID();
       const conversationId = row.destination_conversation_id as string;
+      const { content, truncated } = boundOutput(redact(output, sourceSecret), EXCHANGE_LIMITS.replyChars);
       db.prepare(
         'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(replyId, conversationId, 'bot', request.target_agent_id, 'bot', request.id, output, at);
-      let bindingId: string | null = null;
-      if (result.externalSessionId && result.externalSessionId !== sourceSecret) {
-        bindingId = engine.bindSession({
-          agentId: request.target_agent_id, adapter: attempt.adapter, externalSessionId: result.externalSessionId,
-          conversationId, requestId: request.id, sourceAttemptId: attempt.id, now: at,
-        }).id;
-        setRefs(row, { destination_binding_id: bindingId }, at);
-      }
+      ).run(replyId, conversationId, 'bot', request.target_agent_id, 'bot', request.id, content, at);
+      const bindingId = engine.bindSession({
+        agentId: request.target_agent_id, adapter: attempt.adapter, externalSessionId: reported,
+        conversationId, requestId: request.id, sourceAttemptId: attempt.id, now: at,
+      }).id;
+      setRefs(row, { destination_binding_id: bindingId }, at);
       event(row.id, 'destination_replied', {
         request_id: request.id, attempt_id: attempt.id, message_id: replyId, conversation_id: conversationId,
-        session_ref: bindingId, session: bindingId ? 'bound' : 'not_reported',
+        session_ref: bindingId, truncated,
       }, at);
-      return { exchange_id: row.id, reply_message_id: replyId };
+      // Not reply_message_id: a delivery reply routes no Wakes (the
+      // exchange ends with this one destination turn).
+      return { exchange_id: row.id, destination_message_id: replyId };
     },
 
     // Derives the next step from the hops' durable state. Idempotent: run
@@ -828,6 +858,13 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
           move(row, 'failed', at, {
             reason: 'hop_failed', failureCode: 'destination_turn_failed',
             failureMessage: `The destination turn failed (${delivery.error_code ?? 'failed'}): ${delivery.error_message ?? 'no detail'}`,
+          });
+          return [];
+        }
+        if (!row.destination_binding_id) {
+          move(row, 'failed', at, {
+            reason: 'destination_session_missing', failureCode: 'destination_session_invalid',
+            failureMessage: 'The destination turn bound no fresh destination-owned session.',
           });
           return [];
         }
@@ -943,6 +980,27 @@ export function exchangeInputFromBody(body: unknown, requester: CreateExchangeIn
     instruction: text(body.instruction, 'instruction'),
     ...(body.execution_kind !== undefined ? { executionKind: body.execution_kind } : {}),
   };
+}
+
+// The optional POST /api/exchanges/:id/cancel body: empty, or one JSON
+// object with at most a reason. Anything else is refused before the
+// cancellation runs.
+export function cancelReasonFromBody(text: string): string | null {
+  if (text.trim().length === 0) return null;
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new ExchangeError('invalid_request', 'The body must be a JSON object.');
+  }
+  if (!isObject(body)) throw new ExchangeError('invalid_request', 'The body must be a JSON object.');
+  const unknown = Object.keys(body).filter(key => key !== 'reason');
+  if (unknown.length > 0) throw new ExchangeError('invalid_request', `Unknown field ${unknown[0]}.`);
+  const value = body.reason;
+  if (value !== undefined && value !== null && (typeof value !== 'string' || value.length > 500)) {
+    throw new ExchangeError('invalid_request', 'reason must be a string of at most 500 characters.');
+  }
+  return typeof value === 'string' ? value : null;
 }
 
 export function exchangeErrorBody(error: ExchangeError): { error: { code: ExchangeErrorCode; message: string } } {

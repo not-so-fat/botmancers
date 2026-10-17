@@ -154,7 +154,11 @@ The owner can target one session by its reference in two explicit ways
   does Botmancers launch the destination Agent: a fresh read-only turn in the
   destination conversation (default: the destination Agent's direct thread),
   with no session to resume. The session the destination reports is bound as a
-  new Session Binding that the destination owns. The destination never
+  new Session Binding that the destination owns. That session must be new:
+  if the destination reports no session, the source's session, or any session
+  already bound, the exchange fails with `destination_session_invalid` and
+  nothing is bound. Wakes in the delivery reply route nothing, so the exchange
+  ends with that one destination turn. The destination never
   resumes or receives the source provider session ID. Both hops link to one
   exchange.
 
@@ -167,7 +171,9 @@ States move `queued -> extracting -> completed` for an Ask, and
 `queued -> extracting -> delivering -> completed` for a Continue. Either can
 end `failed` or `cancelled` instead. Triggers enforce the edges, the mode
 rules (an Ask never delivers; a Continue cannot complete from `extracting`),
-and the rule that a terminal exchange never changes.
+and the rule that a terminal exchange never changes. The answer reference must
+name the source Agent's message in the origin conversation, produced by the
+source hop request, and that message cannot be deleted under its exchange.
 
 - **Hops are Work Requests.** The leased dispatcher runs each hop. A hop has
   the `exchange` entry point, the `session_exchange_conversation` rule
@@ -186,7 +192,10 @@ and the rule that a terminal exchange never changes.
 - **Limits.** One source and one destination per exchange. The instruction is
   at most 4000 characters. The packet is at most 16000 characters in total: an
   objective of at most 2000, and at most 20 entries of at most 500 characters
-  in each list. An Ask answer is cut at 16000 characters. A packet or answer
+  in each list. The raw extraction output is at most 32000 characters; over
+  that, the packet is refused. An Ask answer and a delivery reply are each
+  stored at most 16000 characters long, including the `[truncated]` marker.
+  A hop prompt is at most 24000 characters. A packet, answer, or reply
   that repeats the source provider session ID is redacted.
 - **Cancellation and recovery.** Cancelling is allowed only while the
   exchange is non-terminal. The intent is recorded once and the open hop
