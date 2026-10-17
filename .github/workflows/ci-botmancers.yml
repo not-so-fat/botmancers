@@ -33,6 +33,12 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Install the locked package-local build tools
         run: npm ci --no-audit --no-fund
+      - name: DIAG tests alone
+        run: |
+          npm test > "$RUNNER_TEMP/t.log" 2>&1; echo "npm test exit=$?"
+          grep -E "ℹ (pass|fail)" "$RUNNER_TEMP/t.log"
+          ps -eo pid,ppid,pgid,etime,cmd | grep -E "node|botmancers" | grep -v grep | cut -c1-200 || true
+          echo "still alive after tests"
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app
