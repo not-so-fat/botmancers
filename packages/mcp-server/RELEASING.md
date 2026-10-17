@@ -93,16 +93,19 @@ registry smoke test before announcing that release.
    `release-evidence/` is outside the package `files` allowlist, so it is
    never published. Commit it in a follow-up commit that touches only that
    directory, so the recorded SHA is the code that was checked.
-3. **Tag**:
+3. **Tag**. Go back to the repository root (step 2 ends in
+   `packages/mcp-server`, and the script is defined only in the root
+   `package.json`), confirm `origin/main` is still the commit step 2 checked
+   (or that commit plus the `release-evidence/` follow-up), then run:
 
    ```sh
-   npm run release:tag:push    # repository root; tags origin/main, never the working tree
+   npm run release:tag:push    # tags origin/main, never the working tree
    ```
 
-   Run it bare. It reads the version from `origin/main`, requires the CHANGELOG
-   entry, and refuses to reuse a tag that exists on the remote. Add `-- --dry` to
-   preview. Do not hand-type `git tag ... && git push ...`: a chained command
-   does not match an agent's allowlisted `git push` prefix rule.
+   It reads the version from `origin/main`, requires the CHANGELOG entry, and
+   refuses to reuse a tag that exists on the remote or exists locally at a
+   different commit. `npm run release:tag:push -- --dry` previews. Use it
+   instead of tagging by hand.
 
    The `release-botmancers` workflow then runs `release:check --tag ...`
    again and runs `npm publish --provenance --access public --tag canary`
