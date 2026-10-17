@@ -2701,15 +2701,7 @@ export type EngineStore = ReturnType<typeof createEngineStore>;
 function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string; arg: string; exchanges: string }): void {
   const ids = (sql: string, ...args: unknown[]) => (db.prepare(sql).all(...args) as { id: string }[]).map(row => row.id);
   const requests = new Set(ids(seed.requests, seed.arg));
-  // NOT-497: the hop requests of every exchange removed with this
-  // aggregate go with it, wherever they run. A source hop runs in the
-  // source binding's conversation for the source Agent, so neither the
-  // origin conversation nor the destination Agent reaches it otherwise.
-  for (const id of ids(
-    `SELECT source_request_id AS id FROM session_exchanges WHERE (${seed.exchanges}) AND source_request_id IS NOT NULL
-     UNION SELECT destination_request_id AS id FROM session_exchanges WHERE (${seed.exchanges}) AND destination_request_id IS NOT NULL`,
-    seed.arg, seed.arg, seed.arg, seed.arg
-  )) requests.add(id);
+  const exchanges = new Set<string>();
   const bindings = new Set(ids(seed.bindings, seed.arg));
   const attempts = new Set<string>();
   const add = (set: Set<string>, found: string[]) => {
@@ -2720,6 +2712,23 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   const list = (set: Set<string>) => JSON.stringify([...set]);
   const inSet = '(SELECT value FROM json_each(?))';
   for (;;) {
+    // NOT-497: an exchange goes with the aggregate or with any hop request,
+    // Attempt, or binding removed here; its hop requests then go with it,
+    // wherever they run (a source hop runs in the source binding's
+    // conversation for the source Agent, a Continue's destination hop is a
+    // fresh root). Discovery sits in the fixed point because either side
+    // can be reached only through the other.
+    const grewExchanges = add(exchanges, ids(
+      `SELECT id FROM session_exchanges WHERE (${seed.exchanges})
+         OR source_request_id IN ${inSet} OR destination_request_id IN ${inSet} OR source_attempt_id IN ${inSet}
+         OR destination_attempt_id IN ${inSet} OR source_binding_id IN ${inSet} OR destination_binding_id IN ${inSet}`,
+      seed.arg, seed.arg, list(requests), list(requests), list(attempts), list(attempts), list(bindings), list(bindings)
+    ));
+    const grewHops = add(requests, ids(
+      `SELECT source_request_id AS id FROM session_exchanges WHERE id IN ${inSet} AND source_request_id IS NOT NULL
+       UNION SELECT destination_request_id AS id FROM session_exchanges WHERE id IN ${inSet} AND destination_request_id IS NOT NULL`,
+      list(exchanges), list(exchanges)
+    ));
     const grewRequests = add(requests, ids(
       `SELECT id FROM work_requests WHERE parent_request_id IN ${inSet} OR root_request_id IN ${inSet}`,
       list(requests), list(requests)
@@ -2735,14 +2744,9 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
       `SELECT id FROM session_bindings WHERE request_id IN ${inSet} OR source_attempt_id IN ${inSet}`,
       list(requests), list(attempts)
     ));
-    if (!grewRequests && !grewOwners && !grewAttempts && !grewBindings) break;
+    if (!grewExchanges && !grewHops && !grewRequests && !grewOwners && !grewAttempts && !grewBindings) break;
   }
-  // NOT-497: an exchange goes with any hop request, Attempt, or binding
-  // removed here.
-  deleteSessionExchanges(db,
-    `source_request_id IN ${inSet} OR destination_request_id IN ${inSet} OR source_attempt_id IN ${inSet}
-      OR destination_attempt_id IN ${inSet} OR source_binding_id IN ${inSet} OR destination_binding_id IN ${inSet}`,
-    list(requests), list(requests), list(attempts), list(attempts), list(bindings), list(bindings));
+  deleteSessionExchanges(db, `id IN ${inSet}`, list(exchanges));
   // Authorize the append-only guard for exactly the requests removed
   // here, only for the duration of this delete.
   // Projections of removed requests go first: they name the events.
@@ -2798,9 +2802,6 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   db.prepare(`DELETE FROM terminal_followups WHERE request_id IN ${inSet}`).run(list(requests));
   const ordered =ids(`SELECT id FROM work_requests WHERE id IN ${inSet} ORDER BY depth DESC`, list(requests));
   for (const id of ordered) db.prepare('DELETE FROM work_requests WHERE id = ?').run(id);
-  // Any matching exchange no hop request reached (none is expected: an
-  // exchange commits with its first hop) goes too.
-  deleteSessionExchanges(db, seed.exchanges, seed.arg, seed.arg);
 }
 
 // NOT-497: removes matching exchanges with their events, under the purge

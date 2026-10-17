@@ -885,6 +885,30 @@ async function main() {
     'deleting an open exchange\'s destination Agent removes its queued source hop request (for the source Agent) too');
     assert(count('SELECT COUNT(*) AS n FROM work_requests WHERE requester_id = ? AND id NOT IN (SELECT source_request_id FROM session_exchanges UNION SELECT destination_request_id FROM session_exchanges WHERE destination_request_id IS NOT NULL)', 'botmancers-exchanges') === 0,
       'no exchange hop request outlives its exchange');
+    // A completed Continue is reached through its source hop only when the
+    // source session's conversation is deleted (origin and destination are
+    // other conversations); the destination hop is a fresh root, so the
+    // closure has to take it from the exchange.
+    const srcC = agent('CleanSrcC');
+    const destC = agent('CleanDestC');
+    const sessionC = seedSession(srcC, 'prov-cleanc-SECRET-0004', { key: 'clean-c' });
+    script = (input, kind) => kind === 'extract'
+      ? { output: `\`\`\`json\n${packetJson()}\n\`\`\``, session: SECRETS.dev }
+      : { output: 'Destination picking up.', session: 'prov-cleanc-FRESH-0005' };
+    const done = service.createExchangeCommand(cont({ sourceAgentId: srcC.id, sessionRef: sessionC.binding.id, destinationAgentId: destC.id, idempotencyKey: 'cleanup-completed' }));
+    await done.dispatched;
+    await service.waitForAgentDispatchIdle();
+    const doneRow = exchanges.get(done.exchange.id);
+    const destBindingId = doneRow.destination_binding_id;
+    assert(doneRow.state === 'completed' && !!doneRow.destination_request_id && !!destBindingId
+      && doneRow.destination_conversation_id !== sessionC.conv.id && doneRow.origin_conversation_id !== sessionC.conv.id,
+    'fixture: a completed Continue whose source session lives in a conversation that is neither its origin nor its destination');
+    raw.transaction(() => engineStore.deleteEngineRecordsForConversation(raw, sessionC.conv.id))();
+    assert(!exchanges.get(done.exchange.id) && !engine.getWorkRequest(doneRow.source_request_id) && !engine.getWorkRequest(doneRow.destination_request_id)
+      && count('SELECT COUNT(*) AS n FROM work_attempts WHERE id IN (?, ?)', doneRow.source_attempt_id, doneRow.destination_attempt_id) === 0
+      && count('SELECT COUNT(*) AS n FROM session_bindings WHERE id = ?', destBindingId) === 0
+      && count('SELECT COUNT(*) AS n FROM session_exchange_events WHERE exchange_id = ?', done.exchange.id) === 0,
+    'deleting the source session\'s conversation removes a completed Continue with both hops, their Attempts, the destination binding, and the events');
     const tankThreadExchanges = count('SELECT COUNT(*) AS n FROM session_exchanges WHERE origin_conversation_id = ?', tankConv.id);
     raw.transaction(() => engineStore.deleteEngineRecordsForConversation(raw, tankConv.id))();
     assert(tankThreadExchanges > 0 && count('SELECT COUNT(*) AS n FROM session_exchanges WHERE origin_conversation_id = ?', tankConv.id) === 0,
