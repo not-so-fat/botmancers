@@ -370,7 +370,7 @@ async function run() {
     await waitFor("document.querySelector('.exchange-dialog[data-exchange-mode=\"ask\"]')", 'Ask dialog');
     check(await evaluate("document.activeElement?.id === document.querySelector('.exchange-dialog textarea').id"), 'Enter opens the Ask dialog and focus moves to the question field');
     check(await evaluate("document.querySelector('.sessions-drawer').inert === true"), 'the Sessions drawer is inert under the dialog');
-    const askContext = await evaluate("document.querySelector('.exchange-source').innerText");
+    const askContext = await evaluate("document.querySelector('.exchange-source').textContent");
     check(/Dev/.test(askContext) && /Add the session catalog read model/.test(askContext) && /Last activity/.test(askContext), 'the dialog shows the recognizable source Agent, session title, and activity');
     check(await evaluate("document.querySelectorAll('.exchange-dialog input').length === 0") && !(await evaluate('document.querySelector(".exchange-dialog").innerText')).includes(implRef), 'no session-id entry and no session reference shown');
     await press('Escape');
@@ -485,7 +485,7 @@ async function run() {
     await focusEl("document.querySelector('nav.rail-nav a')");
     await press('Enter');
     await waitFor("location.pathname === '/exchanges' && document.querySelectorAll('.ledger-row').length === 2", 'ledger rows', 120000);
-    const ledgerRows = () => evaluate("[...document.querySelectorAll('.ledger-row')].map(b => ({ id: b.dataset.exchangeId, text: b.innerText }))");
+    const ledgerRows = () => evaluate("[...document.querySelectorAll('.ledger-row')].map(b => ({ id: b.dataset.exchangeId, text: b.textContent }))");
     let lr = await ledgerRows();
     check(lr[0].id === continueId && lr[1].id === askId, 'newest activity first: the Continue, then the Ask');
     check(/Continue/.test(lr[0].text) && /Dev → Scout/.test(lr[0].text) && /Handed off/.test(lr[0].text) && /From Dev thread/.test(lr[0].text) && /Started .* UTC/.test(lr[0].text), 'a row shows mode, participants, state, origin, and timestamps');
