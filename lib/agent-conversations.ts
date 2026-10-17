@@ -61,6 +61,7 @@ import { continueAfterFinalization, continueAfterTerminal, pendingCoordinatorWor
 import { decideWakeGrant, retryWake, type GrantDecisionResult, type RoutedWake } from './wake-router';
 import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-safety';
 import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
+import { ExchangeError, createExchangeStore, hopOf, type CreateExchangeInput, type ExchangeView } from './session-exchanges';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -370,6 +371,7 @@ async function runDispatch(requestId: string): Promise<void> {
 
 function afterRequest(requestId: string, released: boolean): void {
   for (const next of continueAfterTerminal(requestId)) void startAgentDispatch(next);
+  advanceExchangeOf(requestId);
   for (const id of openFinalizationIds()) if (!submittedThisProcess.has(id)) void startFinalization(id);
   if (released) drainDeferred();
 }
@@ -410,7 +412,8 @@ async function runTurn(requestId: string): Promise<boolean> {
   // NOT-456: the attempt adapter records the dispatched agent identity
   // (hermes|cursor|claude|codex|muse), never Agent Deck.
   const agent = agentForDispatch(bot);
-  const resume = resumeBindingFor(request, agent);
+  // NOT-497: an exchange source hop resumes exactly its selected binding.
+  const resume = exchanges.resumeFor(request, agent) ?? resumeBindingFor(request, agent);
   if (!resume.ok) {
     try {
       engine.transitionWorkRequest(requestId, {
@@ -427,9 +430,10 @@ async function runTurn(requestId: string): Promise<boolean> {
   try {
     prepared = prepareDispatch({
       bot,
-      history: [...historyFor(request, bot), ...turnContext(request)],
+      history: [...historyFor(request, bot), ...turnContext(request), ...(exchanges.turnContext(request) ?? [])],
       toolProfile: policy.tool_profile,
       sessionBinding: resume.binding ? { bindingId: resume.binding.id, externalSessionId: resume.binding.external_session_id } : null,
+      ...('freshSession' in resume && resume.freshSession ? { freshSession: true } : {}),
       prepareFinalization: policy.execution_kind === 'implementation' || policy.execution_kind === 'revision',
     });
   } catch (error) {
@@ -457,17 +461,17 @@ async function runTurn(requestId: string): Promise<boolean> {
         const input = { ...prepared.input, deadlineAt, signal: controller.signal };
         const attempt = beginAttempt(engine, requestId, { agent, adapter: prepared.adapter, input, snapshot, now: startedAt });
         dispatcher.recordLaunchIntent(claim.lease, attempt.attempt.id, prepared.adapter.name, prepared.adapter.launchIntent?.(attempt.input) ?? null);
+        exchanges.hopClaimed(requestId, attempt.attempt.id, startedAt);
         return { lease: claim.lease, attempt };
       }
-      return {
-        lease: claim.lease,
-        attempt: engine.createAttempt(requestId, {
-          kind: 'launch',
-          adapter: agent,
-          toolProfile: policy.tool_profile,
-          launchSnapshot: snapshot,
-        }).id,
-      };
+      const unpreparedAttempt = engine.createAttempt(requestId, {
+        kind: 'launch',
+        adapter: agent,
+        toolProfile: policy.tool_profile,
+        launchSnapshot: snapshot,
+      });
+      exchanges.hopClaimed(requestId, unpreparedAttempt.id, unpreparedAttempt.started_at);
+      return { lease: claim.lease, attempt: unpreparedAttempt.id };
     });
   } catch (error) {
     if (error instanceof EngineStoreError && error.code === 'stale_state') return false;
@@ -506,6 +510,8 @@ async function runTurn(requestId: string): Promise<boolean> {
           if (event.type === 'started') dispatchFault('after_run_id_persisted', requestId);
           recordBaselineEvent(lease, attemptId, event);
         },
+        // An exchange hop's output is redacted and bounded before it is stored.
+        sanitize: result => exchanges.sanitizeHopResult(request, result),
         project: (result, attempt) => commitTurn(lease, request, attempt, result),
       });
       if (ran.abandoned) await recordExternalCancel(ran.abandoned, { localSignalled: true, launched: true });
@@ -683,6 +689,18 @@ function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAtt
     }, now);
     dispatcher.release(lease, settled.outcome);
     return { retryAt: settled.decision.action === 'retry' ? settled.decision.nextEligibleAt : null };
+  }
+  // NOT-497: an exchange hop projects through the exchange (answer to the
+  // origin conversation, packet stored, destination session bound) and
+  // the exchange advances in this same transaction.
+  const hop = hopOf(request);
+  if (hop) {
+    const hopResult = exchanges.commitHop(request, attempt, result, now);
+    engine.transitionWorkRequest(requestId, { from: 'running', to: 'completed', result: hopResult, now });
+    dispatcher.release(lease, 'completed');
+    // A queued destination hop is dispatched by afterRequest.
+    exchanges.advance(hop.exchangeId, now);
+    return { retryAt: null };
   }
   const replyId = randomUUID();
   db.prepare(
@@ -870,12 +888,13 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
     // here on signals the follow.
     if ((await controlled(() => localWork.set(request.id, { attemptId: attempt.id, controller }))).won) return;
     await withHeartbeat(lease, async () => {
-      const result = await reconciler.follow(followRunId, {
+      const followed = await reconciler.follow(followRunId, {
         resumeSessionId: binding?.external_session_id ?? null,
         prepareFinalization: prepare,
         deadlineAt: typeof snapshot.deadline_at === 'number' ? snapshot.deadline_at : null,
         signal: controller.signal,
       }, event => recordBaselineEvent(lease, attempt.id, event));
+      const result = exchanges.sanitizeHopResult(request, followed);
       let abandoned: LocallyAbandonedAttempt | null = null;
       const committed = engine.transaction(() => {
         // Abandoned meanwhile (cancellation or a deadline): evidence only.
@@ -1113,8 +1132,77 @@ export function recoverCoordinatorLoops(): Promise<void> {
     sweepDispatch(),
     ...pendingCoordinatorWork().map(startAgentDispatch),
     ...openFinalizationIds().map(startFinalization),
+    // NOT-497: advance every open exchange from its hops' durable state
+    // and dispatch its queued hop (never a failed one again).
+    ...recoverExchanges().map(startAgentDispatch),
   ]).then(() => undefined);
 }
+
+// ---------------------------------------------------------------------
+// NOT-497: session-targeted Ask and Continue exchanges
+// (lib/session-exchanges). Hops are Work Requests this dispatcher runs; the
+// commands here create, read, and cancel exchanges for the owner.
+
+export const exchanges = createExchangeStore(db, engine);
+
+// After a hop request left the queue or ended: advance its exchange and
+// dispatch the hop it queued (a Continue's destination).
+function advanceExchangeOf(requestId: string): void {
+  const row = exchanges.forHopRequest(requestId);
+  if (!row) return;
+  try {
+    for (const id of exchanges.advance(row.id)) void startAgentDispatch(id);
+  } catch (error) {
+    console.error('Exchange advance failed:', error instanceof Error ? error.message : 'unknown error');
+  }
+}
+
+function recoverExchanges(): string[] {
+  const ids: string[] = [];
+  for (const id of exchanges.openIds()) {
+    try {
+      ids.push(...exchanges.advance(id));
+    } catch (error) {
+      console.error('Exchange recovery failed:', error instanceof Error ? error.message : 'unknown error');
+    }
+  }
+  return ids;
+}
+
+export function createExchangeCommand(input: CreateExchangeInput): { exchange: ExchangeView; created: boolean; dispatched: Promise<void> } {
+  const { exchange, created } = exchanges.create(input);
+  // An exact replay dispatches whatever is still queued (idempotent).
+  const dispatched = Promise.all(exchanges.advance(exchange.id).map(startAgentDispatch)).then(() => undefined);
+  return { exchange: exchanges.view(exchange.id), created, dispatched };
+}
+
+export function getExchangeView(id: string): ExchangeView {
+  return exchanges.view(id);
+}
+
+// Owner cancellation while non-terminal: the intent is recorded once, the
+// open hop request is cancelled (a running Attempt is signalled and its
+// result discarded), and the exchange ends cancelled once that hop has
+// ended. A queued destination is never launched after it.
+export async function cancelExchangeCommand(
+  id: string, actor: { kind: string; id: string }, reason: string | null = null,
+): Promise<{ exchange: ExchangeView; replayed: boolean }> {
+  const { hopRequestId, replayed } = exchanges.requestCancel(id, actor, reason);
+  if (hopRequestId) {
+    const request = engine.getWorkRequest(hopRequestId);
+    if (request && !TERMINAL_STATES.includes(request.state)) {
+      try {
+        await cancelWorkRequest(hopRequestId, { actor, reason: reason ?? 'The exchange was cancelled.' });
+      } catch (error) {
+        if (!(error instanceof ControlError)) throw error;
+      }
+    }
+  }
+  exchanges.advance(id);
+  return { exchange: exchanges.view(id), replayed };
+}
+
+export { ExchangeError };
 
 // Engine event types in the documented request event vocabulary
 // (accepted > dispatched > runtime_started > completed|failed). Attempt

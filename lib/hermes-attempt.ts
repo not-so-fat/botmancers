@@ -3,13 +3,15 @@
 // One Attempt is one chat request to the persistent Hermes gateway through
 // the existing client (hermesChat). Completion is the gateway's HTTP 200
 // answer. The gateway session is the binding's opaque external session id
-// when one is given, otherwise the target's stable per-Agent session.
+// when one is given, a new one when the input asks for a fresh session,
+// otherwise the target's stable per-Agent session.
 // Hermes chat carries no workspace edit authority, so only the readonly
 // tool profile is supported; anything else fails closed before launch.
 import {
   HERMES_DEFAULT_CHAT_PATH,
   HermesError,
   hermesChat,
+  hermesFreshSessionIdForBot,
   hermesSessionIdForBot,
   loadHermesConfig,
   type HermesChatMessage,
@@ -68,7 +70,11 @@ export function createHermesAttemptAdapter(options: HermesAttemptAdapterOptions 
       const early = preLaunchInterruption(input);
       if (early) return failed(early);
 
-      const sessionId = input.sessionBinding?.externalSessionId ?? hermesSessionIdForBot(input.target.agentId, config);
+      if (input.freshSession && input.sessionBinding) {
+        return failed(attemptFailure('session_mismatch', 'A fresh-session turn cannot resume a session.'));
+      }
+      const sessionId = input.sessionBinding?.externalSessionId
+        ?? (input.freshSession ? hermesFreshSessionIdForBot(input.target.agentId, config) : hermesSessionIdForBot(input.target.agentId, config));
       const controller = new AbortController();
       const stop = interruption(input);
       let interrupted: AttemptFailure | null = null;

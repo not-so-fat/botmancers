@@ -71,6 +71,11 @@ export interface AttemptInput {
   // Attempt may ask; the caller decides (implementation and revision in a
   // Git worktree), never the adapter.
   prepareFinalization?: boolean;
+  // NOT-497: launch in a new runtime session the target owns from now on
+  // (a Continue destination). Never together with sessionBinding. An
+  // adapter whose launch would otherwise reuse a standing session (the
+  // Hermes per-Agent gateway session) must open a new one instead.
+  freshSession?: boolean;
 }
 
 export type AttemptFailureCategory =
@@ -148,6 +153,9 @@ export interface AttemptResult {
   // to stop it: whether the runtime accepted the cancel request. On
   // 'failed' the run may continue and the Attempt is abandoned, not stopped.
   externalCancel?: 'requested' | 'failed';
+  // NOT-497: set when a caller's sanitize step cut output to its bound;
+  // output then holds the bounded text only.
+  outputTruncated?: boolean;
 }
 
 export type AttemptEventSink = (event: AttemptEvent) => void;

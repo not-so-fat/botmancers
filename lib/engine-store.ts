@@ -37,6 +37,42 @@ export type AttemptKind = 'launch' | 'resume';
 export type AttemptOutcome = 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'timed_out';
 export type RequesterKind = 'person' | 'bot' | 'service';
 
+// NOT-497: session exchange lifecycle (lib/session-exchanges). An Ask goes
+// queued -> extracting -> completed; a Continue extracts its handoff packet,
+// then delivers it: queued -> extracting -> delivering -> completed. Mode
+// edges (an Ask never delivers, a Continue never completes from
+// extracting) are enforced by the transition trigger as well.
+export type ExchangeMode = 'ask' | 'continue';
+export type ExchangeState = 'queued' | 'extracting' | 'delivering' | 'completed' | 'failed' | 'cancelled';
+export const EXCHANGE_STATES: ExchangeState[] = ['queued', 'extracting', 'delivering', 'completed', 'failed', 'cancelled'];
+export const EXCHANGE_TERMINAL_STATES: ExchangeState[] = ['completed', 'failed', 'cancelled'];
+export const EXCHANGE_TRANSITIONS: Record<ExchangeState, ExchangeState[]> = {
+  queued: ['extracting', 'failed', 'cancelled'],
+  extracting: ['delivering', 'completed', 'failed', 'cancelled'],
+  delivering: ['completed', 'failed', 'cancelled'],
+  completed: [],
+  failed: [],
+  cancelled: [],
+};
+// Explicit bounds: one source and one destination per exchange (columns,
+// not lists), and these sizes in characters.
+export const EXCHANGE_LIMITS = Object.freeze({
+  instructionChars: 4000,
+  packetChars: 16000,
+  packetObjectiveChars: 2000,
+  packetListItems: 20,
+  packetItemChars: 500,
+  // Every hop's persisted output is bounded: the Ask answer and the
+  // delivery reply (truncation marker included), and the raw extraction
+  // output before the packet is parsed (over it, the packet is refused).
+  answerChars: 16000,
+  replyChars: 16000,
+  extractionOutputChars: 32000,
+  // A hop prompt is built from the bounded instruction and packet; it is
+  // checked against this ceiling before the hop request is created.
+  promptChars: 24000,
+});
+
 export const WORK_REQUEST_STATES: WorkRequestState[] = ['queued', 'blocked', 'running', 'waiting', 'completed', 'failed', 'cancelled'];
 export const TERMINAL_STATES: WorkRequestState[] = ['completed', 'failed', 'cancelled'];
 
@@ -1373,6 +1409,224 @@ const MIGRATIONS: Migration[] = [
       retireProcessingQueue(db);
     },
   },
+  {
+    // NOT-497: session-targeted Ask and Continue exchanges
+    // (lib/session-exchanges, docs/core-engine.md Session exchanges).
+    version: 16,
+    name: 'session_exchanges',
+    up: db => {
+      const edges = EXCHANGE_STATES
+        .flatMap(from => EXCHANGE_TRANSITIONS[from].map(to => `'${from}>${to}'`))
+        .join(', ');
+      const exchangeStates = EXCHANGE_STATES.map(state => `'${state}'`).join(', ');
+      const exchangeTerminal = EXCHANGE_TERMINAL_STATES.map(state => `'${state}'`).join(', ');
+      db.exec(`
+        -- One row per owner-requested exchange against one selected Session
+        -- Binding. It names Botmancers rows only (binding, Work Requests,
+        -- Attempts, messages): never a provider session id or credential.
+        -- Hop Work Requests run through the dispatcher; the exchange state
+        -- advances from their durable outcome.
+        CREATE TABLE session_exchanges (
+          id TEXT PRIMARY KEY,
+          requester_kind TEXT NOT NULL CHECK (requester_kind IN ('person', 'bot', 'service')),
+          requester_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) > 0),
+          request_hash TEXT NOT NULL,
+          mode TEXT NOT NULL CHECK (mode IN ('ask', 'continue')),
+          origin_conversation_id TEXT NOT NULL,
+          source_agent_id TEXT NOT NULL,
+          source_binding_id TEXT NOT NULL,
+          destination_agent_id TEXT,
+          destination_conversation_id TEXT,
+          destination_binding_id TEXT,
+          instruction TEXT NOT NULL CHECK (length(instruction) BETWEEN 1 AND ${EXCHANGE_LIMITS.instructionChars}),
+          state TEXT NOT NULL CHECK (state IN (${exchangeStates})),
+          source_request_id TEXT,
+          source_attempt_id TEXT,
+          destination_request_id TEXT,
+          destination_attempt_id TEXT,
+          answer_message_id TEXT,
+          packet TEXT CHECK (packet IS NULL OR length(packet) <= ${EXCHANGE_LIMITS.packetChars}),
+          failure_code TEXT,
+          failure_message TEXT,
+          cancel_requested_at INTEGER,
+          cancel_requested_by TEXT,
+          cancel_reason TEXT,
+          version INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          terminal_at INTEGER,
+          UNIQUE (requester_kind, requester_id, idempotency_key),
+          CHECK ((state IN (${exchangeTerminal})) = (terminal_at IS NOT NULL)),
+          CHECK (state <> 'failed' OR failure_code IS NOT NULL),
+          CHECK ((mode = 'continue') = (destination_agent_id IS NOT NULL AND destination_conversation_id IS NOT NULL)),
+          CHECK (destination_agent_id IS NULL OR destination_agent_id <> source_agent_id),
+          CHECK (mode = 'continue' OR (packet IS NULL AND destination_request_id IS NULL AND destination_binding_id IS NULL)),
+          CHECK (mode = 'ask' OR answer_message_id IS NULL),
+          CHECK (state = 'queued' OR state = 'failed' OR state = 'cancelled' OR source_request_id IS NOT NULL),
+          CHECK (state <> 'delivering' OR (packet IS NOT NULL AND destination_request_id IS NOT NULL)),
+          FOREIGN KEY (origin_conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (source_agent_id) REFERENCES bots(id),
+          FOREIGN KEY (source_binding_id) REFERENCES session_bindings(id),
+          FOREIGN KEY (destination_agent_id) REFERENCES bots(id),
+          FOREIGN KEY (destination_conversation_id) REFERENCES conversations(id),
+          FOREIGN KEY (destination_binding_id) REFERENCES session_bindings(id),
+          FOREIGN KEY (source_request_id) REFERENCES work_requests(id),
+          FOREIGN KEY (source_attempt_id) REFERENCES work_attempts(id),
+          FOREIGN KEY (destination_request_id) REFERENCES work_requests(id),
+          FOREIGN KEY (destination_attempt_id) REFERENCES work_attempts(id),
+          FOREIGN KEY (answer_message_id) REFERENCES messages(id)
+        );
+        CREATE INDEX idx_session_exchanges_open ON session_exchanges(created_at) WHERE terminal_at IS NULL;
+        CREATE INDEX idx_session_exchanges_binding ON session_exchanges(source_binding_id);
+        CREATE UNIQUE INDEX idx_session_exchanges_source_request ON session_exchanges(source_request_id) WHERE source_request_id IS NOT NULL;
+        CREATE UNIQUE INDEX idx_session_exchanges_destination_request ON session_exchanges(destination_request_id) WHERE destination_request_id IS NOT NULL;
+
+        CREATE TABLE session_exchange_events (
+          id TEXT PRIMARY KEY,
+          exchange_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL CHECK (sequence >= 1),
+          type TEXT NOT NULL CHECK (length(type) > 0),
+          data TEXT,
+          created_at INTEGER NOT NULL,
+          UNIQUE (exchange_id, sequence),
+          FOREIGN KEY (exchange_id) REFERENCES session_exchanges(id)
+        );
+
+        CREATE TRIGGER trg_session_exchanges_fk BEFORE INSERT ON session_exchanges
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.origin_conversation_id')
+            WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE id = NEW.origin_conversation_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.source_agent_id')
+            WHERE NOT EXISTS (SELECT 1 FROM bots WHERE id = NEW.source_agent_id);
+          SELECT RAISE(ABORT, 'session exchange source binding does not belong to its source agent')
+            WHERE NOT EXISTS (SELECT 1 FROM session_bindings WHERE id = NEW.source_binding_id AND agent_id = NEW.source_agent_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.destination_agent_id')
+            WHERE NEW.destination_agent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM bots WHERE id = NEW.destination_agent_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.destination_conversation_id')
+            WHERE NEW.destination_conversation_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM conversations WHERE id = NEW.destination_conversation_id);
+          SELECT RAISE(ABORT, 'a session exchange starts queued')
+            WHERE NEW.state <> 'queued';
+        END;
+
+        -- Identity, target, and instruction are fixed at creation.
+        CREATE TRIGGER trg_session_exchanges_immutable BEFORE UPDATE OF
+          id, requester_kind, requester_id, idempotency_key, request_hash, mode, origin_conversation_id,
+          source_agent_id, source_binding_id, destination_agent_id, destination_conversation_id, instruction, created_at
+        ON session_exchanges
+        BEGIN
+          SELECT RAISE(ABORT, 'session_exchanges identity and target are immutable');
+        END;
+
+        CREATE TRIGGER trg_session_exchanges_transition BEFORE UPDATE OF state ON session_exchanges
+        WHEN NEW.state <> OLD.state
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid session_exchanges state transition')
+            WHERE (OLD.state || '>' || NEW.state) NOT IN (${edges})
+              OR (OLD.mode = 'ask' AND NEW.state = 'delivering')
+              OR (OLD.mode = 'continue' AND OLD.state = 'extracting' AND NEW.state = 'completed');
+        END;
+
+        CREATE TRIGGER trg_session_exchanges_terminal BEFORE UPDATE ON session_exchanges
+        WHEN OLD.state IN (${exchangeTerminal})
+        BEGIN
+          SELECT RAISE(ABORT, 'terminal session_exchanges are immutable');
+        END;
+
+        -- Causal references, the packet, and the cancellation intent are
+        -- recorded once; a set reference must name an existing row.
+        CREATE TRIGGER trg_session_exchanges_set_once BEFORE UPDATE ON session_exchanges
+        BEGIN
+          SELECT RAISE(ABORT, 'session_exchanges references are set once')
+            WHERE (OLD.source_request_id IS NOT NULL AND NEW.source_request_id IS NOT OLD.source_request_id)
+              OR (OLD.source_attempt_id IS NOT NULL AND NEW.source_attempt_id IS NOT OLD.source_attempt_id)
+              OR (OLD.destination_request_id IS NOT NULL AND NEW.destination_request_id IS NOT OLD.destination_request_id)
+              OR (OLD.destination_attempt_id IS NOT NULL AND NEW.destination_attempt_id IS NOT OLD.destination_attempt_id)
+              OR (OLD.destination_binding_id IS NOT NULL AND NEW.destination_binding_id IS NOT OLD.destination_binding_id)
+              OR (OLD.answer_message_id IS NOT NULL AND NEW.answer_message_id IS NOT OLD.answer_message_id)
+              OR (OLD.packet IS NOT NULL AND NEW.packet IS NOT OLD.packet)
+              OR (OLD.cancel_requested_at IS NOT NULL AND (NEW.cancel_requested_at IS NOT OLD.cancel_requested_at
+                OR NEW.cancel_requested_by IS NOT OLD.cancel_requested_by OR NEW.cancel_reason IS NOT OLD.cancel_reason));
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.source_request_id')
+            WHERE NEW.source_request_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM work_requests WHERE id = NEW.source_request_id AND target_agent_id = NEW.source_agent_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.source_attempt_id')
+            WHERE NEW.source_attempt_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM work_attempts WHERE id = NEW.source_attempt_id AND request_id = NEW.source_request_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.destination_request_id')
+            WHERE NEW.destination_request_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM work_requests WHERE id = NEW.destination_request_id AND target_agent_id = NEW.destination_agent_id
+                AND source_conversation_id = NEW.destination_conversation_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.destination_attempt_id')
+            WHERE NEW.destination_attempt_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM work_attempts WHERE id = NEW.destination_attempt_id AND request_id = NEW.destination_request_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.destination_binding_id')
+            WHERE NEW.destination_binding_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM session_bindings WHERE id = NEW.destination_binding_id AND agent_id = NEW.destination_agent_id
+                AND request_id = NEW.destination_request_id AND id <> NEW.source_binding_id);
+          -- The answer is the source Agent's message in the origin
+          -- conversation, produced by the source hop request.
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.answer_message_id')
+            WHERE NEW.answer_message_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM messages WHERE id = NEW.answer_message_id AND conversation_id = NEW.origin_conversation_id
+                AND sender_type = 'bot' AND sender_id = NEW.source_agent_id
+                AND NEW.source_request_id IS NOT NULL AND request_id = NEW.source_request_id);
+        END;
+
+        CREATE TRIGGER trg_session_exchange_events_fk BEFORE INSERT ON session_exchange_events
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchange_events.exchange_id')
+            WHERE NOT EXISTS (SELECT 1 FROM session_exchanges WHERE id = NEW.exchange_id);
+        END;
+        CREATE TRIGGER trg_session_exchange_events_append_only BEFORE UPDATE ON session_exchange_events
+        BEGIN
+          SELECT RAISE(ABORT, 'session_exchange_events are append-only');
+        END;
+        -- Removed only with their exchange, by the aggregate cleanup
+        -- (deleteSessionExchanges), under the same purge authority as
+        -- engine events.
+        CREATE TRIGGER trg_session_exchange_events_no_delete BEFORE DELETE ON session_exchange_events
+        BEGIN
+          SELECT RAISE(ABORT, 'session_exchange_events are append-only')
+            WHERE NOT engine_event_purge_authorized(OLD.exchange_id);
+        END;
+        CREATE TRIGGER trg_session_exchanges_restrict BEFORE DELETE ON session_exchanges
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchange_events.exchange_id')
+            WHERE EXISTS (SELECT 1 FROM session_exchange_events WHERE exchange_id = OLD.id);
+        END;
+
+        -- Foreign keys (delete side): RESTRICT, as for the engine tables.
+        CREATE TRIGGER trg_conversations_exchange_restrict BEFORE DELETE ON conversations
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.conversation')
+            WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE origin_conversation_id = OLD.id OR destination_conversation_id = OLD.id);
+        END;
+        CREATE TRIGGER trg_bots_exchange_restrict BEFORE DELETE ON bots
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.agent')
+            WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE source_agent_id = OLD.id OR destination_agent_id = OLD.id);
+        END;
+        CREATE TRIGGER trg_session_bindings_exchange_restrict BEFORE DELETE ON session_bindings
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.binding')
+            WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE source_binding_id = OLD.id OR destination_binding_id = OLD.id);
+        END;
+        CREATE TRIGGER trg_work_requests_exchange_restrict BEFORE DELETE ON work_requests
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.request')
+            WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE source_request_id = OLD.id OR destination_request_id = OLD.id);
+        END;
+        CREATE TRIGGER trg_messages_exchange_restrict BEFORE DELETE ON messages
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.answer_message_id')
+            WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE answer_message_id = OLD.id);
+        END;
+        CREATE TRIGGER trg_work_attempts_exchange_restrict BEFORE DELETE ON work_attempts
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: session_exchanges.attempt')
+            WHERE EXISTS (SELECT 1 FROM session_exchanges WHERE source_attempt_id = OLD.id OR destination_attempt_id = OLD.id);
+        END;
+      `);
+    },
+  },
 ];
 
 // Migration 13 backfill (contract, Migration). Lineage: an intake root is
@@ -2444,9 +2698,10 @@ export type EngineStore = ReturnType<typeof createEngineStore>;
 // binding (with the whole request that owns it), and bindings scoped to
 // or sourced from removed rows. Rows are
 // then deleted dependants first. Callers run it inside their transaction.
-function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string; arg: string }): void {
+function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string; arg: string; exchanges: string }): void {
   const ids = (sql: string, ...args: unknown[]) => (db.prepare(sql).all(...args) as { id: string }[]).map(row => row.id);
   const requests = new Set(ids(seed.requests, seed.arg));
+  const exchanges = new Set<string>();
   const bindings = new Set(ids(seed.bindings, seed.arg));
   const attempts = new Set<string>();
   const add = (set: Set<string>, found: string[]) => {
@@ -2457,6 +2712,23 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   const list = (set: Set<string>) => JSON.stringify([...set]);
   const inSet = '(SELECT value FROM json_each(?))';
   for (;;) {
+    // NOT-497: an exchange goes with the aggregate or with any hop request,
+    // Attempt, or binding removed here; its hop requests then go with it,
+    // wherever they run (a source hop runs in the source binding's
+    // conversation for the source Agent, a Continue's destination hop is a
+    // fresh root). Discovery sits in the fixed point because either side
+    // can be reached only through the other.
+    const grewExchanges = add(exchanges, ids(
+      `SELECT id FROM session_exchanges WHERE (${seed.exchanges})
+         OR source_request_id IN ${inSet} OR destination_request_id IN ${inSet} OR source_attempt_id IN ${inSet}
+         OR destination_attempt_id IN ${inSet} OR source_binding_id IN ${inSet} OR destination_binding_id IN ${inSet}`,
+      seed.arg, seed.arg, list(requests), list(requests), list(attempts), list(attempts), list(bindings), list(bindings)
+    ));
+    const grewHops = add(requests, ids(
+      `SELECT source_request_id AS id FROM session_exchanges WHERE id IN ${inSet} AND source_request_id IS NOT NULL
+       UNION SELECT destination_request_id AS id FROM session_exchanges WHERE id IN ${inSet} AND destination_request_id IS NOT NULL`,
+      list(exchanges), list(exchanges)
+    ));
     const grewRequests = add(requests, ids(
       `SELECT id FROM work_requests WHERE parent_request_id IN ${inSet} OR root_request_id IN ${inSet}`,
       list(requests), list(requests)
@@ -2472,8 +2744,9 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
       `SELECT id FROM session_bindings WHERE request_id IN ${inSet} OR source_attempt_id IN ${inSet}`,
       list(requests), list(attempts)
     ));
-    if (!grewRequests && !grewOwners && !grewAttempts && !grewBindings) break;
+    if (!grewExchanges && !grewHops && !grewRequests && !grewOwners && !grewAttempts && !grewBindings) break;
   }
+  deleteSessionExchanges(db, `id IN ${inSet}`, list(exchanges));
   // Authorize the append-only guard for exactly the requests removed
   // here, only for the duration of this delete.
   // Projections of removed requests go first: they name the events.
@@ -2531,6 +2804,22 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   for (const id of ordered) db.prepare('DELETE FROM work_requests WHERE id = ?').run(id);
 }
 
+// NOT-497: removes matching exchanges with their events, under the purge
+// authority (events are otherwise append-only). Callers run it inside
+// their transaction, before the rows the exchanges reference go.
+function deleteSessionExchanges(db: Db, where: string, ...args: unknown[]): void {
+  const ids = (db.prepare(`SELECT id FROM session_exchanges WHERE ${where}`).all(...args) as { id: string }[]).map(row => row.id);
+  if (ids.length === 0) return;
+  const authorized = purgeSet(db);
+  for (const id of ids) authorized.add(id);
+  try {
+    db.prepare('DELETE FROM session_exchange_events WHERE exchange_id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids));
+  } finally {
+    authorized.clear();
+  }
+  db.prepare('DELETE FROM session_exchanges WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids));
+}
+
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
   db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM delegation_chains WHERE conversation_id = ?').run(conversationId);
@@ -2539,6 +2828,7 @@ export function deleteEngineRecordsForConversation(db: Db, conversationId: strin
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE source_conversation_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE conversation_id = ?',
+    exchanges: 'origin_conversation_id = ? OR destination_conversation_id = ?',
     arg: conversationId,
   });
 }
@@ -2555,6 +2845,7 @@ export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE target_agent_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE agent_id = ?',
+    exchanges: 'source_agent_id = ? OR destination_agent_id = ?',
     arg: agentId,
   });
 }

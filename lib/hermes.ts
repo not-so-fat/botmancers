@@ -19,6 +19,7 @@
 // - HERMES_WAIT_LOG_PATH: wait-log file. Defaults to logs/ under BOTMANCERS_HOME,
 //   or the .temporal JSONL log in a checkout (./home).
 
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { waitLogPath } from './home';
@@ -95,6 +96,12 @@ export function isHermesConfigured(env: NodeJS.ProcessEnv = process.env): boolea
 
 export function hermesSessionIdForBot(botId: string, config: HermesConfig): string {
   return `${config.sessionPrefix}${botId}`;
+}
+
+// NOT-497: a new gateway session for one bot, distinct from its stable
+// per-bot session and from every earlier one (a Continue destination).
+export function hermesFreshSessionIdForBot(botId: string, config: HermesConfig): string {
+  return `${hermesSessionIdForBot(botId, config)}-x-${randomUUID()}`;
 }
 
 function slugify(value: string): string {

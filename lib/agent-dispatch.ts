@@ -67,6 +67,8 @@ export interface DispatchTurn {
   // implementation or revision). Honored only for an Agent Deck edit turn
   // whose working directory is inside a Git worktree.
   prepareFinalization?: boolean;
+  // NOT-497: launch in a new runtime session (a Continue destination).
+  freshSession?: boolean;
 }
 
 export interface DispatchHooks {
@@ -149,6 +151,7 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
     toolProfile: turn.toolProfile ?? TOOL_PROFILE_FOR_KIND.conversation,
     sessionBinding: turn.sessionBinding ?? null,
     correlation: {},
+    ...(turn.freshSession ? { freshSession: true } : {}),
   };
   if (agentTransport(resolved.agent) === 'hermes-gateway') {
     return {
