@@ -7,7 +7,17 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-17
+
 ### Added
+
+- The Botmancers app bundled in the package adds the durable Agent session
+  catalog and Sessions UI, session-targeted Ask and Continue exchanges with
+  inline exchange cards, and an Agent Exchanges ledger.
+- Service grants let the owner give another Agent narrow, audited access to
+  sessions, conversations, and exchanges (`docs/service-grants.md`). Grants
+  are re-checked at read time, and an unregistered Agent invalidates the
+  document.
 
 - `botmancers setup --client codex|cursor|claude [--remove]`: connects the
   client to the local MCP bridge and installs the optional
