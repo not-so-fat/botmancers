@@ -67,6 +67,8 @@ export interface SessionDetail extends SessionSummary {
 
 interface CatalogRow extends SessionBinding {
   agent_name: string;
+  origin_request_id: string | null;
+  origin_conversation_id: string | null;
   conversation_type: string | null;
   conversation_bot_id: string | null;
   thread_agent_name: string | null;
@@ -84,21 +86,25 @@ const TITLE_LIMIT = 80;
 // (lib/coordinator-loop resumeBindingFor); nothing else is resumed.
 const RESUMABLE_KINDS: ExecutionKind[] = ['implementation', 'revision'];
 
+// A binding may be scoped to a Conversation, a Work Request, or both
+// (lib/engine-store). Its origin is the effective one: the Work Request is
+// the binding's own or its source Attempt's; the Conversation is the
+// binding's own or that Work Request's source conversation.
 // Activity is the newest of: the binding, its release, the Attempt that
 // produced it, and every Attempt that resumed it.
 const SELECT = `
-  SELECT b.*, bot.name AS agent_name,
+  SELECT b.*, bot.name AS agent_name, r.id AS origin_request_id, c.id AS origin_conversation_id,
     c.type AS conversation_type, c.bot_id AS conversation_bot_id, tb.name AS thread_agent_name, g.name AS group_name,
     r.intent AS request_intent, r.execution_kind AS request_kind, r.state AS request_state,
     sa.launch_snapshot AS source_snapshot, sa.finished_at AS source_finished_at,
     (SELECT MAX(COALESCE(ra.finished_at, ra.started_at)) FROM work_attempts ra WHERE ra.resumed_session_binding_id = b.id) AS resumed_last_at
   FROM session_bindings b
   JOIN bots bot ON bot.id = b.agent_id
-  LEFT JOIN conversations c ON c.id = b.conversation_id
+  LEFT JOIN work_attempts sa ON sa.id = b.source_attempt_id
+  LEFT JOIN work_requests r ON r.id = COALESCE(b.request_id, sa.request_id)
+  LEFT JOIN conversations c ON c.id = COALESCE(b.conversation_id, r.source_conversation_id)
   LEFT JOIN bots tb ON tb.id = c.bot_id
   LEFT JOIN groups g ON g.id = c.group_id
-  LEFT JOIN work_requests r ON r.id = b.request_id
-  LEFT JOIN work_attempts sa ON sa.id = b.source_attempt_id
 `;
 
 export function formatSessionTime(ms: number): string {
@@ -117,18 +123,19 @@ function snapshotField(snapshot: Record<string, unknown> | null, key: string): s
 }
 
 function originConversation(row: CatalogRow): SessionOriginConversation | null {
-  if (!row.conversation_id) return null;
+  const id = row.origin_conversation_id;
+  if (!id) return null;
   if (row.conversation_type === 'group') {
-    return { id: row.conversation_id, kind: 'group', label: row.group_name ? `Group ${row.group_name}` : 'Group thread', thread_agent_id: null };
+    return { id, kind: 'group', label: row.group_name ? `Group ${row.group_name}` : 'Group thread', thread_agent_id: null };
   }
   if (row.conversation_type === 'bot' && row.conversation_bot_id) {
     return {
-      id: row.conversation_id, kind: 'direct',
+      id, kind: 'direct',
       label: row.thread_agent_name ? `${row.thread_agent_name} thread` : 'Agent thread',
       thread_agent_id: row.thread_agent_name ? row.conversation_bot_id : null,
     };
   }
-  return { id: row.conversation_id, kind: 'agent_api', label: 'Agent API conversation', thread_agent_id: null };
+  return { id, kind: 'agent_api', label: 'Agent API conversation', thread_agent_id: null };
 }
 
 function summarize(row: CatalogRow): SessionSummary {
@@ -150,8 +157,8 @@ function summarize(row: CatalogRow): SessionSummary {
     last_activity_at: Math.max(row.created_at, row.released_at ?? 0, row.source_finished_at ?? 0, row.resumed_last_at ?? 0),
     origin: {
       conversation,
-      work_request: row.request_id && row.request_kind && row.request_state
-        ? { id: row.request_id, execution_kind: row.request_kind, state: row.request_state }
+      work_request: row.origin_request_id && row.request_kind && row.request_state
+        ? { id: row.origin_request_id, execution_kind: row.request_kind, state: row.request_state }
         : null,
     },
     context: { workspace: snapshotField(snapshot, 'cwd'), deck: snapshotField(snapshot, 'deck') },

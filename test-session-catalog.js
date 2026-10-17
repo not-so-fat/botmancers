@@ -47,7 +47,7 @@ async function main() {
   const tablesBefore = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name);
   const fixture = seedSessionCatalog(dbModule);
   const { dev, scout } = fixture.agents;
-  const { implementation, replaced, direct, directNext, group, other } = fixture.bindings;
+  const { implementation, replaced, direct, directNext, group, requestOnly, conversationOnly, other } = fixture.bindings;
 
   console.log('\nRead model over canonical session_bindings');
   const tablesAfter = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name);
@@ -56,7 +56,7 @@ async function main() {
   const canonical = db.prepare('SELECT id FROM session_bindings WHERE agent_id = ? ORDER BY id').all(dev.id).map(row => row.id);
   assert(JSON.stringify(all.map(s => s.ref).sort()) === JSON.stringify(canonical), 'every canonical binding of the Agent is listed once, by its binding id');
   assert(all.every(s => s.ref !== other.id), 'another Agent\'s binding is not listed');
-  assert(JSON.stringify(all.map(s => s.ref)) === JSON.stringify([implementation.id, group.id, directNext.id, direct.id, replaced.id]),
+  assert(JSON.stringify(all.map(s => s.ref)) === JSON.stringify([implementation.id, requestOnly.id, group.id, conversationOnly.id, directNext.id, direct.id, replaced.id]),
     'newest activity first; equal activity breaks by newest binding');
   const byRef = Object.fromEntries(all.map(s => [s.ref, s]));
   const impl = byRef[implementation.id];
@@ -75,7 +75,19 @@ async function main() {
     && byRef[group.id].origin.conversation.thread_agent_id === null && byRef[group.id].resumable === false, 'a group binding is titled from its group and has no thread link');
   assert(byRef[direct.id].title === 'Dev · 2026-10-15 09:05 UTC', 'no Work Request or group: <Agent name> · <created date/time>');
   assert(byRef[directNext.id].context.workspace === null && byRef[directNext.id].context.deck === null, 'no launch snapshot: no invented workspace or deck');
-  assert(JSON.stringify(catalog.listAgentSessions(db, dev.id, 'active').map(s => s.ref)) === JSON.stringify([implementation.id, group.id, directNext.id]), 'active filter');
+  const reqOnly = byRef[requestOnly.id];
+  assert(reqOnly.title === 'Explain the session binding lifecycle' && reqOnly.origin.work_request.id === fixture.requests.ask.id
+    && reqOnly.origin.conversation.id === fixture.conversations.devConv.id && reqOnly.origin.conversation.label === 'Dev thread'
+    && reqOnly.origin.conversation.thread_agent_id === dev.id, 'a request-only binding derives its conversation from the Work Request\'s source conversation');
+  assert(reqOnly.status === 'active' && reqOnly.last_activity_at === BASE + 46 * MIN && reqOnly.context.workspace === null,
+    'a request-only binding without a source Attempt invents no launch context');
+  const convOnly = byRef[conversationOnly.id];
+  assert(convOnly.title === 'Summarize the open review threads' && convOnly.origin.work_request.id === fixture.requests.summary.id
+    && convOnly.origin.work_request.execution_kind === 'review' && convOnly.origin.conversation.label === 'Tank thread',
+    'a conversation-only binding derives its Work Request and title from its source Attempt');
+  assert(convOnly.context.workspace === '/Users/owner/work/botmancers' && convOnly.context.deck === 'builder' && convOnly.agent.transport === 'agent-deck'
+    && convOnly.last_activity_at === BASE + 36 * MIN && convOnly.resumable === false, 'a conversation-only binding carries its source Attempt\'s launch context and activity');
+  assert(JSON.stringify(catalog.listAgentSessions(db, dev.id, 'active').map(s => s.ref)) === JSON.stringify([implementation.id, requestOnly.id, group.id, conversationOnly.id, directNext.id]), 'active filter');
   assert(JSON.stringify(catalog.listAgentSessions(db, dev.id, 'ended').map(s => s.ref)) === JSON.stringify([direct.id, replaced.id]), 'ended filter');
   assert(leaks(JSON.stringify(all)).length === 0, 'summaries carry no external provider session id');
   const detail = catalog.getAgentSession(db, dev.id, implementation.id);
@@ -87,11 +99,11 @@ async function main() {
   const host = await startRouteHost({ jiti, repoRoot: ROOT });
   try {
     const list = await host.owner('GET', `/api/bots/${dev.id}/sessions`);
-    assert(list.status === 200 && list.json.status === 'all' && list.json.sessions.length === 5, 'GET /api/bots/:id/sessions defaults to all');
+    assert(list.status === 200 && list.json.status === 'all' && list.json.sessions.length === 7, 'GET /api/bots/:id/sessions defaults to all');
     assert(JSON.stringify(list.json.sessions.map(s => s.ref)) === JSON.stringify(all.map(s => s.ref)), 'route order matches the read model');
     assert(leaks(list.text).length === 0 && !list.text.includes('external_session_id'), 'list JSON omits external_session_id');
     const active = await host.owner('GET', `/api/bots/${dev.id}/sessions?status=active`);
-    assert(active.status === 200 && active.json.sessions.every(s => s.status === 'active') && active.json.sessions.length === 3, '?status=active');
+    assert(active.status === 200 && active.json.sessions.every(s => s.status === 'active') && active.json.sessions.length === 5, '?status=active');
     const endedList = await host.owner('GET', `/api/bots/${dev.id}/sessions?status=ended`);
     assert(endedList.status === 200 && endedList.json.sessions.every(s => s.status === 'ended') && endedList.json.sessions.length === 2, '?status=ended');
     assert((await host.owner('GET', `/api/bots/${dev.id}/sessions?status=released`)).status === 400, 'an unknown status filter is 400');

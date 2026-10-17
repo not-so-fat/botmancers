@@ -196,13 +196,19 @@ async function run() {
     check(f.inDrawer && f.name === 'Close', 'Enter opens the drawer and focus moves into it (Close)');
     await waitFor(listReady, 'session list');
     const all = await rows();
-    check(all.length === 5, `All lists every canonical binding of Dev (${all.length})`);
-    check(all.filter(r => r.status === 'Active').length === 3 && all.filter(r => r.status === 'Ended').length === 2, 'three active and two ended sessions');
+    check(all.length === 7, `All lists every canonical binding of Dev (${all.length})`);
+    check(all.filter(r => r.status === 'Active').length === 5 && all.filter(r => r.status === 'Ended').length === 2, 'five active and two ended sessions');
     check(all[0].title === 'Add the session catalog read model' && all[0].status === 'Active' && all[0].meta.Origin === 'Tank thread'
       && all[0].meta['Work request'] === 'Implementation · completed' && all[0].meta.Workspace === '/Users/owner/work/botmancers',
       'newest activity first: the resumed implementation, with origin thread, work request, and stored workspace');
     check(all.some(r => r.title === 'Group Design review') && all.some(r => /^Dev · \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/.test(r.title)), 'group and fallback titles are recognizable');
     check(all.every(r => r.meta['Last activity'] && r.meta.Origin), 'every row shows last activity and origin');
+    const reqOnly = all.find(r => r.title === 'Explain the session binding lifecycle');
+    const convOnly = all.find(r => r.title === 'Summarize the open review threads');
+    check(!!reqOnly && reqOnly.meta.Origin === 'Dev thread' && reqOnly.meta['Work request'] === 'Conversation · completed',
+      'a request-only binding shows its Work Request\'s source thread');
+    check(!!convOnly && convOnly.meta.Origin === 'Tank thread' && convOnly.meta['Work request'] === 'Review · completed' && convOnly.meta.Workspace === '/Users/owner/work/botmancers',
+      'a conversation-only binding shows its source Attempt\'s Work Request and workspace');
     check(await evaluate("document.querySelectorAll('.sessions-drawer input, .sessions-drawer textarea, .sessions-drawer [contenteditable]').length === 0"), 'no raw ID entry in the drawer');
     await noSecrets('All');
     await layout(vp, 'All');
@@ -215,10 +221,10 @@ async function run() {
     await layout(vp, 'Ended');
     await shot(vp, 'sessions-ended');
     await click(byText('.sessions-filter-btn', 'Active'));
-    await waitFor(`${listReady} && document.querySelectorAll('.sessions-drawer .session-row').length === 3`, 'active list');
+    await waitFor(`${listReady} && document.querySelectorAll('.sessions-drawer .session-row').length === 5`, 'active list');
     check((await rows()).every(r => r.status === 'Active'), 'Active shows only unreleased sessions');
     await click(byText('.sessions-filter-btn', 'All'));
-    await waitFor(`${listReady} && document.querySelectorAll('.sessions-drawer .session-row').length === 5`, 'all list again');
+    await waitFor(`${listReady} && document.querySelectorAll('.sessions-drawer .session-row').length === 7`, 'all list again');
 
     await click("document.querySelector('.sessions-drawer .session-row .session-toggle')");
     await waitFor("document.querySelectorAll('.session-attempts li').length === 2", 'session details');

@@ -15,6 +15,8 @@ const EXTERNAL_IDS = {
   direct: 'prov-sess-2b8e-direct-SECRET',
   group: 'prov-sess-5e60-group-SECRET',
   other: 'prov-sess-0aa4-other-SECRET',
+  requestOnly: 'prov-sess-3d71-request-only-SECRET',
+  conversationOnly: 'prov-sess-81c2-conversation-only-SECRET',
 };
 
 function seedSessionCatalog({ engine, bots, groups, conversations }) {
@@ -78,7 +80,26 @@ function seedSessionCatalog({ engine, bots, groups, conversations }) {
   // 3. A group-room binding: titled from the group, active.
   const group = engine.bindSession({ agentId: dev.id, adapter: 'codex', externalSessionId: EXTERNAL_IDS.group, conversationId: roomConv.id, now: BASE + 40 * MIN });
 
-  // 4. Another Agent's session: never listed or disclosed under Dev.
+  // 4. Sparse scopes the engine store permits. A request-only binding
+  //    (no conversation, no source Attempt): its conversation is the Work
+  //    Request's source conversation, Dev's own thread.
+  const ask = run({
+    conversation: devConv, agent: dev, requester: owner, kind: 'conversation', at: BASE + 44 * MIN,
+    intent: 'Explain the session binding lifecycle', snapshot: { transport: 'agent-deck', agent: 'codex' },
+  });
+  const requestOnly = engine.bindSession({ agentId: dev.id, adapter: 'codex', externalSessionId: EXTERNAL_IDS.requestOnly, requestId: ask.request.id, now: BASE + 46 * MIN });
+  //    A conversation-only binding with a source Attempt: its Work Request,
+  //    title, and launch context come from that Attempt.
+  const summary = run({
+    conversation: tankConv, agent: dev, requester: tankAsks, kind: 'review', at: BASE + 32 * MIN,
+    intent: 'Summarize the open review threads', snapshot: { ...workspace, agent: 'codex' },
+  });
+  const conversationOnly = engine.bindSession({
+    agentId: dev.id, adapter: 'codex', externalSessionId: EXTERNAL_IDS.conversationOnly, conversationId: tankConv.id,
+    sourceAttemptId: summary.attempt.id, now: BASE + 34 * MIN,
+  });
+
+  // 5. Another Agent's session: never listed or disclosed under Dev.
   const own = run({
     conversation: scoutConv, agent: scout, requester: owner, kind: 'implementation', at: BASE + 50 * MIN,
     intent: 'Survey the MCP bridge docs', snapshot: { transport: 'agent-deck', agent: 'claude' },
@@ -91,8 +112,8 @@ function seedSessionCatalog({ engine, bots, groups, conversations }) {
   return {
     agents: { dev, tank, scout },
     conversations: { devConv, tankConv, scoutConv, roomConv },
-    requests: { implementation: impl.request },
-    bindings: { replaced, implementation, direct, directNext, group, other },
+    requests: { implementation: impl.request, ask: ask.request, summary: summary.request },
+    bindings: { replaced, implementation, direct, directNext, group, requestOnly, conversationOnly, other },
   };
 }
 

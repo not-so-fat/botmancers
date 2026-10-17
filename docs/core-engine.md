@@ -116,7 +116,9 @@ adds no table and writes nothing.
 - **Metadata.** Agent and adapter (plus transport from the source Attempt's
   launch snapshot); a title from the owning Work Request's first intent line,
   else the group name, else `<Agent name> · <created date/time>`; origin
-  Conversation and Work Request; `active` (unreleased) or `ended` (released);
+  Conversation and Work Request (a binding scoped to only one of them takes the
+  other from what is recorded: the Work Request from its source Attempt, the
+  Conversation from the Work Request's source conversation); `active` (unreleased) or `ended` (released);
   created, ended, and last-activity times (the newest of binding, release,
   source Attempt, and resuming Attempts); and `resumable` (active and owned by an
   implementation or revision, the only bindings a revision resumes). Workspace
