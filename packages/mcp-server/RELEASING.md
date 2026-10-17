@@ -96,8 +96,13 @@ registry smoke test before announcing that release.
 3. **Tag**:
 
    ```sh
-   git tag botmancers-vX.Y.Z && git push origin botmancers-vX.Y.Z
+   npm run release:tag:push    # repository root; tags origin/main, never the working tree
    ```
+
+   Run it bare. It reads the version from `origin/main`, requires the CHANGELOG
+   entry, and refuses to reuse a tag that exists on the remote. Add `-- --dry` to
+   preview. Do not hand-type `git tag ... && git push ...`: a chained command
+   does not match an agent's allowlisted `git push` prefix rule.
 
    The `release-botmancers` workflow then runs `release:check --tag ...`
    again and runs `npm publish --provenance --access public --tag canary`
