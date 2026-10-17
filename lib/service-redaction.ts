@@ -21,8 +21,12 @@ import db, { bots } from './db';
 const PRIVATE_CONFIG_KEY = /^(cwd|working_directory|workspace|deck|deck_id|deck_name|hermes_profile|hermes_profile_path)$/;
 // Environment variables holding a credential.
 const CREDENTIAL_ENV = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
-// Keys whose value is a Botmancers id or reference, never redacted.
-const REFERENCE_KEY = /^(id|ref|session_ref|kind)$|_id$|Id$/;
+// Keys whose value is a Botmancers id or reference, never redacted: an
+// explicit list of the entities Botmancers itself names (request_id,
+// originConversationId, sender_id, ...). Not every key ending in id: the
+// provider's own run and session ids (external_run_id, runId,
+// externalSessionId) are engine-private and fall through to redaction.
+const REFERENCE_KEY = /^(id|ref|session_ref|sessionRef|kind)$|(request|conversation|agent|message|attempt|exchange|event|wake|grant|binding|finalization|bot|participant|sender|requester|origin|group)_?id$/i;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);

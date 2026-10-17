@@ -730,6 +730,9 @@ async function main() {
     delete process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE;
     http.resetServiceApiRateLimits();
 
+    const hopRequestId = service.exchanges.get(continueId).source_request_id;
+    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200, 'fixture: the requesting service reads its exchange hop while granted');
+
     // Rotation: removing grok-bot's Codex entry revokes it on the next call.
     const doc = grantsDoc(agents);
     doc.grants = doc.grants.filter(g => !(g.service === 'grok-bot' && g.agent === codex.id));
@@ -737,8 +740,26 @@ async function main() {
     const revoked = await api.sessions(TOKENS.grok, codex.id);
     const revokedEx = await api.exchange(TOKENS.grok, continueId);
     assert(revoked.status === 404 && revokedEx.status === 404, 'a revoked grant applies on the next call (sessions and exchanges hidden)');
+    const revokedHop = await api.narrowRequest(TOKENS.grok, hopRequestId);
+    assert(revokedHop.status === 404 && revokedHop.json.error.code === 'request_not_found' && leaks(revokedHop.text).length === 0,
+      'the exchange hop request it learned is gone on the next call too (request_not_found)');
     writeGrants(grantsDoc(agents));
     assert((await api.sessions(TOKENS.grok, codex.id)).status === 200, 'rolling the document back restores access');
+    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200, 'and restores the hop read');
+    fs.rmSync(GRANTS_PATH, { force: true });
+    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 404, 'with no grants document a service reads no exchange hop');
+    writeGrants(grantsDoc(agents));
+
+    // The redactor's reference exemption is explicit: a Botmancers id passes,
+    // the provider's own run and session ids (whatever their key) do not.
+    const { serviceRedactor } = jiti('./lib/service-redaction.ts');
+    const shown = serviceRedactor().deep({
+      request_id: 'req-1', originConversationId: 'conv-1', sender_id: 'bot-1',
+      data: { phase: 'runtime_started', external_run_id: SECRETS.run, externalSessionId: SECRETS.codex, runId: SECRETS.run, resumeSessionId: SECRETS.codexOld },
+    });
+    assert(shown.request_id === 'req-1' && shown.originConversationId === 'conv-1' && shown.sender_id === 'bot-1', 'Botmancers reference fields are left as they are');
+    assert(leaks(JSON.stringify(shown)).length === 0 && shown.data.external_run_id === '[redacted runtime id]',
+      'a projected runtime_started external_run_id (and other provider id keys) is redacted');
   }
 
   // -------------------------------------------------------------------

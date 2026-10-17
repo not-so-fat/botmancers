@@ -23,7 +23,7 @@ import { EXCHANGE_LIMITS, type SessionBinding } from './engine-store';
 import { getAgentSession, isSessionFilter, listAgentSessions, type SessionDetail, type SessionFilter, type SessionSummary } from './session-catalog';
 import { ExchangeError, cancelReasonFromBody, type CreateExchangeInput, type ExchangeMode, type ExchangeView, type SessionExchange } from './session-exchanges';
 import { apiStateOf, cancelExchangeCommand, dispatchExchange, exchanges, getExchangeView } from './agent-conversations';
-import { SERVICE_CAPABILITIES, loadServiceGrants, type ServiceCapability } from './service-grants';
+import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, loadServiceGrants, type ServiceCapability } from './service-grants';
 import { serviceRedactor } from './service-redaction';
 
 export type ServiceApiErrorCode =
@@ -525,10 +525,6 @@ function idempotencyKeyOf(body: Record<string, unknown>, header: string | null):
   return key;
 }
 
-// The idempotency namespaces of a service's exchange rows: a session
-// message and an exchange never collide on the caller's key.
-const MESSAGE_KEY_PREFIX = 'message:';
-const EXCHANGE_KEY_PREFIX = 'exchange:';
 
 function existingExchange(principal: Principal, key: string): SessionExchange | undefined {
   return db.prepare('SELECT * FROM session_exchanges WHERE requester_kind = ? AND requester_id = ? AND idempotency_key = ?')

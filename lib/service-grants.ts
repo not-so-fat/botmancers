@@ -61,6 +61,11 @@ export function isServiceCapability(value: unknown): value is ServiceCapability 
 // lib/coordinator-loop). A grant naming one is refused.
 export const RESERVED_SERVICE_IDS: readonly string[] = ['botmancers-exchanges', 'botmancers-engine'];
 
+// The idempotency namespaces of a service's exchange rows: a session
+// message and an exchange never collide on the caller's key.
+export const MESSAGE_KEY_PREFIX = 'message:';
+export const EXCHANGE_KEY_PREFIX = 'exchange:';
+
 const SERVICE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_BYTES = 64 * 1024;

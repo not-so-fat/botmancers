@@ -63,6 +63,7 @@ import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-saf
 import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
 import { ExchangeError, createExchangeStore, hopOf, type CreateExchangeInput, type ExchangeView, type SessionExchange } from './session-exchanges';
 import { serviceRedactor } from './service-redaction';
+import { MESSAGE_KEY_PREFIX, loadServiceGrants } from './service-grants';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -1298,7 +1299,22 @@ export function getAuthorizedWorkRequest(principal: Principal, requestId: string
 function requestedExchangeHop(principal: Principal, request: WorkRequest): boolean {
   if (!hopOf(request)) return false;
   const row = exchanges.forHopRequest(request.id);
-  return !!row && row.requester_kind === principal.kind && row.requester_id === principal.id;
+  if (!row || row.requester_kind !== principal.kind || row.requester_id !== principal.id) return false;
+  return principal.kind !== 'service' || serviceStillHoldsHop(principal, row);
+}
+
+// NOT-499: a service that started an exchange keeps reading its hops only
+// while its grants still allow it, checked on every read like the granted
+// API's own routes (a rotated or revoked grant ends access on the next call;
+// an absent or unreadable grants document grants nothing): exchanges:read,
+// or sessions:message for a session message, on every Agent involved.
+function serviceStillHoldsHop(principal: Principal, row: SessionExchange): boolean {
+  const loaded = loadServiceGrants();
+  if (loaded.state === 'absent' || loaded.state === 'invalid') return false;
+  const held = loaded.grants.get(principal.id);
+  const capability = row.idempotency_key.startsWith(MESSAGE_KEY_PREFIX) ? 'sessions:message' : 'exchanges:read';
+  const holds = (agentId: string) => !!held?.get(agentId)?.has(capability) && !!bots.getById(agentId);
+  return holds(row.source_agent_id) && (row.destination_agent_id === null || holds(row.destination_agent_id));
 }
 
 // NOT-499: a service principal is shown every reply, failure, and event
