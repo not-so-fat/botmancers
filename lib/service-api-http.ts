@@ -20,7 +20,8 @@
 // (BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE, default 120, rolling 60 s;
 // 429 rate_limited with Retry-After before anything runs), bounded (64 KiB
 // bodies), and appends one audit event (lib/service-audit) whatever its
-// outcome. Failures use the /api/v0 envelope { error: { code, message } }.
+// outcome; a mutation's allowed event commits atomically with the mutation,
+// before anything is dispatched. Failures use the /api/v0 envelope { error: { code, message } }.
 import db, { serviceAudit, type Principal } from './db';
 import { authenticate } from './agent-api';
 import { AgentApiError } from './agent-conversations';
@@ -134,10 +135,13 @@ interface AuditTarget {
   agentId: string | null;
 }
 
+// A mutation hands commitAudit to the service as its commit hook: the
+// allowed audit event is appended inside the transaction that records the
+// mutation, so if the append fails nothing is committed or dispatched.
 async function serve(
   request: Request,
   op: Operation,
-  run: (ctx: ServiceContext, target: AuditTarget) => Promise<Response> | Response,
+  run: (ctx: ServiceContext, target: AuditTarget, commitAudit: () => void) => Promise<Response> | Response,
 ): Promise<Response> {
   let principal: Principal;
   try {
@@ -148,6 +152,15 @@ async function serve(
     return envelope(500, 'internal_error', 'The request could not be processed.');
   }
   const target: AuditTarget = { kind: op.targetKind, targetRef: op.targetRef ?? null, agentId: op.agentId ?? null };
+  const append = (outcome: AuditOutcome, code: string | null) => serviceAudit.append({
+    principal, operation: op.operation, capability: op.capability,
+    targetKind: target.kind, targetRef: target.targetRef, agentId: target.agentId, outcome, code,
+  });
+  let committed = false;
+  const commitAudit = () => {
+    append('allowed', null);
+    committed = true;
+  };
   let response: Response;
   let outcome: AuditOutcome;
   let code: string | null = null;
@@ -159,7 +172,7 @@ async function serve(
       outcome = 'denied';
       response = envelope(429, 'rate_limited', 'Too many calls; retry later.', { 'Retry-After': String(retryAfter) });
     } else {
-      response = await run(serviceContext(principal), target);
+      response = await run(serviceContext(principal), target, commitAudit);
       outcome = 'allowed';
     }
   } catch (error) {
@@ -174,11 +187,11 @@ async function serve(
       response = envelope(500, 'internal_error', 'The request could not be processed.');
     }
   }
+  // A committed mutation already holds its allowed event; anything that
+  // failed after the commit is appended as well.
+  if (committed && outcome === 'allowed') return response;
   try {
-    serviceAudit.append({
-      principal, operation: op.operation, capability: op.capability,
-      targetKind: target.kind, targetRef: target.targetRef, agentId: target.agentId, outcome, code,
-    });
+    append(outcome, code);
   } catch (error) {
     // Fail closed: nothing is returned that was not audited.
     console.error('Service audit append failed:', error instanceof Error ? error.message : 'unknown error');
@@ -262,11 +275,13 @@ export function handleGetConversation(request: Request, agentId: string, convers
 }
 
 export function handleSendSessionMessage(request: Request, ref: string): Promise<Response> {
-  return serve(request, { operation: 'sessions.message', capability: 'sessions:message', targetKind: 'session', targetRef: ref }, async (ctx, target) => {
+  return serve(request, { operation: 'sessions.message', capability: 'sessions:message', targetKind: 'session', targetRef: ref }, async (ctx, target, commitAudit) => {
     if (ref.length <= 200) target.agentId = sessionOwner(ref);
     const input = parseSessionMessageBody(await readJsonBody(request), request.headers.get('idempotency-key'));
-    const { accepted } = sendServiceSessionMessage(ctx, ref, input);
-    target.agentId = accepted.agent_id;
+    const { accepted } = sendServiceSessionMessage(ctx, ref, input, row => {
+      target.agentId = row.source_agent_id;
+      commitAudit();
+    });
     return Response.json(accepted, { status: accepted.replayed ? 200 : 202 });
   });
 }
@@ -281,14 +296,16 @@ export function handleListExchanges(request: Request): Promise<Response> {
 export function handleCreateExchange(request: Request): Promise<Response> {
   // Until the exchange exists, its audit target is the source session (and
   // the Agent owning it), recorded even when the body is then refused.
-  return serve(request, { operation: 'exchanges.create', capability: 'exchanges:create', targetKind: 'session' }, async (ctx, target) => {
+  return serve(request, { operation: 'exchanges.create', capability: 'exchanges:create', targetKind: 'session' }, async (ctx, target, commitAudit) => {
     const body = await readJsonBody(request);
     Object.assign(target, sourceTargetOf(body));
     const input = parseServiceExchangeBody(body, request.headers.get('idempotency-key'));
-    const { exchange, created } = createServiceExchange(ctx, input);
-    target.kind = 'exchange';
-    target.targetRef = exchange.id;
-    target.agentId = exchange.source.agent_id;
+    const { exchange, created } = createServiceExchange(ctx, input, row => {
+      target.kind = 'exchange';
+      target.targetRef = row.id;
+      target.agentId = row.source_agent_id;
+      commitAudit();
+    });
     return Response.json({ exchange, replayed: !created }, { status: created ? 201 : 200 });
   });
 }
@@ -303,11 +320,13 @@ export function handleGetExchange(request: Request, id: string): Promise<Respons
 }
 
 export function handleCancelExchange(request: Request, id: string): Promise<Response> {
-  return serve(request, { operation: 'exchanges.cancel', capability: 'exchanges:create', targetKind: 'exchange', targetRef: id }, async (ctx, target) => {
+  return serve(request, { operation: 'exchanges.cancel', capability: 'exchanges:create', targetKind: 'exchange', targetRef: id }, async (ctx, target, commitAudit) => {
     target.agentId = exchangeSource(id);
     const reason = parseCancelBody(await readText(request));
-    const result = await cancelServiceExchange(ctx, id, reason);
-    target.agentId = result.exchange.source.agent_id;
+    const result = await cancelServiceExchange(ctx, id, reason, row => {
+      target.agentId = row.source_agent_id;
+      commitAudit();
+    });
     return Response.json(result);
   });
 }

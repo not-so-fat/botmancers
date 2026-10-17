@@ -170,6 +170,21 @@ omitted, a new conversation owned by the service is opened. When a `Continue`
 omits `destination.conversation_id`, the delivery goes to a new conversation
 the service opens with the destination Agent (never the owner's direct thread);
 a named destination conversation must be one the service participates in.
+`POST /api/v0/exchanges` and its cancel return the full exchange (instruction,
+hops, answer, handoff packet, events) only when the caller also holds
+`exchanges:read` on every Agent involved; with `exchanges:create` alone they
+return status metadata (`id`, `kind`, `mode`, `state`, source and destination
+Agent and session, failure code, timestamps), also on an idempotent replay.
+
+**Redaction:** everything a service is shown — conversation messages, session
+titles and Attempts, Ask answers, Continue handoff packets, failure messages,
+and events, through the granted routes and through
+`GET /api/v0/requests/{id}` and `GET /api/v0/conversations/{id}` — passes
+through one sanitizer (`lib/service-redaction.ts`): every provider session
+and run id the engine recorded becomes `[redacted runtime id]`, and every
+working directory, Deck selection, and Hermes profile an Agent is configured
+or launched with, and every credential in the environment, becomes
+`[redacted]`. Owner (UI) reads are unchanged.
 
 **Limits:** request bodies over 64 KiB are 413 `payload_too_large`; content
 and instructions at most 4000 characters; idempotency keys 1 to 160
@@ -188,7 +203,11 @@ Botmancers reference, the owning Agent when known, outcome (`allowed`,
 because of the grants is recorded as `not_granted`, distinct from a missing
 target. Rows never hold a prompt, transcript, token, credential, provider id,
 or working directory; a reference that does not look like a Botmancers id is
-stored as `[invalid]`. Rows cannot be updated or deleted. Unauthenticated
+stored as `[invalid]`. Rows cannot be updated or deleted. A mutation (session
+message, exchange create, cancel) commits in the same transaction as its
+`allowed` row, and is dispatched only after that commit: if the audit row
+cannot be written, nothing is recorded or launched and the caller gets 500
+`internal_error` (audited as `error` when the trail accepts it). Unauthenticated
 requests are not recorded (there is no principal).
 
 ## Migration

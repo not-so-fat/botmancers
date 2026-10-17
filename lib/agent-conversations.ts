@@ -61,7 +61,8 @@ import { continueAfterFinalization, continueAfterTerminal, pendingCoordinatorWor
 import { decideWakeGrant, retryWake, type GrantDecisionResult, type RoutedWake } from './wake-router';
 import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-safety';
 import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
-import { ExchangeError, createExchangeStore, hopOf, type CreateExchangeInput, type ExchangeView } from './session-exchanges';
+import { ExchangeError, createExchangeStore, hopOf, type CreateExchangeInput, type ExchangeView, type SessionExchange } from './session-exchanges';
+import { serviceRedactor } from './service-redaction';
 
 export const PRINCIPAL_KINDS: readonly PrincipalKind[] = ['person', 'bot', 'service'];
 
@@ -1190,10 +1191,18 @@ export function getExchangeView(id: string): ExchangeView {
 // open hop request is cancelled (a running Attempt is signalled and its
 // result discarded), and the exchange ends cancelled once that hop has
 // ended. A queued destination is never launched after it.
+// NOT-499: onRecorded runs inside the transaction recording the intent
+// (the service API appends its audit event there); nothing is cancelled
+// unless both commit.
 export async function cancelExchangeCommand(
   id: string, actor: { kind: string; id: string }, reason: string | null = null,
+  onRecorded?: (row: SessionExchange) => void,
 ): Promise<{ exchange: ExchangeView; replayed: boolean }> {
-  const { hopRequestId, replayed } = exchanges.requestCancel(id, actor, reason);
+  const { hopRequestId, replayed } = db.transaction(() => {
+    const result = exchanges.requestCancel(id, actor, reason);
+    onRecorded?.(result.exchange);
+    return result;
+  }).immediate();
   if (hopRequestId) {
     const request = engine.getWorkRequest(hopRequestId);
     if (request && !TERMINAL_STATES.includes(request.state)) {
@@ -1292,8 +1301,13 @@ function requestedExchangeHop(principal: Principal, request: WorkRequest): boole
   return !!row && row.requester_kind === principal.kind && row.requester_id === principal.id;
 }
 
+// NOT-499: a service principal is shown every reply, failure, and event
+// through the service redactor (lib/service-redaction).
 export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {
-  return workRequestView(getAuthorizedWorkRequest(principal, requestId));
+  const request = getAuthorizedWorkRequest(principal, requestId);
+  const view = workRequestView(request);
+  if (principal.kind !== 'service') return view;
+  return serviceRedactor().deep(view);
 }
 
 const CONVERSATION_TYPE_VIEW: Record<string, ConversationView['type']> = {
@@ -1316,7 +1330,7 @@ export function getConversation(principal: Principal, conversationId: string): C
   const rows = db.prepare(
     'SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid ASC'
   ).all(conversation.id) as MessageRow[];
-  return {
+  const view: ConversationView = {
     conversationId: conversation.id,
     type: CONVERSATION_TYPE_VIEW[conversation.type] ?? 'agent',
     origin: conversation.origin_kind && conversation.origin_id
@@ -1333,6 +1347,9 @@ export function getConversation(principal: Principal, conversationId: string): C
     })),
     events: projector.listConversationEvents(conversation.id),
   };
+  // NOT-499: what a service is shown passes through the service redactor.
+  if (principal.kind !== 'service') return view;
+  return serviceRedactor().deep(view);
 }
 
 // Legacy UI user messages carry no sender id; they were written by the

@@ -66,6 +66,7 @@ const SECRETS = {
   claude: 'prov-claude-SECRET-6666',
   grokFresh: 'prov-grok-FRESH-7777',
   run: 'run-codex-RUNID-8888',
+  grokEcho: 'prov-grok-ECHO-9999',
 };
 const WORKDIR = '/Users/someone/private-workdir-SECRET';
 const PROMPT_MARK = 'PROMPT-BODY-MARK-9f3';
@@ -587,6 +588,111 @@ async function main() {
     assert(cancelResult.status === 200 && afterCancel.json.state === 'cancelled' && afterCancel.json.answer === null, 'cancelling an in-flight Ask ends it cancelled with no answer');
     const again = await api.cancel(TOKENS.grok, ask.json.exchange.id);
     assert(again.status === 409 && again.json.error.code === 'exchange_terminal', 'a terminal exchange cannot be cancelled again');
+  }
+
+  // -------------------------------------------------------------------
+  console.log('\n[4b] every service-visible output is redacted; create-only sees status; audit commits with the mutation');
+  {
+    http.resetServiceApiRateLimits();
+    // Each runtime output echoes a run id, the working directory, the Deck
+    // selection, a credential, and the provider session ids.
+    const echo = `run ${SECRETS.run} in ${WORKDIR} on deck-builder key ${CREDENTIAL} sessions ${SECRETS.codex} ${SECRETS.grokFresh}`;
+    script = (input, kind) => {
+      if (kind === 'extract') {
+        return { output: JSON.stringify({ objective: `Echo ${echo}`, decisions: [echo], constraints: [echo], artifacts: [], open_questions: [echo] }), session: SECRETS.codex };
+      }
+      if (kind === 'deliver') return { output: `Delivered: ${echo} ${SECRETS.grokEcho}`, session: SECRETS.grokEcho };
+      return { output: `Answer: ${echo}`, session: SECRETS.codex };
+    };
+    const ask = await api.createExchange(TOKENS.grok, { mode: 'ask', idempotency_key: 'echo-ask', source: { session_ref: codexB.binding.id }, instruction: 'Echo it' });
+    const cont = await api.createExchange(TOKENS.grok, { mode: 'continue', idempotency_key: 'echo-cont', source: { session_ref: codexA.binding.id }, destination: { agent_id: grok.id }, instruction: 'Echo it on' });
+    const msg = await api.message(TOKENS.grok, codexA.binding.id, { content: 'Echo it here', idempotency_key: 'echo-msg' });
+    await service.waitForAgentDispatchIdle();
+    const askDetail = await api.exchange(TOKENS.grok, ask.json.exchange.id);
+    const contDetail = await api.exchange(TOKENS.grok, cont.json.exchange.id);
+    assert(askDetail.json.state === 'completed' && askDetail.json.answer?.content.startsWith('Answer: run [redacted runtime id] in [redacted] on [redacted] key [redacted]')
+      && leaks(askDetail.text).length === 0, `an Ask answer echoing private values is redacted in exchange detail (${leaks(askDetail.text).join(',')})`);
+    assert(contDetail.json.state === 'completed' && contDetail.json.packet && JSON.stringify(contDetail.json.packet).includes('[redacted]')
+      && leaks(contDetail.text).length === 0, `a Continue packet echoing private values is redacted in exchange detail (${leaks(contDetail.text).join(',')})`);
+    const polls = [
+      await api.narrowRequest(TOKENS.grok, askDetail.json.hops.source.request_id),
+      await api.narrowRequest(TOKENS.grok, contDetail.json.hops.destination.request_id),
+      await api.narrowRequest(TOKENS.grok, msg.json.request_id),
+      await api.narrowConversation(TOKENS.grok, askDetail.json.origin_conversation_id),
+      await api.narrowConversation(TOKENS.grok, contDetail.json.destination.conversation_id),
+      await api.narrowConversation(TOKENS.grok, msg.json.conversation_id),
+    ];
+    assert(polls.every(p => p.status === 200) && polls.some(p => p.text.includes('Answer: run [redacted runtime id]'))
+      && polls.some(p => p.text.includes('Delivered: run [redacted runtime id]')),
+    'the documented polling routes return the echoed results');
+    assert(polls.every(p => leaks(p.text).length === 0), `polling /api/v0/requests and /api/v0/conversations never shows a private value (${polls.flatMap(p => leaks(p.text)).join(',')})`);
+    const ownerView = service.getConversation(OWNER, conversations.getByBotId(codex.id).id);
+    assert(ownerView.messages.some(m => m.content.includes(WORKDIR)), 'the owner\'s own reads are unchanged (not redacted)');
+
+    // exchanges:create without exchanges:read: status metadata only.
+    const doc = grantsDoc(agents);
+    doc.grants.push({ service: 'other-bot', agent: codex.id, capabilities: ['exchanges:create'] });
+    writeGrants(doc);
+    const createOnly = await api.createExchange(TOKENS.other, { mode: 'ask', idempotency_key: 'create-only', source: { session_ref: codexB.binding.id }, instruction: `Secret plan ${PROMPT_MARK}` });
+    await service.waitForAgentDispatchIdle();
+    const createOnlyReplay = await api.createExchange(TOKENS.other, { mode: 'ask', idempotency_key: 'create-only', source: { session_ref: codexB.binding.id }, instruction: `Secret plan ${PROMPT_MARK}` });
+    const summaryKeys = ['created_at', 'destination', 'failure', 'id', 'kind', 'mode', 'source', 'state', 'terminal_at', 'updated_at'];
+    assert(createOnly.status === 201 && same(Object.keys(createOnly.json.exchange).sort(), summaryKeys), 'a create-only principal gets status metadata on create');
+    assert(createOnlyReplay.status === 200 && createOnlyReplay.json.replayed && createOnlyReplay.json.exchange.state === 'completed'
+      && same(Object.keys(createOnlyReplay.json.exchange).sort(), summaryKeys)
+      && !createOnlyReplay.text.includes('Answer:') && !createOnlyReplay.text.includes(PROMPT_MARK) && !/"answer"|"packet"|"instruction"|"hops"|"events"|conversation_id/.test(createOnlyReplay.text),
+    'replaying the create after completion reveals no answer, instruction, hop, or conversation');
+    const createOnlyRead = await api.exchange(TOKENS.other, createOnly.json.exchange.id);
+    assert(createOnlyRead.status === 404 && (await api.exchanges(TOKENS.other)).json.items.length === 0, 'without exchanges:read the exchange cannot be read or listed');
+    const createOnlyCont = await api.createExchange(TOKENS.grok, { mode: 'continue', idempotency_key: 'grok-full', source: { session_ref: codexB.binding.id }, destination: { agent_id: grok.id }, instruction: 'x' });
+    assert(createOnlyCont.status === 201 && 'instruction' in createOnlyCont.json.exchange, 'a principal holding exchanges:read still gets the full view on create');
+    await service.waitForAgentDispatchIdle();
+    const heldOnly = holdAdapter();
+    const pendingAsk = await api.createExchange(TOKENS.other, { mode: 'ask', idempotency_key: 'create-only-cancel', source: { session_ref: codexB.binding.id }, instruction: 'hold' });
+    const pendingHop = one('SELECT source_request_id FROM session_exchanges WHERE id = ?', pendingAsk.json.exchange.id).source_request_id;
+    await waitFor(() => calls.some(c => c.requestId === pendingHop), 'held create-only exchange');
+    const cancelOnly = await api.cancel(TOKENS.other, pendingAsk.json.exchange.id);
+    heldOnly.release();
+    await service.waitForAgentDispatchIdle();
+    assert(cancelOnly.status === 200 && same(Object.keys(cancelOnly.json.exchange).sort(), summaryKeys), 'a create-only cancel returns status metadata only');
+    writeGrants(grantsDoc(agents));
+
+    // A failing audit append rolls the mutation back: nothing is written,
+    // dispatched, or launched; the failure itself is audited as an error.
+    const appendOriginal = serviceAudit.append;
+    serviceAudit.append = input => {
+      if (input.outcome === 'allowed') throw new Error('audit store unavailable');
+      return appendOriginal(input);
+    };
+    const beforeRows = rowCounts();
+    const beforeCalls = calls.length;
+    const beforeAudit = count('SELECT COUNT(*) AS n FROM service_audit_events');
+    const failMsg = await api.message(TOKENS.grok, codexA.binding.id, { content: 'unaudited', idempotency_key: 'audit-fail-msg' });
+    const failCreate = await api.createExchange(TOKENS.grok, { mode: 'continue', idempotency_key: 'audit-fail-cont', source: { session_ref: codexA.binding.id }, destination: { agent_id: grok.id }, instruction: 'unaudited' });
+    await service.waitForAgentDispatchIdle();
+    assert(failMsg.status === 500 && failMsg.json.error.code === 'internal_error' && failCreate.status === 500 && failCreate.json.error.code === 'internal_error',
+      'when the audit append fails the caller gets internal_error');
+    assert(same(rowCounts(), beforeRows) && calls.length === beforeCalls,
+      'no exchange, request, message, conversation, Attempt, or launch survives an unaudited session message or exchange create');
+    assert(count("SELECT COUNT(*) AS n FROM service_audit_events WHERE outcome = 'error' AND code = 'internal_error' AND operation IN ('sessions.message', 'exchanges.create')") >= 2
+      && count('SELECT COUNT(*) AS n FROM service_audit_events') === beforeAudit + 2, 'each failed mutation is audited as an error, never as allowed');
+    serviceAudit.append = appendOriginal;
+    const heldCancel = holdAdapter();
+    const toCancel = await api.createExchange(TOKENS.grok, { mode: 'ask', idempotency_key: 'audit-fail-cancel', source: { session_ref: codexB.binding.id }, instruction: 'hold' });
+    await waitFor(() => calls.some(c => c.requestId === toCancel.json.exchange.hops.source.request_id), 'held Ask before an unaudited cancel');
+    serviceAudit.append = input => {
+      if (input.outcome === 'allowed') throw new Error('audit store unavailable');
+      return appendOriginal(input);
+    };
+    const failCancel = await api.cancel(TOKENS.grok, toCancel.json.exchange.id);
+    serviceAudit.append = appendOriginal;
+    const cancelRow = one('SELECT cancel_requested_at, state FROM session_exchanges WHERE id = ?', toCancel.json.exchange.id);
+    const hopState = engine.getWorkRequest(toCancel.json.exchange.hops.source.request_id).state;
+    assert(failCancel.status === 500 && cancelRow.cancel_requested_at === null && hopState === 'running',
+      'an unaudited cancel records no intent and cancels nothing');
+    heldCancel.release();
+    await service.waitForAgentDispatchIdle();
+    assert(one('SELECT state FROM session_exchanges WHERE id = ?', toCancel.json.exchange.id).state === 'completed', 'the exchange runs on to completion');
   }
 
   // -------------------------------------------------------------------

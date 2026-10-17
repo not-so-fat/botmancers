@@ -24,6 +24,7 @@ import { getAgentSession, isSessionFilter, listAgentSessions, type SessionDetail
 import { ExchangeError, cancelReasonFromBody, type CreateExchangeInput, type ExchangeMode, type ExchangeView, type SessionExchange } from './session-exchanges';
 import { apiStateOf, cancelExchangeCommand, dispatchExchange, exchanges, getExchangeView } from './agent-conversations';
 import { SERVICE_CAPABILITIES, loadServiceGrants, type ServiceCapability } from './service-grants';
+import { serviceRedactor } from './service-redaction';
 
 export type ServiceApiErrorCode =
   | 'invalid_request'
@@ -321,7 +322,8 @@ export function listServiceSessions(ctx: ServiceContext, agentId: string, query:
   requireAgent(ctx, agentId, 'sessions:read');
   const status = query.status ?? 'all';
   if (!isSessionFilter(status)) throw new ServiceApiError('invalid_request', 'status must be active, ended, or all.');
-  const rows = listAgentSessions(db, agentId, status as SessionFilter).map(sessionView);
+  const redactor = serviceRedactor();
+  const rows = listAgentSessions(db, agentId, status as SessionFilter).map(summary => redactor.deep(sessionView(summary)));
   return paginate(`sessions:${agentId}:${status}`, rows, row => ({ at: row.last_activity_at, tie: row.created_at, id: row.ref }), query.cursor, query.limit);
 }
 
@@ -329,7 +331,7 @@ export function getServiceSession(ctx: ServiceContext, agentId: string, ref: str
   requireAgent(ctx, agentId, 'sessions:read');
   const detail = getAgentSession(db, agentId, ref);
   if (!detail) throw NOT_FOUND.session();
-  return { ...sessionView(detail), attempts: detail.attempts };
+  return serviceRedactor().deep({ ...sessionView(detail), attempts: detail.attempts });
 }
 
 // ---------------------------------------------------------------------
@@ -420,77 +422,6 @@ interface MessageRow {
   seq: number;
 }
 
-// Every provider session and run id this conversation's Agents or requests
-// ever reported.
-function privateIdsOf(conversationId: string, agentIds: string[]): string[] {
-  const ids = new Set<string>();
-  for (const agentId of agentIds) {
-    for (const row of db.prepare('SELECT external_session_id FROM session_bindings WHERE agent_id = ?').all(agentId) as { external_session_id: string }[]) {
-      ids.add(row.external_session_id);
-    }
-  }
-  const attempts = db.prepare(`
-    SELECT a.external_session_id, a.external_run_id FROM work_attempts a
-    JOIN work_requests r ON r.id = a.request_id
-    WHERE r.source_conversation_id = ? OR r.target_agent_id IN (SELECT value FROM json_each(?))
-  `).all(conversationId, JSON.stringify(agentIds)) as { external_session_id: string | null; external_run_id: string | null }[];
-  for (const row of attempts) {
-    if (row.external_session_id) ids.add(row.external_session_id);
-    if (row.external_run_id) ids.add(row.external_run_id);
-  }
-  return [...ids].filter(id => id.length >= 6).sort((a, b) => b.length - a.length);
-}
-
-// Launch-context and Agent configuration fields whose values are
-// engine-private (working directory, Deck selection, Hermes profile).
-const PRIVATE_CONFIG_KEY = /^(cwd|working_directory|workspace|deck|deck_id|deck_name|hermes_profile|hermes_profile_path)$/;
-// Environment variables holding a credential.
-const CREDENTIAL_ENV = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
-
-function collectPrivate(value: unknown, into: Set<string>, privateKey = false): void {
-  if (typeof value === 'string') {
-    if (privateKey) into.add(value);
-  } else if (Array.isArray(value)) {
-    for (const item of value) collectPrivate(item, into, privateKey);
-  } else if (isObject(value)) {
-    for (const [key, item] of Object.entries(value)) collectPrivate(item, into, privateKey || PRIVATE_CONFIG_KEY.test(key));
-  }
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-// Every working directory, Deck selection, and Hermes profile the
-// conversation's Agents are configured with or were ever launched with,
-// and every credential in the environment.
-function privateValuesOf(agentIds: string[]): string[] {
-  const values = new Set<string>();
-  for (const agentId of agentIds) {
-    const bot = bots.getById(agentId);
-    if (bot) collectPrivate(bot, values);
-    const snapshots = db.prepare(`
-      SELECT a.launch_snapshot AS snapshot FROM work_attempts a JOIN work_requests r ON r.id = a.request_id WHERE r.target_agent_id = ?
-      UNION ALL SELECT snapshot FROM launch_snapshots WHERE bot_id = ?
-    `).all(agentId, agentId) as { snapshot: string }[];
-    for (const row of snapshots) collectPrivate(parseJson(row.snapshot), values);
-  }
-  const configured = [...values].filter(value => value.trim().length >= 4);
-  const credentials = Object.entries(process.env)
-    .filter(([name, value]) => CREDENTIAL_ENV.test(name) && typeof value === 'string')
-    .flatMap(([, value]) => [value as string, ...(value as string).split(/[\s,=]+/)])
-    .filter(value => value.length >= 8);
-  return [...new Set([...configured, ...credentials])].sort((a, b) => b.length - a.length);
-}
-
-function redactAll(text: string, values: string[], label: string): string {
-  return values.reduce((acc, value) => (acc.includes(value) ? acc.split(value).join(label) : acc), text);
-}
-
 export interface ServiceConversationDetail extends ServiceConversationSummary {
   messages: {
     message_id: string;
@@ -521,13 +452,11 @@ export function getServiceConversation(ctx: ServiceContext, agentId: string, con
     ) WHERE seq < ? ORDER BY seq DESC LIMIT ?
   `).all(row.id, before ? before.at : Number.MAX_SAFE_INTEGER, query.limit + 1) as MessageRow[];
   const page = rows.slice(0, query.limit).reverse();
-  const agentIds = participants.filter(p => p.kind === 'bot').map(p => p.id);
-  const ids = privateIdsOf(row.id, agentIds);
-  const values = privateValuesOf(agentIds);
+  const redactor = serviceRedactor();
   return {
     ...conversationSummary(row, participants),
     messages: page.map(message => {
-      const content = redactAll(redactAll(message.content, ids, '[redacted runtime id]'), values, '[redacted]');
+      const content = redactor.text(message.content);
       return {
         message_id: message.id,
         seq: message.seq,
@@ -623,12 +552,22 @@ function bindingOf(ref: string): SessionBinding | undefined {
   return db.prepare('SELECT * FROM session_bindings WHERE id = ?').get(ref) as SessionBinding | undefined;
 }
 
-function createThroughStore(build: () => { input: CreateExchangeInput; afterCreate?: (row: SessionExchange) => void }): { exchange: SessionExchange; created: boolean } {
+// Called inside the transaction that records a mutation, after its rows are
+// written and before it commits: the HTTP boundary appends the allowed audit
+// event here, so a mutation commits only together with its audit event (and
+// is dispatched only after both).
+export type CommitHook = (row: SessionExchange) => void;
+
+function createThroughStore(
+  build: () => { input: CreateExchangeInput; afterCreate?: (row: SessionExchange) => void },
+  onCommit?: CommitHook,
+): { exchange: SessionExchange; created: boolean } {
   try {
     return db.transaction(() => {
       const { input, afterCreate } = build();
       const result = exchanges.create(input);
       if (result.created && afterCreate) afterCreate(result.exchange);
+      onCommit?.(result.exchange);
       return result;
     }).immediate();
   } catch (error) {
@@ -665,7 +604,9 @@ export function parseSessionMessageBody(body: unknown, header: string | null): {
   return { content: requireText(body.content, 'content', EXCHANGE_LIMITS.instructionChars), idempotencyKey };
 }
 
-export function sendServiceSessionMessage(ctx: ServiceContext, ref: string, input: { content: string; idempotencyKey: string }): { accepted: SessionMessageAccepted; dispatched: Promise<void> } {
+export function sendServiceSessionMessage(
+  ctx: ServiceContext, ref: string, input: { content: string; idempotencyKey: string }, onCommit?: CommitHook,
+): { accepted: SessionMessageAccepted; dispatched: Promise<void> } {
   const binding = bindingOf(ref);
   if (!binding) throw NOT_FOUND.session();
   if (!holds(ctx, binding.agent_id, 'sessions:message')) throw notGranted('session');
@@ -693,7 +634,7 @@ export function sendServiceSessionMessage(ctx: ServiceContext, ref: string, inpu
         ).run(randomUUID(), row.origin_conversation_id, 'user', principal.id, principal.kind, row.source_request_id, input.content, now);
       },
     };
-  });
+  }, onCommit);
   const dispatched = dispatchExchange(exchange.id);
   const request = exchange.source_request_id ? db.prepare('SELECT state FROM work_requests WHERE id = ?').get(exchange.source_request_id) as { state: Parameters<typeof apiStateOf>[0] } | undefined : undefined;
   const message = db.prepare('SELECT id FROM messages WHERE conversation_id = ? AND request_id = ? AND sender_kind = ? ORDER BY rowid ASC LIMIT 1')
@@ -731,20 +672,22 @@ function requireExchange(ctx: ServiceContext, id: string, capability: ServiceCap
   return row;
 }
 
+const exchangeKind = (row: SessionExchange) => (row.idempotency_key.startsWith(MESSAGE_KEY_PREFIX) ? 'session_message' as const : 'exchange' as const);
+
 // The exchange view minus what only the engine needs: the caller's
-// idempotency namespace is its own key again.
+// idempotency namespace is its own key again, and every answer, handoff
+// packet, failure, and event a runtime wrote is redacted
+// (lib/service-redaction).
 function serviceExchangeView(view: ExchangeView, row: SessionExchange) {
   const key = row.idempotency_key.startsWith(MESSAGE_KEY_PREFIX) ? row.idempotency_key.slice(MESSAGE_KEY_PREFIX.length)
     : row.idempotency_key.startsWith(EXCHANGE_KEY_PREFIX) ? row.idempotency_key.slice(EXCHANGE_KEY_PREFIX.length) : row.idempotency_key;
-  return {
-    ...view,
-    kind: row.idempotency_key.startsWith(MESSAGE_KEY_PREFIX) ? 'session_message' as const : 'exchange' as const,
-    idempotency_key: key,
-  };
+  return serviceRedactor().deep({ ...view, kind: exchangeKind(row), idempotency_key: key });
 }
 
 export type ServiceExchangeView = ReturnType<typeof serviceExchangeView>;
 
+// Status metadata only: no instruction, answer, packet, failure message,
+// event data, conversation, or hop request.
 export interface ServiceExchangeSummary {
   id: string;
   kind: 'session_message' | 'exchange';
@@ -758,22 +701,35 @@ export interface ServiceExchangeSummary {
   terminal_at: number | null;
 }
 
+function exchangeSummary(row: SessionExchange): ServiceExchangeSummary {
+  return {
+    id: row.id,
+    kind: exchangeKind(row),
+    mode: row.mode,
+    state: row.state,
+    source: { agent_id: row.source_agent_id, session_ref: row.source_binding_id },
+    destination: row.destination_agent_id ? { agent_id: row.destination_agent_id, session_ref: row.destination_binding_id } : null,
+    failure: row.state === 'failed' ? { code: row.failure_code ?? 'failed' } : null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    terminal_at: row.terminal_at,
+  };
+}
+
+// What a create or cancel returns: the full view only to a caller that may
+// also read the exchange (exchanges:read on every Agent involved), else
+// status metadata, so exchanges:create alone never reveals an answer or a
+// handoff packet.
+function mutationView(ctx: ServiceContext, id: string): ServiceExchangeView | ServiceExchangeSummary {
+  const row = exchanges.require(id);
+  return exchangeVisible(ctx, row, 'exchanges:read') ? serviceExchangeView(getExchangeView(id), row) : exchangeSummary(row);
+}
+
 export function listServiceExchanges(ctx: ServiceContext, query: ListQuery): Page<ServiceExchangeSummary> {
   const rows = (db.prepare('SELECT * FROM session_exchanges WHERE requester_kind = ? AND requester_id = ?')
     .all(ctx.principal.kind, ctx.principal.id) as SessionExchange[])
     .filter(row => exchangeVisible(ctx, row, 'exchanges:read'))
-    .map((row): ServiceExchangeSummary => ({
-      id: row.id,
-      kind: row.idempotency_key.startsWith(MESSAGE_KEY_PREFIX) ? 'session_message' : 'exchange',
-      mode: row.mode,
-      state: row.state,
-      source: { agent_id: row.source_agent_id, session_ref: row.source_binding_id },
-      destination: row.destination_agent_id ? { agent_id: row.destination_agent_id, session_ref: row.destination_binding_id } : null,
-      failure: row.state === 'failed' ? { code: row.failure_code ?? 'failed' } : null,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      terminal_at: row.terminal_at,
-    }));
+    .map(exchangeSummary);
   return paginate(`exchanges:${ctx.principal.id}`, rows, row => ({ at: row.updated_at, tie: row.created_at, id: row.id }), query.cursor, query.limit);
 }
 
@@ -824,7 +780,9 @@ export function parseServiceExchangeBody(body: unknown, header: string | null): 
   };
 }
 
-export function createServiceExchange(ctx: ServiceContext, input: ServiceExchangeInput): { exchange: ServiceExchangeView; created: boolean; dispatched: Promise<void> } {
+export function createServiceExchange(
+  ctx: ServiceContext, input: ServiceExchangeInput, onCommit?: CommitHook,
+): { exchange: ServiceExchangeView | ServiceExchangeSummary; created: boolean; dispatched: Promise<void> } {
   const binding = bindingOf(input.sessionRef);
   if (!binding || (input.sourceAgentId !== null && input.sourceAgentId !== binding.agent_id)) throw NOT_FOUND.session();
   if (!holds(ctx, binding.agent_id, 'exchanges:create')) throw notGranted('session');
@@ -855,9 +813,9 @@ export function createServiceExchange(ctx: ServiceContext, input: ServiceExchang
         destinationConversationId, instruction: input.instruction, now,
       },
     };
-  });
+  }, onCommit);
   const dispatched = dispatchExchange(exchange.id);
-  return { exchange: serviceExchangeView(getExchangeView(exchange.id), exchanges.require(exchange.id)), created, dispatched };
+  return { exchange: mutationView(ctx, exchange.id), created, dispatched };
 }
 
 export function parseCancelBody(text: string): string | null {
@@ -869,11 +827,13 @@ export function parseCancelBody(text: string): string | null {
   }
 }
 
-export async function cancelServiceExchange(ctx: ServiceContext, id: string, reason: string | null): Promise<{ exchange: ServiceExchangeView; replayed: boolean }> {
+export async function cancelServiceExchange(
+  ctx: ServiceContext, id: string, reason: string | null, onCommit?: CommitHook,
+): Promise<{ exchange: ServiceExchangeView | ServiceExchangeSummary; replayed: boolean }> {
   const row = requireExchange(ctx, id, 'exchanges:create');
   try {
-    const { replayed } = await cancelExchangeCommand(row.id, ctx.principal, reason);
-    return { exchange: serviceExchangeView(getExchangeView(row.id), exchanges.require(row.id)), replayed };
+    const { replayed } = await cancelExchangeCommand(row.id, ctx.principal, reason, onCommit);
+    return { exchange: mutationView(ctx, row.id), replayed };
   } catch (error) {
     if (error instanceof ExchangeError) throw serviceErrorFromExchange(error);
     throw error;
