@@ -23,9 +23,10 @@ every flow and the recovery for every error.
 3. If the request involves an existing session, call
    `botmancers_list_sessions` for that Agent. Match on the session `title`
    and `status`. Messages, `Ask`, and `Continue` all run in the source
-   session, so it must be `active` and `resumable`. If the history matters, call `botmancers_list_conversations`.
-   If more than one session could match, show the user their titles and ask
-   which one. Never ask the user for an ID.
+   session, so it must be `active` and `resumable`. If the history matters,
+   call `botmancers_list_conversations`. If more than one session could
+   match, show the user their titles and ask which one. Never ask the user
+   for an ID.
 
 ## 2. Choose one action
 

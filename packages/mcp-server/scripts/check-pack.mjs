@@ -54,7 +54,7 @@ export const REQUIRED = [
     .map(platform => `app/node_modules/better-sqlite3/prebuilds/${platform}.node`),
 ];
 
-const SECRET_PATTERNS = [
+export const SECRET_PATTERNS = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key'],
   [/\bnpm_[A-Za-z0-9]{36}\b/, 'npm token'],
   [/\bgh[pousr]_[A-Za-z0-9]{36,}\b/, 'GitHub token'],
