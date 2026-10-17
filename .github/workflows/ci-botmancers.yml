@@ -34,4 +34,10 @@ jobs:
       - name: Install the locked package-local build tools
         run: npm ci --no-audit --no-fund
       - name: Release check (dry run, no registry mutation)
-        run: npm run build && npm run build:app && npm run release:check
+        run: |
+          npm run build && npm run build:app
+          npm run release:check -- --out "$RUNNER_TEMP/release-check.log" || status=$?
+          if [ "${status:-0}" != 0 ]; then
+            echo "::group::release-check transcript"; cut -c1-400 "$RUNNER_TEMP/release-check.log" || true; echo "::endgroup::"
+            exit "$status"
+          fi
