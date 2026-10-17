@@ -48,6 +48,8 @@
     "test:engine-store": "node test-engine-store.js",
     "test:session-catalog": "node test-session-catalog.js",
     "test:agent-exchanges": "node test-agent-exchanges.js",
+    "test:exchange-ui": "node test-exchange-ui.js",
+    "proof:exchanges": "node scripts/ui-exchanges-proof.js",
     "test:conversation-intake": "node test-conversation-intake.js",
     "test:attempt-adapter": "node test-attempt-adapter.js",
     "test:wake-router": "node test-wake-router.js",

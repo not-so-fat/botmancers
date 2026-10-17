@@ -144,11 +144,19 @@ export function listExchanges(db: Db, query: ExchangeListQuery): ExchangeSummary
     .filter(summary => !query.conversationId || summary.links.some(item => item.id === query.conversationId));
 }
 
+// Timeline data keeps what the wording needs (hop, states, reason, flags)
+// and drops every reference: Work Request, Attempt, message, binding, and
+// actor ids stay in the exchange API, not the ledger.
+function timelineData(data: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!data) return null;
+  return Object.fromEntries(Object.entries(data).filter(([key]) => !key.endsWith('_id') && key !== 'session_ref' && key !== 'by'));
+}
+
 export function exchangeDetail(db: Db, view: ExchangeView): ExchangeDetail {
   const row = db.prepare('SELECT * FROM session_exchanges WHERE id = ?').get(view.id) as SessionExchange;
   return {
     summary: summarizeExchange(db, row),
-    events: view.events,
+    events: view.events.map(event => ({ ...event, data: timelineData(event.data) })),
     packet: view.packet,
     answer: view.answer?.content ?? null,
   };
