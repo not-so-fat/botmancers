@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 export const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
 export const CLI = join(PACKAGE_DIR, 'dist/cli.js');
-export const SCHEMA_PATH = join(PACKAGE_DIR, 'schemas/botmancers.mcp.v1.tools.json');
+export const SCHEMA_PATH = join(PACKAGE_DIR, 'schemas/botmancers.mcp.v2.tools.json');
 
 // Runs `command args` to completion. Resolves { code, stdout, stderr }.
 export function run(command, args, { env, cwd, timeoutMs = 90_000 } = {}) {

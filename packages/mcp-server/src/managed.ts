@@ -232,6 +232,9 @@ const REQUIRED_RELEASE_FILES = [
   'schemas/botmancers.mcp.v1.tools.json',
 ];
 const RELATIVE_IMPORT = /\bfrom\s*['"]\.\/([\w.-]+\.js)['"]|\bimport\s*\(\s*['"]\.\/([\w.-]+\.js)['"]\s*\)/g;
+// The bundled tool schemas a release's own modules load (an older release
+// loads only botmancers.mcp.v1; 0.4.0 onward also botmancers.mcp.v2).
+const SCHEMA_REFERENCE = /new URL\(\s*['"]\.\.\/schemas\/([\w.-]+\.json)['"]/g;
 
 function missingDistModule(dist: string): string | null {
   const seen = new Set<string>();
@@ -247,6 +250,9 @@ function missingDistModule(dist: string): string | null {
       return `missing dist/${file}`;
     }
     for (const match of text.matchAll(RELATIVE_IMPORT)) queue.push(match[1] ?? match[2]);
+    for (const match of text.matchAll(SCHEMA_REFERENCE)) {
+      if (!existsSync(join(dist, '..', 'schemas', match[1]))) return `missing schemas/${match[1]}`;
+    }
   }
   return null;
 }

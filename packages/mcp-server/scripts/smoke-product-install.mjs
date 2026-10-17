@@ -19,6 +19,9 @@ import { dirname, join, resolve } from 'node:path';
 import { PACKAGE_DIR, freePort, run } from './product-harness.mjs';
 import { mcpPost, mcpSession } from './harness.mjs';
 
+// tools/list must be exactly the bundled botmancers.mcp.v2 list (v1 tools first).
+const BUNDLED_TOOL_NAMES = JSON.parse(readFileSync(new URL('../schemas/botmancers.mcp.v2.tools.json', import.meta.url), 'utf8')).tools.map(tool => tool.name);
+
 const REPO_ROOT = realpathSync(join(PACKAGE_DIR, '..', '..'));
 const args = process.argv.slice(2);
 const option = name => {
@@ -225,7 +228,7 @@ export async function smoke({ tarball, registryVersion } = {}) {
     check(bridgeHealth.status === 'ok' && bridgeHealth.version === installed.version, `bridge GET /healthz -> ${JSON.stringify(bridgeHealth)}`);
     const session = await mcpSession(`http://127.0.0.1:${mcpPort}/mcp`, mcpToken);
     const names = session.tools.json.result.tools.map(tool => tool.name);
-    check(names.join(',') === 'botmancers_start_task,botmancers_get_request,botmancers_get_conversation,botmancers_health', `MCP tools/list -> ${names.join(', ')}`);
+    check(names.join(',') === BUNDLED_TOOL_NAMES.join(','), `MCP tools/list -> ${names.join(', ')}`);
     const structured = session.health.json.result.structuredContent;
     check(session.health.json.result.isError === false && structured.principal.id === 'botmancers-bridge'
       && structured.coordinators.some(entry => entry.name === 'Smokey' && entry.available), `MCP tools/call botmancers_health reaches the same engine -> ${JSON.stringify(structured)}`);

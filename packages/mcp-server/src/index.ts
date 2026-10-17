@@ -1,10 +1,14 @@
-// Library surface of the `botmancers` package: the botmancers.mcp.v1 MCP
-// bridge. The `botmancers` binary (./cli) is the supported entry point; these
+// Library surface of the `botmancers` package: the botmancers.mcp.v2 MCP
+// bridge (which serves every botmancers.mcp.v1 tool unchanged). The `botmancers` binary (./cli) is the supported entry point; these
 // exports let a Node program embed the same bridge.
 export {
   MCP_CONTRACT,
+  MCP_CONTRACT_V1,
+  MCP_CONTRACTS,
   MCP_PROTOCOL_VERSIONS,
   TOOL_SCHEMA_URL,
+  TOOL_SCHEMA_V1_URL,
+  toolContractOf,
   loadToolContract,
   negotiateProtocolVersion,
   packageVersion,

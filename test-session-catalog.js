@@ -203,7 +203,7 @@ async function main() {
   assert(/### Session catalog/.test(core) && /Botmancers reference/.test(core) && /GET \/api\/bots\/:id\/sessions\?status=active\|ended\|all/.test(core),
     'docs/core-engine.md documents the safe session-reference contract and routes');
   assert(/Local debug: provider session ID/.test(core) && /\?debug=external_session_id/.test(core), 'docs/core-engine.md documents the debug-only external-id exception');
-  assert(/Responses never include Session Bindings, external run or\s+session ids/.test(bridge) && /the bridge never proxies it/.test(bridge),
+  assert(/Responses never include external run or\s+session ids/.test(bridge) && /the bridge never proxies it/.test(bridge),
     'docs/mcp-bridge.md keeps its non-disclosure contract and excludes the Sessions view');
   // NOT-499: /api/v0 reaches the catalog only through the grant-gated
   // service API (lib/service-api). NOT-500: so does the MCP bridge's v2

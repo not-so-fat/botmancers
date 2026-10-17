@@ -3,7 +3,30 @@
 All notable changes to the `botmancers` npm package. It uses
 [Semantic Versioning](https://semver.org): while the package is `0.x`, a
 minor version may change the CLI or configuration. The MCP tool contract is
-versioned separately, as `botmancers.mcp.v1`.
+versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
+
+## [Unreleased]
+
+### Added
+
+- MCP contract `botmancers.mcp.v2`: `botmancers_capabilities`,
+  `botmancers_list_agents`, `botmancers_list_sessions`,
+  `botmancers_list_conversations`, `botmancers_send_to_session`,
+  `botmancers_create_exchange`, `botmancers_get_exchange`, and
+  `botmancers_list_exchanges`, plus a v2 (`agent_id`) path of
+  `botmancers_get_conversation`, over the owner's service grants. The bundled
+  schema is `schemas/botmancers.mcp.v2.tools.json`; every v2 call is forwarded
+  unchanged. `GET /healthz` adds `contracts`. Library exports add
+  `MCP_CONTRACT_V1`, `MCP_CONTRACTS`, `TOOL_SCHEMA_V1_URL`, and
+  `toolContractOf`.
+
+### Changed
+
+- `MCP_CONTRACT` and `/healthz` `contract` are now `botmancers.mcp.v2`;
+  `tools/list` returns the v1 tools unchanged, then the v2 tools.
+- Startup preflight refuses (exit 4) a Botmancers that lacks any bundled v1 or
+  v2 tool, or the v2 path of `botmancers_get_conversation`, and names what is
+  missing. It still sends only `initialize` and `tools/list`.
 
 ## [0.3.0] - 2026-10-16
 

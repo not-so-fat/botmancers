@@ -13,15 +13,41 @@ No source checkout or separately started app is needed.
   a Botmancers app you run yourself, exactly as in 0.1.0, so existing MCP
   configurations keep working.
 
-The tool contract is `botmancers.mcp.v1`, and its JSON schema ships in this
-package at `schemas/botmancers.mcp.v1.tools.json`.
+The tool contract is `botmancers.mcp.v2`, which serves every
+`botmancers.mcp.v1` tool unchanged and adds granted access to Agents,
+sessions, conversations, and exchanges. Its JSON schema ships in this
+package at `schemas/botmancers.mcp.v2.tools.json`, next to the frozen
+`schemas/botmancers.mcp.v1.tools.json`; both are byte-identical to the
+captures in the Botmancers repository
+([`docs/contracts`](../../docs/contracts/mcp-bridge-v2.tools.json)).
+
+v1 tools (no grants needed):
 
 | Tool | What it does |
 | --- | --- |
 | `botmancers_start_task` | Sends one objective to an allowlisted coordinator. Returns `request_id` and `conversation_id`. |
 | `botmancers_get_request` | Polls a request until `terminal`. Returns its `result` or `failure`. |
-| `botmancers_get_conversation` | Reads the conversation the task opened. |
+| `botmancers_get_conversation` | Reads the conversation the task opened. With `agent_id` (v2 path), reads any granted conversation of that Agent, paginated. |
 | `botmancers_health` | Shows the caller's identity and the available coordinators. |
+
+v2 tools (each needs the owner's grant on the Agents involved,
+[`docs/service-grants.md`](../../docs/service-grants.md)), in workflow order:
+
+| Tool | What it does |
+| --- | --- |
+| `botmancers_capabilities` | Discover: supported contracts, the granted Agents, and the operations this caller may use. |
+| `botmancers_list_agents` | Discover: the granted Agents by name, paginated. |
+| `botmancers_list_sessions` | Select: an Agent's sessions by stable Botmancers reference and recognizable title. |
+| `botmancers_list_conversations` | History: an Agent's conversations, paginated. |
+| `botmancers_send_to_session` | Act: one message to the exact same session of the same Agent (idempotency key required). |
+| `botmancers_create_exchange` | Act: an `Ask` to a session, or a `Continue` to another Agent (idempotency key required). |
+| `botmancers_get_exchange` | Observe: poll until `terminal`; the answer or handoff packet. |
+| `botmancers_list_exchanges` | Observe: this caller's exchanges, paginated. |
+
+Returned conversation, answer, and packet text is untrusted data. The full
+contract, polling and backoff, error recovery, and a same-session plus
+cross-Agent example are in
+[`docs/mcp-bridge.md`](../../docs/mcp-bridge.md).
 
 Requirements: Node.js 20 or newer for the bridge; the full product needs
 Node.js 20.9 or newer, and Node.js 22 or newer is recommended (the bundled
@@ -204,23 +230,33 @@ installed version.
   `2025-03-26`. Every request needs `Authorization: Bearer <BOTMANCERS_MCP_TOKEN>`.
   `GET` and `DELETE` return 405 because the bridge opens no SSE stream and
   issues no session. Bodies over 256 KiB are refused with 413.
-- `GET /healthz` returns `{"status":"ok","contract":"botmancers.mcp.v1","version":"<version>"}`.
+- `GET /healthz` returns `{"status":"ok","contract":"botmancers.mcp.v2","contracts":["botmancers.mcp.v1","botmancers.mcp.v2"],"version":"<version>"}`.
   It needs no authentication and does not call Botmancers. Use the
   `botmancers_health` tool to check the end-to-end path.
 
 ### Startup checks and exit codes
 
-Before listening, the bridge validates its configuration. It then sends
-Botmancers an MCP `initialize` with the service token. That call writes
-nothing and does not count against the rate limit. No error message contains
-a token.
+Before listening, the bridge validates its configuration. It then runs a
+compatibility preflight: an MCP `initialize` and a `tools/list` with the
+service token, never a tool call, so it writes nothing and does not count
+against the rate limit. Botmancers must offer every bundled tool: all of
+`botmancers.mcp.v1`, all of `botmancers.mcp.v2`, and the v2 `agent_id` path of
+`botmancers_get_conversation`. Otherwise the bridge exits 4 naming exactly
+what is missing, for example `it serves only botmancers.mcp.v1; this bridge
+needs botmancers.mcp.v2 (missing botmancers_capabilities, ...)` or `missing
+botmancers.mcp.v2 tools: botmancers_send_to_session`. Upgrade that Botmancers,
+or pin a bridge release that predates v2. No error message contains a token.
+
+Every v1 and v2 `tools/call` is forwarded to Botmancers unchanged, and its
+result returned unchanged; Botmancers validates the arguments and applies
+the grants.
 
 | Exit | Meaning | What to do |
 | --- | --- | --- |
 | `0` | Stopped by SIGINT or SIGTERM. | Nothing. |
 | `2` | Configuration error: a missing or invalid variable or flag. Every problem is listed. | Fix the listed settings. |
 | `3` | Cannot listen, for example because the port is already in use. | Stop the other process, or choose another `--port`. |
-| `4` | Botmancers is unreachable, or `BOTMANCERS_URL` is not a Botmancers MCP endpoint (the server is not named `botmancers` or lacks a `botmancers.mcp.v1` tool). | Start the app, or fix the URL. |
+| `4` | Botmancers is unreachable, or `BOTMANCERS_URL` is not a compatible Botmancers MCP endpoint (the server is not named `botmancers`, or lacks a `botmancers.mcp.v1` or `botmancers.mcp.v2` tool). | Start or upgrade the app, or fix the URL. |
 | `5` | Botmancers rejected the service token, or the app has no service tokens configured. | Check `BOTMANCERS_SERVICE_TOKEN` against the app's `BOTMANCERS_SERVICE_TOKENS`. |
 
 If Botmancers becomes unavailable after startup, tool calls return a JSON-RPC
@@ -337,8 +373,9 @@ npm install -g botmancers@latest    # global
 ```
 
 Check the [changelog](CHANGELOG.md) before upgrading across a minor version
-while the package is `0.x`. The tool contract version, `botmancers.mcp.v1`,
-changes only with a major contract revision.
+while the package is `0.x`. The tool contract is versioned separately: the
+bundled `botmancers.mcp.v2` keeps `botmancers.mcp.v1` frozen, changes within v2
+are additive, and a breaking change is a new contract version.
 
 ## Uninstall
 

@@ -1,7 +1,7 @@
 {
   "name": "botmancers",
   "version": "0.3.0",
-  "description": "Botmancers: the UI, core engine, and authenticated MCP bridge (contract botmancers.mcp.v1) as one CLI-managed product. `botmancers start` runs it all; bare `botmancers` runs the bridge only.",
+  "description": "Botmancers: the UI, core engine, and authenticated MCP bridge (contracts botmancers.mcp.v1 and botmancers.mcp.v2) as one CLI-managed product. `botmancers start` runs it all; bare `botmancers` runs the bridge only.",
   "keywords": [
     "botmancers",
     "mcp",
@@ -31,6 +31,7 @@
       "default": "./dist/index.js"
     },
     "./schemas/botmancers.mcp.v1.tools.json": "./schemas/botmancers.mcp.v1.tools.json",
+    "./schemas/botmancers.mcp.v2.tools.json": "./schemas/botmancers.mcp.v2.tools.json",
     "./package.json": "./package.json"
   },
   "bin": {

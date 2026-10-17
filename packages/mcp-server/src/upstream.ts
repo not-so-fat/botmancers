@@ -1,7 +1,7 @@
 // The Botmancers side of the bridge: JSON-RPC messages POSTed to the app's
 // /api/v0/mcp endpoint with the service token. Failures are classified so
 // the CLI and the MCP surface can say what to fix, without echoing secrets.
-import { MCP_CONTRACT, MCP_PROTOCOL_VERSIONS, loadToolContract } from './contract.js';
+import { MCP_CONTRACT, MCP_CONTRACT_V1, MCP_PROTOCOL_VERSIONS, loadToolContract, toolContractOf } from './contract.js';
 
 // The serverInfo.name the Botmancers app reports from initialize.
 export const MCP_SERVER_NAME = 'botmancers';
@@ -102,8 +102,10 @@ export function createUpstream(options: UpstreamOptions) {
   }
 
   // initialize and tools/list round trips: authenticate, then confirm the
-  // endpoint is Botmancers and offers every botmancers.mcp.v1 tool. No tool
-  // is called, so preflight writes nothing and is not rate-limited.
+  // endpoint is Botmancers and offers every bundled tool: all of
+  // botmancers.mcp.v1 and all of botmancers.mcp.v2, including the v2
+  // (agent_id) path of botmancers_get_conversation. No tool is called, so
+  // preflight writes nothing and is not rate-limited.
   async function preflight(): Promise<{ serverVersion: string | null }> {
     const incompatible = (why: string) => new UpstreamError('incompatible',
       `${options.botmancersUrl}${UPSTREAM_PATH} is an MCP endpoint but not a compatible Botmancers (${why}). Check BOTMANCERS_URL and upgrade Botmancers.`);
@@ -121,9 +123,20 @@ export function createUpstream(options: UpstreamOptions) {
     const list = await send({ jsonrpc: '2.0', id: 'botmancers-bridge-preflight-tools', method: 'tools/list', params: {} });
     const offered = (list.result as { tools?: unknown } | undefined)?.tools;
     if (!Array.isArray(offered)) throw incompatible('tools/list returned no tools');
-    const names = new Set(offered.map(tool => (tool as { name?: unknown } | null)?.name));
-    const missing = loadToolContract().tools.map(tool => tool.name).filter(name => !names.has(name));
-    if (missing.length) throw incompatible(`missing ${MCP_CONTRACT} tools: ${missing.join(', ')}`);
+    const byName = new Map(offered.map(tool => [(tool as { name?: unknown } | null)?.name, tool as { inputSchema?: { properties?: Record<string, unknown> } }]));
+    const bundled = loadToolContract().tools;
+    const missing = (contract: string) => bundled.filter(tool => toolContractOf(tool) === contract && !byName.has(tool.name)).map(tool => tool.name);
+    const missingV1 = missing(MCP_CONTRACT_V1);
+    if (missingV1.length) throw incompatible(`missing ${MCP_CONTRACT_V1} tools: ${missingV1.join(', ')}`);
+    const missingV2 = missing(MCP_CONTRACT);
+    const v2Total = bundled.filter(tool => toolContractOf(tool) === MCP_CONTRACT).length;
+    if (missingV2.length === v2Total) {
+      throw incompatible(`it serves only ${MCP_CONTRACT_V1}; this bridge needs ${MCP_CONTRACT} (missing ${missingV2.join(', ')}). Upgrade Botmancers to a release that serves ${MCP_CONTRACT}`);
+    }
+    if (missingV2.length) throw incompatible(`missing ${MCP_CONTRACT} tools: ${missingV2.join(', ')}`);
+    if (!byName.get('botmancers_get_conversation')?.inputSchema?.properties?.agent_id) {
+      throw incompatible(`botmancers_get_conversation lacks the ${MCP_CONTRACT} agent_id path`);
+    }
 
     const version = result.serverInfo.version;
     return { serverVersion: typeof version === 'string' ? version : null };
