@@ -9,6 +9,17 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ### Added
 
+- `botmancers setup --client codex|cursor|claude [--remove]`: connects the
+  client to the local MCP bridge and installs the optional
+  `botmancers-collaboration` Agent Skill (shipped in `skills/`). An
+  ownership record in `config/clients/<client>.json` (versions and SHA-256
+  hashes, no token) lets re-runs, upgrades, and rollbacks refresh only
+  unmodified Botmancers files. Edited or foreign files are never overwritten
+  (exit 12), a missing client writes nothing (exit 11), and a failed write is
+  rolled back. Plain `botmancers setup` refreshes the clients already set up.
+  `botmancers doctor` reports each client as connected, missing, stale, or
+  conflicted, with the repair command.
+
 - MCP contract `botmancers.mcp.v2`: `botmancers_capabilities`,
   `botmancers_list_agents`, `botmancers_list_sessions`,
   `botmancers_list_conversations`, `botmancers_send_to_session`,

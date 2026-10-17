@@ -13,6 +13,15 @@
 // user-state file hashes survive, and that BOTMANCERS_DISABLE_AUTOUPDATER=1
 // stops every automatic registry request.
 //
+// NOT-501: Codex and Claude Code (isolated ~/.codex and ~/.claude holding
+// the user's own configuration and skill) are connected with `botmancers
+// setup --client`; the v2 section below runs through the URL and token from
+// Codex's own config.toml. N+1 also ships a changed skill: after the upgrade
+// doctor reports the client skill stale, a plain `botmancers setup` refreshes
+// it with credentials and user files intact, and the reconnected client
+// discovers the session and completes one more Ask; the rollback puts N's
+// skill back. An unsupported client gets the MCP-only instructions.
+//
 // NOT-500: between those, botmancers.mcp.v2 through the managed bridge. With
 // an owner grant for the bridge's service principal, an MCP client lists the
 // v2 tools, discovers a seeded session of a Deck-backed Agent, sends one
@@ -52,6 +61,7 @@ function check(condition, message) {
 
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 
+const SKILL = 'botmancers-collaboration';
 const V2_TOOLS = JSON.parse(readFileSync(join(PACKAGE_DIR, 'schemas/botmancers.mcp.v2.tools.json'), 'utf8')).tools.map(tool => tool.name);
 const DECK_TOKEN = 'adg_managed_smoke_fixture_bearer';
 const PROVIDER_SESSION = 'prov-relay-SECRET-session-0001';
@@ -149,6 +159,38 @@ async function smokeMcpV2({ base, mcpUrl, mcpToken, serviceToken, home, workdir,
   const uiAfter = await (await fetch(`${base}/api/bots/${relay.id}/sessions`)).json();
   check(JSON.stringify(uiAfter).includes(ref), 'after stop/start the owner UI Sessions route still lists the session');
   check(!texts.join('\n').includes(PROVIDER_SESSION), 'no MCP v2 response carried the provider session id');
+  return { relay, ref };
+}
+
+// What `botmancers setup --client codex` wrote into Codex's config.toml.
+function codexConnection(configToml) {
+  const text = readFileSync(configToml, 'utf8');
+  const url = /^\[mcp_servers\.botmancers\]\nurl = "([^"]+)"$/m.exec(text);
+  const token = /^http_headers = \{ "Authorization" = "Bearer ([^"]+)" \}$/m.exec(text);
+  if (!url || !token) throw new Error(`no botmancers MCP server in ${configToml}`);
+  return { mcpUrl: url[1], mcpToken: token[1] };
+}
+
+// After an upgrade, as the reconnected client: discover the session, Ask it once.
+async function discoverAndAsk({ mcpUrl, mcpToken, relay, ref, key }) {
+  const call = async (name, args = {}) => {
+    const res = await rpc(mcpUrl, mcpToken, 'tools/call', { name, arguments: args });
+    if (!res.json || !res.json.result || res.json.result.isError) throw new Error(`MCP ${name} -> HTTP ${res.status} ${res.text}`);
+    return res.json.result.structuredContent;
+  };
+  const caps = await call('botmancers_capabilities');
+  const agents = await call('botmancers_list_agents');
+  const sessions = await call('botmancers_list_sessions', { agent_id: agents.items.find(agent => agent.name === 'Relay').agent_id, status: 'active' });
+  check(caps.mode === 'granted' && sessions.items.some(item => item.ref === ref), `reconnected client: capabilities granted; list_agents -> Relay; list_sessions discovers ${ref} ("${sessions.items[0].title}")`);
+  const asked = await call('botmancers_create_exchange', { mode: 'ask', source: { session_ref: ref }, instruction: 'post-upgrade smoke: one Ask', idempotency_key: key });
+  let view;
+  for (let wait = 250, deadline = Date.now() + 90_000; ; wait = Math.min(wait * 2, 2000)) {
+    view = await call('botmancers_get_exchange', { exchange_id: asked.exchange.id });
+    if (view.terminal || Date.now() > deadline) break;
+    await new Promise(done => setTimeout(done, wait));
+  }
+  check(view.terminal && view.exchange.state === 'completed' && view.exchange.source.agent_id === relay.id,
+    `post-upgrade Ask exchange ${asked.exchange.id} -> ${view.exchange.state}: "${view.exchange.answer && view.exchange.answer.content}"`);
 }
 const bump = version => version.replace(/(\d+)$/, patch => String(Number(patch) + 1));
 
@@ -172,6 +214,8 @@ function repackNext(tarball, version, workdir) {
     const path = join(pkg, file);
     writeFileSync(path, `${JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), version }, null, 2)}\n`);
   }
+  // A new release's skill differs, so the client refresh is observable.
+  appendFileSync(join(pkg, 'skills', SKILL, 'SKILL.md'), `\n<!-- botmancers ${version} -->\n`);
   // next build inlines the release version (BOTMANCERS_BUILD_VERSION) into the
   // health route and the server config; rewrite exactly those literals.
   const inlined = [
@@ -271,9 +315,39 @@ export async function smoke({ tarball } = {}) {
     const doctor0 = await botmancers(['doctor']);
     log(doctor0.stdout.trimEnd().split('\n').map(line => `    | ${line}`).join('\n'));
     check(/info  install     managed/.test(doctor0.stdout) && /ok    path {8}PATH resolves botmancers to/.test(doctor0.stdout), 'doctor reports a managed install resolved through the launcher');
-    check((await botmancers(['setup'])).code === 0, 'botmancers setup');
+    const setup = await botmancers(['setup']);
+    check(setup.code === 0 && setup.stdout.includes(`URL     http://127.0.0.1:${mcp}/mcp`) && /Header  Authorization: Bearer <BOTMANCERS_MCP_TOKEN from .*bridge\.env>/.test(setup.stdout), 'botmancers setup (prints the MCP-only URL and header)');
     const doctor = await botmancers(['doctor']);
     check(doctor.code === 0, `botmancers doctor: ${doctor.stdout.trim().split('\n').pop()}`);
+
+    // 1b. Connect Codex and Claude Code (NOT-501); the user's own files stay.
+    const codexDir = join(user, '.codex');
+    const claudeDir = join(user, '.claude');
+    mkdirSync(join(codexDir, 'skills', 'my-skill'), { recursive: true });
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(codexDir, 'config.toml'), 'model = "o4"\n\n[mcp_servers.mine]\ncommand = "mine"\n');
+    writeFileSync(join(codexDir, 'skills', 'my-skill', 'SKILL.md'), '---\nname: my-skill\ndescription: mine\n---\n');
+    writeFileSync(join(user, '.claude.json'), '{\n  "numStartups": 3\n}\n');
+    const userFiles = [join(codexDir, 'skills', 'my-skill', 'SKILL.md')];
+    const userHashes = () => userFiles.map(sha256).join();
+    const userBefore = userHashes();
+    const packagedSkill = version => sha256(join(home, 'versions', version, 'node_modules', 'botmancers', 'skills', SKILL, 'SKILL.md'));
+    for (const client of ['codex', 'claude']) {
+      const connected = await botmancers(['setup', '--client', client]);
+      log(connected.stdout.trimEnd().split('\n').slice(-5).map(line => `    | ${line}`).join('\n'));
+      check(connected.code === 0 && new RegExp(`setup --client ${client}: .* is connected to Botmancers ${N}`).test(connected.stdout), `botmancers setup --client ${client} -> exit 0`);
+    }
+    const codexSkill = join(codexDir, 'skills', SKILL, 'SKILL.md');
+    const claudeSkill = join(claudeDir, 'skills', SKILL, 'SKILL.md');
+    check(sha256(codexSkill) === packagedSkill(N) && sha256(claudeSkill) === packagedSkill(N), `both clients hold the ${N} skill (${SKILL})`);
+    check(/^model = "o4"\n\n\[mcp_servers\.mine\]\ncommand = "mine"\n\n\[mcp_servers\.botmancers\]/.test(readFileSync(join(codexDir, 'config.toml'), 'utf8'))
+      && JSON.parse(readFileSync(join(user, '.claude.json'), 'utf8')).numStartups === 3 && userHashes() === userBefore, 'the user\'s own Codex/Claude configuration and skill are kept');
+    const again = await botmancers(['setup', '--client', 'codex']);
+    check(again.code === 0 && (again.stdout.match(/\(unchanged\)/g) || []).length === 2, 'setup --client codex again: unchanged (idempotent)');
+    const unsupported = await botmancers(['setup', '--client', 'vscode']);
+    check(unsupported.code === 2 && /Other MCP clients need no setup: point them at the bridge URL with the MCP token header/.test(unsupported.stderr), 'unsupported client: exit 2 with the MCP-only path');
+    const doctorClients = await botmancers(['doctor']);
+    check(/ok {4}codex {7}MCP connected; skill botmancers-collaboration .* current/.test(doctorClients.stdout) && /ok {4}claude {6}MCP connected/.test(doctorClients.stdout), 'doctor: codex and claude connected, skill current');
     // The v2 section's Deck-backed Agent runs against a loopback fake Agent
     // Deck; the core reads its run token from core.env at start.
     const { createFakeAgentDeck } = createRequire(import.meta.url)(join(REPO_ROOT, 'test-support', 'fake-agent-deck-api.js'));
@@ -297,6 +371,8 @@ export async function smoke({ tarball } = {}) {
     const bridgeVersion = async () => (await (await fetch(`http://127.0.0.1:${mcp}/healthz`)).json()).version;
     check((await health()).version === N && (await bridgeVersion()) === N, `/api/health and bridge /healthz -> ${N}`);
     const mcpToken = /^BOTMANCERS_MCP_TOKEN=(\S+)$/m.exec(readFileSync(join(home, 'config/bridge.env'), 'utf8'))[1];
+    const codex = codexConnection(join(codexDir, 'config.toml'));
+    check(codex.mcpUrl === `http://127.0.0.1:${mcp}/mcp` && codex.mcpToken === mcpToken, 'Codex config.toml points at this bridge with the MCP token');
     const owner = { 'content-type': 'application/json', origin: base };
     const agent = await (await fetch(`${base}/api/bots`, { method: 'POST', headers: owner, body: JSON.stringify({ name: 'Smokey', title: 'Managed smoke', description: 'smoke', deck_id: '00000000-0000-4000-8000-000000000001' }) })).json();
     const conversation = await (await fetch(`${base}/api/conversations?botId=${agent.id}`)).json();
@@ -310,8 +386,8 @@ export async function smoke({ tarball } = {}) {
 
     // 2b. botmancers.mcp.v2 (NOT-500), surviving one stop/start.
     const serviceToken = /^BOTMANCERS_SERVICE_TOKEN=(\S+)$/m.exec(readFileSync(join(home, 'config/bridge.env'), 'utf8'))[1];
-    await smokeMcpV2({
-      base, mcpUrl: `http://127.0.0.1:${mcp}/mcp`, mcpToken, serviceToken, home, workdir: join(root, 'relay-workdir'), deck, owner,
+    const { relay, ref } = await smokeMcpV2({
+      base, mcpUrl: codex.mcpUrl, mcpToken: codex.mcpToken, serviceToken, home, workdir: join(root, 'relay-workdir'), deck, owner,
       restart: async () => {
         check((await botmancers(['stop'])).code === 0, 'botmancers stop');
         check((await botmancers(['start', '--daemon'])).code === 0 && (await health()).version === N, `botmancers start --daemon: the product runs ${N} again`);
@@ -360,6 +436,16 @@ export async function smoke({ tarball } = {}) {
     check((await health()).version === N1 && (await bridgeVersion()) === N1 && readlinkSync(join(home, 'current')) === `versions/${N1}`, `core and bridge report ${N1}; current -> versions/${N1}`);
     check((await botmancers(['status'])).code === 0, 'status healthy after the upgrade');
     await stateIntact(`after upgrade to ${N1}`);
+    const staleDoctor = await botmancers(['doctor']);
+    check(new RegExp(`warn {2}codex {7}MCP connected; skill ${SKILL} ${N} stale \\(1 file differs from this release\\); repair: botmancers setup --client codex`).test(staleDoctor.stdout), `doctor after the upgrade: the ${N} client skill is stale, with the repair command`);
+    const refresh = await botmancers(['setup']);
+    log(refresh.stdout.trimEnd().split('\n').slice(-11).map(line => `    | ${line}`).join('\n'));
+    check(refresh.code === 0 && sha256(codexSkill) === packagedSkill(N1) && sha256(claudeSkill) === packagedSkill(N1), `botmancers setup refreshed both clients to the ${N1} skill`);
+    await stateIntact(`after the client refresh on ${N1}`);
+    check(userHashes() === userBefore && /\[mcp_servers\.mine\]/.test(readFileSync(join(codexDir, 'config.toml'), 'utf8')), 'the user\'s own Codex files are unchanged');
+    check(/ok {4}codex {7}MCP connected; skill botmancers-collaboration .* current/.test((await botmancers(['doctor'])).stdout), `doctor on ${N1}: codex connected, skill current`);
+    const reconnected = codexConnection(join(codexDir, 'config.toml'));
+    await discoverAndAsk({ ...reconnected, relay, ref, key: 'managed-v2-ask-after-upgrade' });
 
     // 5. Roll back to N.
     check((await botmancers(['stop'])).code === 0, 'botmancers stop');
@@ -367,6 +453,7 @@ export async function smoke({ tarball } = {}) {
     check(rollback.code === 0 && new RegExp(`activated ${N} \\(was ${N1}\\)`).test(rollback.stdout), `botmancers install --to ${N} (rollback) activated ${N} without a download`);
     check((await botmancers(['start', '--daemon'])).code === 0 && (await health()).version === N && (await bridgeVersion()) === N, `after rollback the product runs ${N}`);
     await stateIntact(`after rollback to ${N}`);
+    check((await botmancers(['setup'])).code === 0 && sha256(codexSkill) === packagedSkill(N) && sha256(claudeSkill) === packagedSkill(N), `after rollback botmancers setup puts the ${N} skill back`);
 
     // 6. The kill switch: no automatic registry traffic or state change at all.
     writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), checkedAt: '2000-01-01T00:00:00.000Z', declinedVersion: null }));

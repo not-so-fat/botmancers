@@ -119,3 +119,51 @@ test('README documents the install, configuration, exposure, upgrade, and uninst
   const missing = checklist.filter(([pattern]) => !pattern.test(readme)).map(([, label]) => label);
   assert.deepEqual(missing, []);
 });
+
+test('README documents the optional collaboration skill: when, why optional, clients, lifecycle, ownership, MCP-only', () => {
+  const readme = read('../README.md');
+  const section = readme.split('## Client setup and the collaboration skill')[1]?.split('\n## ')[0] ?? '';
+  const checklist = [
+    [/\*\*When it helps\.\*\*/, 'when the skill helps'],
+    [/\*\*Why it is optional\.\*\*[\s\S]*only source of live data,\s+authorization, and actions/, 'why optional; MCP is the authority'],
+    [/^### Supported clients$/m, 'supported clients'],
+    [/\| Codex \| `codex` \|[\s\S]*\| Cursor \| `cursor` \|[\s\S]*\| Claude Code \| `claude` \|/, 'codex, cursor, claude rows'],
+    [/^botmancers setup --client codex /m, 'install command'],
+    [/\*\*Update\.\*\*[\s\S]*`botmancers setup` refreshes it/, 'update after upgrade'],
+    [/^botmancers setup --client codex --remove$/m, 'removal command'],
+    [/^### Managed-file ownership$/m, 'managed-file ownership'],
+    [/config\/clients\/<client>\.json/, 'ownership record path'],
+    [/exits 12/, 'conflict exit code'],
+    [/^### MCP-only clients$/m, 'MCP-only fallback'],
+  ];
+  assert.deepEqual(checklist.filter(([pattern]) => !pattern.test(section)).map(([, label]) => label), []);
+  assert.match(readme, /`botmancers setup --client codex\\\|cursor\\\|claude \[--remove\]`/, 'command table row');
+});
+
+test('documentation links resolve: README, the bridge doc, and the skill', () => {
+  const docs = [
+    new URL('../README.md', import.meta.url),
+    new URL('../../../docs/mcp-bridge.md', import.meta.url),
+    new URL('../skills/botmancers-collaboration/SKILL.md', import.meta.url),
+    new URL('../skills/botmancers-collaboration/references/workflows.md', import.meta.url),
+  ];
+  const slug = heading => heading.trim().toLowerCase().replace(/`/g, '').replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-');
+  const problems = [];
+  for (const doc of docs) {
+    const text = readFileSync(doc, 'utf8');
+    for (const [, target] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
+      if (/^[a-z]+:/i.test(target)) continue;
+      const [file, anchor] = target.split('#');
+      const resolved = file ? new URL(file, doc) : doc;
+      if (!existsSync(resolved)) {
+        problems.push(`${doc.pathname}: ${target} does not exist`);
+        continue;
+      }
+      if (anchor && resolved.pathname.endsWith('.md')) {
+        const headings = [...readFileSync(resolved, 'utf8').matchAll(/^#{1,6}\s+(.+)$/gm)].map(match => slug(match[1]));
+        if (!headings.includes(anchor)) problems.push(`${doc.pathname}: #${anchor} not found in ${resolved.pathname}`);
+      }
+    }
+  }
+  assert.deepEqual(problems, []);
+});
