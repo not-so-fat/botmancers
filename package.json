@@ -46,6 +46,7 @@
     "test:text-contrast": "node test-text-contrast.js",
     "test:config-layout": "node test-config-layout.js",
     "test:engine-store": "node test-engine-store.js",
+    "test:session-catalog": "node test-session-catalog.js",
     "test:conversation-intake": "node test-conversation-intake.js",
     "test:attempt-adapter": "node test-attempt-adapter.js",
     "test:wake-router": "node test-wake-router.js",
