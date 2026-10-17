@@ -74,6 +74,8 @@ does not exist.
   is still open, possibly waiting for the owner.
 - **Privacy.** Responses never include Session Bindings, external run or
   session ids, Decks, working directories, tool profiles, or credentials.
+  The owner's Sessions view (`docs/core-engine.md`, Session catalog) is a
+  loopback UI route, not a bridge tool; the bridge never proxies it.
 
 ## Operator configuration
 

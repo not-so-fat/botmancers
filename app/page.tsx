@@ -22,6 +22,7 @@ import { useDeckList } from '@/app/components/useDeckList';
 import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import ManageAgentsPanel from '@/app/components/ManageAgentsPanel';
+import SessionsPanel from '@/app/components/SessionsPanel';
 import { deletedStatusLine, type DeleteAgentRef } from '@/lib/bot-deletion';
 import { DIALOG_FOCUSABLE, newAgentDialogPlacement, wrapFocusTarget, type DialogPlacement } from '@/lib/new-agent-dialog';
 import ThreadState from '@/app/components/ThreadState';
@@ -204,6 +205,8 @@ export default function Home() {
   const hiddenToggleRef = useRef<HTMLButtonElement>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const manageRef = useRef<HTMLButtonElement>(null);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const sessionsRef = useRef<HTMLButtonElement>(null);
   const [rosterStatus, setRosterStatus] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const avatarFileRef = useRef<HTMLInputElement>(null);
@@ -944,6 +947,16 @@ export default function Home() {
                   Config
                 </Link>
                 <button
+                  ref={sessionsRef}
+                  type="button"
+                  className="attach-word"
+                  aria-haspopup="dialog"
+                  aria-expanded={sessionsOpen}
+                  onClick={() => setSessionsOpen(true)}
+                >
+                  Sessions
+                </button>
+                <button
                   type="button"
                   className="attach-word"
                   title="Stop delegated turns in this thread"
@@ -1207,6 +1220,21 @@ export default function Home() {
         />
       ) : null}
 
+      {sessionsOpen && activeConversation ? (
+        <SessionsPanel
+          key={activeConversation.details.id}
+          agentId={activeConversation.details.id}
+          agentName={activeConversation.details.name}
+          onClose={() => {
+            setSessionsOpen(false);
+            requestAnimationFrame(() => sessionsRef.current?.focus());
+          }}
+          onOpenThread={id => {
+            setSessionsOpen(false);
+            void openBot(id).then(() => requestAnimationFrame(() => sessionsRef.current?.focus()));
+          }}
+        />
+      ) : null}
       {manageOpen ? (
         <ManageAgentsPanel
           deckState={deckState}

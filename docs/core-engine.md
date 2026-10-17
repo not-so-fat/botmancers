@@ -103,6 +103,43 @@ A Session Binding is opaque runtime continuity for an Agent doing work in a
 Conversation or Work Request. Botmancers stores it so a later revision can resume
 the correct session, but users do not have to manage it.
 
+### Session catalog
+
+Each Agent's **Sessions** view (thread header → Sessions) lists its Session
+Bindings so the owner can recognize a runtime context without handling provider
+IDs. It is a read model over `session_bindings` (`lib/session-catalog.ts`); it
+adds no table and writes nothing.
+
+- **Reference.** A session is named by its Botmancers reference: the Session
+  Binding's own id. It is the only identifier in the catalog's normal responses
+  and UI.
+- **Metadata.** Agent and adapter (plus transport from the source Attempt's
+  launch snapshot); a title from the owning Work Request's first intent line,
+  else the group name, else `<Agent name> · <created date/time>`; origin
+  Conversation and Work Request (a binding scoped to only one of them takes the
+  other from what is recorded: the Work Request from its source Attempt, the
+  Conversation from the Work Request's source conversation); `active` (unreleased) or `ended` (released);
+  created, ended, and last-activity times (the newest of binding, release,
+  source Attempt, and resuming Attempts); and `resumable` (exactly the binding a revision
+  would resume: active, scoped to its own implementation or revision Work
+  Request together with that request's source conversation, and bound under
+  the adapter the Agent dispatches today; a sparse request-only or
+  conversation-only binding, or one left by an earlier runtime, is not
+  resumable). Workspace
+  and deck appear only when the stored launch snapshot recorded them; nothing is
+  probed live.
+- **Routes.** `GET /api/bots/:id/sessions?status=active|ended|all` (newest
+  activity first, then newest binding, then reference) and
+  `GET /api/bots/:id/sessions/:ref`. Both sit behind the owner boundary
+  (`proxy.ts`). An unknown Agent or reference is 404; a reference belonging to
+  another Agent is the same 404.
+- **External session IDs.** The opaque provider session ID is never part of a
+  summary, a detail, or the default UI. The single exception is the explicitly
+  labeled local debug disclosure ("Local debug: provider session ID", with a
+  Copy action), which requests `?debug=external_session_id` on the detail
+  route. The MCP bridge and `/api/v0` do not expose the catalog, and their
+  non-disclosure contract (`docs/mcp-bridge.md`, Privacy) is unchanged.
+
 ## One engine
 
 All entry points use one control path:
@@ -392,6 +429,7 @@ above them:
 | `lib/agent.ts`, `lib/ui-turns.ts` | UI turn executor: UI thread features over UI turn Work Requests |
 | `lib/agent-dispatch.ts` | Runtime adapter selection, not workflow policy |
 | `lib/agent-deck-run.ts` | Agent Deck transport and session resume |
+| `lib/session-catalog.ts` | Read-only Agent session catalog over Session Bindings (Sessions view) |
 
 ### Persistent schema
 
