@@ -119,6 +119,20 @@ function envelope(status: number, code: string, message: string, headers: Record
   return Response.json({ error: { code, message } }, { status, headers });
 }
 
+// One service call's answer, before it becomes an HTTP response (here) or an
+// MCP tool result (lib/mcp-bridge).
+export interface ServiceResult {
+  status: number;
+  body: unknown;
+  headers?: Record<string, string>;
+}
+
+const ok = (body: unknown, status = 200): ServiceResult => ({ status, body });
+
+function failure(status: number, code: string, message: string, headers: Record<string, string> = {}, fields?: string[]): ServiceResult {
+  return { status, body: { error: { code, message, ...(fields ? { fields } : {}) } }, headers };
+}
+
 interface Operation {
   operation: string;
   capability: string;
@@ -135,22 +149,19 @@ interface AuditTarget {
   agentId: string | null;
 }
 
-// A mutation hands commitAudit to the service as its commit hook: the
-// allowed audit event is appended inside the transaction that records the
-// mutation, so if the append fails nothing is committed or dispatched.
-async function serve(
-  request: Request,
-  op: Operation,
-  run: (ctx: ServiceContext, target: AuditTarget, commitAudit: () => void) => Promise<Response> | Response,
-): Promise<Response> {
-  let principal: Principal;
-  try {
-    principal = await authenticate(request);
-  } catch (error) {
-    if (error instanceof AgentApiError) return envelope(error.status, error.code, error.message);
-    console.error('Service API authentication error:', error instanceof Error ? error.message : 'unknown error');
-    return envelope(500, 'internal_error', 'The request could not be processed.');
-  }
+// A caller-side check that runs first inside the audited call (the MCP
+// bridge validates its tool arguments here), so its refusal is audited and
+// precedes any write.
+export type ServiceGuard = (ctx: ServiceContext) => void;
+
+type Run = (ctx: ServiceContext, target: AuditTarget, commitAudit: () => void) => Promise<ServiceResult> | ServiceResult;
+
+// One call by an already authenticated principal: service principals only,
+// rate limited, and audited whatever its outcome. A mutation hands
+// commitAudit to the service as its commit hook: the allowed audit event is
+// appended inside the transaction that records the mutation, so if the
+// append fails nothing is committed or dispatched.
+async function serveAs(principal: Principal, op: Operation, run: Run, guard?: ServiceGuard): Promise<ServiceResult> {
   const target: AuditTarget = { kind: op.targetKind, targetRef: op.targetRef ?? null, agentId: op.agentId ?? null };
   const append = (outcome: AuditOutcome, code: string | null) => serviceAudit.append({
     principal, operation: op.operation, capability: op.capability,
@@ -161,7 +172,7 @@ async function serve(
     append('allowed', null);
     committed = true;
   };
-  let response: Response;
+  let result: ServiceResult;
   let outcome: AuditOutcome;
   let code: string | null = null;
   try {
@@ -170,34 +181,49 @@ async function serve(
     if (retryAfter !== null) {
       code = 'rate_limited';
       outcome = 'denied';
-      response = envelope(429, 'rate_limited', 'Too many calls; retry later.', { 'Retry-After': String(retryAfter) });
+      result = failure(429, 'rate_limited', 'Too many calls; retry later.', { 'Retry-After': String(retryAfter) });
     } else {
-      response = await run(serviceContext(principal), target, commitAudit);
+      const ctx = serviceContext(principal);
+      guard?.(ctx);
+      result = await run(ctx, target, commitAudit);
       outcome = 'allowed';
     }
   } catch (error) {
     if (error instanceof ServiceApiError) {
       outcome = error.denied ? 'denied' : 'rejected';
       code = error.notGranted ? 'not_granted' : error.code;
-      response = envelope(error.status, error.code, error.message);
+      result = failure(error.status, error.code, error.message, {}, error.fields);
     } else {
       console.error('Service API error:', error instanceof Error ? error.message : 'unknown error');
       outcome = 'error';
       code = 'internal_error';
-      response = envelope(500, 'internal_error', 'The request could not be processed.');
+      result = failure(500, 'internal_error', 'The request could not be processed.');
     }
   }
   // A committed mutation already holds its allowed event; anything that
   // failed after the commit is appended as well.
-  if (committed && outcome === 'allowed') return response;
+  if (committed && outcome === 'allowed') return result;
   try {
     append(outcome, code);
   } catch (error) {
     // Fail closed: nothing is returned that was not audited.
     console.error('Service audit append failed:', error instanceof Error ? error.message : 'unknown error');
+    return failure(500, 'internal_error', 'The request could not be processed.');
+  }
+  return result;
+}
+
+async function serve(request: Request, call: (principal: Principal) => Promise<ServiceResult>): Promise<Response> {
+  let principal: Principal;
+  try {
+    principal = await authenticate(request);
+  } catch (error) {
+    if (error instanceof AgentApiError) return envelope(error.status, error.code, error.message);
+    console.error('Service API authentication error:', error instanceof Error ? error.message : 'unknown error');
     return envelope(500, 'internal_error', 'The request could not be processed.');
   }
-  return response;
+  const result = await call(principal);
+  return Response.json(result.body, { status: result.status, headers: result.headers ?? {} });
 }
 
 // The source session a create body names, and the Agent owning it, before
@@ -208,15 +234,6 @@ function sourceTargetOf(body: unknown): Partial<AuditTarget> {
   const ref = source && typeof source === 'object' ? (source as Record<string, unknown>).session_ref : undefined;
   if (typeof ref !== 'string' || ref.length === 0) return {};
   return { targetRef: ref, agentId: ref.length <= 200 ? sessionOwner(ref) : null };
-}
-
-function query(request: Request) {
-  const params = new URL(request.url).searchParams;
-  return {
-    cursor: params.get('cursor'),
-    limit: (max: number = PAGE_LIMITS.max, fallback: number = PAGE_LIMITS.default) => parseLimit(params.get('limit'), fallback, max),
-    get: (name: string) => params.get(name),
-  };
 }
 
 function sessionOwner(ref: string): string | null {
@@ -230,103 +247,155 @@ function exchangeSource(id: string): string | null {
   return row?.source_agent_id ?? null;
 }
 
+// ---------------------------------------------------------------------
+// The operations, for a principal the transport authenticated: the HTTP
+// handlers below and the MCP bridge's granted tools (lib/mcp-bridge) are
+// both thin adapters over these. List parameters arrive as the raw query
+// strings and are validated inside the audited call.
+
+export interface ListParams {
+  cursor: string | null;
+  limit: string | null;
+}
+
+// A request body, read (and for the MCP bridge, built from validated tool
+// arguments) inside the audited call.
+export type BodySource = () => Promise<unknown> | unknown;
+
+export const serviceOperations = {
+  capabilities: (principal: Principal, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'capabilities.read', capability: 'discovery', targetKind: 'grants' }, ctx => ok(capabilitiesView(ctx)), guard),
+
+  listAgents: (principal: Principal, q: ListParams, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'agents.list', capability: 'agents:read', targetKind: 'agent' },
+      ctx => ok(listServiceAgents(ctx, { cursor: q.cursor, limit: parseLimit(q.limit) })), guard),
+
+  getAgent: (principal: Principal, agentId: string, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'agents.read', capability: 'agents:read', targetKind: 'agent', targetRef: agentId, agentId },
+      ctx => ok(getServiceAgent(ctx, agentId)), guard),
+
+  listSessions: (principal: Principal, agentId: string, q: ListParams & { status: string | null }, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'sessions.list', capability: 'sessions:read', targetKind: 'agent', targetRef: agentId, agentId },
+      ctx => ok(listServiceSessions(ctx, agentId, { cursor: q.cursor, limit: parseLimit(q.limit), status: q.status })), guard),
+
+  getSession: (principal: Principal, agentId: string, ref: string, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'sessions.read', capability: 'sessions:read', targetKind: 'session', targetRef: ref, agentId },
+      ctx => ok(getServiceSession(ctx, agentId, ref)), guard),
+
+  listConversations: (principal: Principal, agentId: string, q: ListParams, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'conversations.list', capability: 'conversations:read', targetKind: 'agent', targetRef: agentId, agentId },
+      ctx => ok(listServiceConversations(ctx, agentId, { cursor: q.cursor, limit: parseLimit(q.limit) })), guard),
+
+  getConversation: (principal: Principal, agentId: string, conversationId: string, q: ListParams, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'conversations.read', capability: 'conversations:read', targetKind: 'conversation', targetRef: conversationId, agentId },
+      ctx => ok(getServiceConversation(ctx, agentId, conversationId, {
+        cursor: q.cursor, limit: parseLimit(q.limit, PAGE_LIMITS.messagesDefault, PAGE_LIMITS.messagesMax),
+      })), guard),
+
+  sendSessionMessage: (principal: Principal, ref: string, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'sessions.message', capability: 'sessions:message', targetKind: 'session', targetRef: ref }, async (ctx, target, commitAudit) => {
+      if (ref.length <= 200) target.agentId = sessionOwner(ref);
+      const input = parseSessionMessageBody(await body(), idempotencyHeader);
+      const { accepted } = sendServiceSessionMessage(ctx, ref, input, row => {
+        target.agentId = row.source_agent_id;
+        commitAudit();
+      });
+      return ok(accepted, accepted.replayed ? 200 : 202);
+    }, guard),
+
+  listExchanges: (principal: Principal, q: ListParams, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'exchanges.list', capability: 'exchanges:read', targetKind: 'exchange' },
+      ctx => ok(listServiceExchanges(ctx, { cursor: q.cursor, limit: parseLimit(q.limit) })), guard),
+
+  // Until the exchange exists, its audit target is the source session (and
+  // the Agent owning it), recorded even when the body is then refused.
+  createExchange: (principal: Principal, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'exchanges.create', capability: 'exchanges:create', targetKind: 'session' }, async (ctx, target, commitAudit) => {
+      const raw = await body();
+      Object.assign(target, sourceTargetOf(raw));
+      const input = parseServiceExchangeBody(raw, idempotencyHeader);
+      const { exchange, created } = createServiceExchange(ctx, input, row => {
+        target.kind = 'exchange';
+        target.targetRef = row.id;
+        target.agentId = row.source_agent_id;
+        commitAudit();
+      });
+      return ok({ exchange, replayed: !created }, created ? 201 : 200);
+    }, guard),
+
+  getExchange: (principal: Principal, id: string, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'exchanges.read', capability: 'exchanges:read', targetKind: 'exchange', targetRef: id }, (ctx, target) => {
+      target.agentId = exchangeSource(id);
+      const exchange = getServiceExchange(ctx, id);
+      target.agentId = exchange.source.agent_id;
+      return ok(exchange);
+    }, guard),
+
+  cancelExchange: (principal: Principal, id: string, readReason: () => Promise<string | null>, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'exchanges.cancel', capability: 'exchanges:create', targetKind: 'exchange', targetRef: id }, async (ctx, target, commitAudit) => {
+      target.agentId = exchangeSource(id);
+      const reason = await readReason();
+      const result = await cancelServiceExchange(ctx, id, reason, row => {
+        target.agentId = row.source_agent_id;
+        commitAudit();
+      });
+      return ok(result);
+    }, guard),
+};
+
+function query(request: Request): ListParams & { get: (name: string) => string | null } {
+  const params = new URL(request.url).searchParams;
+  return { cursor: params.get('cursor'), limit: params.get('limit'), get: (name: string) => params.get(name) };
+}
+
+// ---------------------------------------------------------------------
+// HTTP handlers.
+
 export function handleGetCapabilities(request: Request): Promise<Response> {
-  return serve(request, { operation: 'capabilities.read', capability: 'discovery', targetKind: 'grants' }, ctx => Response.json(capabilitiesView(ctx)));
+  return serve(request, principal => serviceOperations.capabilities(principal));
 }
 
 export function handleListAgents(request: Request): Promise<Response> {
-  return serve(request, { operation: 'agents.list', capability: 'agents:read', targetKind: 'agent' }, ctx => {
-    const q = query(request);
-    return Response.json(listServiceAgents(ctx, { cursor: q.cursor, limit: q.limit() }));
-  });
+  return serve(request, principal => serviceOperations.listAgents(principal, query(request)));
 }
 
 export function handleGetAgent(request: Request, agentId: string): Promise<Response> {
-  return serve(request, { operation: 'agents.read', capability: 'agents:read', targetKind: 'agent', targetRef: agentId, agentId },
-    ctx => Response.json(getServiceAgent(ctx, agentId)));
+  return serve(request, principal => serviceOperations.getAgent(principal, agentId));
 }
 
 export function handleListSessions(request: Request, agentId: string): Promise<Response> {
-  return serve(request, { operation: 'sessions.list', capability: 'sessions:read', targetKind: 'agent', targetRef: agentId, agentId }, ctx => {
-    const q = query(request);
-    return Response.json(listServiceSessions(ctx, agentId, { cursor: q.cursor, limit: q.limit(), status: q.get('status') }));
-  });
+  const q = query(request);
+  return serve(request, principal => serviceOperations.listSessions(principal, agentId, { cursor: q.cursor, limit: q.limit, status: q.get('status') }));
 }
 
 export function handleGetSession(request: Request, agentId: string, ref: string): Promise<Response> {
-  return serve(request, { operation: 'sessions.read', capability: 'sessions:read', targetKind: 'session', targetRef: ref, agentId },
-    ctx => Response.json(getServiceSession(ctx, agentId, ref)));
+  return serve(request, principal => serviceOperations.getSession(principal, agentId, ref));
 }
 
 export function handleListConversations(request: Request, agentId: string): Promise<Response> {
-  return serve(request, { operation: 'conversations.list', capability: 'conversations:read', targetKind: 'agent', targetRef: agentId, agentId }, ctx => {
-    const q = query(request);
-    return Response.json(listServiceConversations(ctx, agentId, { cursor: q.cursor, limit: q.limit() }));
-  });
+  return serve(request, principal => serviceOperations.listConversations(principal, agentId, query(request)));
 }
 
 export function handleGetConversation(request: Request, agentId: string, conversationId: string): Promise<Response> {
-  return serve(request, { operation: 'conversations.read', capability: 'conversations:read', targetKind: 'conversation', targetRef: conversationId, agentId }, ctx => {
-    const q = query(request);
-    return Response.json(getServiceConversation(ctx, agentId, conversationId, {
-      cursor: q.cursor, limit: q.limit(PAGE_LIMITS.messagesMax, PAGE_LIMITS.messagesDefault),
-    }));
-  });
+  return serve(request, principal => serviceOperations.getConversation(principal, agentId, conversationId, query(request)));
 }
 
 export function handleSendSessionMessage(request: Request, ref: string): Promise<Response> {
-  return serve(request, { operation: 'sessions.message', capability: 'sessions:message', targetKind: 'session', targetRef: ref }, async (ctx, target, commitAudit) => {
-    if (ref.length <= 200) target.agentId = sessionOwner(ref);
-    const input = parseSessionMessageBody(await readJsonBody(request), request.headers.get('idempotency-key'));
-    const { accepted } = sendServiceSessionMessage(ctx, ref, input, row => {
-      target.agentId = row.source_agent_id;
-      commitAudit();
-    });
-    return Response.json(accepted, { status: accepted.replayed ? 200 : 202 });
-  });
+  return serve(request, principal => serviceOperations.sendSessionMessage(principal, ref, () => readJsonBody(request), request.headers.get('idempotency-key')));
 }
 
 export function handleListExchanges(request: Request): Promise<Response> {
-  return serve(request, { operation: 'exchanges.list', capability: 'exchanges:read', targetKind: 'exchange' }, ctx => {
-    const q = query(request);
-    return Response.json(listServiceExchanges(ctx, { cursor: q.cursor, limit: q.limit() }));
-  });
+  return serve(request, principal => serviceOperations.listExchanges(principal, query(request)));
 }
 
 export function handleCreateExchange(request: Request): Promise<Response> {
-  // Until the exchange exists, its audit target is the source session (and
-  // the Agent owning it), recorded even when the body is then refused.
-  return serve(request, { operation: 'exchanges.create', capability: 'exchanges:create', targetKind: 'session' }, async (ctx, target, commitAudit) => {
-    const body = await readJsonBody(request);
-    Object.assign(target, sourceTargetOf(body));
-    const input = parseServiceExchangeBody(body, request.headers.get('idempotency-key'));
-    const { exchange, created } = createServiceExchange(ctx, input, row => {
-      target.kind = 'exchange';
-      target.targetRef = row.id;
-      target.agentId = row.source_agent_id;
-      commitAudit();
-    });
-    return Response.json({ exchange, replayed: !created }, { status: created ? 201 : 200 });
-  });
+  return serve(request, principal => serviceOperations.createExchange(principal, () => readJsonBody(request), request.headers.get('idempotency-key')));
 }
 
 export function handleGetExchange(request: Request, id: string): Promise<Response> {
-  return serve(request, { operation: 'exchanges.read', capability: 'exchanges:read', targetKind: 'exchange', targetRef: id }, (ctx, target) => {
-    target.agentId = exchangeSource(id);
-    const exchange = getServiceExchange(ctx, id);
-    target.agentId = exchange.source.agent_id;
-    return Response.json(exchange);
-  });
+  return serve(request, principal => serviceOperations.getExchange(principal, id));
 }
 
 export function handleCancelExchange(request: Request, id: string): Promise<Response> {
-  return serve(request, { operation: 'exchanges.cancel', capability: 'exchanges:create', targetKind: 'exchange', targetRef: id }, async (ctx, target, commitAudit) => {
-    target.agentId = exchangeSource(id);
-    const reason = parseCancelBody(await readText(request));
-    const result = await cancelServiceExchange(ctx, id, reason, row => {
-      target.agentId = row.source_agent_id;
-      commitAudit();
-    });
-    return Response.json(result);
-  });
+  return serve(request, principal => serviceOperations.cancelExchange(principal, id, async () => parseCancelBody(await readText(request))));
 }
