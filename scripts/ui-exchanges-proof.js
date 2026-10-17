@@ -31,10 +31,14 @@
 // - the rail's Exchanges entry opens the ledger: both records, newest
 //   first; All/Ask/Continue, status, and Agent filters; filter-zero state;
 //   the detail timeline and backlinks; a backlink opens the thread with
-//   the card focused.
-// Narrow (390x844): the ledger list and detail are full-height pages,
-// thread cards, the Sessions actions, and the Continue dialog fit with no
-// clipping or horizontal overflow.
+//   the card focused;
+// - Ask on Dev's group-room session: the Design review group is a linked
+//   thread; its ledger backlink opens the group thread page with the card
+//   focused, live then terminal.
+// Narrow (390x844): the ledger list and detail are full-height pages, and
+// the detail's back control returns focus to the row that opened it;
+// thread cards, the group thread page, the Sessions actions, and the
+// Continue dialog fit with no clipping or horizontal overflow.
 // Every page: no provider session id in the DOM or text.
 //
 // Refuses a dirty worktree. Writes screenshots, a trace, and
@@ -238,6 +242,8 @@ async function run() {
   const { fixture, EXTERNAL_IDS } = seed(deck.url);
   const { dev, tank, scout } = fixture.agents;
   const implRef = fixture.bindings.implementation.id;
+  const groupRef = fixture.bindings.group.id;
+  const roomConvId = fixture.conversations.roomConv.id;
   log(`fake Agent Deck ${deck.url}; app ${URL_BASE} (real Next.js app and engine; the only mocked response is one 503 on POST /api/exchanges)`);
   const app = await startApp(deck.fake.token);
   const chrome = await launchChrome();
@@ -340,6 +346,7 @@ async function run() {
 
   let askId = null;
   let continueId = null;
+  let groupAskId = null;
   try {
     // ================= Desktop =================
     const vp = DESKTOP;
@@ -541,12 +548,47 @@ async function run() {
     check(true, 'a backlink opens the linked thread and focuses the exchange card');
     await shot(vp, 'backlink-tank-card-focused');
 
+    log('Ask on a group-room session: the group thread is linked');
+    await openThread(dev, 'Dev');
+    await click(byText('.thread-bar button', 'Sessions'));
+    const groupRow = `document.querySelector('.sessions-drawer [data-session-ref="${groupRef}"]')`;
+    await waitFor(groupRow, 'Sessions drawer with the group-room row');
+    check(/Design review/.test(await evaluate(`${groupRow}.textContent`)), 'the group-room session is recognizable by its group');
+    await focusEl(`${groupRow}.querySelector('.session-action')`);
+    await press('Enter');
+    await waitFor("document.querySelector('.exchange-dialog[data-exchange-mode=\"ask\"]')", 'group Ask dialog');
+    await typeInto("document.querySelector('.exchange-dialog textarea')", 'What did the design review settle on?');
+    await click("document.querySelector('.exchange-dialog button[type=\"submit\"]')");
+    await waitFor("!document.querySelector('.exchange-dialog')", 'group Ask dialog closes');
+    check(posts.length === 4 && posts[3].source.session_ref === groupRef, 'one request names the group-room session');
+    await press('Escape');
+    await waitFor(`[...document.querySelectorAll('.messages .exchange-card')].some(el => ![${JSON.stringify(askId)}, ${JSON.stringify(continueId)}].includes(el.dataset.exchangeId))`, 'group Ask card in Dev thread');
+    groupAskId = await evaluate(`[...document.querySelectorAll('.messages .exchange-card')].find(el => ![${JSON.stringify(askId)}, ${JSON.stringify(continueId)}].includes(el.dataset.exchangeId)).dataset.exchangeId`);
+    await waitFor(`document.querySelector('.messages [data-exchange-id="${groupAskId}"]')?.dataset.exchangeState === 'extracting'`, 'group Ask extracting');
+    await cdp.send('Page.navigate', { url: `${URL_BASE}/exchanges?id=${groupAskId}` });
+    await waitFor(`document.querySelector('[data-exchange-detail="${groupAskId}"] .ledger-links li')`, 'group Ask detail', 120000);
+    const groupLinks = await evaluate(`[...document.querySelectorAll('[data-exchange-detail="${groupAskId}"] .ledger-links li')].map(li => ({ text: li.textContent.trim(), href: li.querySelector('a')?.getAttribute('href') ?? null }))`);
+    const groupLink = groupLinks.find(l => /^Group Design review/.test(l.text));
+    check(groupLinks.length === 2 && groupLinks.every(l => l.href) && !!groupLink && groupLink.href === `/threads/${roomConvId}?exchange=${groupAskId}`, `every linked thread has a backlink, the group's opens its thread page (${groupLinks.map(l => l.text).join(' | ')})`);
+    await click(`[...document.querySelectorAll('[data-exchange-detail="${groupAskId}"] .ledger-thread-link')].find(a => /^Group Design review/.test(a.textContent.trim()))`);
+    await waitFor(`location.pathname === '/threads/${roomConvId}' && document.activeElement?.dataset?.exchangeId === ${JSON.stringify(groupAskId)}`, 'group thread page with the card focused', 120000);
+    const gCard = await evaluate(`(() => { const c = document.querySelector('[data-exchange-id="${groupAskId}"]'); return { state: c.dataset.exchangeState, text: c.innerText, h1: document.querySelector('h1').textContent.trim(), main: !!document.querySelector('main') }; })()`);
+    check(gCard.h1 === 'Group Design review' && gCard.main && gCard.state === 'extracting' && /Cancel/.test(gCard.text), 'the group thread page shows the live card (with Cancel) under the group heading');
+    await shot(vp, 'group-thread-intermediate');
+    for (let i = 0; i < 100 && deck.started('ask') < 2; i++) await sleep(100);
+    check(deck.release('ask') === 1, 'the held group Ask run is released');
+    await waitFor(`document.querySelector('[data-exchange-id="${groupAskId}"]')?.dataset.exchangeState === 'completed'`, 'group Ask completed on the group thread page');
+    check(!/Cancel/.test(await evaluate(`document.querySelector('[data-exchange-id="${groupAskId}"]').innerText`)), 'the group thread page shows the terminal card without Cancel');
+    await layout('Group thread desktop', '.exchange-card, .exchange-card p, .group-thread-list li');
+    await noSecrets('Group thread');
+    await shot(vp, 'group-thread-terminal');
+
     // ================= Narrow =================
     const nv = NARROW;
     log(`\n== ${nv.name} ==`);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: nv.width, height: nv.height, deviceScaleFactor: 1, mobile: true });
     await cdp.send('Page.navigate', { url: `${URL_BASE}/exchanges` });
-    await waitFor("document.querySelectorAll('.ledger-row').length === 2", 'narrow ledger rows', 120000);
+    await waitFor("document.querySelectorAll('.ledger-row').length === 3", 'narrow ledger rows', 120000);
     const listPane = await evaluate("(() => { const l = document.querySelector('.ledger-list-pane').getBoundingClientRect(); return { listShown: l.width > 0, detailShown: getComputedStyle(document.querySelector('.ledger-detail-pane')).display !== 'none', width: l.width }; })()");
     check(listPane.listShown && !listPane.detailShown && listPane.width > 330, `narrow: the list is a full-width page with no squeezed detail column (${Math.round(listPane.width)}px)`);
     await layout('Ledger list narrow', '.ledger-row, .ledger-row span, .ledger-filters, .ledger-selects select, .ledger-mode button');
@@ -560,9 +602,16 @@ async function run() {
     await shot(nv, 'ledger-continue-detail');
     await click("document.querySelector('.ledger-detail-back')");
     await waitFor("getComputedStyle(document.querySelector('.ledger-list-pane')).display !== 'none' && location.search === ''", 'back to the list');
-    check(true, 'narrow: back returns to the list');
+    await sleep(200);
+    check(await evaluate(`document.activeElement === document.querySelector('.ledger-row[data-exchange-id="${continueId}"]')`), 'narrow: back returns to the list with focus on the row that opened the detail');
+    await shot(nv, 'ledger-back-row-focused');
+    await cdp.send('Page.navigate', { url: `${URL_BASE}/threads/${roomConvId}?exchange=${groupAskId}` });
+    await waitFor(`document.activeElement?.dataset?.exchangeId === ${JSON.stringify(groupAskId)}`, 'narrow group thread with the card focused', 120000);
+    await layout('Group thread narrow', '.exchange-card, .exchange-card p, .exchange-card span, .group-thread-list li, .group-thread-nav a');
+    await noSecrets('Narrow group thread');
+    await shot(nv, 'group-thread-card');
     await cdp.send('Page.navigate', { url: `${URL_BASE}/?agent=${dev.id}` });
-    await waitFor(`document.querySelector('.thread-name')?.textContent.trim() === 'Dev' && document.querySelectorAll('.messages .exchange-card').length === 2`, 'narrow Dev thread with both cards', 120000);
+    await waitFor(`document.querySelector('.thread-name')?.textContent.trim() === 'Dev' && document.querySelectorAll('.messages .exchange-card').length === 3`, 'narrow Dev thread with its three cards', 120000);
     await evaluate(`document.querySelector('.messages [data-exchange-id="${askId}"]').scrollIntoView({ block: 'start' })`);
     await layout('Thread cards narrow', '.exchange-card, .exchange-card p, .exchange-card span');
     await noSecrets('Narrow thread');
@@ -578,7 +627,7 @@ async function run() {
     await shot(nv, 'continue-dialog');
     await press('Escape');
     check(await evaluate("!document.querySelector('.exchange-dialog')"), 'narrow: Escape closes the dialog');
-    check(posts.length === 3, `no extra exchange requests overall (${posts.length} POSTs for three successful or retried user actions)`);
+    check(posts.length === 4, `no extra exchange requests overall (${posts.length} POSTs for four Sends, one retried)`);
   } finally {
     cdp.close();
     chrome.proc.kill();
@@ -591,7 +640,7 @@ async function run() {
   fs.writeFileSync(path.join(OUT, 'exchanges-proof-receipt.json'), `${JSON.stringify({
     head: HEAD, cleanTree: true, app: URL_BASE, agentDeck: 'test-support/fake-agent-deck-api (loopback, held runs)',
     mocks: 'one mocked 503 response to the first POST /api/exchanges (CDP Fetch interception); everything else is the real app and engine',
-    result: failures === 0 ? 'pass' : 'fail', failures, exchanges: { ask: askId, continue: continueId },
+    result: failures === 0 ? 'pass' : 'fail', failures, exchanges: { ask: askId, continue: continueId, groupAsk: groupAskId },
     posts, viewports: [`${DESKTOP.width}x${DESKTOP.height}`, `${NARROW.width}x${NARROW.height}`], screenshots, capturedAt: new Date().toISOString(),
   }, null, 2)}\n`);
   process.exit(failures === 0 ? 0 : 1);
