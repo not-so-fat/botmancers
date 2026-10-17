@@ -65,7 +65,7 @@ function step(name, fn) {
     print(`PASS  ${name}${detail ? ` — ${detail}` : ''}\n`);
   } catch (error) {
     failed = true;
-    print(`FAIL  ${name} — ${error.message.trim().split('\n').slice(-8).join('\n      ')}\n`);
+    print(`FAIL  ${name} — ${error.message.trim().split('\n').slice(-(name === 'tests' ? 40 : 8)).join('\n      ')}\n`);
   }
 }
 
@@ -162,7 +162,16 @@ step('packaged app build', () => {
 });
 
 step('tests', () => {
-  const out = run('npm', ['test']);
+  let out;
+  try {
+    out = run('npm', ['test']);
+  } catch (error) {
+    // execFileSync's message carries only stderr (build warnings); the failing
+    // test names and assertions are on stdout.
+    const stdout = String(error.stdout ?? '');
+    const failing = stdout.split('\n').filter(line => /^\s*(✖|not ok)|Error|expected|actual/.test(line)).slice(0, 30);
+    throw new Error(`npm test failed (exit ${error.status})\n${(failing.length ? failing : stdout.split('\n').slice(-30)).join('\n')}`);
+  }
   const pass = /ℹ pass (\d+)/.exec(out)?.[1];
   const fail = /ℹ fail (\d+)/.exec(out)?.[1];
   assert(fail === '0', `npm test reported ${fail} failure(s)`);

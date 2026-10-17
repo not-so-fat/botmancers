@@ -1,0 +1,37 @@
+# Runs the same release gate as release-botmancers.yml on every pull request
+# that touches the app or the package, on the release runner (Linux, Node 24),
+# so a failure shows up before a tag is pushed. It never publishes.
+name: ci-botmancers
+
+on:
+  pull_request:
+    paths:
+      - 'packages/mcp-server/**'
+      - 'app/**'
+      - 'lib/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/*botmancers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install the app's locked dependencies (repository root)
+        working-directory: .
+        run: npm ci --no-audit --no-fund
+      - name: Install the locked package-local build tools
+        run: npm ci --no-audit --no-fund
+      - name: Release check (dry run, no registry mutation)
+        run: npm run build && npm run build:app && npm run release:check
