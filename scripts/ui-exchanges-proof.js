@@ -618,10 +618,13 @@ async function run() {
     check(!detailPane.listShown && detailPane.back, 'narrow: the detail replaces the list as a full-height page with a back control');
     await layout('Ledger detail narrow', '.ledger-detail, .ledger-detail p, .ledger-timeline li, .ledger-links li, .exchange-card, .exchange-card p');
     await shot(nv, 'ledger-continue-detail');
-    await click("document.querySelector('.ledger-detail-back')");
+    // Back from the keyboard, so the restored focus is :focus-visible and the
+    // screenshot shows the ring.
+    await focusEl("document.querySelector('.ledger-detail-back')");
+    await press('Enter');
     await waitFor("getComputedStyle(document.querySelector('.ledger-list-pane')).display !== 'none' && location.search === ''", 'back to the list');
     await sleep(200);
-    check(await evaluate(`document.activeElement === document.querySelector('.ledger-row[data-exchange-id="${continueId}"]')`), 'narrow: back returns to the list with focus on the row that opened the detail');
+    check(await evaluate(`document.activeElement === document.querySelector('.ledger-row[data-exchange-id="${continueId}"]') && document.activeElement.matches(':focus-visible')`), 'narrow: keyboard back returns to the list with visible focus on the row that opened the detail');
     await shot(nv, 'ledger-back-row-focused');
     await cdp.send('Page.navigate', { url: `${URL_BASE}/threads/${roomConvId}?exchange=${groupAskId}` });
     await waitFor(`document.activeElement?.dataset?.exchangeId === ${JSON.stringify(groupAskId)}`, 'narrow group thread with the card focused', 120000);
