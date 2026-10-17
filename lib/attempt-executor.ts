@@ -56,6 +56,7 @@ export function attemptLaunchSnapshot(options: BeginAttemptOptions): Record<stri
     prompt_hash: promptHash(input),
     session_binding_id: input.sessionBinding?.bindingId ?? null,
     prepare_finalization: input.prepareFinalization === true,
+    fresh_session: input.freshSession === true,
     deadline_at: input.deadlineAt ?? null,
   };
 }
@@ -67,6 +68,9 @@ export function beginAttempt(store: EngineStore, requestId: string, options: Beg
   const binding = options.input.sessionBinding;
   if (binding && !binding.bindingId) {
     throw new EngineStoreError('invalid_input', 'A persisted resume attempt names its Session Binding.');
+  }
+  if (binding && options.input.freshSession) {
+    throw new EngineStoreError('invalid_input', 'A fresh-session attempt cannot resume a Session Binding.');
   }
   const attempt = store.createAttempt(requestId, {
     kind: binding ? 'resume' : 'launch',

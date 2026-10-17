@@ -71,6 +71,11 @@ export interface AttemptInput {
   // Attempt may ask; the caller decides (implementation and revision in a
   // Git worktree), never the adapter.
   prepareFinalization?: boolean;
+  // NOT-497: launch in a new runtime session the target owns from now on
+  // (a Continue destination). Never together with sessionBinding. An
+  // adapter whose launch would otherwise reuse a standing session (the
+  // Hermes per-Agent gateway session) must open a new one instead.
+  freshSession?: boolean;
 }
 
 export type AttemptFailureCategory =

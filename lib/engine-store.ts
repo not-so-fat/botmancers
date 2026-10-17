@@ -2698,9 +2698,18 @@ export type EngineStore = ReturnType<typeof createEngineStore>;
 // binding (with the whole request that owns it), and bindings scoped to
 // or sourced from removed rows. Rows are
 // then deleted dependants first. Callers run it inside their transaction.
-function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string; arg: string }): void {
+function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string; arg: string; exchanges: string }): void {
   const ids = (sql: string, ...args: unknown[]) => (db.prepare(sql).all(...args) as { id: string }[]).map(row => row.id);
   const requests = new Set(ids(seed.requests, seed.arg));
+  // NOT-497: the hop requests of every exchange removed with this
+  // aggregate go with it, wherever they run. A source hop runs in the
+  // source binding's conversation for the source Agent, so neither the
+  // origin conversation nor the destination Agent reaches it otherwise.
+  for (const id of ids(
+    `SELECT source_request_id AS id FROM session_exchanges WHERE (${seed.exchanges}) AND source_request_id IS NOT NULL
+     UNION SELECT destination_request_id AS id FROM session_exchanges WHERE (${seed.exchanges}) AND destination_request_id IS NOT NULL`,
+    seed.arg, seed.arg, seed.arg, seed.arg
+  )) requests.add(id);
   const bindings = new Set(ids(seed.bindings, seed.arg));
   const attempts = new Set<string>();
   const add = (set: Set<string>, found: string[]) => {
@@ -2789,6 +2798,9 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   db.prepare(`DELETE FROM terminal_followups WHERE request_id IN ${inSet}`).run(list(requests));
   const ordered =ids(`SELECT id FROM work_requests WHERE id IN ${inSet} ORDER BY depth DESC`, list(requests));
   for (const id of ordered) db.prepare('DELETE FROM work_requests WHERE id = ?').run(id);
+  // Any matching exchange no hop request reached (none is expected: an
+  // exchange commits with its first hop) goes too.
+  deleteSessionExchanges(db, seed.exchanges, seed.arg, seed.arg);
 }
 
 // NOT-497: removes matching exchanges with their events, under the purge
@@ -2808,7 +2820,6 @@ function deleteSessionExchanges(db: Db, where: string, ...args: unknown[]): void
 }
 
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
-  deleteSessionExchanges(db, 'origin_conversation_id = ? OR destination_conversation_id = ?', conversationId, conversationId);
   db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM delegation_chains WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM conversation_events WHERE conversation_id = ? AND request_id IS NULL').run(conversationId);
@@ -2816,6 +2827,7 @@ export function deleteEngineRecordsForConversation(db: Db, conversationId: strin
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE source_conversation_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE conversation_id = ?',
+    exchanges: 'origin_conversation_id = ? OR destination_conversation_id = ?',
     arg: conversationId,
   });
 }
@@ -2827,12 +2839,12 @@ export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
   db.prepare(`DELETE FROM conversation_events WHERE request_id IS NULL AND wake_id IN (
     SELECT id FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL))`).run(agentId, agentId);
   db.prepare('DELETE FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL)').run(agentId, agentId);
-  deleteSessionExchanges(db, 'source_agent_id = ? OR destination_agent_id = ?', agentId, agentId);
   // NOT-475: deleting either Agent deletes its grants.
   db.prepare('DELETE FROM wake_grants WHERE caller_agent_id = ? OR target_agent_id = ?').run(agentId, agentId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE target_agent_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE agent_id = ?',
+    exchanges: 'source_agent_id = ? OR destination_agent_id = ?',
     arg: agentId,
   });
 }

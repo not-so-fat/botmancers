@@ -335,7 +335,9 @@ export function hopOf(request: Pick<WorkRequest, 'requester_kind' | 'requester_i
   };
 }
 
-export type ExchangeResume = { ok: true; binding: SessionBinding | null } | { ok: false; reason: string };
+// freshSession: the turn must launch in a new runtime session (a Continue
+// delivery), never the runtime's standing one.
+export type ExchangeResume = { ok: true; binding: SessionBinding | null; freshSession?: boolean } | { ok: false; reason: string };
 
 export interface ExchangeView {
   id: string;
@@ -667,7 +669,7 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
     resumeFor(request: WorkRequest, adapter: string): ExchangeResume | null {
       const hop = hopOf(request);
       if (!hop) return null;
-      if (hop.hop === 'deliver') return { ok: true, binding: null };
+      if (hop.hop === 'deliver') return { ok: true, binding: null, freshSession: true };
       const row = store.get(hop.exchangeId);
       const binding = hop.resumeBindingId ? getBinding.get(hop.resumeBindingId) as SessionBinding | undefined : undefined;
       if (!row || !binding || row.source_binding_id !== binding.id || row.source_request_id !== request.id) {
@@ -742,13 +744,22 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
         return { exchange_id: row.id, packet: 'stored' };
       }
       // Delivery: the destination must report a session of its own, never
-      // seen before (not the source's, not any bound one); otherwise the
-      // hand-off has no destination-owned session and the exchange fails.
+      // seen before (not the source's, not any bound one, not one any other
+      // Attempt ran in), from a launch that asked the adapter for a fresh
+      // session; otherwise the hand-off has no destination-owned session
+      // and the exchange fails.
       const reported = result.externalSessionId ?? null;
-      const fresh = !!reported && reported !== sourceSecret
-        && !db.prepare('SELECT 1 FROM session_bindings WHERE external_session_id = ?').get(reported);
+      let launchedFresh = false;
+      try {
+        launchedFresh = (JSON.parse(attempt.launch_snapshot) as { fresh_session?: unknown }).fresh_session === true;
+      } catch {
+        launchedFresh = false;
+      }
+      const fresh = launchedFresh && !!reported && reported !== sourceSecret
+        && !db.prepare('SELECT 1 FROM session_bindings WHERE external_session_id = ?').get(reported)
+        && !db.prepare('SELECT 1 FROM work_attempts WHERE external_session_id = ? AND id != ?').get(reported, attempt.id);
       if (!fresh) {
-        const reason = reported ? 'reused' : 'not_reported';
+        const reason = !launchedFresh ? 'not_fresh_launch' : reported ? 'reused' : 'not_reported';
         event(row.id, 'destination_session_rejected', { request_id: request.id, attempt_id: attempt.id, reason }, at);
         move(row, 'failed', at, {
           reason: 'destination_session_invalid', failureCode: 'destination_session_invalid',

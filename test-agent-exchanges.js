@@ -407,6 +407,9 @@ async function main() {
       'the extraction resumed the selected source binding, read-only');
     assert(deliver.agentId === scout.id && deliver.input.sessionBinding === null && deliver.input.toolProfile === 'readonly',
       'the destination launched fresh (no session to resume), read-only');
+    assert(deliver.input.freshSession === true && extract.input.freshSession === undefined
+      && JSON.parse(engine.listAttempts(view.hops.destination.request_id)[0].launch_snapshot).fresh_session === true,
+    'the destination adapter is asked for a fresh session (recorded in its launch snapshot); the extraction is not');
     assert(leaks(JSON.stringify(deliver.input)).length === 0, 'the destination adapter input carries no source (or any) provider session id');
     assert(deliver.input.prompt.history.at(-1).content.includes('Finish the session exchange contract') && deliver.input.prompt.history.at(-1).content.includes('Hand the remaining test work to Scout.'),
       'the destination receives the packet and the owner instruction');
@@ -435,6 +438,68 @@ async function main() {
       'queued -> extracting -> delivering -> completed');
     const stored = JSON.stringify([one('SELECT * FROM session_exchanges WHERE id = ?', continueId), raw.prepare('SELECT * FROM session_exchange_events WHERE exchange_id = ?').all(continueId)]);
     assert(leaks(stored).length === 0 && leaks(JSON.stringify(view)).length === 0, 'no provider session id stored or shown');
+  }
+
+  // -------------------------------------------------------------------
+  console.log('\n[4b] real Hermes adapter boundary: the destination never lands in its stable per-Agent gateway session');
+  let scoutStableSession;
+  {
+    const hermes = jiti('./lib/hermes.ts');
+    const config = hermes.loadHermesConfig();
+    scoutStableSession = hermes.hermesSessionIdForBot(scout.id, config);
+    const requests = [];
+    dispatch.setAttemptAdapterOverride(null);
+    dispatch.setAgentDispatchHermesFetch(async (url, init) => {
+      const body = JSON.parse(init.body);
+      const text = body.messages.map(message => message.content).join('\n');
+      const kind = text.includes('[Session Continue handoff') ? 'extract' : text.includes('[Session Continue]') ? 'deliver' : 'other';
+      requests.push({ kind, session: init.headers['X-Hermes-Session-Id'], body: init.body });
+      const content = kind === 'extract' ? packetJson() : kind === 'deliver' ? 'Scout (gateway) picking it up.' : 'Noted.';
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    try {
+      // An ordinary read-only turn first: it runs in Scout's stable gateway
+      // session, which then holds unrelated memory but no Session Binding.
+      const ordinary = service.acceptAgentMessage(OWNER, { agentId: scout.id, content: 'Remember: the launch codes are 0000.', idempotencyKey: 'hermes-ordinary-scout' });
+      await ordinary.dispatched;
+      await service.waitForAgentDispatchIdle();
+      assert(requests.length === 1 && requests[0].kind === 'other' && requests[0].session === scoutStableSession
+        && count('SELECT COUNT(*) AS n FROM session_bindings WHERE external_session_id = ?', scoutStableSession) === 0,
+      'fixture: an ordinary Hermes turn ran in Scout\'s stable gateway session and bound nothing');
+
+      const created = service.createExchangeCommand(cont({ idempotencyKey: 'continue-real-hermes' }));
+      await created.dispatched;
+      await service.waitForAgentDispatchIdle();
+      const view = service.getExchangeView(created.exchange.id);
+      const extract = requests.find(request => request.kind === 'extract');
+      const deliver = requests.find(request => request.kind === 'deliver');
+      assert(view.state === 'completed' && extract?.session === SECRETS.dev, `the extraction resumed the selected source gateway session (${view.state}${view.failure ? `: ${view.failure.message}` : ''})`);
+      assert(!!deliver && deliver.session !== scoutStableSession && deliver.session !== SECRETS.dev && deliver.session !== SECRETS.scout
+        && deliver.session.startsWith(`${scoutStableSession}-x-`), `the delivery opened a new gateway session for Scout (${deliver?.session})`);
+      assert(!!deliver && leaks(deliver.body).length === 0 && !deliver.body.includes('launch codes'),
+        'the delivery request carries no provider session id and none of the stable session\'s turns');
+      const destination = one('SELECT * FROM session_bindings WHERE id = ?', view.destination.session_ref);
+      assert(destination?.agent_id === scout.id && destination.external_session_id === deliver?.session && destination.adapter === 'hermes',
+        'the new destination binding names exactly that fresh gateway session');
+
+      // The adapter contract itself: a fresh-session input never resumes,
+      // and without freshSession the stable session is what it would use.
+      const adapter = jiti('./lib/hermes-attempt.ts').createHermesAttemptAdapter({ fetchImpl: (url, init) => {
+        requests.push({ kind: 'direct', session: init.headers['X-Hermes-Session-Id'], body: init.body });
+        return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 }));
+      } });
+      const base = { target: { agentId: scout.id, agent: 'hermes' }, prompt: { kind: 'text', text: 'hi' }, cwd: null, deck: null, toolProfile: 'readonly', sessionBinding: null, correlation: {} };
+      const both = await adapter.run({ ...base, freshSession: true, sessionBinding: { bindingId: 'b', externalSessionId: SECRETS.scout } });
+      const fresh1 = await adapter.run({ ...base, freshSession: true });
+      const fresh2 = await adapter.run({ ...base, freshSession: true });
+      const standing = await adapter.run(base);
+      assert(both.status === 'failed' && both.failure.category === 'session_mismatch', 'a fresh-session input that also names a binding fails before launch');
+      assert(fresh1.externalSessionId !== fresh2.externalSessionId && fresh1.externalSessionId !== scoutStableSession && standing.externalSessionId === scoutStableSession,
+        'each fresh-session launch gets its own gateway session; an ordinary launch keeps the stable one');
+    } finally {
+      dispatch.setAgentDispatchHermesFetch(null);
+      installAdapter();
+    }
   }
 
   // -------------------------------------------------------------------
@@ -506,6 +571,7 @@ async function main() {
       ['no session reported', null, 'not_reported'],
       ['the source session id reported', SECRETS.dev, 'reused'],
       ['an already-bound session id reported', SECRETS.scout, 'reused'],
+      ['the stable gateway session an ordinary turn ran in', scoutStableSession, 'reused'],
     ]) {
       const bindingsBefore = count('SELECT COUNT(*) AS n FROM session_bindings WHERE agent_id = ?', scout.id);
       const view = await run(`deliver-session-${reason}-${label}`, (input, kind) => kind === 'extract' ? { output: packetJson() } : { output: 'Delivered.', session });
@@ -741,6 +807,34 @@ async function main() {
       'deleting an Agent removes exchanges sourced from or delivered to it, with their events');
     assert(!engine.getWorkRequest(asTemp.source_request_id) && one('SELECT 1 AS ok FROM session_bindings WHERE id = ?', roseSession.binding.id)?.ok === 1,
       'their hop requests go too; other Agents\' sessions stay');
+    // Open exchanges: their hop requests run elsewhere (the source hop in
+    // the source binding's thread, for the source Agent), yet go with the
+    // exchange when its origin conversation or destination Agent is deleted.
+    const srcA = agent('CleanSrcA');
+    const srcB = agent('CleanSrcB');
+    const destB = agent('CleanDestB');
+    const originAgent = agent('CleanOrigin');
+    const originConv = conversations.getByBotId(originAgent.id);
+    const sessionA = seedSession(srcA, 'prov-cleana-SECRET-0002', { key: 'clean-a' });
+    const sessionB = seedSession(srcB, 'prov-cleanb-SECRET-0003', { key: 'clean-b' });
+    const fromOrigin = exchanges.create(cont({ originConversationId: originConv.id, sourceAgentId: srcA.id, sessionRef: sessionA.binding.id, destinationAgentId: scout.id, idempotencyKey: 'cleanup-open-origin' })).exchange;
+    const toDest = exchanges.create(cont({ sourceAgentId: srcB.id, sessionRef: sessionB.binding.id, destinationAgentId: destB.id, idempotencyKey: 'cleanup-open-dest' })).exchange;
+    const hopA = engine.getWorkRequest(fromOrigin.source_request_id);
+    const hopB = engine.getWorkRequest(toDest.source_request_id);
+    assert(hopA.state === 'queued' && hopA.source_conversation_id === sessionA.conv.id && hopA.target_agent_id === srcA.id
+      && hopB.state === 'queued' && hopB.target_agent_id === srcB.id, 'fixture: open exchanges whose source hops run in the source thread for the source Agent');
+    raw.transaction(() => engineStore.deleteEngineRecordsForConversation(raw, originConv.id))();
+    assert(!exchanges.get(fromOrigin.id) && !engine.getWorkRequest(hopA.id)
+      && count('SELECT COUNT(*) AS n FROM session_exchange_events WHERE exchange_id = ?', fromOrigin.id) === 0
+      && one('SELECT 1 AS ok FROM session_bindings WHERE id = ?', sessionA.binding.id)?.ok === 1 && !!engine.getWorkRequest(sessionA.request.id),
+    'deleting an open exchange\'s origin conversation removes its queued source hop request too (the source session and its own work stay)');
+    raw.transaction(() => engineStore.deleteEngineRecordsForAgent(raw, destB.id))();
+    assert(!exchanges.get(toDest.id) && !engine.getWorkRequest(hopB.id)
+      && count('SELECT COUNT(*) AS n FROM session_exchange_events WHERE exchange_id = ?', toDest.id) === 0
+      && one('SELECT 1 AS ok FROM session_bindings WHERE id = ?', sessionB.binding.id)?.ok === 1 && !!engine.getWorkRequest(sessionB.request.id),
+    'deleting an open exchange\'s destination Agent removes its queued source hop request (for the source Agent) too');
+    assert(count('SELECT COUNT(*) AS n FROM work_requests WHERE requester_id = ? AND id NOT IN (SELECT source_request_id FROM session_exchanges UNION SELECT destination_request_id FROM session_exchanges WHERE destination_request_id IS NOT NULL)', 'botmancers-exchanges') === 0,
+      'no exchange hop request outlives its exchange');
     const tankThreadExchanges = count('SELECT COUNT(*) AS n FROM session_exchanges WHERE origin_conversation_id = ?', tankConv.id);
     raw.transaction(() => engineStore.deleteEngineRecordsForConversation(raw, tankConv.id))();
     assert(tankThreadExchanges > 0 && count('SELECT COUNT(*) AS n FROM session_exchanges WHERE origin_conversation_id = ?', tankConv.id) === 0,

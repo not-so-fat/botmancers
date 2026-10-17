@@ -433,6 +433,7 @@ async function runTurn(requestId: string): Promise<boolean> {
       history: [...historyFor(request, bot), ...turnContext(request), ...(exchanges.turnContext(request) ?? [])],
       toolProfile: policy.tool_profile,
       sessionBinding: resume.binding ? { bindingId: resume.binding.id, externalSessionId: resume.binding.external_session_id } : null,
+      ...('freshSession' in resume && resume.freshSession ? { freshSession: true } : {}),
       prepareFinalization: policy.execution_kind === 'implementation' || policy.execution_kind === 'revision',
     });
   } catch (error) {
