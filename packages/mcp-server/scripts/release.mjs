@@ -17,7 +17,7 @@
 // Run `npm run build && npm run build:app` first.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,10 +45,12 @@ const transcript = [];
 const print = text => {
   transcript.push(text);
   process.stdout.write(text);
+  // Append as we go, so a process that dies mid-run still leaves its transcript.
+  if (outFile) appendFileSync(outFile, text);
 };
 const finish = code => {
-  if (outFile) writeFileSync(outFile, transcript.join(''));
-  process.exit(code);
+  // Exit only once stdout has drained; a bare process.exit() can cut a piped transcript short.
+  process.stdout.write('', () => process.exit(code));
 };
 
 function atLeast(actual, floor) {
@@ -60,12 +62,16 @@ function atLeast(actual, floor) {
 }
 
 function step(name, fn) {
+  if (outFile) appendFileSync(outFile, `RUN   ${name}\n`);
   try {
     const detail = fn();
     print(`PASS  ${name}${detail ? ` — ${detail}` : ''}\n`);
   } catch (error) {
     failed = true;
-    print(`FAIL  ${name} — ${error.message.trim().split('\n').slice(-8).join('\n      ')}\n`);
+    // execFileSync's message has the command and stderr only; the smokes explain themselves on stdout.
+    const stdout = String(error.stdout ?? '').trim().split('\n').slice(-25).join('\n');
+    const detail = `${error.message.trim().split('\n').slice(-(name === 'tests' ? 40 : 8)).join('\n')}${stdout && name !== 'tests' ? `\n${stdout}` : ''}`;
+    print(`FAIL  ${name} — ${detail.split('\n').join('\n      ')}\n`);
   }
 }
 
@@ -162,7 +168,16 @@ step('packaged app build', () => {
 });
 
 step('tests', () => {
-  const out = run('npm', ['test']);
+  let out;
+  try {
+    out = run('npm', ['test']);
+  } catch (error) {
+    // execFileSync's message carries only stderr (build warnings); the failing
+    // test names and assertions are on stdout.
+    const stdout = String(error.stdout ?? '');
+    const failing = stdout.split('\n').filter(line => /^\s*(✖|not ok)|Error|expected|actual/.test(line)).slice(0, 30);
+    throw new Error(`npm test failed (exit ${error.status})\n${(failing.length ? failing : stdout.split('\n').slice(-30)).join('\n')}`);
+  }
   const pass = /ℹ pass (\d+)/.exec(out)?.[1];
   const fail = /ℹ fail (\d+)/.exec(out)?.[1];
   assert(fail === '0', `npm test reported ${fail} failure(s)`);
@@ -241,6 +256,7 @@ step('canary install of the exact tarball', () => {
 if (failed) {
   print('\nRelease check FAILED. Nothing was published.\n');
   finish(1);
+  await new Promise(() => {}); // wait for the drain callback to exit
 }
 print(`
 Release check PASSED for botmancers@${version}. Nothing was published.

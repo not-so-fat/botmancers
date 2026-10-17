@@ -58,7 +58,7 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "build:app": "node scripts/build-app.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && npm run build:app && node --test test/",
+    "test": "npm run build && npm run build:app && node --test \"test/*.test.mjs\"",
     "check:pack": "node scripts/check-pack.mjs",
     "check:skill": "node scripts/check-skill.mjs",
     "smoke:install": "node scripts/smoke-install.mjs",
