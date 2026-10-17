@@ -7,7 +7,27 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-17
+
+### Fixed
+
+- 0.4.0 was never published: its release check failed on the Linux release
+  runner. `npm test` passed a directory to `node --test`, which Node 24 treats
+  as a module path; it now passes a glob. The clean-install smoke signalled
+  `npx`, which on npm 11.19 does not forward `SIGTERM` to the bridge; it now
+  signals the process group and checks that the bridge port closes.
+- `release:check` shows the failing test and smoke output, drains stdout
+  before exiting, and writes its `--out` transcript as it goes.
+
+### Changed
+
+- A `ci-botmancers` workflow runs the same release check on pull requests that
+  touch the app or the package, so release failures show up before a tag.
+- 0.4.1 carries everything 0.4.0 would have shipped (below).
+
 ## [0.4.0] - 2026-10-17
+
+Not published; see 0.4.1.
 
 ### Added
 
