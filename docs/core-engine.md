@@ -140,6 +140,69 @@ adds no table and writes nothing.
   route. The MCP bridge and `/api/v0` do not expose the catalog, and their
   non-disclosure contract (`docs/mcp-bridge.md`, Privacy) is unchanged.
 
+### Session exchanges
+
+The owner can target one session by its reference in two explicit ways
+(`lib/session-exchanges.ts`):
+
+- **Ask.** Exactly one read-only conversation turn to the Agent that owns the
+  session. It resumes exactly that Session Binding and returns its one answer
+  to the origin conversation. Wakes in the answer route nothing.
+- **Continue.** First, one read-only turn on the source session produces a
+  bounded handoff packet: `objective`, `decisions`, `constraints`, `artifacts`,
+  and `open_questions`, as one JSON object. Only after that packet is stored
+  does Botmancers launch the destination Agent: a fresh read-only turn in the
+  destination conversation (default: the destination Agent's direct thread),
+  with no session to resume. The session the destination reports is bound as a
+  new Session Binding that the destination owns. The destination never
+  resumes or receives the source provider session ID. Both hops link to one
+  exchange.
+
+Each exchange is one `session_exchanges` row plus append-only
+`session_exchange_events`. A row holds the mode, the requester, the origin
+conversation, the selected source binding and Agent, the destination Agent,
+conversation, and binding, the instruction, the state, and set-once
+references to the hop Work Requests, hop Attempts, answer message, and packet.
+States move `queued -> extracting -> completed` for an Ask, and
+`queued -> extracting -> delivering -> completed` for a Continue. Either can
+end `failed` or `cancelled` instead. Triggers enforce the edges, the mode
+rules (an Ask never delivers; a Continue cannot complete from `extracting`),
+and the rule that a terminal exchange never changes.
+
+- **Hops are Work Requests.** The leased dispatcher runs each hop. A hop has
+  the `exchange` entry point, the `session_exchange_conversation` rule
+  (`conversation`/`readonly` only), one Attempt, and an allowed `human_owner`
+  safety decision for the owner. A source hop continues the binding's own
+  conversation and lineage, so the existing resume-scope checks still apply.
+  Hop creation, claim, and result projection commit in the same transaction as
+  the exchange state they move.
+- **Validation.** The source reference must be an active binding of the named
+  Agent, bound under the runtime that Agent dispatches today. The Agent must
+  have an Agent Deck. A source session runs at most one open exchange at a
+  time. Unknown references and other Agents' references get the same
+  `session_not_found`. Requests for other authority (`authority_not_allowed`),
+  non-owner requesters, and bodies that name another exchange
+  (`recursive_exchange`) are refused before anything is written.
+- **Limits.** One source and one destination per exchange. The instruction is
+  at most 4000 characters. The packet is at most 16000 characters in total: an
+  objective of at most 2000, and at most 20 entries of at most 500 characters
+  in each list. An Ask answer is cut at 16000 characters. A packet or answer
+  that repeats the source provider session ID is redacted.
+- **Cancellation and recovery.** Cancelling is allowed only while the
+  exchange is non-terminal. The intent is recorded once and the open hop
+  request is cancelled. The exchange reads `cancelled` once that hop has
+  ended, and nothing launches after it. After any hop ends, and at startup
+  (`recoverCoordinatorLoops`), the exchange advances from its hops' durable
+  state. An interrupted hop fails the exchange; it is never relaunched.
+- **Retry.** A failed exchange stays failed. Replaying its idempotency key
+  returns it unchanged. Only a new exchange with a new key retries. Nothing
+  loops on its own.
+- **Routes.** `POST /api/exchanges` (201 for a new exchange, 200 for a replay),
+  `GET /api/exchanges/:id`, and `POST /api/exchanges/:id/cancel` (409
+  `exchange_terminal` once terminal). All three sit behind the owner boundary.
+  Errors use `{ error: { code, message } }`. Responses carry Botmancers IDs
+  only. The MCP bridge and `/api/v0` do not expose exchanges.
+
 ## One engine
 
 All entry points use one control path:
@@ -179,7 +242,7 @@ The initial profiles are:
 
 | Execution kind | Tool profile | Purpose |
 | --- | --- | --- |
-| Conversation or explanation | `readonly` | Inspect and answer without changing the workspace |
+| Conversation or explanation (including every session exchange hop) | `readonly` | Inspect and answer without changing the workspace |
 | Implementation | `edit` | Make the explicitly requested change |
 | Review | `readonly` | Inspect the implementation and report findings |
 | Revision after review | `edit` | Resume the implementation session and address findings |
@@ -446,6 +509,7 @@ All tables are SQLite tables in one database. The engine's tables are versioned 
 | `conversation_events`, `conversation_projection_cursors` | Typed projection of engine events into conversations |
 | `conversations`, `messages`, `conversation_participants` | Conversations and their ordered history |
 | `delegation_chains` | Delegation accounting for UI thread turns: handoffs, delegated turns, Stop, and caller frames per user message |
+| `session_exchanges`, `session_exchange_events` | Session-targeted Ask and Continue exchanges (migration 16) and their append-only events; removed with the Agent, conversation, hop request, or binding they name |
 | `legacy_agent_requests_archive`, `legacy_agent_request_events_archive` | Evidence only. Every pre-NOT-465 `agent_requests` row and its events, verbatim. Nothing reads them except conversation deletion, which removes the conversation's rows (and their events). They exist only in databases that had the legacy tables |
 | `legacy_processing_queue_archive` | Evidence only. Every `processing_queue` row, verbatim. Nothing reads it except conversation and Agent deletion, which remove their rows. It exists only in databases that had the queue |
 
