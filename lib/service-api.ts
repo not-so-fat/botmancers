@@ -336,8 +336,9 @@ export function getServiceSession(ctx: ServiceContext, agentId: string, ref: str
 // Conversations. A conversation is visible under an Agent when that Agent
 // participates, every Agent participant is granted conversations:read to
 // the caller, and no other service participates (one service never reads
-// another's conversation). Provider session and run ids the runtime may
-// have echoed into a message are redacted.
+// another's conversation). Provider session and run ids, working
+// directories, Deck selections, and credentials the runtime may have
+// echoed into a message are redacted.
 
 export const MESSAGE_CONTENT_LIMIT = 16000;
 
@@ -440,8 +441,54 @@ function privateIdsOf(conversationId: string, agentIds: string[]): string[] {
   return [...ids].filter(id => id.length >= 6).sort((a, b) => b.length - a.length);
 }
 
-function redactIds(text: string, ids: string[]): string {
-  return ids.reduce((acc, id) => (acc.includes(id) ? acc.split(id).join('[redacted runtime id]') : acc), text);
+// Launch-context and Agent configuration fields whose values are
+// engine-private (working directory, Deck selection, Hermes profile).
+const PRIVATE_CONFIG_KEY = /^(cwd|working_directory|workspace|deck|deck_id|deck_name|hermes_profile|hermes_profile_path)$/;
+// Environment variables holding a credential.
+const CREDENTIAL_ENV = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
+
+function collectPrivate(value: unknown, into: Set<string>, privateKey = false): void {
+  if (typeof value === 'string') {
+    if (privateKey) into.add(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectPrivate(item, into, privateKey);
+  } else if (isObject(value)) {
+    for (const [key, item] of Object.entries(value)) collectPrivate(item, into, privateKey || PRIVATE_CONFIG_KEY.test(key));
+  }
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// Every working directory, Deck selection, and Hermes profile the
+// conversation's Agents are configured with or were ever launched with,
+// and every credential in the environment.
+function privateValuesOf(agentIds: string[]): string[] {
+  const values = new Set<string>();
+  for (const agentId of agentIds) {
+    const bot = bots.getById(agentId);
+    if (bot) collectPrivate(bot, values);
+    const snapshots = db.prepare(`
+      SELECT a.launch_snapshot AS snapshot FROM work_attempts a JOIN work_requests r ON r.id = a.request_id WHERE r.target_agent_id = ?
+      UNION ALL SELECT snapshot FROM launch_snapshots WHERE bot_id = ?
+    `).all(agentId, agentId) as { snapshot: string }[];
+    for (const row of snapshots) collectPrivate(parseJson(row.snapshot), values);
+  }
+  const configured = [...values].filter(value => value.trim().length >= 4);
+  const credentials = Object.entries(process.env)
+    .filter(([name, value]) => CREDENTIAL_ENV.test(name) && typeof value === 'string')
+    .flatMap(([, value]) => [value as string, ...(value as string).split(/[\s,=]+/)])
+    .filter(value => value.length >= 8);
+  return [...new Set([...configured, ...credentials])].sort((a, b) => b.length - a.length);
+}
+
+function redactAll(text: string, values: string[], label: string): string {
+  return values.reduce((acc, value) => (acc.includes(value) ? acc.split(value).join(label) : acc), text);
 }
 
 export interface ServiceConversationDetail extends ServiceConversationSummary {
@@ -474,11 +521,13 @@ export function getServiceConversation(ctx: ServiceContext, agentId: string, con
     ) WHERE seq < ? ORDER BY seq DESC LIMIT ?
   `).all(row.id, before ? before.at : Number.MAX_SAFE_INTEGER, query.limit + 1) as MessageRow[];
   const page = rows.slice(0, query.limit).reverse();
-  const ids = privateIdsOf(row.id, participants.filter(p => p.kind === 'bot').map(p => p.id));
+  const agentIds = participants.filter(p => p.kind === 'bot').map(p => p.id);
+  const ids = privateIdsOf(row.id, agentIds);
+  const values = privateValuesOf(agentIds);
   return {
     ...conversationSummary(row, participants),
     messages: page.map(message => {
-      const content = redactIds(message.content, ids);
+      const content = redactAll(redactAll(message.content, ids, '[redacted runtime id]'), values, '[redacted]');
       return {
         message_id: message.id,
         seq: message.seq,
@@ -793,11 +842,17 @@ export function createServiceExchange(ctx: ServiceContext, input: ServiceExchang
     const now = Date.now();
     const replay = existingExchange(principal, key);
     const origin = input.originConversationId ?? replay?.origin_conversation_id ?? openServiceConversation(principal, binding.agent_id, now);
+    // A Continue without a destination conversation is delivered into a
+    // fresh conversation the service opens with the destination Agent,
+    // never into the owner's direct thread.
+    const destinationConversationId = input.mode !== 'continue' ? null
+      : input.destinationConversationId ?? replay?.destination_conversation_id
+        ?? openServiceConversation(principal, input.destinationAgentId as string, now);
     return {
       input: {
         requester: principal, serviceGrant: true, idempotencyKey: key, mode: input.mode, originConversationId: origin,
         sourceAgentId: binding.agent_id, sessionRef: binding.id, destinationAgentId: input.destinationAgentId,
-        destinationConversationId: input.destinationConversationId, instruction: input.instruction, now,
+        destinationConversationId, instruction: input.instruction, now,
       },
     };
   });

@@ -32,7 +32,9 @@ grants at all).
 ```
 
 - `service` is the id from `BOTMANCERS_SERVICE_TOKENS` (the principal
-  `service:<id>`).
+  `service:<id>`). Every entry must name a service configured there: a typo,
+  a service removed from the token list, or a malformed token list refuses the
+  whole document.
 - `agent` is one Agent id (the id in `/api/bots`, or in the Agent's config
   page URL). There is no wildcard.
 - `capabilities` is an explicit, non-empty subset of:
@@ -46,8 +48,8 @@ grants at all).
 | `exchanges:read` | `GET /api/v0/exchanges`, `GET /api/v0/exchanges/{id}` for the caller's exchanges involving it |
 | `exchanges:create` | `POST /api/v0/exchanges`, `POST /api/v0/exchanges/{id}/cancel` involving it |
 
-The file must be owned by the user running Botmancers and not writable by
-group or others:
+The file must be owned by the user running Botmancers and neither readable
+nor writable by group or others (modes such as `644` or `640` are refused):
 
 ```sh
 chmod 600 ~/.botmancers/config/service-grants.json
@@ -79,7 +81,9 @@ latest audit events.
 - **Rotate a token:** add the new `sha256:` digest under a new service id or
   replace the digest of the existing id in `BOTMANCERS_SERVICE_TOKENS`. Grants
   are keyed by service id, so replacing the digest of the same id keeps its
-  grants; a new id needs its own entries.
+  grants; a new id needs its own entries. Retiring a service id: delete its
+  grant entries first, then remove it from `BOTMANCERS_SERVICE_TOKENS`; an
+  entry naming an unconfigured service refuses the whole document.
 - **Revoke:** delete the service's entries (or one capability) and save. The
   next call is refused; targets it can no longer see answer exactly as
   missing ones. Exchanges already running finish under the engine; the caller
@@ -131,7 +135,7 @@ answered with exactly the code and message of a missing one
 | `GET /api/v0/agents/{agentId}/sessions?status=active\|ended\|all` | the session catalog without its launch context |
 | `GET /api/v0/agents/{agentId}/sessions/{ref}` | adds the session's Attempts |
 | `GET /api/v0/agents/{agentId}/conversations` | id, type, label, participants, message count, activity |
-| `GET /api/v0/agents/{agentId}/conversations/{id}?cursor&limit` | newest `limit` messages (default 50, max 200), `next_cursor` pages back; provider ids redacted, each message at most 16000 characters |
+| `GET /api/v0/agents/{agentId}/conversations/{id}?cursor&limit` | newest `limit` messages (default 50, max 200), `next_cursor` pages back; provider ids, working directories, Deck selections, and credentials redacted, each message at most 16000 characters |
 | `POST /api/v0/sessions/{ref}/messages` | body `{ "content", "idempotency_key" }` (or `Idempotency-Key` header) |
 | `GET /api/v0/exchanges`, `GET /api/v0/exchanges/{id}` | the caller's own exchanges and session messages |
 | `POST /api/v0/exchanges` | `{ mode, idempotency_key, source: { session_ref, agent_id? }, destination?: { agent_id, conversation_id? }, instruction, origin_conversation_id? }` |
@@ -162,7 +166,10 @@ service owns per session.
 requester; `exchanges:create` is needed on the source Agent and, for a
 `Continue`, on the destination Agent. The destination starts a fresh session
 it owns with its own configured Deck. When `origin_conversation_id` is
-omitted, a new conversation owned by the service is opened.
+omitted, a new conversation owned by the service is opened. When a `Continue`
+omits `destination.conversation_id`, the delivery goes to a new conversation
+the service opens with the destination Agent (never the owner's direct thread);
+a named destination conversation must be one the service participates in.
 
 **Limits:** request bodies over 64 KiB are 413 `payload_too_large`; content
 and instructions at most 4000 characters; idempotency keys 1 to 160

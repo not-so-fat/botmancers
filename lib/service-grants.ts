@@ -23,16 +23,20 @@
 //
 // Fail closed: the whole document is refused (state 'invalid', nothing is
 // granted to anyone) when it is not owner-only (owned by another user, or
-// writable by group or others), too large, not JSON, the wrong version, or
+// readable or writable by group or others), too large, not JSON, the wrong version, or
 // carries an unknown field, an unknown or duplicate capability, a wildcard,
-// a duplicate (service, Agent) entry, or a reserved engine principal. A
+// a duplicate (service, Agent) entry, a reserved engine principal, or a
+// service that is not a configured service principal (BOTMANCERS_SERVICE_TOKENS,
+// lib/service-token-auth; a malformed token list refuses the document). A
 // missing document is state 'absent': installations without one keep the
 // narrow bridge behavior (lib/agent-api) and the granted resources see no
 // Agents. The file is re-read when it changes, so a rotation or rollback
 // applies on the next request without a restart.
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import { botmancersHome } from './home';
+import { SERVICE_TOKENS_ENV, ServiceTokenConfigError, parseServiceTokens } from './service-token-auth';
 
 export const SERVICE_GRANTS_PATH_ENV = 'BOTMANCERS_SERVICE_GRANTS_PATH';
 export const SERVICE_GRANTS_FILE = 'config/service-grants.json';
@@ -87,8 +91,10 @@ function onlyKeys(value: Record<string, unknown>, allowed: string[], where: stri
 }
 
 // Parses and validates the document text. Throws ServiceGrantsError with
-// the first problem; never returns a partial table.
-export function parseServiceGrants(text: string): ServiceGrantTable {
+// the first problem; never returns a partial table. configuredServices,
+// when given, is the set of configured service principal ids every entry
+// must name.
+export function parseServiceGrants(text: string, configuredServices?: ReadonlySet<string>): ServiceGrantTable {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -110,6 +116,9 @@ export function parseServiceGrants(text: string): ServiceGrantTable {
       throw new ServiceGrantsError(`${where}.service must be a configured service id (letters, digits, ".", "_", "-").`);
     }
     if (RESERVED_SERVICE_IDS.includes(service)) throw new ServiceGrantsError(`${where}.service names a reserved engine principal.`);
+    if (configuredServices && !configuredServices.has(service)) {
+      throw new ServiceGrantsError(`${where}.service is not a configured service principal (${SERVICE_TOKENS_ENV}).`);
+    }
     if (typeof agent !== 'string' || !AGENT_ID.test(agent)) {
       throw new ServiceGrantsError(`${where}.agent must be one Agent id; wildcards are not allowed.`);
     }
@@ -139,8 +148,18 @@ export function serviceGrantsPath(env: NodeJS.ProcessEnv = process.env): string 
 
 let cache: { key: string; state: ServiceGrantsState } | null = null;
 
+// The configured service principal ids, or a reason they are unavailable.
+function configuredServiceIds(env: NodeJS.ProcessEnv): ReadonlySet<string> | string {
+  try {
+    return new Set(parseServiceTokens(env[SERVICE_TOKENS_ENV]).map(entry => entry.serviceId));
+  } catch (error) {
+    if (error instanceof ServiceTokenConfigError) return `${SERVICE_TOKENS_ENV} is malformed, so no grant can name a configured service.`;
+    throw error;
+  }
+}
+
 // The current document state. Re-reads the file when its identity, size,
-// mode, owner, or modification time changes.
+// mode, owner, or modification time, or the configured service list, changes.
 export function loadServiceGrants(env: NodeJS.ProcessEnv = process.env): ServiceGrantsState {
   const file = serviceGrantsPath(env);
   if (!file) return { state: 'absent', path: null };
@@ -151,21 +170,23 @@ export function loadServiceGrants(env: NodeJS.ProcessEnv = process.env): Service
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'absent', path: file };
     return { state: 'invalid', path: file, reason: 'The document cannot be read.' };
   }
-  const key = [file, stat.ino, stat.size, stat.mode, stat.uid, stat.mtimeMs].join(':');
+  const tokens = createHash('sha256').update(env[SERVICE_TOKENS_ENV] ?? '', 'utf8').digest('hex');
+  const key = [file, stat.ino, stat.size, stat.mode, stat.uid, stat.mtimeMs, tokens].join(':');
   if (cache && cache.key === key) return cache.state;
-  const state = readState(file, stat);
+  const state = readState(file, stat, configuredServiceIds(env));
   cache = { key, state };
   return state;
 }
 
-function readState(file: string, stat: fs.Stats): ServiceGrantsState {
+function readState(file: string, stat: fs.Stats, services: ReadonlySet<string> | string): ServiceGrantsState {
   if (!stat.isFile()) return { state: 'invalid', path: file, reason: 'The document is not a regular file.' };
   if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
     return { state: 'invalid', path: file, reason: 'The document must be owned by the user running Botmancers.' };
   }
-  if ((stat.mode & 0o022) !== 0) {
-    return { state: 'invalid', path: file, reason: 'The document must not be writable by group or others (chmod 600).' };
+  if ((stat.mode & 0o077) !== 0) {
+    return { state: 'invalid', path: file, reason: 'The document must not be readable or writable by group or others (chmod 600).' };
   }
+  if (typeof services === 'string') return { state: 'invalid', path: file, reason: services };
   if (stat.size > MAX_BYTES) return { state: 'invalid', path: file, reason: `The document exceeds ${MAX_BYTES} bytes.` };
   let text: string;
   try {
@@ -174,7 +195,7 @@ function readState(file: string, stat: fs.Stats): ServiceGrantsState {
     return { state: 'invalid', path: file, reason: 'The document cannot be read.' };
   }
   try {
-    return { state: 'loaded', path: file, grants: parseServiceGrants(text) };
+    return { state: 'loaded', path: file, grants: parseServiceGrants(text, services) };
   } catch (error) {
     if (error instanceof ServiceGrantsError) return { state: 'invalid', path: file, reason: error.message };
     throw error;

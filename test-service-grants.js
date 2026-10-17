@@ -69,7 +69,8 @@ const SECRETS = {
 };
 const WORKDIR = '/Users/someone/private-workdir-SECRET';
 const PROMPT_MARK = 'PROMPT-BODY-MARK-9f3';
-const leaks = text => [...Object.values(SECRETS), ...Object.values(TOKENS), WORKDIR, 'deck-builder', 'private-workdir'].filter(id => text.includes(id));
+const CREDENTIAL = process.env.HERMES_API_SERVER_KEY;
+const leaks = text => [...Object.values(SECRETS), ...Object.values(TOKENS), WORKDIR, 'deck-builder', 'private-workdir', CREDENTIAL].filter(id => text.includes(id));
 
 let failures = 0;
 function assert(condition, label) {
@@ -257,6 +258,8 @@ async function main() {
   const codexB = { binding: one('SELECT * FROM session_bindings WHERE external_session_id = ?', `${SECRETS.codexEnded}-next`) };
   // A transcript line that echoes a provider session id and a run id.
   dbModule.messages.create(codexA.conv.id, 'bot', `Resumed ${SECRETS.codex} under ${SECRETS.run}; continuing.`, codex.id);
+  // A transcript line that echoes the working directory, the Deck, and a credential.
+  dbModule.messages.create(codexA.conv.id, 'bot', `Working in ${WORKDIR}/src with deck-builder, key ${CREDENTIAL}.`, codex.id);
   // A group with Codex and Claude: never fully granted to either service.
   const groupId = 'group-codex-claude';
   raw.prepare('INSERT INTO groups (id, name, created_at) VALUES (?, ?, ?)').run(groupId, 'Pair', Date.now());
@@ -304,6 +307,9 @@ async function main() {
       ['empty capabilities', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: [] }] }],
       ['unknown entry field', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['agents:read'], deck: 'x' }] }],
       ['reserved engine principal', { version: 1, grants: [{ service: 'botmancers-exchanges', agent: codex.id, capabilities: ['exchanges:create'] }] }],
+      ['unconfigured service principal', { version: 1, grants: [
+        { service: 'grok-bot', agent: codex.id, capabilities: ['agents:read'] },
+        { service: 'grok-bott', agent: codex.id, capabilities: ['agents:read'] }] }],
     ];
     for (const [label, doc] of bad) {
       writeGrants(doc);
@@ -313,8 +319,21 @@ async function main() {
       assert(state.state === 'invalid' && response.status === 503 && response.json.error.code === 'grants_unavailable' && agentsResponse.status === 503,
         `${label}: the whole document is refused (grants_unavailable for every service)`);
     }
-    writeGrants(grantsDoc(agents), 0o666);
-    assert(grantsLib.loadServiceGrants().state === 'invalid' && (await api.agents(TOKENS.grok)).status === 503, 'a group/world-writable document is refused (owner-only)');
+    for (const mode of [0o666, 0o620, 0o644, 0o640, 0o604, 0o610]) {
+      writeGrants(grantsDoc(agents), mode);
+      assert(grantsLib.loadServiceGrants().state === 'invalid' && (await api.agents(TOKENS.grok)).status === 503,
+        `a document with mode 0${mode.toString(8)} (group/other readable or writable) is refused (owner-only)`);
+    }
+    writeGrants(grantsDoc(agents));
+    const tokens = process.env.BOTMANCERS_SERVICE_TOKENS;
+    process.env.BOTMANCERS_SERVICE_TOKENS = 'grok-bot=not-a-digest';
+    const malformedTokens = grantsLib.loadServiceGrants();
+    process.env.BOTMANCERS_SERVICE_TOKENS = `ci-bot=${digest(TOKENS.ci)}`;
+    const grokUnconfigured = grantsLib.loadServiceGrants();
+    process.env.BOTMANCERS_SERVICE_TOKENS = tokens;
+    assert(malformedTokens.state === 'invalid' && grokUnconfigured.state === 'invalid' && /configured service principal/.test(grokUnconfigured.reason)
+      && grantsLib.loadServiceGrants().state === 'loaded',
+    'grant entries are checked against BOTMANCERS_SERVICE_TOKENS: a malformed list or a removed service refuses the document; restoring it reloads');
     const narrowStill = await api.narrowSend(TOKENS.grok, codex.id, { content: 'Still fresh', idempotencyKey: 'narrow-2' });
     assert(narrowStill.status === 202, 'a malformed document leaves the narrow route working');
     await service.waitForAgentDispatchIdle();
@@ -388,6 +407,8 @@ async function main() {
     const thread = await api.conversation(TOKENS.grok, codex.id, codexA.conv.id);
     assert(thread.status === 200 && thread.json.messages.some(m => m.content.includes('[redacted runtime id]')) && leaks(thread.text).length === 0,
       'a transcript that echoed a provider session id and run id is redacted');
+    assert(thread.json.messages.some(m => m.content.startsWith('Working in [redacted]/src with [redacted], key [redacted].')),
+      'a transcript that echoed the working directory, the Deck selection, and a credential is redacted');
     const groupRead = await api.conversation(TOKENS.grok, codex.id, groupConv);
     const missingConv = await api.conversation(TOKENS.grok, codex.id, 'no-such-conversation');
     const otherRead = await api.conversation(TOKENS.grok, codex.id, otherConv);
@@ -504,6 +525,24 @@ async function main() {
       && deliver && deliver.agentId === grok.id && !deliver.input.sessionBinding && !JSON.stringify(deliver.input).includes(SECRETS.codex),
     'Grok launched fresh: no binding and never the Codex provider session id');
     assert(leaks(detail.text).length === 0, 'the exchange view carries no provider id, Deck, or working directory');
+    const grokThread = conversations.getByBotId(grok.id).id;
+    const destConv = detail.json.destination.conversation_id;
+    assert(destConv && destConv !== grokThread && count('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND request_id = ?', grokThread, detail.json.hops.destination.request_id) === 0
+      && count("SELECT COUNT(*) AS n FROM conversation_participants WHERE conversation_id = ? AND participant_kind = 'service' AND participant_id = 'grok-bot'", destConv) === 1
+      && one('SELECT conversation_id FROM session_bindings WHERE id = ?', detail.json.destination.session_ref).conversation_id === destConv,
+    'without destination.conversation_id the Continue is delivered into a new service-owned conversation, never the owner\'s Grok thread');
+    const destRead = await api.narrowConversation(TOKENS.grok, destConv);
+    assert(destRead.status === 200 && destRead.json.messages.some(m => m.content.includes('Grok picked it up')), 'the service reads the delivery in its own destination conversation');
+    const storeFallback = (() => {
+      try {
+        service.exchanges.create({ requester: { kind: 'service', id: 'grok-bot' }, serviceGrant: true, idempotencyKey: 'store-fallback', mode: 'continue',
+          originConversationId: detail.json.origin_conversation_id,
+          sourceAgentId: codex.id, sessionRef: codexB.binding.id, destinationAgentId: grok.id, instruction: 'x' });
+        return null;
+      } catch (error) { return error; }
+    })();
+    assert(storeFallback?.code === 'destination_invalid',
+      `the canonical store refuses a service Continue that would fall back to the owner's direct thread (${storeFallback?.code})`);
     assert(detail.json.hops.destination.tool_profile === 'readonly' && one('SELECT COUNT(*) AS n FROM session_exchanges WHERE id = ?', continueId).n === 1,
       'one canonical exchange row; hops are read-only');
 
@@ -628,6 +667,17 @@ async function main() {
       && rows.some(r => r.code === 'rate_limited') && rows.some(r => r.code === 'grants_unavailable'),
     'validation, internal-error, rate-limit, and grants-unavailable paths are audited');
     assert(rows.some(r => r.target_ref === '[invalid]'), 'a reference that is not a Botmancers id is stored as [invalid]');
+    const createRows = rows.filter(r => r.operation === 'exchanges.create');
+    const authorityRow = createRows.find(r => r.code === 'authority_not_allowed');
+    const deniedRow = createRows.find(r => r.code === 'not_granted');
+    const okRow = createRows.find(r => r.outcome === 'allowed');
+    assert(authorityRow && authorityRow.target_kind === 'session' && authorityRow.target_ref === codexA.binding.id && authorityRow.agent_id === codex.id,
+      'a refused (authority-seeking) create records its source session and owning Agent');
+    assert(deniedRow && deniedRow.target_kind === 'session' && deniedRow.target_ref && deniedRow.agent_id,
+      'a grant-denied create records its source session and owning Agent');
+    assert(okRow && okRow.target_kind === 'exchange' && okRow.target_ref === continueId && okRow.agent_id === codex.id, 'an allowed create records the exchange');
+    const msgDenied = rows.find(r => r.operation === 'sessions.message' && r.code === 'not_granted' && r.target_ref === claudeS.binding.id);
+    assert(msgDenied && msgDenied.agent_id === claude.id, 'a grant-denied session message records the owning Agent');
     assert(rows.some(r => r.capability === 'participant' && r.operation === 'requests.read' && r.target_ref === message.request_id),
       'narrow /api/v0 reads by a service are audited too');
     const update = (() => { try { raw.prepare("UPDATE service_audit_events SET outcome = 'allowed'").run(); return null; } catch (e) { return e; } })();

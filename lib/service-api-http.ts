@@ -21,7 +21,7 @@
 // 429 rate_limited with Retry-After before anything runs), bounded (64 KiB
 // bodies), and appends one audit event (lib/service-audit) whatever its
 // outcome. Failures use the /api/v0 envelope { error: { code, message } }.
-import { serviceAudit, type Principal } from './db';
+import db, { serviceAudit, type Principal } from './db';
 import { authenticate } from './agent-api';
 import { AgentApiError } from './agent-conversations';
 import type { AuditOutcome, AuditTargetKind } from './service-audit';
@@ -129,6 +129,7 @@ interface Operation {
 // The audit target, refined by the handler once it knows more (the Agent
 // that owns a session, the exchange a create made).
 interface AuditTarget {
+  kind: AuditTargetKind;
   targetRef: string | null;
   agentId: string | null;
 }
@@ -146,7 +147,7 @@ async function serve(
     console.error('Service API authentication error:', error instanceof Error ? error.message : 'unknown error');
     return envelope(500, 'internal_error', 'The request could not be processed.');
   }
-  const target: AuditTarget = { targetRef: op.targetRef ?? null, agentId: op.agentId ?? null };
+  const target: AuditTarget = { kind: op.targetKind, targetRef: op.targetRef ?? null, agentId: op.agentId ?? null };
   let response: Response;
   let outcome: AuditOutcome;
   let code: string | null = null;
@@ -174,13 +175,26 @@ async function serve(
     }
   }
   try {
-    serviceAudit.append({ principal, operation: op.operation, capability: op.capability, targetKind: op.targetKind, ...target, outcome, code });
+    serviceAudit.append({
+      principal, operation: op.operation, capability: op.capability,
+      targetKind: target.kind, targetRef: target.targetRef, agentId: target.agentId, outcome, code,
+    });
   } catch (error) {
     // Fail closed: nothing is returned that was not audited.
     console.error('Service audit append failed:', error instanceof Error ? error.message : 'unknown error');
     return envelope(500, 'internal_error', 'The request could not be processed.');
   }
   return response;
+}
+
+// The source session a create body names, and the Agent owning it, before
+// the body is validated. The reference is audited only in its safe form
+// (lib/service-audit stores anything else as "[invalid]").
+function sourceTargetOf(body: unknown): Partial<AuditTarget> {
+  const source = body && typeof body === 'object' ? (body as Record<string, unknown>).source : undefined;
+  const ref = source && typeof source === 'object' ? (source as Record<string, unknown>).session_ref : undefined;
+  if (typeof ref !== 'string' || ref.length === 0) return {};
+  return { targetRef: ref, agentId: ref.length <= 200 ? sessionOwner(ref) : null };
 }
 
 function query(request: Request) {
@@ -190,6 +204,17 @@ function query(request: Request) {
     limit: (max: number = PAGE_LIMITS.max, fallback: number = PAGE_LIMITS.default) => parseLimit(params.get('limit'), fallback, max),
     get: (name: string) => params.get(name),
   };
+}
+
+function sessionOwner(ref: string): string | null {
+  const row = db.prepare('SELECT agent_id FROM session_bindings WHERE id = ?').get(ref) as { agent_id: string } | undefined;
+  return row?.agent_id ?? null;
+}
+
+function exchangeSource(id: string): string | null {
+  if (id.length > 200) return null;
+  const row = db.prepare('SELECT source_agent_id FROM session_exchanges WHERE id = ?').get(id) as { source_agent_id: string } | undefined;
+  return row?.source_agent_id ?? null;
 }
 
 export function handleGetCapabilities(request: Request): Promise<Response> {
@@ -238,6 +263,7 @@ export function handleGetConversation(request: Request, agentId: string, convers
 
 export function handleSendSessionMessage(request: Request, ref: string): Promise<Response> {
   return serve(request, { operation: 'sessions.message', capability: 'sessions:message', targetKind: 'session', targetRef: ref }, async (ctx, target) => {
+    if (ref.length <= 200) target.agentId = sessionOwner(ref);
     const input = parseSessionMessageBody(await readJsonBody(request), request.headers.get('idempotency-key'));
     const { accepted } = sendServiceSessionMessage(ctx, ref, input);
     target.agentId = accepted.agent_id;
@@ -253,10 +279,14 @@ export function handleListExchanges(request: Request): Promise<Response> {
 }
 
 export function handleCreateExchange(request: Request): Promise<Response> {
-  return serve(request, { operation: 'exchanges.create', capability: 'exchanges:create', targetKind: 'exchange' }, async (ctx, target) => {
-    const input = parseServiceExchangeBody(await readJsonBody(request), request.headers.get('idempotency-key'));
-    target.targetRef = input.sessionRef;
+  // Until the exchange exists, its audit target is the source session (and
+  // the Agent owning it), recorded even when the body is then refused.
+  return serve(request, { operation: 'exchanges.create', capability: 'exchanges:create', targetKind: 'session' }, async (ctx, target) => {
+    const body = await readJsonBody(request);
+    Object.assign(target, sourceTargetOf(body));
+    const input = parseServiceExchangeBody(body, request.headers.get('idempotency-key'));
     const { exchange, created } = createServiceExchange(ctx, input);
+    target.kind = 'exchange';
     target.targetRef = exchange.id;
     target.agentId = exchange.source.agent_id;
     return Response.json({ exchange, replayed: !created }, { status: created ? 201 : 200 });
@@ -265,6 +295,7 @@ export function handleCreateExchange(request: Request): Promise<Response> {
 
 export function handleGetExchange(request: Request, id: string): Promise<Response> {
   return serve(request, { operation: 'exchanges.read', capability: 'exchanges:read', targetKind: 'exchange', targetRef: id }, (ctx, target) => {
+    target.agentId = exchangeSource(id);
     const exchange = getServiceExchange(ctx, id);
     target.agentId = exchange.source.agent_id;
     return Response.json(exchange);
@@ -273,6 +304,7 @@ export function handleGetExchange(request: Request, id: string): Promise<Respons
 
 export function handleCancelExchange(request: Request, id: string): Promise<Response> {
   return serve(request, { operation: 'exchanges.cancel', capability: 'exchanges:create', targetKind: 'exchange', targetRef: id }, async (ctx, target) => {
+    target.agentId = exchangeSource(id);
     const reason = parseCancelBody(await readText(request));
     const result = await cancelServiceExchange(ctx, id, reason);
     target.agentId = result.exchange.source.agent_id;

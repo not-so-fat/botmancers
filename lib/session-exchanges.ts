@@ -624,6 +624,10 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
           if (input.destinationConversationId) {
             requireVisibleConversation(input.destinationConversationId, input.requester, 'destination');
             destinationConversationId = input.destinationConversationId;
+          } else if (input.requester.kind === 'service') {
+            // The owner's direct thread is the owner's: a granted service
+            // names a destination conversation it participates in.
+            throw new ExchangeError('destination_invalid', 'A service-started Continue names destination.conversation_id.');
           } else {
             const thread = db.prepare('SELECT id FROM conversations WHERE bot_id = ?').get(destination.id) as { id: string } | undefined;
             if (!thread) throw new ExchangeError('destination_invalid', `${destination.name} has no direct thread; name destination.conversation_id.`);
