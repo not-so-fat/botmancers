@@ -156,7 +156,7 @@ export async function handleMcpPost(request: Request): Promise<Response> {
   }
   let response;
   try {
-    response = handleMcpMessage(principal, message);
+    response = await handleMcpMessage(principal, message);
   } catch (error) {
     console.error('MCP bridge error:', error);
     const id = (message as { id?: unknown })?.id;

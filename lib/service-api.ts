@@ -28,6 +28,7 @@ import { serviceRedactor } from './service-redaction';
 
 export type ServiceApiErrorCode =
   | 'invalid_request'
+  | 'unsupported_field'
   | 'authority_not_allowed'
   | 'principal_not_allowed'
   | 'grant_required'
@@ -51,6 +52,7 @@ export type ServiceApiErrorCode =
 
 export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   invalid_request: 400,
+  unsupported_field: 400,
   authority_not_allowed: 403,
   principal_not_allowed: 403,
   grant_required: 403,

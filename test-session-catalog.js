@@ -206,11 +206,13 @@ async function main() {
   assert(/Responses never include Session Bindings, external run or\s+session ids/.test(bridge) && /the bridge never proxies it/.test(bridge),
     'docs/mcp-bridge.md keeps its non-disclosure contract and excludes the Sessions view');
   // NOT-499: /api/v0 reaches the catalog only through the grant-gated
-  // service API (lib/service-api); the MCP bridge still does not.
+  // service API (lib/service-api). NOT-500: so does the MCP bridge's v2
+  // contract, through the same audited service operations.
   const v0SessionRoutes = ['app/api/v0/sessions/[ref]/messages/route.ts', 'app/api/v0/agents/[agentId]/sessions/route.ts', 'app/api/v0/agents/[agentId]/sessions/[ref]/route.ts'];
-  assert(!/session-catalog|sessions/.test(read('lib/mcp-bridge.ts'))
+  assert(!/session-catalog/.test(read('lib/mcp-bridge.ts')) && !/session-catalog/.test(read('lib/mcp-bridge-v2.ts'))
+    && /from '\.\/service-api-http'/.test(read('lib/mcp-bridge-v2.ts'))
     && v0SessionRoutes.every(file => /from '@\/lib\/service-api-http'/.test(read(file)) && !/session-catalog/.test(read(file))),
-  'the MCP bridge does not reach the catalog; /api/v0 reaches it only through the grant-gated service API');
+  'the MCP bridge reaches sessions only through the grant-gated service API, as /api/v0 does');
 
   removeDb();
   if (failures > 0) {
