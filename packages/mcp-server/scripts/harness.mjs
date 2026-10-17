@@ -5,9 +5,9 @@ import { spawn } from 'node:child_process';
 // Runs a command to completion (or until it prints the listening line).
 // Resolves { code, stdout, stderr, port, child } — port and child are set
 // only when the bridge started serving.
-export function runBridge(command, args, { env, cwd, timeoutMs = 20_000 } = {}) {
+export function runBridge(command, args, { env, cwd, timeoutMs = 20_000, detached = false } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { env, cwd, detached, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let settled = false;

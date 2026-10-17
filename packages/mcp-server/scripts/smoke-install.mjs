@@ -105,7 +105,7 @@ export async function smoke({ tarball, registryVersion } = {}) {
 
     const fake = await startFakeBotmancers({ serviceToken: SERVICE_TOKEN });
     const serveEnv = { ...env, BOTMANCERS_URL: fake.url, BOTMANCERS_SERVICE_TOKEN: SERVICE_TOKEN, BOTMANCERS_MCP_TOKEN: MCP_TOKEN, BOTMANCERS_MCP_PORT: '0' };
-    const started = await runBridge('npx', ['botmancers'], { env: serveEnv, cwd: project });
+    const started = await runBridge('npx', ['botmancers'], { env: serveEnv, cwd: project, detached: true });
     try {
       check(started.port !== null, `\`npx botmancers\` serves: ${started.stderr.trim().split('\n').pop()}`);
       const base = `http://127.0.0.1:${started.port}`;
@@ -120,14 +120,16 @@ export async function smoke({ tarball, registryVersion } = {}) {
       check(result.isError === false && result.structuredContent.status === 'ok', `tools/call botmancers_health -> ${JSON.stringify(result.structuredContent)}`);
       check(fake.received.some(entry => entry.headers.authorization === `Bearer ${SERVICE_TOKEN}`), 'fake Botmancers received the service token');
     } finally {
-      // `npx` is the process we signal. Depending on the npm version it either relays the
-      // bridge's exit 0 or dies from the forwarded SIGTERM itself (exit code null), so
-      // accept both and prove the bridge is really gone by its closed port.
+      // `npx` is the process we signal, and it runs in its own process group so one
+      // SIGTERM reaches the bridge too: npm 11.19 on Linux does not forward the signal
+      // and would leave the bridge running. Depending on the npm version `npx` then
+      // either relays the bridge's exit 0 or dies from the signal itself (exit code
+      // null), so accept both and prove the bridge is really gone by its closed port.
       const exited = started.child
         ? await new Promise(resolve => {
             if (started.child.exitCode !== null) return resolve({ code: started.child.exitCode, signal: null });
             started.child.once('exit', (code, signal) => resolve({ code, signal }));
-            started.child.kill('SIGTERM');
+            try { process.kill(-started.child.pid, 'SIGTERM'); } catch { started.child.kill('SIGTERM'); }
           })
         : { code: started.code, signal: null };
       const output = started.child ? started.output().stderr : started.stderr;
