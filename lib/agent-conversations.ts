@@ -1171,9 +1171,15 @@ function recoverExchanges(): string[] {
 
 export function createExchangeCommand(input: CreateExchangeInput): { exchange: ExchangeView; created: boolean; dispatched: Promise<void> } {
   const { exchange, created } = exchanges.create(input);
-  // An exact replay dispatches whatever is still queued (idempotent).
-  const dispatched = Promise.all(exchanges.advance(exchange.id).map(startAgentDispatch)).then(() => undefined);
+  const dispatched = dispatchExchange(exchange.id);
   return { exchange: exchanges.view(exchange.id), created, dispatched };
+}
+
+// Advances one exchange and dispatches its queued hop. An exact replay
+// dispatches whatever is still queued (idempotent). NOT-499: the service
+// API creates exchanges in its own transaction and dispatches through this.
+export function dispatchExchange(id: string): Promise<void> {
+  return Promise.all(exchanges.advance(id).map(startAgentDispatch)).then(() => undefined);
 }
 
 export function getExchangeView(id: string): ExchangeView {
@@ -1229,16 +1235,26 @@ function apiEventType(event: EngineEvent): string | null {
 }
 
 function workRequestView(request: WorkRequest): AgentRequestView {
-  const result = request.result ? (JSON.parse(request.result) as { reply_message_id?: string }) : null;
-  const reply = result?.reply_message_id
-    ? (db.prepare('SELECT id, content FROM messages WHERE id = ?').get(result.reply_message_id) as { id: string; content: string } | undefined)
+  const result = request.result ? (JSON.parse(request.result) as { reply_message_id?: string; answer_message_id?: string }) : null;
+  // NOT-499: a service's session message is an Ask hop. Its caller sees it
+  // in the origin conversation it asked from (never the session's own
+  // thread): the accepted message is the one the service sent there and
+  // the reply is the Ask answer.
+  const ask = hopOf(request)?.hop === 'ask' ? exchanges.forHopRequest(request.id) : undefined;
+  const replyId = ask ? result?.answer_message_id : result?.reply_message_id;
+  const reply = replyId
+    ? (db.prepare('SELECT id, content FROM messages WHERE id = ?').get(replyId) as { id: string; content: string } | undefined)
+    : undefined;
+  const askedMessage = ask
+    ? db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND request_id = ? AND sender_kind = ? ORDER BY rowid ASC LIMIT 1")
+      .get(ask.origin_conversation_id, request.id, ask.requester_kind) as { id: string } | undefined
     : undefined;
   const failed = request.state === 'failed' || request.state === 'cancelled';
   return {
     requestId: publicRequestId(request),
-    conversationId: request.source_conversation_id,
+    conversationId: ask ? ask.origin_conversation_id : request.source_conversation_id,
     agentId: request.target_agent_id,
-    acceptedMessageId: request.source_event_id,
+    acceptedMessageId: askedMessage ? askedMessage.id : request.source_event_id,
     state: apiStateOf(request.state),
     reply: reply ? { messageId: reply.id, content: reply.content } : null,
     failure: failed ? { code: request.error_code ?? request.state, message: request.error_message ?? '' } : null,
@@ -1258,15 +1274,22 @@ function publicRequestId(request: WorkRequest): string {
 
 // The canonical Work Request behind a public request id, when the principal
 // participates in its source conversation (NOT-491: the MCP bridge reads
-// the lifecycle state through this same check).
+// the lifecycle state through this same check), or (NOT-499) it is a hop
+// of an exchange the principal requested.
 export function getAuthorizedWorkRequest(principal: Principal, requestId: string): WorkRequest {
   assertKnownPrincipal(principal);
   const migrated = db.prepare('SELECT id FROM work_requests WHERE legacy_agent_request_id = ?').get(requestId) as { id: string } | undefined;
   const request = engine.getWorkRequest(migrated ? migrated.id : requestId);
-  if (!request || !isParticipant(request.source_conversation_id, principal)) {
+  if (!request || !(isParticipant(request.source_conversation_id, principal) || requestedExchangeHop(principal, request))) {
     throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
   }
   return request;
+}
+
+function requestedExchangeHop(principal: Principal, request: WorkRequest): boolean {
+  if (!hopOf(request)) return false;
+  const row = exchanges.forHopRequest(request.id);
+  return !!row && row.requester_kind === principal.kind && row.requester_id === principal.id;
 }
 
 export function getAgentRequest(principal: Principal, requestId: string): AgentRequestView {

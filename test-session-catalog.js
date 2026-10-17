@@ -205,8 +205,12 @@ async function main() {
   assert(/Local debug: provider session ID/.test(core) && /\?debug=external_session_id/.test(core), 'docs/core-engine.md documents the debug-only external-id exception');
   assert(/Responses never include Session Bindings, external run or\s+session ids/.test(bridge) && /the bridge never proxies it/.test(bridge),
     'docs/mcp-bridge.md keeps its non-disclosure contract and excludes the Sessions view');
-  assert(!/session-catalog|sessions/.test(read('lib/mcp-bridge.ts')) && !fs.existsSync(path.join(ROOT, 'app/api/v0/sessions')),
-    'the MCP bridge and /api/v0 do not reach the catalog');
+  // NOT-499: /api/v0 reaches the catalog only through the grant-gated
+  // service API (lib/service-api); the MCP bridge still does not.
+  const v0SessionRoutes = ['app/api/v0/sessions/[ref]/messages/route.ts', 'app/api/v0/agents/[agentId]/sessions/route.ts', 'app/api/v0/agents/[agentId]/sessions/[ref]/route.ts'];
+  assert(!/session-catalog|sessions/.test(read('lib/mcp-bridge.ts'))
+    && v0SessionRoutes.every(file => /from '@\/lib\/service-api-http'/.test(read(file)) && !/session-catalog/.test(read(file))),
+  'the MCP bridge does not reach the catalog; /api/v0 reaches it only through the grant-gated service API');
 
   removeDb();
   if (failures > 0) {
