@@ -49,7 +49,8 @@ const print = text => {
   if (outFile) appendFileSync(outFile, text);
 };
 const finish = code => {
-  process.exit(code);
+  // Exit only once stdout has drained; a bare process.exit() can cut a piped transcript short.
+  process.stdout.write('', () => process.exit(code));
 };
 
 function atLeast(actual, floor) {
@@ -67,7 +68,10 @@ function step(name, fn) {
     print(`PASS  ${name}${detail ? ` — ${detail}` : ''}\n`);
   } catch (error) {
     failed = true;
-    print(`FAIL  ${name} — ${error.message.trim().split('\n').slice(-(name === 'tests' ? 40 : 8)).join('\n      ')}\n`);
+    // execFileSync's message has the command and stderr only; the smokes explain themselves on stdout.
+    const stdout = String(error.stdout ?? '').trim().split('\n').slice(-25).join('\n');
+    const detail = `${error.message.trim().split('\n').slice(-(name === 'tests' ? 40 : 8)).join('\n')}${stdout && name !== 'tests' ? `\n${stdout}` : ''}`;
+    print(`FAIL  ${name} — ${detail.split('\n').join('\n      ')}\n`);
   }
 }
 
@@ -252,6 +256,7 @@ step('canary install of the exact tarball', () => {
 if (failed) {
   print('\nRelease check FAILED. Nothing was published.\n');
   finish(1);
+  await new Promise(() => {}); // wait for the drain callback to exit
 }
 print(`
 Release check PASSED for botmancers@${version}. Nothing was published.
