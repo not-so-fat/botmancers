@@ -20,7 +20,10 @@
 //   source context, required-field validation, the exact request payloads
 //   (accepted by the server's body parser), and no session-id entry;
 // - source contracts for accessibility (dialog semantics, Escape, focus
-//   return, live status, reduced motion, rail entry).
+//   return, live status, reduced motion, rail entry, focus restored when
+//   leaving a ledger detail);
+// - a group-origin exchange: the group link opens the group thread page,
+//   whose routes serve the thread and its card.
 // Self-contained: isolated SQLite file and HOME, no network.
 'use strict';
 
@@ -53,7 +56,7 @@ const ExchangesPage = jiti('./app/exchanges/page.tsx').default;
 const { startRouteHost } = require('./test-support/acceptance/route-host');
 
 const raw = dbModule.default;
-const { engine, bots, conversations, UI_OWNER_PRINCIPAL: OWNER } = dbModule;
+const { engine, bots, groups, conversations, UI_OWNER_PRINCIPAL: OWNER } = dbModule;
 
 const SECRETS = {
   dev: 'prov-dev-UI-SECRET-1111',
@@ -379,6 +382,32 @@ async function main() {
   assert(/@media \(max-width: 799px\)\s*\{\s*\.ledger-page\.has-detail \.ledger-list-pane/.test(css), 'narrow ledger shows list or detail full-height, not squeezed columns');
   assert(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.exchange-card,/.test(css), 'reduced motion is honoured for the new surfaces');
   assert(/\.exchange-card a:focus-visible,[\s\S]*?outline: 2px solid var\(--accent\)/.test(css) && /\.session-action:focus-visible/.test(css), 'new controls get the accent focus ring');
+  assert(/if \(selected \|\| !previous\) return;/.test(ledgerSrc) && /\.ledger-row\[data-exchange-id=/.test(ledgerSrc) && /\(row \?\? listTitleRef\.current\)\?\.focus\(\)/.test(ledgerSrc)
+    && /ref=\{listTitleRef\} tabIndex=\{-1\}/.test(ledgerSrc), 'leaving a detail returns focus to its row, or to the list heading');
+  const groupSrc = read('app/threads/[id]/page.tsx');
+  assert(/\/api\/exchanges\?conversation=/.test(groupSrc) && /<ExchangeCard summary=\{summary\}/.test(groupSrc) && /card\.focus\(/.test(groupSrc) && /<main /.test(groupSrc),
+    'the group thread page renders its linked exchange cards from the API and focuses the linked card');
+
+  console.log('Case 7: group-origin exchange backlinks');
+  const room = groups.create('Design review', [rose.id, tank.id]);
+  const roomConv = conversations.getByGroupId(room.id);
+  const groupAsk = service.exchanges.create(input({ idempotencyKey: 'ui-group-ask', mode: 'ask', originConversationId: roomConv.id, sourceAgentId: rose.id, sessionRef: roseS.binding.id, instruction: 'What copy did the room agree on?' })).exchange;
+  const groupSummary = ledger.listExchanges(raw, { requester: OWNER, conversationId: roomConv.id }).find(summary => summary.id === groupAsk.id);
+  const groupLink = groupSummary && groupSummary.links.find(link => link.id === roomConv.id);
+  assert(!!groupLink && groupLink.kind === 'group' && groupLink.thread_agent_id === null && groupLink.roles.includes('origin'), 'the group origin is a linked thread with no owner Agent');
+  assert(view.threadHref(groupLink, groupAsk.id) === `/threads/${roomConv.id}?exchange=${groupAsk.id}`, 'the group link backlinks to its group thread page with the card focused');
+  assert(groupSummary.links.every(link => link.kind === 'agent_api' || view.threadHref(link, groupAsk.id) !== null), 'every owner-visible linked thread has a backlink');
+  assert(view.threadHref({ id: 'c1', kind: 'agent_api', thread_agent_id: null }) === null, 'an Agent API conversation has no backlink');
+  const groupHost = await startRouteHost({ jiti, repoRoot: ROOT });
+  try {
+    const gConv = await groupHost.owner('GET', `/api/conversations/${roomConv.id}`);
+    assert(gConv.status === 200 && gConv.json.details.name === 'Design review' && gConv.json.details.members.length === 2, 'the group thread page reads the group and its members');
+    const gCards = await groupHost.owner('GET', `/api/exchanges?conversation=${roomConv.id}`);
+    assert(gCards.status === 200 && gCards.json.exchanges.some(item => item.id === groupAsk.id), 'the group thread page reads its exchange card from the exchange API');
+  } finally {
+    await groupHost.close();
+  }
+  await service.cancelExchangeCommand(groupAsk.id, OWNER, 'test done');
 
   releaseAsk();
   releaseDeliver();

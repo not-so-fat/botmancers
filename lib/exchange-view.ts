@@ -167,11 +167,21 @@ export function detailsHref(id: string): string {
   return `/exchanges?id=${encodeURIComponent(id)}`;
 }
 
-export function threadHref(link: Pick<ExchangeConversationRef, 'thread_agent_id'>, exchangeId?: string): string | null {
-  if (!link.thread_agent_id) return null;
-  const params = new URLSearchParams({ agent: link.thread_agent_id });
+// Where a linked thread opens: an owner thread opens in the chat with its
+// Agent selected; a group thread (no owner Agent) opens its own thread page
+// (app/threads/[id]). Either way the exchange's card is brought into view.
+// An Agent API conversation is not an owner thread and has no backlink.
+export function threadHref(link: Pick<ExchangeConversationRef, 'id' | 'kind' | 'thread_agent_id'>, exchangeId?: string): string | null {
+  const params = new URLSearchParams();
+  if (link.thread_agent_id) {
+    params.set('agent', link.thread_agent_id);
+    if (exchangeId) params.set('exchange', exchangeId);
+    return `/?${params.toString()}`;
+  }
+  if (link.kind !== 'group') return null;
   if (exchangeId) params.set('exchange', exchangeId);
-  return `/?${params.toString()}`;
+  const query = params.toString();
+  return `/threads/${encodeURIComponent(link.id)}${query ? `?${query}` : ''}`;
 }
 
 export function linkRoleLabel(roles: ExchangeLinkRole[]): string {

@@ -57,6 +57,19 @@ export default function ExchangesPage() {
   const statusId = useId();
   const agentId = useId();
   const listTitleId = useId();
+  const listTitleRef = useRef<HTMLHeadingElement>(null);
+  const lastSelected = useRef<string | null>(null);
+
+  // Leaving a detail (its Back control, or browser Back) unmounts the
+  // focused heading; focus returns to the row that opened it, or to the
+  // list heading when that row is gone or filtered out.
+  useEffect(() => {
+    const previous = lastSelected.current;
+    lastSelected.current = selected;
+    if (selected || !previous) return;
+    const row = document.querySelector<HTMLElement>(`.ledger-row[data-exchange-id="${CSS.escape(previous)}"]`);
+    (row ?? listTitleRef.current)?.focus();
+  }, [selected]);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,7 +114,7 @@ export default function ExchangesPage() {
       </header>
       <main className="ledger-main">
         <section className="ledger-list-pane" aria-labelledby={listTitleId}>
-          <h2 id={listTitleId} className="ledger-pane-title">Exchanges</h2>
+          <h2 id={listTitleId} ref={listTitleRef} tabIndex={-1} className="ledger-pane-title">Exchanges</h2>
           <div className="ledger-filters">
             <div className="sessions-filter ledger-mode" role="group" aria-label="Mode">
               {MODE_FILTER_OPTIONS.map(option => (
@@ -290,7 +303,9 @@ function ExchangeDetailView({ id, onBack, onChanged }: { id: string; onBack: () 
             const href = threadHref(link, summary.id);
             return (
               <li key={link.id}>
-                {href ? <Link className="session-link ledger-thread-link" href={href}>{link.label}</Link> : <span>{link.label}</span>}
+                {href
+                  ? <Link className="session-link ledger-thread-link" href={href}>{link.label}</Link>
+                  : <span>{link.label}{link.kind === 'agent_api' ? <span className="ledger-link-role"> (between Agents, not an owner thread)</span> : null}</span>}
                 <span className="ledger-link-role"> · {linkRoleLabel(link.roles)}</span>
               </li>
             );

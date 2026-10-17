@@ -2836,6 +2836,37 @@ button.avatar-pic {
   }
 }
 
+/* A group thread opened from an exchange backlink: the ledger page frame
+   around the thread's messages and exchange cards. */
+.group-thread-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.group-thread-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 56rem;
+}
+
+.group-thread-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.group-thread-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 800px) {
+  .group-thread-page {
+    height: auto;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .exchange-card,
   .ledger-row,
