@@ -22,6 +22,7 @@ export const ALLOWED = [
   /^CHANGELOG\.md$/,
   /^dist\/[a-z0-9-]+\.(?:js|d\.ts)$/,
   /^schemas\/botmancers\.mcp\.v\d+\.tools\.json$/,
+  /^skills\/botmancers-collaboration\/(?:SKILL\.md|references\/[a-z0-9-]+\.md)$/,
   /^app\/(?:server\.js|package\.json|BUILD_INFO\.json)$/,
   /^app\/(?:\.next|node_modules|public)\//,
 ];
@@ -43,6 +44,7 @@ export const REQUIRED = [
   'dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'dist/product.js', 'dist/setup.js', 'dist/home.js', 'dist/server.js',
   'dist/managed.js', 'dist/upgrade.js',  // managed install: launcher, release trees, updater
   'schemas/botmancers.mcp.v1.tools.json', 'schemas/botmancers.mcp.v2.tools.json',
+  'dist/clients.js', 'skills/botmancers-collaboration/SKILL.md', 'skills/botmancers-collaboration/references/workflows.md',
   'app/server.js', 'app/package.json', 'app/BUILD_INFO.json', 'app/.next/BUILD_ID',
   'app/.next/required-server-files.json', 'app/.next/server/app/api/health/route.js',
   'app/public/brand/botmancers-logo-filled-64.png',
@@ -52,7 +54,7 @@ export const REQUIRED = [
     .map(platform => `app/node_modules/better-sqlite3/prebuilds/${platform}.node`),
 ];
 
-const SECRET_PATTERNS = [
+export const SECRET_PATTERNS = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key'],
   [/\bnpm_[A-Za-z0-9]{36}\b/, 'npm token'],
   [/\bgh[pousr]_[A-Za-z0-9]{36,}\b/, 'GitHub token'],

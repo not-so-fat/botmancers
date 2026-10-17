@@ -348,6 +348,13 @@ without the v2 `agent_id` path.
 Release steps are in
 [`packages/mcp-server/RELEASING.md`](../packages/mcp-server/RELEASING.md).
 
+For Codex, Cursor, and Claude Code, `botmancers setup --client
+codex|cursor|claude` writes the MCP connection and installs the optional
+`botmancers-collaboration` Agent Skill, a procedure for this workflow that
+holds no tools, credentials, or authority of its own
+([client setup](../packages/mcp-server/README.md#client-setup-and-the-collaboration-skill)).
+Clients without skills use the tools above unchanged.
+
 Consumer runbooks: [Cursor Grok Bot](integrations/grok-bot/README.md)
 (pinned package, network route, token rotation, fixture and operator smokes).
 

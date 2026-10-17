@@ -41,6 +41,7 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "schemas/*.json",
+    "skills/",
     "app/",
     "CHANGELOG.md"
   ],
@@ -59,6 +60,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && npm run build:app && node --test test/",
     "check:pack": "node scripts/check-pack.mjs",
+    "check:skill": "node scripts/check-skill.mjs",
     "smoke:install": "node scripts/smoke-install.mjs",
     "smoke:product": "node scripts/smoke-product-install.mjs",
     "smoke:managed": "node scripts/smoke-managed-install.mjs",

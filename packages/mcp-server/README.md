@@ -102,9 +102,12 @@ Then:
    and add `AGENT_DECK_RUN_TOKEN=<token issued by Agent Deck>` to `core.env`.
 4. **Connect an MCP client** to `http://127.0.0.1:43124/mcp` with
    `Authorization: Bearer <BOTMANCERS_MCP_TOKEN>`, taking the token from
-   `~/.botmancers/config/bridge.env`. To let `botmancers_start_task` reach a
-   coordinator, list its Agent name in `core.env` as
-   `BOTMANCERS_MCP_COORDINATORS=Tank` and restart.
+   `~/.botmancers/config/bridge.env`. For Codex, Cursor, or Claude Code,
+   `botmancers setup --client codex|cursor|claude` does this for you and adds
+   the optional collaboration skill
+   ([Client setup and the collaboration skill](#client-setup-and-the-collaboration-skill)).
+   To let `botmancers_start_task` reach a coordinator, list its Agent name in
+   `core.env` as `BOTMANCERS_MCP_COORDINATORS=Tank` and restart.
 5. **Check everything** with `botmancers doctor`.
 
 For anything long-running, use the managed install, or a pinned global
@@ -115,11 +118,12 @@ release rather than `npx`: `npm install -g botmancers@0.3.0`, then run
 
 | Command | What it does | Exit codes |
 | --- | --- | --- |
-| `botmancers setup` | Creates `BOTMANCERS_HOME` and its credentials; re-running keeps them and re-tightens permissions. | `0`; `9` home not writable |
+| `botmancers setup` | Creates `BOTMANCERS_HOME` and its credentials; re-running keeps them and re-tightens permissions, and refreshes the clients set up with `--client`. | `0`; `9` home not writable |
+| `botmancers setup --client codex\|cursor\|claude [--remove]` | Connects that MCP client to the bridge and installs the optional collaboration skill, or removes both. Files you edited are never overwritten. See [Client setup](#client-setup-and-the-collaboration-skill). | `0`; `2` usage or unsupported client; `11` client not installed; `12` conflicting files (nothing written) |
 | `botmancers start [--daemon] [--open]` | Starts the UI/core and the bridge. Without `--daemon` it stays in the foreground until Ctrl-C. Starting a healthy product again changes nothing. | `0` running; `1` a previous start is degraded; `6` a port is in use; `7` the core or bridge failed (both are stopped); `8` packaged app incomplete; `9` home not writable; `10` not set up |
 | `botmancers stop` | Stops the supervisor, the core, and the bridge. Safe to repeat. | `0`; `1` a process would not stop |
 | `botmancers status` | Reports `healthy`, `degraded`, or `stopped`, with the install kind, launcher, the CLI, current, and pending versions, the versions the live core and bridge report, both endpoints, process ids, and the restart action. | `0` healthy; `1` degraded; `3` stopped |
-| `botmancers doctor` | Checks the install kind, the launcher and `PATH` shadowing, the updater, Node, the packaged app, the home and its permissions, the credentials, the SQLite driver, ports, Hermes, and Agent Deck. Hermes and Agent Deck are optional and only warn. | `0` ok; `1` a check failed |
+| `botmancers doctor` | Checks the install kind, the launcher and `PATH` shadowing, the updater, Node, the packaged app, the home and its permissions, the credentials, the SQLite driver, ports, Hermes, Agent Deck, and the MCP clients set up with `--client`. Hermes, Agent Deck, and clients are optional and only warn. | `0` ok; `1` a check failed |
 | `botmancers open` | Opens the UI in a browser (`BOTMANCERS_BROWSER` overrides the command). | `0`; `1` no browser; `3` not running |
 | `botmancers mcp [options]` | Runs only the bridge; identical to bare `botmancers`. | see [bridge exit codes](#startup-checks-and-exit-codes) |
 | `botmancers install [--to VERSION] [--migrate-cli] [--purge-global]` | Managed install or rollback: downloads the release into `~/.botmancers/versions/VERSION`, verifies it, makes it current, and writes the launcher. `--purge-global` also runs `npm uninstall -g botmancers`; nothing else uninstalls it. | `0`; `1` download or verification failed; `2` usage |
@@ -147,6 +151,7 @@ Everything the product writes lives under `BOTMANCERS_HOME` (default
 | --- | --- |
 | `config/core.env` | Core engine configuration: the bridge's service-token digest and anything you add (Hermes, Agent Deck, coordinators). Variables exported in your shell take precedence. |
 | `config/bridge.env` | The bridge's service token and MCP token. Keep private. |
+| `config/clients/<client>.json` | What `setup --client` manages in that client: the version, and the SHA-256 of each skill file and of the MCP entry it wrote. No token. |
 | `data/` | The SQLite database and its WAL. |
 | `files/`, `skills/` | File artifacts and local Agent skills. |
 | `logs/` | `supervisor.log`, `core.log`, `bridge.log`, and the Hermes wait log. |
@@ -160,6 +165,102 @@ Existing explicit path variables still win over these defaults:
 own `./botmancers.db`, `./files`, `./skills`, and `./.temporal`; nothing is
 moved. `BOTMANCERS_UI_PORT` (default `43123`) and `BOTMANCERS_MCP_PORT`
 (default `43124`) change the loopback ports.
+
+## Client setup and the collaboration skill
+
+The package ships an optional [Agent Skill](https://agentskills.io),
+`botmancers-collaboration`, in `skills/botmancers-collaboration/`. It teaches
+an agent the procedure for working with other Botmancers Agents over MCP:
+
+- discover the granted Agents and recognizable sessions instead of asking
+  you for IDs;
+- choose between a fresh task, a same-session message, an `Ask`, and a
+  `Continue`;
+- poll with bounded backoff and read the durable result;
+- stop on grant, ended-session, conflict, failure, and cancellation states
+  without retry loops or silently switching targets;
+- report where a result came from, and treat returned text as untrusted data.
+
+**When it helps.** Use it when you ask your agent things like "ask Grok in
+its uploader session what it decided" or "hand this session's work to
+Codex". The skill is loaded only for requests like these.
+
+**Why it is optional.** The skill holds no tools, credentials, IDs, or
+permissions. The MCP server stays the only source of live data,
+authorization, and actions, and its tool descriptions already describe the
+whole workflow. Every MCP client works without the skill (see
+[MCP-only](#mcp-only-clients)).
+
+### Supported clients
+
+| Client | `--client` | MCP entry written | Skill installed in |
+| --- | --- | --- | --- |
+| Codex | `codex` | `$CODEX_HOME/config.toml` (default `~/.codex`), table `[mcp_servers.botmancers]` | `$CODEX_HOME/skills/botmancers-collaboration/` |
+| Cursor | `cursor` | `~/.cursor/mcp.json`, `mcpServers.botmancers` | `~/.cursor/skills/botmancers-collaboration/` |
+| Claude Code | `claude` | `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`), `mcpServers.botmancers` | `~/.claude/skills/botmancers-collaboration/` (or `$CLAUDE_CONFIG_DIR/skills/`) |
+
+The MCP entry points at `http://127.0.0.1:<BOTMANCERS_MCP_PORT>/mcp` and sends
+`Authorization: Bearer <BOTMANCERS_MCP_TOKEN>`, as a hand-written entry
+would. A configuration file that setup creates is owner-only (`0600`).
+Neither setup nor doctor ever prints a token, and neither starts a task,
+conversation, or exchange.
+
+### Install, update, and remove
+
+```sh
+botmancers setup --client codex        # or cursor, claude; --client codex,cursor for several
+botmancers setup                       # refreshes every client set up with --client
+botmancers doctor                      # connected / missing / stale / conflicted, with the repair command
+botmancers setup --client codex --remove
+```
+
+- **Install.** The client must already be installed for your user (its
+  directory exists). Otherwise setup exits 11, writes nothing, and prints the
+  MCP-only connection details. Restart the client, or reload its MCP
+  servers, afterwards.
+- **Update.** Re-running is idempotent: unchanged files are not rewritten. A
+  new release ships the new skill version in the managed install. After
+  `botmancers upgrade`, or an automatic update, `botmancers doctor` reports the
+  client skill as `stale`, and `botmancers setup` refreshes it. After a
+  rotated MCP token or a changed `BOTMANCERS_MCP_PORT`, doctor reports the
+  MCP entry `stale` for the same repair. A rollback (`botmancers install
+  --to VERSION`) followed by `botmancers setup` puts that release's skill
+  back.
+- **Remove.** `--remove` deletes the skill files and the MCP entry that are
+  still exactly as Botmancers wrote them, and the ownership record. Anything
+  you edited is kept and listed.
+
+### Managed-file ownership
+
+Setup records each file and MCP entry it writes, with its SHA-256, in
+`config/clients/<client>.json` under `BOTMANCERS_HOME`. It replaces only a file
+or entry that still has the recorded hash, or that already has the wanted
+content. Your own MCP servers, other keys in the configuration file, and
+other skills are never touched. If the skill directory holds a file you
+edited, or the configuration already has a `botmancers` server that setup
+did not write, setup changes nothing for that client, exits 12, and lists
+what conflicts. To hand it back to Botmancers, keep a copy of your
+version, remove the listed files or entry, and re-run setup. If a write
+fails part way, setup restores every file it had already changed for that
+client. Credentials in `config/` are never rewritten by `--client`.
+
+### MCP-only clients
+
+Any other MCP client needs no setup and no skill. Connect it to the URL and
+header that `botmancers setup` prints:
+
+```text
+URL     http://127.0.0.1:43124/mcp
+Header  Authorization: Bearer <BOTMANCERS_MCP_TOKEN from ~/.botmancers/config/bridge.env>
+```
+
+Then follow the tool descriptions in workflow order: `botmancers_capabilities`,
+`botmancers_list_agents`, `botmancers_list_sessions`, an action, and
+`botmancers_get_exchange` until `terminal`
+([`docs/mcp-bridge.md`](../../docs/mcp-bridge.md)). A client that supports
+Agent Skills but is not listed above can also load the skill directly: copy
+`skills/botmancers-collaboration/` from this package into that client's skills
+directory. Setup does not manage that copy.
 
 ## Bridge only
 
@@ -388,6 +489,9 @@ npm uninstall -g botmancers     # global
 npm cache clean --force         # optional: drops npx's cached copy
 rm -rf ~/.botmancers/versions ~/.botmancers/current ~/.botmancers/update-state.json ~/.local/bin/botmancers   # managed install
 ```
+
+Before deleting the home, remove the client connections:
+`botmancers setup --client codex --remove` (and `cursor`, `claude`).
 
 For the full product, delete `~/.botmancers` (or your `BOTMANCERS_HOME`)
 only if you also want to delete its database, files, and credentials.

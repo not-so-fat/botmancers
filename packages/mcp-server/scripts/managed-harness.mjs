@@ -30,7 +30,7 @@ export function makePackage(dir, version, { app } = {}) {
   pkg.version = version;
   delete pkg.scripts;
   writeFileSync(join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
-  for (const entry of ['dist', 'schemas', 'CHANGELOG.md', 'README.md', 'LICENSE']) cpSync(join(PACKAGE_DIR, entry), join(dir, entry), { recursive: true });
+  for (const entry of ['dist', 'schemas', 'skills', 'CHANGELOG.md', 'README.md', 'LICENSE']) cpSync(join(PACKAGE_DIR, entry), join(dir, entry), { recursive: true });
   if (app) {
     cpSync(app, join(dir, 'app'), { recursive: true, verbatimSymlinks: true });
     const infoPath = join(dir, 'app', 'BUILD_INFO.json');
