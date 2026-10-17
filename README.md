@@ -88,6 +88,13 @@ coordinator, an objective, and an idempotency key; it cannot choose a runtime,
 Deck, model, grant, or target. The contract is in
 [`docs/mcp-bridge.md`](docs/mcp-bridge.md).
 
+Beyond that narrow bridge, the owner can grant a service explicit,
+per-Agent access to discover Agents, read their sessions and conversations,
+send one read-only message to an exact session, and start `Ask`/`Continue`
+exchanges, through `/api/v0` and an owner-only grants document. Setup,
+rotation, rollback, and least-privilege examples are in
+[`docs/service-grants.md`](docs/service-grants.md).
+
 The [`botmancers`](packages/mcp-server/README.md) npm package
 (`packages/mcp-server`) ships the whole product: the UI, API, core engine,
 and the bridge, run by one supervisor with no checkout needed:
