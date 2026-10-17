@@ -29,6 +29,7 @@ import {
 import { RESTART_ACTION, START_LOCK_ENV, activateRelease, activatablePending, cliEntryIn, beginHandOff, handOffFileLock, managedPaths, managedReport, scheduleAutoUpdate, versionDir, waitForFileLock, writeUpdateState, type ManagedReport, type Unlock } from './managed.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { BRIDGE_SERVICE_ID, SERVICE_TOKENS_ENV, credentialState } from './setup.js';
+import { clientDoctorLines, mcpTarget } from './clients.js';
 
 export const PRODUCT_EXIT = {
   ok: 0,
@@ -40,6 +41,8 @@ export const PRODUCT_EXIT = {
   missingAssets: 8,  // the packaged app is incomplete
   home: 9,           // BOTMANCERS_HOME is not writable
   notSetUp: 10,      // run `botmancers setup` first
+  clientMissing: 11, // setup --client: that client is not installed for this user
+  clientConflict: 12, // setup --client: its files are not Botmancers-managed; nothing written
 } as const;
 
 export const STARTUP_TIMEOUT_ENV = 'BOTMANCERS_STARTUP_TIMEOUT_MS';
@@ -1023,6 +1026,9 @@ export async function doctor(ctx: Ctx): Promise<number> {
   else if (!(await reachable(deckUrl))) add('warn', 'agent-deck', `Agent Deck is unavailable: ${deckBin} found, but its server at ${deckUrl} is not answering.`);
   else if (!(core.AGENT_DECK_RUN_TOKEN ?? '').trim()) add('warn', 'agent-deck', `Agent Deck is reachable at ${deckUrl}, but AGENT_DECK_RUN_TOKEN is not set in ${ctx.paths.coreEnv}.`);
   else add('ok', 'agent-deck', `agent-deck on PATH, server ${deckUrl} reachable, run token configured`);
+
+  // MCP clients connected by `setup --client` and their skill (optional: only warn).
+  for (const [level, name, detail] of clientDoctorLines(ctx.env, ctx.paths, mcpTarget(ctx.paths, ctx.mcpPort))) add(level, name, detail);
 
   const failures = checks.filter(([level]) => level === 'fail').length;
   const warnings = checks.filter(([level]) => level === 'warn').length;

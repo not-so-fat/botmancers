@@ -19,6 +19,7 @@ import { HEALTH_PATH, MCP_PATH, createBridge } from './server.js';
 import { UpstreamError } from './upstream.js';
 import { PRODUCT_EXIT, UsageError, doctor, open, parseStartArgs, productContext, start, status, stop } from './product.js';
 import { SetupError, runSetup } from './setup.js';
+import { ClientUsageError, mcpTarget, parseSetupArgs, setupClients } from './clients.js';
 import { DISABLE_AUTOUPDATER_ENV, runUpdateCheck, scheduleAutoUpdate } from './managed.js';
 import { runInstall, runUpgrade } from './upgrade.js';
 
@@ -48,7 +49,12 @@ export const PRODUCT_HELP = `Usage: botmancers <command>
 Run Botmancers (UI, API, core engine, and MCP bridge) from this package:
 
   setup                     Create BOTMANCERS_HOME (owner-only) and generate the
-                            bridge credentials; prints Hermes and Agent Deck steps
+                            bridge credentials; prints Hermes and Agent Deck steps;
+                            refreshes the clients set up with --client
+  setup --client codex|cursor|claude [--remove]
+                            Connect that client to the MCP bridge and install the
+                            optional botmancers-collaboration skill (or remove both);
+                            files you edited are never overwritten
   start [--daemon] [--open] Start the UI/core on 127.0.0.1:43123 and the MCP bridge
                             on 127.0.0.1:43124 under one supervisor
   stop                      Stop the supervisor, core, and bridge
@@ -71,7 +77,8 @@ BOTMANCERS_MCP_PORT. Variables exported in your shell (HERMES_*, BOTMANCERS_DB_P
 
 Exit codes: 0 ok, 1 degraded or check failed, 2 usage, 3 not running,
 6 port in use, 7 core or bridge failed to start, 8 packaged app incomplete,
-9 home not writable, 10 not set up (run botmancers setup).
+9 home not writable, 10 not set up (run botmancers setup), 11 the client is not
+installed, 12 client files conflict (setup --client changed nothing).
 `;
 
 // Product commands (./product). Resolves when the command finishes; a
@@ -85,11 +92,26 @@ export async function productMain(command: typeof PRODUCT_COMMANDS[number], argv
     const ctx = productContext(env, io);
     // The running supervisor schedules its own checks; `start` reaches it.
     if (command !== 'start') scheduleAutoUpdate(env);
-    if (command !== 'start' && argv.length) throw new UsageError(`${command} takes no arguments.`);
+    if (command !== 'start' && command !== 'setup' && argv.length) throw new UsageError(`${command} takes no arguments.`);
     switch (command) {
       case 'setup': {
-        const result = runSetup(ctx.paths, { ui: ctx.uiPort, mcp: ctx.mcpPort });
-        ctx.io.stdout(`${result.lines.join('\n')}\n`);
+        let options;
+        try {
+          options = parseSetupArgs(argv);
+        } catch (error) {
+          if (error instanceof ClientUsageError) throw new UsageError(error.message);
+          throw error;
+        }
+        if (!options.remove) {
+          const result = runSetup(ctx.paths, { ui: ctx.uiPort, mcp: ctx.mcpPort });
+          ctx.io.stdout(`${result.lines.join('\n')}\n`);
+        }
+        const outcomes = setupClients(options, ctx.env, ctx.paths, mcpTarget(ctx.paths, ctx.mcpPort), ctx.version);
+        for (const outcome of outcomes) (outcome.ok ? ctx.io.stdout : ctx.io.stderr)(`${options.remove ? '' : '\n'}${outcome.lines.join('\n')}\n`);
+        // Plain setup only refreshes; its own job (the home) already succeeded.
+        if (!options.clients.length) return PRODUCT_EXIT.ok;
+        if (outcomes.some(outcome => outcome.kind === 'conflict')) return PRODUCT_EXIT.clientConflict;
+        if (outcomes.some(outcome => outcome.kind === 'missing-client')) return PRODUCT_EXIT.clientMissing;
         return PRODUCT_EXIT.ok;
       }
       case 'start': return await start(ctx, parseStartArgs(argv));

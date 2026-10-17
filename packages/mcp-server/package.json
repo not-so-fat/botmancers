@@ -41,6 +41,7 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "schemas/*.json",
+    "skills/",
     "app/",
     "CHANGELOG.md"
   ],

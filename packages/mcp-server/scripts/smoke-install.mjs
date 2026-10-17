@@ -92,7 +92,7 @@ export async function smoke({ tarball, registryVersion } = {}) {
     if (registryVersion) check(installed.version === registryVersion, `registry version is ${registryVersion}`);
 
     const shipped = readdirSync(join(project, 'node_modules/botmancers')).sort();
-    check(shipped.every(name => ['CHANGELOG.md', 'LICENSE', 'README.md', 'app', 'dist', 'package.json', 'schemas'].includes(name)), `installed files are only ${shipped.join(', ')}`);
+    check(shipped.every(name => ['CHANGELOG.md', 'LICENSE', 'README.md', 'app', 'dist', 'package.json', 'schemas', 'skills'].includes(name)), `installed files are only ${shipped.join(', ')}`);
     check(Object.keys(installed.dependencies ?? {}).length === 0 && readdirSync(join(project, 'node_modules')).filter(n => !n.startsWith('.')).join(',') === 'botmancers', 'no transitive dependencies installed');
 
     const help = await runBridge('npx', ['botmancers', '--help'], { env, cwd: project });
