@@ -419,7 +419,7 @@ async function main() {
     script = (input, kind) => {
       order.push(kind);
       if (kind === 'extract') return { output: `Here is the packet:\n\`\`\`json\n${packetJson()}\n\`\`\``, session: SECRETS.dev };
-      if (kind === 'deliver') return { output: 'Scout here: picking up the test work.', session: SECRETS.scoutFresh };
+      if (kind === 'deliver') return { output: `Scout here: picking up the test work in ${SECRETS.scoutFresh}.`, session: SECRETS.scoutFresh };
       return { output: 'unexpected' };
     };
     const callsBefore = calls.length;
@@ -460,6 +460,10 @@ async function main() {
       && engine.listAttempts(delivery.id)[0].kind === 'launch', 'both hop Attempts are linked (the destination\'s is a launch, not a resume)');
     const reply = one("SELECT * FROM messages WHERE request_id = ? AND sender_type = 'bot'", delivery.id);
     assert(reply.conversation_id === scoutConv.id && reply.sender_id === scout.id, 'the destination reply lands in the destination conversation');
+    assert(leaks(reply.content).length === 0 && reply.content.includes('[redacted session id]')
+      && leaks(engine.listAttempts(delivery.id)[0].output).length === 0
+      && count('SELECT COUNT(*) AS n FROM engine_events WHERE data LIKE ?', `%${SECRETS.scoutFresh}%`) === 0,
+    'a destination reply echoing its own new session id keeps it out of the message, the Attempt output, and every event');
     const types = view.events.map(event => event.type);
     assert(JSON.stringify(types) === JSON.stringify(['created', 'hop_queued', 'state_changed', 'hop_started', 'packet_extracted', 'hop_queued', 'state_changed', 'hop_started', 'destination_replied', 'state_changed']),
       `ordered exchange events (${types.join(',')})`);
