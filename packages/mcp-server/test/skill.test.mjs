@@ -14,9 +14,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SKILL_DIR, TOOLS, checkArgs, checkSkill, extractSkill } from '../scripts/check-skill.mjs';
 import { PACKAGE_DIR } from '../scripts/product-harness.mjs';
+import { makeSimulator } from '../scripts/skill-sim.mjs';
 
 const skillText = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/skill-routing.json', import.meta.url), 'utf8'));
+const simulator = scenario => makeSimulator(fixtures, scenario);
 
 test('the skill in this checkout passes the validator', () => {
   const result = checkSkill();
@@ -108,68 +110,6 @@ function decisionTable() {
     table.set(action.replace(/`/g, ''), [...tools.matchAll(/`(botmancers_[a-z_]+)`/g)].map(match => match[1]));
   }
   return table;
-}
-
-const CAPABILITY = {
-  botmancers_list_agents: 'agents:read', botmancers_list_sessions: 'sessions:read', botmancers_list_conversations: 'conversations:read',
-  botmancers_send_to_session: 'sessions:message', botmancers_create_exchange: 'exchanges:create',
-  botmancers_get_exchange: 'exchanges:read', botmancers_list_exchanges: 'exchanges:read',
-};
-const ALL = ['agents:read', 'sessions:read', 'conversations:read', 'sessions:message', 'exchanges:read', 'exchanges:create'];
-const RETRYABLE = new Set(['source_session_busy', 'agent_unavailable', 'rate_limited', 'internal_error', 'conflict']);
-
-// Simulated MCP: results built from the fixture's Agents and sessions.
-function simulator(scenario) {
-  const byName = name => fixtures.agents.find(agent => agent.name === name);
-  const grants = scenario.grants ?? Object.fromEntries(fixtures.agents.map(agent => [agent.name, ALL]));
-  const errors = structuredClone(scenario.errors ?? {});
-  const exchangeStates = [...(scenario.exchange ?? [])];
-  const requestStates = [...(scenario.request ?? [])];
-  const calls = [];
-  const call = (tool, args) => {
-    assert.ok(TOOLS.has(tool), `unknown tool ${tool}`);
-    calls.push([tool, structuredClone(args)]);
-    const code = errors[tool]?.shift();
-    if (code) return { error: { code, retryable: RETRYABLE.has(code) } };
-    switch (tool) {
-      case 'botmancers_capabilities':
-        return {
-          mode: scenario.mode ?? 'granted',
-          agents: scenario.mode === 'narrow' ? [] : fixtures.agents.map(agent => ({ agent_id: agent.agent_id, capabilities: grants[agent.name] ?? [] })),
-          operations: scenario.mode === 'narrow' ? [] : Object.entries(CAPABILITY).map(([name, capability]) => ({
-            tool: name, capability, agent_ids: fixtures.agents.filter(agent => (grants[agent.name] ?? []).includes(capability)).map(agent => agent.agent_id),
-          })),
-          polling: { initial_seconds: 2, max_seconds: 30 },
-        };
-      case 'botmancers_health': return { status: 'ok', coordinators: fixtures.agents.map(agent => ({ name: agent.name, available: true })) };
-      case 'botmancers_list_agents': return { items: fixtures.agents, next_cursor: null };
-      case 'botmancers_list_sessions': return { items: fixtures.sessions[args.agent_id], next_cursor: null };
-      case 'botmancers_start_task': return { request_id: 'req-fixture-1', conversation_id: 'conv-fixture-1', replayed: false };
-      case 'botmancers_get_request': {
-        const status = requestStates.shift();
-        return { request_id: args.request_id, status, terminal: ['succeeded', 'failed', 'cancelled'].includes(status), result: status === 'succeeded' ? 'done' : null };
-      }
-      case 'botmancers_get_conversation': return { messages: [], status: 'idle', content_trust: 'untrusted' };
-      case 'botmancers_send_to_session': return { exchange_id: 'xch-fixture-1', conversation_id: 'conv-fixture-2', replayed: false };
-      case 'botmancers_create_exchange': return { exchange: { id: 'xch-fixture-1', state: 'queued' }, terminal: false, replayed: false };
-      case 'botmancers_get_exchange': {
-        const state = exchangeStates.shift();
-        const terminal = ['completed', 'failed', 'cancelled'].includes(state);
-        return {
-          terminal,
-          content_trust: 'untrusted',
-          exchange: {
-            id: args.exchange_id, state,
-            answer: state === 'completed' ? { content: scenario.answer ?? 'An answer.' } : null,
-            failure: state === 'failed' ? scenario.failure : null,
-            cancel: state === 'cancelled' ? { reason: null } : null,
-          },
-        };
-      }
-      default: throw new Error(`fixture does not simulate ${tool}`);
-    }
-  };
-  return { call, calls, byName };
 }
 
 // SKILL.md's procedure, step by step. Returns the outcome; the simulator
@@ -338,4 +278,51 @@ for (const scenario of fixtures.scenarios) {
 test('routing fixtures name only tools the skill documents', () => {
   const documented = new Set(readdirSync(SKILL_DIR, { recursive: true }).filter(rel => rel.endsWith('.md')).flatMap(rel => [...readFileSync(join(SKILL_DIR, rel), 'utf8').matchAll(/botmancers_[a-z_]+/g)].map(match => match[0])));
   for (const scenario of fixtures.scenarios) for (const [tool] of scenario.expected.calls) assert.ok(documented.has(tool), tool);
+});
+
+// ---------------------------------------------------------------------
+// The live client eval's grader (scripts/eval-skill-routing.mjs), offline:
+// a transcript built from the fixture's expected calls passes, and each
+// routing mistake a real client could make is caught.
+
+const live = await import('../scripts/eval-skill-routing.mjs');
+
+function transcriptFor(scenario, { skill = true, calls = scenario.expected.calls, reply } = {}) {
+  const sim = simulator(scenario);
+  const recorded = calls.map(([tool, args]) => [tool, args, sim.call(tool, args)]);
+  const uses = calls.map(([tool, args]) => ({ name: `mcp__botmancers__${tool}`, input: args }));
+  const session = scenario.facts.session_agent && fixtures.sessions[fixtures.agents.find(agent => agent.name === scenario.facts.session_agent).agent_id];
+  const defaultReply = scenario.expected.outcome === 'choose_session'
+    ? `Which session do you mean: ${scenario.expected.ask_user.join(' or ')}?`
+    : `${scenario.facts.session_agent ?? scenario.facts.coordinator} answered in "${session?.map(item => item.title).join('", "') ?? 'a new task'}" (exchange xch-fixture-1).`;
+  return { transcript: [...(skill ? [{ name: 'Skill', input: { skill: 'botmancers-collaboration' } }] : []), ...uses], calls: recorded, reply: reply ?? defaultReply };
+}
+
+test('live grader: the fixture-expected behaviour passes for every scenario', () => {
+  for (const scenario of fixtures.scenarios) {
+    assert.deepEqual(live.grade(scenario, transcriptFor(scenario)).problems, [], scenario.name);
+  }
+});
+
+test('live grader: catches a skipped skill, wrong workflow, raw ids, authority, and unbounded retries', () => {
+  const byName = name => fixtures.scenarios.find(scenario => scenario.name === name);
+  const ask = byName('codex-to-grok-ask');
+  const swap = (calls, from, to) => calls.map(([tool, args]) => [tool === from[0] ? to[0] : tool, tool === from[0] ? to[1] : args]);
+  const sendInstead = swap(ask.expected.calls, ['botmancers_create_exchange'], ['botmancers_send_to_session', { session_ref: 'sref-grok-uploader', content: 'x', idempotency_key: 'k' }]);
+  const cases = [
+    ['no skill', transcriptFor(ask, { skill: false }), /never invoked the botmancers-collaboration skill/],
+    ['same-session instead of Ask', transcriptFor(ask, { calls: sendInstead }), /chose botmancers_send_to_session, expected botmancers_create_exchange/],
+    ['wrong session', transcriptFor(ask, { calls: ask.expected.calls.map(([tool, args]) => [tool, tool === 'botmancers_create_exchange' ? { ...args, source: { session_ref: 'sref-grok-pricing' } } : args]) }), /routed .*sref-grok-pricing/],
+    ['raw id', transcriptFor(ask, { calls: [['botmancers_capabilities', {}], ['botmancers_create_exchange', ask.expected.calls.find(([tool]) => tool === 'botmancers_create_exchange')[1]]] }), /used sref-grok-uploader before any tool returned it/],
+    ['authority', transcriptFor(ask, { calls: ask.expected.calls.map(([tool, args]) => [tool, tool === 'botmancers_create_exchange' ? { ...args, deck_id: 'mine' } : args]) }), /deck_id/],
+    ['asks for an id', transcriptFor(ask, { reply: 'Please provide the session ID you want.' }), /asks the user for an id/],
+    ['no provenance', transcriptFor(ask, { reply: 'Done.' }), /does not name the Agent Grok/],
+    ['acts when it should ask', transcriptFor(byName('codex-to-grok-ambiguous-session'), { calls: [...byName('codex-to-grok-ambiguous-session').expected.calls, ['botmancers_create_exchange', { mode: 'ask', source: { session_ref: 'sref-grok-pricing' }, instruction: 'x', idempotency_key: 'k' }]] }), /acted \(botmancers_create_exchange\) where the fixture expects no action/],
+    ['retry loop', transcriptFor(ask, { calls: [...ask.expected.calls.slice(0, 3), ...Array(4).fill(ask.expected.calls[3])] }), /retries are not bounded|retried botmancers_create_exchange without a retryable error/],
+    ['other tools', { ...transcriptFor(ask), transcript: [{ name: 'Bash', input: {} }, ...transcriptFor(ask).transcript] }, /outside the skill and MCP: Bash/],
+  ];
+  for (const [label, run, expected] of cases) {
+    const { problems } = live.grade(byName(label === 'acts when it should ask' ? 'codex-to-grok-ambiguous-session' : 'codex-to-grok-ask'), run);
+    assert.ok(problems.some(problem => expected.test(problem)), `${label}: ${JSON.stringify(problems)}`);
+  }
 });

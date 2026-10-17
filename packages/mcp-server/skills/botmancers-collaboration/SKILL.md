@@ -24,9 +24,11 @@ every flow and the recovery for every error.
    `botmancers_list_sessions` for that Agent. Match on the session `title`
    and `status`. Messages, `Ask`, and `Continue` all run in the source
    session, so it must be `active` and `resumable`. If the history matters,
-   call `botmancers_list_conversations`. If more than one session could
-   match, show the user their titles and ask which one. Never ask the user
-   for an ID.
+   call `botmancers_list_conversations`. If only one session title
+   contains the user's words, use that session. If the words fit more than
+   one title (for example "pricing research" fits both "Pricing research"
+   and "Pricing research follow-up"), show the user those titles and ask
+   which one. Never ask the user for an ID.
 
 ## 2. Choose one action
 
@@ -35,10 +37,14 @@ Check the rows in order and use the first one that fits:
 | The user wants | Action | Tools, in order |
 | --- | --- | --- |
 | New work for a coordinator, with no existing session | Fresh task | `botmancers_health`, `botmancers_start_task`, `botmancers_get_request`, `botmancers_get_conversation` |
-| A follow-up from the Agent that owns an `active`, `resumable` session, in that same session | Same-session message | `botmancers_send_to_session`, `botmancers_get_exchange` |
-| One bounded answer from what a session already knows | `Ask` | `botmancers_create_exchange` (`mode: "ask"`), `botmancers_get_exchange` |
+| A new instruction or further work for the Agent that owns an `active`, `resumable` session, in that same session | Same-session message | `botmancers_send_to_session`, `botmancers_get_exchange` |
+| An answer to a question about what a session already did, decided, or knows | `Ask` | `botmancers_create_exchange` (`mode: "ask"`), `botmancers_get_exchange` |
 | Another Agent should carry the work on in a fresh session of its own | `Continue` | `botmancers_create_exchange` (`mode: "continue"`, `destination.agent_id`), `botmancers_get_exchange` |
 
+- A question about a session's earlier work is an `Ask`, even when the user
+  names that session ("ask Grok in the uploader review whether the cap is
+  right"). Use the same-session message only to give the owning Agent a new
+  instruction or more work.
 - Use the same-session message only for the Agent that owns the session. To
   reach a different Agent, use `Ask` or `Continue`.
 - Before you act, check that `botmancers_capabilities` lists the operation

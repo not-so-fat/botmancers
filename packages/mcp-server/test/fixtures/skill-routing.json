@@ -146,7 +146,7 @@
     {
       "name": "grok-to-codex-continue",
       "caller": "Grok",
-      "prompt": "Pass my pricing research findings on to Codex so it can implement the plan.",
+      "prompt": "Pass the pricing research follow-up findings on to Codex so it can implement the plan.",
       "facts": { "wants": "handoff", "session_agent": "Grok", "session_hint": "pricing research follow-up", "to_agent": "Codex", "text": "Implement the pricing plan from this research." },
       "exchange": ["completed"],
       "expected": {
@@ -283,8 +283,8 @@
     {
       "name": "codex-to-grok-cancelled",
       "caller": "Codex",
-      "prompt": "Tell Grok in the uploader retry review to summarize its findings.",
-      "facts": { "wants": "follow_up", "session_agent": "Grok", "session_hint": "uploader retry review", "text": "Summarize your findings." },
+      "prompt": "Tell Grok in the uploader retry review to also add the lease-expiry case to its checklist.",
+      "facts": { "wants": "follow_up", "session_agent": "Grok", "session_hint": "uploader retry review", "text": "Please also add the lease-expiry case to your checklist." },
       "exchange": ["queued", "cancelled"],
       "expected": {
         "outcome": "cancelled",
@@ -292,7 +292,7 @@
           ["botmancers_capabilities", {}],
           ["botmancers_list_agents", {}],
           ["botmancers_list_sessions", { "agent_id": "agent-grok-fixture", "status": "active" }],
-          ["botmancers_send_to_session", { "session_ref": "sref-grok-uploader", "content": "Summarize your findings.", "idempotency_key": "codex-to-grok-cancelled-1" }],
+          ["botmancers_send_to_session", { "session_ref": "sref-grok-uploader", "content": "Please also add the lease-expiry case to your checklist.", "idempotency_key": "codex-to-grok-cancelled-1" }],
           ["botmancers_get_exchange", { "exchange_id": "xch-fixture-1" }],
           ["botmancers_get_exchange", { "exchange_id": "xch-fixture-1" }]
         ]
