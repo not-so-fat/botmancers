@@ -332,3 +332,119 @@ test('doctor reports connected, missing, stale, and conflicted client states wit
   }
   s.noLeaks();
 });
+
+// ---------------------------------------------------------------------
+// Ownership edge cases, driven through the built module with crafted
+// releases: a release that drops a file, a failed write after pruning, and
+// a manifest that is not one Botmancers wrote.
+
+const clients = () => import('../dist/clients.js');
+const homeModule = () => import('../dist/home.js');
+const release = (files) => Object.entries(files).map(([rel, text]) => ({ rel, data: Buffer.from(text), hash: createHash('sha256').update(text).digest('hex') }));
+const OLD = release({ 'SKILL.md': 'old skill\n', 'references/workflows.md': 'flows\n', 'references/legacy/notes.md': 'legacy\n' });
+const NEW = release({ 'SKILL.md': 'new skill\n', 'references/workflows.md': 'flows\n' });
+const TARGET = { url: 'http://127.0.0.1:43999/mcp', token: `bmmcp_${'d'.repeat(64)}` };
+
+async function direct(t) {
+  const { homePaths } = await homeModule();
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'botmancers-clients-direct-')));
+  t.after(() => {
+    try { chmodSync(join(root, 'user'), 0o700); } catch { /* fine */ }
+    rmSync(root, { recursive: true, force: true });
+  });
+  const user = join(root, 'user');
+  mkdirSync(join(user, '.claude', 'skills'), { recursive: true });
+  const paths = homePaths(join(root, 'bm'));
+  mkdirSync(paths.config, { recursive: true });
+  const env = { HOME: user };
+  const skillDir = join(user, '.claude', 'skills', SKILL);
+  return { user, paths, env, skillDir, config: join(user, '.claude.json'), manifestFile: join(paths.config, 'clients', 'claude.json') };
+}
+
+test('an edited managed file that the new release drops is a conflict: nothing changes', async t => {
+  const { installClient, inspectClient } = await clients();
+  const d = await direct(t);
+  assert.equal(installClient('claude', d.env, d.paths, TARGET, '1.0.0', OLD).ok, true);
+  const legacy = join(d.skillDir, 'references/legacy/notes.md');
+  appendFileSync(legacy, 'my own note\n');
+  const manifestBefore = readFileSync(d.manifestFile, 'utf8');
+  const skillBefore = readFileSync(join(d.skillDir, 'SKILL.md'), 'utf8');
+
+  assert.equal(inspectClient('claude', d.env, d.paths, TARGET, NEW).skill.state, 'conflict');
+  const outcome = installClient('claude', d.env, d.paths, TARGET, '1.1.0', NEW);
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.kind, 'conflict');
+  assert.match(outcome.lines.join('\n'), /changed nothing for Claude Code[\s\S]*\n {2}skill {2}~\/\.claude\/skills\/botmancers-collaboration\/references\/legacy\/notes\.md\n[\s\S]*then re-run: botmancers setup --client claude$/);
+  assert.equal(readFileSync(join(d.skillDir, 'SKILL.md'), 'utf8'), skillBefore, 'no partial refresh');
+  assert.equal(readFileSync(legacy, 'utf8'), 'legacy\nmy own note\n');
+  assert.equal(readFileSync(d.manifestFile, 'utf8'), manifestBefore, 'manifest not replaced');
+
+  // Untouched, the dropped file is removed and its empty directory pruned.
+  writeFileSync(legacy, 'legacy\n');
+  assert.equal(installClient('claude', d.env, d.paths, TARGET, '1.1.0', NEW).ok, true);
+  assert.ok(!existsSync(join(d.skillDir, 'references/legacy')));
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(d.manifestFile, 'utf8')).skill.files).sort(), ['SKILL.md', 'references/workflows.md']);
+});
+
+test('rollback recreates pruned directories when a later write fails', { skip: process.getuid?.() === 0 && 'root ignores permissions' }, async t => {
+  const { installClient } = await clients();
+  const d = await direct(t);
+  assert.equal(installClient('claude', d.env, d.paths, TARGET, '1.0.0', OLD).ok, true);
+  const before = Object.fromEntries(OLD.map(file => [file.rel, sha(join(d.skillDir, file.rel))]));
+  const configBefore = sha(d.config);
+  const manifestBefore = readFileSync(d.manifestFile, 'utf8');
+  // A rotated token makes the ~/.claude.json write necessary; it comes after
+  // the dropped file was removed and references/legacy/ pruned, and a
+  // read-only HOME fails it.
+  chmodSync(d.user, 0o555);
+  const outcome = installClient('claude', d.env, d.paths, { ...TARGET, token: `bmmcp_${'e'.repeat(64)}` }, '1.1.0', NEW);
+  chmodSync(d.user, 0o700);
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.lines[0], /could not write Claude Code files \(EACCES\); restored everything this run had changed\./);
+  assert.deepEqual(Object.fromEntries(OLD.map(file => [file.rel, sha(join(d.skillDir, file.rel))])), before, 'every file, including the pruned one, is back');
+  assert.equal(mode(join(d.skillDir, 'references/legacy/notes.md')), 0o644);
+  assert.equal(sha(d.config), configBefore);
+  assert.equal(readFileSync(d.manifestFile, 'utf8'), manifestBefore);
+});
+
+test('a structurally invalid manifest is reported, never trusted, and repaired by setup', async t => {
+  const { installClient, inspectClient, clientDoctorLines, removeClient, setupClients } = await clients();
+  const d = await direct(t);
+  assert.equal(installClient('claude', d.env, d.paths, TARGET, '1.0.0', NEW).ok, true);
+  const valid = JSON.parse(readFileSync(d.manifestFile, 'utf8'));
+  const broken = [
+    ['no skill.files', { ...valid, skill: { dir: valid.skill.dir } }],
+    ['no mcp.hash', { ...valid, mcp: { config: valid.mcp.config, name: 'botmancers' } }],
+    ['escaping path', { ...valid, skill: { ...valid.skill, files: { '../../outside': valid.skill.files['SKILL.md'] } } }],
+    ['not an object', [1, 2]],
+    ['not JSON', null],
+  ];
+  for (const [label, doc] of broken) {
+    writeFileSync(d.manifestFile, doc === null ? '{"schema":1,' : JSON.stringify(doc));
+    const view = inspectClient('claude', d.env, d.paths, TARGET, NEW);
+    assert.equal(view.manifest, null, label);
+    assert.ok(view.manifestProblem, label);
+    const doctor = clientDoctorLines(d.env, d.paths, TARGET).find(([, name]) => name === 'claude');
+    assert.equal(doctor[0], 'warn', label);
+    assert.match(doctor[2], /ownership manifest .*claude\.json cannot be trusted \(.+\); Botmancers treats Claude Code files as user-owned until it is rebuilt; repair: botmancers setup --client claude$/, label);
+    assert.ok(!doctor[2].includes(TARGET.token));
+    const removal = removeClient('claude', d.env, d.paths);
+    assert.equal(removal.ok, false, label);
+    assert.match(removal.lines[0], /--remove: changed nothing; the ownership manifest .* cannot be trusted/);
+    assert.ok(existsSync(join(d.skillDir, 'SKILL.md')), `${label}: removal deleted nothing`);
+  }
+  // Plain setup still selects a client whose manifest file is untrusted.
+  const [selected] = setupClients({ clients: [], remove: false }, d.env, d.paths, TARGET, '1.0.0');
+  assert.match(selected.lines[0], /botmancers setup --client claude:/);
+  // Files still match this release: setup rebuilds the manifest.
+  const repaired = installClient('claude', d.env, d.paths, TARGET, '1.0.0', NEW);
+  assert.equal(repaired.ok, true, repaired.lines.join('\n'));
+  assert.deepEqual(JSON.parse(readFileSync(d.manifestFile, 'utf8')).skill, valid.skill);
+
+  // When files differ from this release, an untrusted manifest makes them conflicts.
+  writeFileSync(d.manifestFile, '{}');
+  const conflict = installClient('claude', d.env, d.paths, TARGET, '1.1.0', OLD);
+  assert.equal(conflict.ok, false);
+  assert.match(conflict.lines.join('\n'), /owner {2}the ownership manifest cannot be trusted/);
+  assert.equal(readFileSync(join(d.skillDir, 'SKILL.md'), 'utf8'), 'new skill\n');
+});

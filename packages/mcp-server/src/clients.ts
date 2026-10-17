@@ -105,13 +105,37 @@ export interface ClientManifest {
 
 export const manifestPath = (paths: HomePaths, id: ClientId) => join(paths.config, 'clients', `${id}.json`);
 
-export function readManifest(paths: HomePaths, id: ClientId): ClientManifest | null {
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const isHash = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+const isSafeRel = (rel: string) => !!rel && !rel.startsWith('/') && !rel.split('/').some(part => !part || part === '.' || part === '..');
+
+// A manifest that exists but is not one Botmancers wrote is reported, never
+// trusted: without it every file and entry counts as user-owned.
+export function loadManifest(paths: HomePaths, id: ClientId): { manifest: ClientManifest | null; problem: string | null } {
+  let text: string;
   try {
-    const manifest = JSON.parse(readFileSync(manifestPath(paths, id), 'utf8')) as ClientManifest;
-    return manifest && manifest.schema === 1 && manifest.client === id ? manifest : null;
-  } catch {
-    return null;
+    text = readFileSync(manifestPath(paths, id), 'utf8');
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') return { manifest: null, problem: null };
+    return { manifest: null, problem: `it cannot be read (${(error as { code?: string }).code ?? 'error'})` };
   }
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return { manifest: null, problem: 'it is not valid JSON' };
+  }
+  if (!isRecord(doc) || doc.schema !== 1 || doc.client !== id) return { manifest: null, problem: `it is not a schema 1 manifest for ${id}` };
+  const { skill, mcp } = doc;
+  const valid = typeof doc.version === 'string'
+    && isRecord(skill) && typeof skill.dir === 'string' && isRecord(skill.files)
+    && Object.entries(skill.files).every(([rel, hash]) => isSafeRel(rel) && isHash(hash))
+    && isRecord(mcp) && typeof mcp.config === 'string' && mcp.name === MCP_SERVER_NAME && isHash(mcp.hash);
+  return valid ? { manifest: doc as unknown as ClientManifest, problem: null } : { manifest: null, problem: 'it is missing or has malformed version, skill, or mcp fields' };
+}
+
+export function readManifest(paths: HomePaths, id: ClientId): ClientManifest | null {
+  return loadManifest(paths, id).manifest;
 }
 
 // ---------------------------------------------------------------------
@@ -267,6 +291,7 @@ export interface ClientView {
   layout: ClientLayout;
   installed: boolean;          // the client's own directory exists
   manifest: ClientManifest | null;
+  manifestProblem: string | null;  // a manifest file exists but cannot be trusted
   mcp: { state: PartState; reason?: string };
   skill: { state: PartState; conflicts: string[]; changes: number };
 }
@@ -283,7 +308,7 @@ function fileHash(path: string): string | null | 'not-a-file' {
 
 export function inspectClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomePaths, target: McpTarget | null, skill = packagedSkill()): ClientView {
   const layout = clientLayout(id, env);
-  const manifest = readManifest(paths, id);
+  const { manifest, problem: manifestProblem } = loadManifest(paths, id);
   const installed = existsSync(layout.root);
 
   let mcp: ClientView['mcp'];
@@ -317,7 +342,11 @@ export function inspectClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomeP
     }
     for (const [rel, hash] of Object.entries(manifest?.skill.files ?? {})) {
       if (skill.some(file => file.rel === rel)) continue;
-      if (fileHash(join(layout.skillDir, rel)) === hash) changes += 1;  // a managed file this version no longer ships
+      // A managed file this version no longer ships: removed if untouched, a conflict if edited.
+      const current = fileHash(join(layout.skillDir, rel));
+      if (current === null) continue;
+      if (current === hash) changes += 1;
+      else conflicts.push(join(layout.skillDir, rel));
     }
   }
   let skillState: PartState;
@@ -325,7 +354,7 @@ export function inspectClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomeP
   else if (!changes) skillState = 'current';
   else if (!present) skillState = manifest ? 'missing' : 'absent';
   else skillState = 'stale';
-  return { layout, installed, manifest, mcp, skill: { state: skillState, conflicts, changes } };
+  return { layout, installed, manifest, manifestProblem, mcp, skill: { state: skillState, conflicts, changes } };
 }
 
 // ---------------------------------------------------------------------
@@ -358,6 +387,7 @@ function conflictLines(view: ClientView, env: NodeJS.ProcessEnv, removing: boole
   const lines = [`botmancers setup --client ${id}: changed nothing for ${view.layout.label}; these are not Botmancers-managed or were edited since Botmancers wrote them:`];
   if (view.mcp.state === 'conflict') lines.push(`  MCP    ${view.mcp.reason}`);
   for (const path of view.skill.conflicts) lines.push(`  skill  ${home(path, env)}`);
+  if (view.manifestProblem) lines.push(`  owner  the ownership manifest cannot be trusted (${view.manifestProblem}), so nothing counts as Botmancers-managed`);
   lines.push(
     'Botmancers never overwrites them. To let it manage them again, keep a copy of anything you want,',
     view.mcp.state === 'conflict'
@@ -391,7 +421,12 @@ class Journal {
     const before = readFileSync(path);
     const mode = statSync(path).mode & 0o777;
     rmSync(path);
-    this.undo.push(() => writeFileSync(path, before, { mode }));
+    // Removal prunes empty parents right after, so restoring recreates them.
+    this.undo.push(() => {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, before, { mode });
+      chmodSync(path, mode);
+    });
   }
 
   private mkdirs(dir: string): string[] {
@@ -405,10 +440,14 @@ class Journal {
     return made;
   }
 
-  rollback(): void {
+  // Returns how many steps could not be undone.
+  rollback(): number {
+    let failed = 0;
     for (const step of this.undo.reverse()) {
-      try { step(); } catch { /* best effort */ }
+      try { step(); } catch { failed += 1; }
     }
+    this.undo = [];
+    return failed;
   }
 }
 
@@ -468,13 +507,15 @@ export function installClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomeP
       mcp: { config: layout.config, name: MCP_SERVER_NAME, hash: wanted.hash },
     });
   } catch (error) {
-    journal.rollback();
+    const unrestored = journal.rollback();
     const code = (error as { code?: string }).code ?? (error as Error).message;
     return {
       ok: false,
       kind: 'conflict',
       lines: [
-        `botmancers setup --client ${id}: could not write ${layout.label} files (${code}); restored everything this run had changed.`,
+        unrestored
+          ? `botmancers setup --client ${id}: could not write ${layout.label} files (${code}), and ${unrestored} change${unrestored > 1 ? 's' : ''} could not be undone; check ${home(layout.skillDir, env)} and ${home(layout.config, env)}.`
+          : `botmancers setup --client ${id}: could not write ${layout.label} files (${code}); restored everything this run had changed.`,
         `Fix the permissions under ${home(layout.root, env)}${layout.config.startsWith(layout.root) ? '' : ` and of ${home(layout.config, env)}`}, then re-run: ${repairCommand(id)}`,
       ],
     };
@@ -497,6 +538,16 @@ export function installClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomeP
 export function removeClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomePaths): ClientOutcome {
   const view = inspectClient(id, env, paths, null);
   const { layout, manifest } = view;
+  if (view.manifestProblem) {
+    return {
+      ok: false,
+      kind: 'conflict',
+      lines: [
+        `botmancers setup --client ${id} --remove: changed nothing; the ownership manifest ${manifestPath(paths, id)} cannot be trusted (${view.manifestProblem}), so Botmancers cannot tell which ${layout.label} files it wrote.`,
+        `Re-run ${repairCommand(id)} to rebuild it from files that match this release, or remove the "${MCP_SERVER_NAME}" MCP entry and ${home(layout.skillDir, env)} by hand and delete the manifest.`,
+      ],
+    };
+  }
   if (!manifest) {
     return { ok: true, kind: 'removed', lines: [`botmancers setup --client ${id} --remove: Botmancers has not set up ${layout.label}; nothing to remove.`] };
   }
@@ -517,8 +568,15 @@ export function removeClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomePa
     if (state?.found === 'present' && state.hash === manifest.mcp.hash) journal.write(layout.config, state.rewrite(null));
     else if (state?.found === 'present' || config.problem || state?.found === 'unmanageable') kept.push(`${layout.config} "${MCP_SERVER_NAME}" MCP server entry`);
   } catch (error) {
-    journal.rollback();
-    return { ok: false, kind: 'conflict', lines: [`botmancers setup --client ${id} --remove: could not change ${layout.label} files (${(error as { code?: string }).code ?? (error as Error).message}); restored them.`] };
+    const unrestored = journal.rollback();
+    const code = (error as { code?: string }).code ?? (error as Error).message;
+    return {
+      ok: false,
+      kind: 'conflict',
+      lines: [unrestored
+        ? `botmancers setup --client ${id} --remove: could not change ${layout.label} files (${code}), and ${unrestored} change${unrestored > 1 ? 's' : ''} could not be undone; check ${home(manifest.skill.dir, env)} and ${home(layout.config, env)}.`
+        : `botmancers setup --client ${id} --remove: could not change ${layout.label} files (${code}); restored them.`],
+    };
   }
   rmSync(manifestPath(paths, id), { force: true });
   const lines = [`botmancers setup --client ${id} --remove: removed the Botmancers MCP connection and the ${SKILL_NAME} skill from ${layout.label}.`];
@@ -541,6 +599,10 @@ export function clientDoctorLines(env: NodeJS.ProcessEnv, paths: HomePaths, targ
   for (const id of CLIENT_IDS) {
     const view = inspectClient(id, env, paths, target, skill);
     const { layout, manifest } = view;
+    if (view.manifestProblem) {
+      out.push(['warn', id, `ownership manifest ${manifestPath(paths, id)} cannot be trusted (${view.manifestProblem}); Botmancers treats ${layout.label} files as user-owned until it is rebuilt; repair: ${repairCommand(id)}`]);
+      continue;
+    }
     if (!manifest) {
       if (view.installed) detected.push(id);
       continue;
@@ -608,7 +670,7 @@ export function parseSetupArgs(argv: string[]): SetupOptions {
 // (for example after an upgrade); `--client` installs or refreshes the named ones.
 export function setupClients(options: SetupOptions, env: NodeJS.ProcessEnv, paths: HomePaths, target: McpTarget | null, version: string): ClientOutcome[] {
   if (options.remove) return options.clients.map(id => removeClient(id, env, paths));
-  const ids = options.clients.length ? options.clients : CLIENT_IDS.filter(id => readManifest(paths, id));
+  const ids = options.clients.length ? options.clients : CLIENT_IDS.filter(id => existsSync(manifestPath(paths, id)));
   if (!target) return ids.map(id => ({ ok: false, kind: 'conflict' as const, lines: [`botmancers setup --client ${id}: the bridge credentials are missing; run botmancers setup first.`] }));
   const skill = packagedSkill();
   return ids.map(id => installClient(id, env, paths, target, version, skill));
