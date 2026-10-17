@@ -120,8 +120,12 @@ adds no table and writes nothing.
   other from what is recorded: the Work Request from its source Attempt, the
   Conversation from the Work Request's source conversation); `active` (unreleased) or `ended` (released);
   created, ended, and last-activity times (the newest of binding, release,
-  source Attempt, and resuming Attempts); and `resumable` (active and owned by an
-  implementation or revision, the only bindings a revision resumes). Workspace
+  source Attempt, and resuming Attempts); and `resumable` (exactly the binding a revision
+  would resume: active, scoped to its own implementation or revision Work
+  Request together with that request's source conversation, and bound under
+  the adapter the Agent dispatches today; a sparse request-only or
+  conversation-only binding, or one left by an earlier runtime, is not
+  resumable). Workspace
   and deck appear only when the stored launch snapshot recorded them; nothing is
   probed live.
 - **Routes.** `GET /api/bots/:id/sessions?status=active|ended|all` (newest

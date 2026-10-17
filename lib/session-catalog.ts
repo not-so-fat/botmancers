@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { resolveAgent } from './bot-definition';
 import type { ExecutionKind, SessionBinding, WorkRequestState } from './engine-store';
 
 // NOT-496: the Agent session catalog. A read model over the canonical
@@ -67,6 +68,7 @@ export interface SessionDetail extends SessionSummary {
 
 interface CatalogRow extends SessionBinding {
   agent_name: string;
+  agent_runtime: string | null;
   origin_request_id: string | null;
   origin_conversation_id: string | null;
   conversation_type: string | null;
@@ -76,6 +78,8 @@ interface CatalogRow extends SessionBinding {
   request_intent: string | null;
   request_kind: ExecutionKind | null;
   request_state: WorkRequestState | null;
+  request_conversation_id: string | null;
+  request_target_agent_id: string | null;
   source_snapshot: string | null;
   source_finished_at: number | null;
   resumed_last_at: number | null;
@@ -86,6 +90,20 @@ const TITLE_LIMIT = 80;
 // (lib/coordinator-loop resumeBindingFor); nothing else is resumed.
 const RESUMABLE_KINDS: ExecutionKind[] = ['implementation', 'revision'];
 
+// The same conditions resumeBindingFor applies: the binding's own Work
+// Request (not one derived through its source Attempt) is an
+// implementation or revision of this Agent, the binding's scope is exactly
+// that request plus its source conversation (getActiveSessionBinding
+// compares both), and the adapter is the one the Agent dispatches today.
+function isResumable(row: CatalogRow): boolean {
+  return row.released_at === null
+    && row.request_id !== null
+    && row.request_kind !== null && RESUMABLE_KINDS.includes(row.request_kind)
+    && row.request_target_agent_id === row.agent_id
+    && (row.conversation_id ?? '') === (row.request_conversation_id ?? '')
+    && row.adapter === resolveAgent({ agent: row.agent_runtime }).agent;
+}
+
 // A binding may be scoped to a Conversation, a Work Request, or both
 // (lib/engine-store). Its origin is the effective one: the Work Request is
 // the binding's own or its source Attempt's; the Conversation is the
@@ -93,9 +111,10 @@ const RESUMABLE_KINDS: ExecutionKind[] = ['implementation', 'revision'];
 // Activity is the newest of: the binding, its release, the Attempt that
 // produced it, and every Attempt that resumed it.
 const SELECT = `
-  SELECT b.*, bot.name AS agent_name, r.id AS origin_request_id, c.id AS origin_conversation_id,
+  SELECT b.*, bot.name AS agent_name, bot.agent AS agent_runtime, r.id AS origin_request_id, c.id AS origin_conversation_id,
     c.type AS conversation_type, c.bot_id AS conversation_bot_id, tb.name AS thread_agent_name, g.name AS group_name,
     r.intent AS request_intent, r.execution_kind AS request_kind, r.state AS request_state,
+    r.source_conversation_id AS request_conversation_id, r.target_agent_id AS request_target_agent_id,
     sa.launch_snapshot AS source_snapshot, sa.finished_at AS source_finished_at,
     (SELECT MAX(COALESCE(ra.finished_at, ra.started_at)) FROM work_attempts ra WHERE ra.resumed_session_binding_id = b.id) AS resumed_last_at
   FROM session_bindings b
@@ -151,7 +170,7 @@ function summarize(row: CatalogRow): SessionSummary {
     agent: { id: row.agent_id, name: row.agent_name, adapter: row.adapter, transport: snapshotField(snapshot, 'transport') },
     title,
     status,
-    resumable: status === 'active' && row.request_kind !== null && RESUMABLE_KINDS.includes(row.request_kind),
+    resumable: isResumable(row),
     created_at: row.created_at,
     ended_at: row.released_at,
     last_activity_at: Math.max(row.created_at, row.released_at ?? 0, row.source_finished_at ?? 0, row.resumed_last_at ?? 0),

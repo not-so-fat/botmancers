@@ -95,6 +95,44 @@ async function main() {
     && detail.attempts[1].kind === 'resume', 'detail lists the source Attempt and the Attempt that resumed it');
   assert(catalog.getAgentSession(db, dev.id, other.id) === undefined, 'detail of another Agent\'s binding is undefined');
 
+  console.log('\nResumable matches the revision resume lookup (sparse scopes, runtime change)');
+  // A separate Agent so the shared fixture's counts stay fixed. It
+  // dispatches claude today; its implementation ran and bound under claude.
+  const { engine, bots, conversations } = dbModule;
+  const sparse = bots.create({ name: 'Sparse', title: 'Implementer', description: 'Edge cases', agent: 'claude', deck_id: 'deck-builder' });
+  const sparseConv = conversations.getByBotId(sparse.id);
+  const { request: sparseImpl } = engine.createOrGetWorkRequest({
+    sourceConversationId: sparseConv.id, sourceEventId: 'sparse-msg-1', requester: { kind: 'person', id: 'local-owner' },
+    targetAgentId: sparse.id, intent: 'Sparse implementation', executionKind: 'implementation', toolProfile: 'edit',
+    idempotencyKey: 'sparse-1', now: BASE + 70 * MIN,
+  });
+  engine.transitionWorkRequest(sparseImpl.id, { from: 'queued', to: 'running', now: BASE + 70 * MIN });
+  const sparseAttempt = engine.createAttempt(sparseImpl.id, { kind: 'launch', adapter: 'claude', toolProfile: 'edit', launchSnapshot: {}, now: BASE + 70 * MIN });
+  const bind = (fields, at) => engine.bindSession({ agentId: sparse.id, externalSessionId: `sparse-secret-${at}`, now: BASE + at * MIN, ...fields });
+  const fullScope = bind({ adapter: 'claude', conversationId: sparseConv.id, requestId: sparseImpl.id, sourceAttemptId: sparseAttempt.id }, 71);
+  const reqOnlyImpl = bind({ adapter: 'claude', requestId: sparseImpl.id }, 72);
+  const convOnlyImpl = bind({ adapter: 'claude', conversationId: sparseConv.id, sourceAttemptId: sparseAttempt.id }, 73);
+  const staleRuntime = bind({ adapter: 'codex', conversationId: sparseConv.id, requestId: sparseImpl.id }, 74);
+  const sparseRows = Object.fromEntries(catalog.listAgentSessions(db, sparse.id, 'all').map(s => [s.ref, s]));
+  assert(sparseRows[fullScope.id].resumable === true, 'an implementation binding scoped to its request and conversation under the current adapter is resumable');
+  assert(sparseRows[reqOnlyImpl.id].status === 'active' && sparseRows[reqOnlyImpl.id].origin.work_request.execution_kind === 'implementation'
+    && sparseRows[reqOnlyImpl.id].resumable === false, 'a request-only implementation binding is not resumable (the lookup also matches the conversation)');
+  assert(sparseRows[convOnlyImpl.id].status === 'active' && sparseRows[convOnlyImpl.id].origin.work_request.id === sparseImpl.id
+    && sparseRows[convOnlyImpl.id].resumable === false, 'a conversation-only binding deriving an implementation through its source Attempt is not resumable');
+  assert(sparseRows[staleRuntime.id].status === 'active' && sparseRows[staleRuntime.id].resumable === false,
+    'an active binding under an adapter the Agent no longer dispatches is not resumable');
+  // Parity: resumable is true for exactly the binding resumeBindingFor's
+  // getActiveSessionBinding call would return, for every listed session.
+  const lookups = [dev, scout, sparse].flatMap(agent => catalog.listAgentSessions(db, agent.id, 'all').map(s => {
+    const req = s.origin.work_request && engine.getWorkRequest(s.origin.work_request.id);
+    const bot = bots.getById(agent.id);
+    const found = req && ['implementation', 'revision'].includes(req.execution_kind) && req.target_agent_id === agent.id
+      ? engine.getActiveSessionBinding({ agentId: agent.id, adapter: bot.agent, conversationId: req.source_conversation_id, requestId: req.id })
+      : undefined;
+    return s.resumable === (found?.id === s.ref);
+  }));
+  assert(lookups.length === 12 && lookups.every(Boolean), 'resumable agrees with the revision resume lookup for every session');
+
   console.log('\nOwner routes on loopback (real proxy.ts)');
   const host = await startRouteHost({ jiti, repoRoot: ROOT });
   try {

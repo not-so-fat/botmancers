@@ -4,7 +4,7 @@
 // headless Chrome over the DevTools protocol, at desktop and narrow widths:
 // - open Dev, reach the thread header's Sessions control with Tab, open it
 //   with Enter; focus moves into the drawer;
-// - every canonical binding is listed (3 active, 2 ended) by title, state,
+// - every canonical binding is listed (5 active, 2 ended) by title, state,
 //   last activity, and origin; the Active/Ended filters narrow the list;
 // - no drawer content is clipped or overflows horizontally, the drawer fits
 //   the viewport, and no external provider session id is anywhere in the
