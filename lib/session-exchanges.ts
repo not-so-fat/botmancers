@@ -188,8 +188,8 @@ function json(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
 
-function redact(text: string, secret: string | null): string {
-  return secret && secret.length > 0 ? text.split(secret).join('[redacted session id]') : text;
+function redact(text: string, ...secrets: Array<string | null | undefined>): string {
+  return secrets.reduce<string>((acc, secret) => (secret ? acc.split(secret).join('[redacted session id]') : acc), text);
 }
 
 const TRUNCATED = '\n[truncated]';
@@ -716,12 +716,15 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       const limit = hop.hop === 'ask' ? EXCHANGE_LIMITS.answerChars
         : hop.hop === 'extract' ? EXCHANGE_LIMITS.extractionOutputChars
           : EXCHANGE_LIMITS.replyChars;
-      const bounded = result.output === null ? null : boundOutput(redact(result.output, sourceSecret), limit);
+      // The id the adapter reports for this turn (a fork, or the fresh
+      // destination session) is as private as the source's: both go.
+      const reportedSecret = result.externalSessionId ?? null;
+      const bounded = result.output === null ? null : boundOutput(redact(result.output, sourceSecret, reportedSecret), limit);
       return {
         ...result,
         output: bounded ? bounded.content : null,
         outputTruncated: result.outputTruncated === true || bounded?.truncated === true,
-        failure: result.failure ? { ...result.failure, message: redact(result.failure.message, sourceSecret) } : null,
+        failure: result.failure ? { ...result.failure, message: redact(result.failure.message, sourceSecret, reportedSecret) } : null,
       };
     },
 
@@ -801,7 +804,7 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       // hop request).
       const replyId = randomUUID();
       const conversationId = row.destination_conversation_id as string;
-      const bounded = boundOutput(redact(output, sourceSecret), EXCHANGE_LIMITS.replyChars);
+      const bounded = boundOutput(redact(output, sourceSecret, reported), EXCHANGE_LIMITS.replyChars);
       const { content } = bounded;
       const truncated = bounded.truncated || result.outputTruncated === true;
       db.prepare(

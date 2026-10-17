@@ -58,6 +58,8 @@ const SECRETS = {
   scoutFresh: 'prov-scout-FRESH-6666',
   rose: 'prov-rose-SECRET-7777',
   scoutRestart: 'prov-scout-RESTART-9191',
+  devFork: 'prov-dev-FORK-7777',
+  devForkFail: 'prov-dev-FORKFAIL-8888',
 };
 const leaks = text => Object.values(SECRETS).filter(id => text.includes(id));
 
@@ -113,8 +115,8 @@ function installAdapter() {
       const now = Date.now();
       if (out.fail) {
         return {
-          status: 'failed', adapter: 'hermes-gateway', externalRunId: null, externalSessionId: null, output: null, artifacts: [],
-          startedAt: started, finishedAt: now, failure: { category: 'runtime_failed', message: 'fake failure', code: 'fake' },
+          status: 'failed', adapter: 'hermes-gateway', externalRunId: null, externalSessionId: out.session ?? null, output: null, artifacts: [],
+          startedAt: started, finishedAt: now, failure: { category: 'runtime_failed', message: out.failMessage ?? 'fake failure', code: 'fake' },
         };
       }
       return {
@@ -347,6 +349,29 @@ async function main() {
   }
 
   // -------------------------------------------------------------------
+  console.log('\n[2b] a session id the adapter reports for the turn (a fork) is as private as the source id');
+  {
+    script = () => ({ output: `forked into ${SECRETS.devFork}`, session: SECRETS.devFork });
+    const ok = service.createExchangeCommand(ask({ idempotencyKey: 'ask-forked' }));
+    await ok.dispatched;
+    await service.waitForAgentDispatchIdle();
+    const okView = service.getExchangeView(ok.exchange.id);
+    const okAttempt = engine.listAttempts(okView.hops.source.request_id)[0];
+    assert(okView.state === 'completed' && !okView.answer.content.includes(SECRETS.devFork), 'a forked Ask answer does not carry the newly reported session id');
+    assert(!one('SELECT output FROM work_attempts WHERE id = ?', okAttempt.id).output.includes(SECRETS.devFork),
+      'the Attempt output does not carry it either');
+    script = () => ({ fail: true, session: SECRETS.devForkFail, failMessage: `session_mismatch: resumed ${SECRETS.dev} but got ${SECRETS.devForkFail}` });
+    const bad = service.createExchangeCommand(ask({ idempotencyKey: 'ask-forked-fail' }));
+    await bad.dispatched;
+    await service.waitForAgentDispatchIdle();
+    const badView = service.getExchangeView(bad.exchange.id);
+    const badAttempt = engine.listAttempts(badView.hops.source.request_id)[0];
+    const stored = JSON.stringify(one('SELECT * FROM work_attempts WHERE id = ?', badAttempt.id)).replace(/"external_session_id":"[^"]*"/g, '');
+    assert(!stored.includes(SECRETS.devForkFail) && !stored.includes(SECRETS.dev),
+      'a failed forked resume keeps neither session id in the Attempt error text');
+    assert(count('SELECT COUNT(*) AS n FROM engine_events WHERE data LIKE ?', `%${SECRETS.devForkFail}%`) === 0, 'no event carries the reported session id');
+  }
+
   console.log('\n[3] Ask rejections: ended, mismatched, unknown, edit-seeking, recursive, unavailable, busy');
   {
     const rowsBefore = exchangeRows();
