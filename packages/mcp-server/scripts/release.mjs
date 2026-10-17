@@ -17,7 +17,7 @@
 // Run `npm run build && npm run build:app` first.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,9 +45,10 @@ const transcript = [];
 const print = text => {
   transcript.push(text);
   process.stdout.write(text);
+  // Append as we go, so a process that dies mid-run still leaves its transcript.
+  if (outFile) appendFileSync(outFile, text);
 };
 const finish = code => {
-  if (outFile) writeFileSync(outFile, transcript.join(''));
   process.exit(code);
 };
 
@@ -60,6 +61,7 @@ function atLeast(actual, floor) {
 }
 
 function step(name, fn) {
+  if (outFile) appendFileSync(outFile, `RUN   ${name}\n`);
   try {
     const detail = fn();
     print(`PASS  ${name}${detail ? ` — ${detail}` : ''}\n`);

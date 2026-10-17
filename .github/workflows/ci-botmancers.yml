@@ -33,19 +33,12 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Install the locked package-local build tools
         run: npm ci --no-audit --no-fund
-      - name: DIAG tests alone
-        run: |
-          npm test > "$RUNNER_TEMP/t.log" 2>&1; echo "npm test exit=$?"
-          grep -E "ℹ (pass|fail)" "$RUNNER_TEMP/t.log"
-          ps -eo pid,ppid,pgid,etime,cmd | grep -E "node|botmancers" | grep -v grep | cut -c1-200 || true
-          echo "still alive after tests"
-          npm pack --dry-run --json --ignore-scripts > "$RUNNER_TEMP/pack.json" 2> "$RUNNER_TEMP/pack.err"; echo "pack exit=$? bytes=$(wc -c < "$RUNNER_TEMP/pack.json")"; tail -c 600 "$RUNNER_TEMP/pack.err"
-          node scripts/check-pack.mjs | tail -c 1500; echo "check-pack exit=${PIPESTATUS[0]}"
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app
           npm run release:check -- --out "$RUNNER_TEMP/release-check.log" || status=$?
-          if [ "${status:-0}" != 0 ]; then
-            echo "::group::release-check transcript"; cut -c1-400 "$RUNNER_TEMP/release-check.log" || true; echo "::endgroup::"
-            exit "$status"
-          fi
+          echo "release:check exit=${status:-0}"
+          exit "${status:-0}"
+      - name: Release-check transcript
+        if: always()
+        run: cut -c1-300 "$RUNNER_TEMP/release-check.log" || true
