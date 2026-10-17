@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PACKAGE_DIR } from './check-pack.mjs';
 import { startFakeBotmancers } from './fake-botmancers.mjs';
-import { mcpSession, runBridge, stopBridge } from './harness.mjs';
+import { mcpSession, runBridge } from './harness.mjs';
 
 // tools/list must be exactly the bundled botmancers.mcp.v2 list (v1 tools first).
 const BUNDLED_TOOL_NAMES = JSON.parse(readFileSync(new URL('../schemas/botmancers.mcp.v2.tools.json', import.meta.url), 'utf8')).tools.map(tool => tool.name);
@@ -120,10 +120,27 @@ export async function smoke({ tarball, registryVersion } = {}) {
       check(result.isError === false && result.structuredContent.status === 'ok', `tools/call botmancers_health -> ${JSON.stringify(result.structuredContent)}`);
       check(fake.received.some(entry => entry.headers.authorization === `Bearer ${SERVICE_TOKEN}`), 'fake Botmancers received the service token');
     } finally {
-      const code = started.child ? await stopBridge(started.child) : started.code;
+      // `npx` is the process we signal. Depending on the npm version it either relays the
+      // bridge's exit 0 or dies from the forwarded SIGTERM itself (exit code null), so
+      // accept both and prove the bridge is really gone by its closed port.
+      const exited = started.child
+        ? await new Promise(resolve => {
+            if (started.child.exitCode !== null) return resolve({ code: started.child.exitCode, signal: null });
+            started.child.once('exit', (code, signal) => resolve({ code, signal }));
+            started.child.kill('SIGTERM');
+          })
+        : { code: started.code, signal: null };
       const output = started.child ? started.output().stderr : started.stderr;
       await fake.close();
-      check(code === 0, 'SIGTERM stops the bridge with exit 0');
+      check(exited.code === 0 || (exited.code === null && exited.signal === 'SIGTERM'), `SIGTERM stops the bridge (exit ${exited.code ?? exited.signal})`);
+      if (started.port !== null) {
+        let reachable = true;
+        for (let wait = 0; wait < 50 && reachable; wait++) {
+          reachable = await fetch(`http://127.0.0.1:${started.port}/healthz`).then(() => true, () => false);
+          if (reachable) await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        check(!reachable, 'the bridge port is closed after SIGTERM');
+      }
       check(!output.includes(SERVICE_TOKEN) && !output.includes(MCP_TOKEN), 'bridge output contains no token');
     }
     log(`PASS clean-install smoke for ${installed.name}@${installed.version} at ${commit}`);
