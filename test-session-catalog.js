@@ -122,6 +122,40 @@ async function main() {
     await host.close();
   }
 
+  console.log('\nSessions UI source contract');
+  const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
+  const page = read('app/page.tsx');
+  const panel = read('app/components/SessionsPanel.tsx');
+  const bar = page.slice(page.indexOf('className="thread-bar"'), page.indexOf('{avatarStep ?'));
+  assert(/<button[\s\S]*?ref=\{sessionsRef\}[\s\S]*?type="button"[\s\S]*?aria-haspopup="dialog"[\s\S]*?aria-expanded=\{sessionsOpen\}[\s\S]*?>\s*Sessions\s*<\/button>/.test(bar),
+    'the selected-Agent thread header has a native Sessions button (keyboard reachable, dialog semantics)');
+  assert(/agentId=\{activeConversation\.details\.id\}/.test(page) && /sessionsRef\.current\?\.focus\(\)/.test(page), 'the drawer is scoped to the selected Agent and returns focus to Sessions on close');
+  assert(/role="dialog"/.test(panel) && /aria-modal="true"/.test(panel) && /e\.key === 'Escape'/.test(panel) && /closeRef\.current\?\.focus\(\)/.test(panel),
+    'the drawer is a labeled modal dialog: focus moves in, Escape closes, Tab is contained');
+  assert(/Loading sessions…/.test(panel) && /role="alert"/.test(panel) && /Retry/.test(panel) && /emptySessionsCopy\(/.test(panel), 'loading, error (with retry), and empty states');
+  assert(/statusLabel\(row\)/.test(panel) && /is-\$\{row\.status\}/.test(panel) && /aria-pressed=\{filter === option\.value\}/.test(panel), 'active/ended state per row and an active|ended|all filter');
+  assert(/onOpenThread\(conversation\.thread_agent_id/.test(panel) && /Last activity/.test(panel) && /Origin/.test(panel), 'rows show last activity and origin, with a link back to the origin thread');
+  assert(!/<input|<textarea|contentEditable/i.test(panel), 'no raw ID entry: the drawer has no text input');
+  const externalMentions = panel.split('\n').filter(line => /external_session_id/.test(line));
+  assert(externalMentions.length === 2 && externalMentions.every(line => /debug/.test(line)), 'the provider session id is read only by the debug disclosure');
+  assert(/<summary>Local debug: provider session ID<\/summary>/.test(panel) && /navigator\.clipboard\.writeText/.test(panel), 'the debug disclosure is explicitly labeled and has a Copy action');
+  const view = jiti('./lib/session-view.ts');
+  const sample = all.find(s => s.ref === implementation.id);
+  assert(view.runtimeLabel(sample) === 'codex · agent-deck' && view.workRequestLabel(sample) === 'Implementation · completed'
+    && view.statusLabel(byRef[replaced.id]) === 'Ended', 'row labels for runtime, origin request, and state');
+  assert(/no active sessions/.test(view.emptySessionsCopy('active', 'Dev')) && /no ended sessions/.test(view.emptySessionsCopy('ended', 'Dev')), 'empty copy follows the filter');
+
+  console.log('\nDocumentation contract');
+  const core = read('docs/core-engine.md');
+  const bridge = read('docs/mcp-bridge.md');
+  assert(/### Session catalog/.test(core) && /Botmancers reference/.test(core) && /GET \/api\/bots\/:id\/sessions\?status=active\|ended\|all/.test(core),
+    'docs/core-engine.md documents the safe session-reference contract and routes');
+  assert(/Local debug: provider session ID/.test(core) && /\?debug=external_session_id/.test(core), 'docs/core-engine.md documents the debug-only external-id exception');
+  assert(/Responses never include Session Bindings, external run or\s+session ids/.test(bridge) && /the bridge never proxies it/.test(bridge),
+    'docs/mcp-bridge.md keeps its non-disclosure contract and excludes the Sessions view');
+  assert(!/session-catalog|sessions/.test(read('lib/mcp-bridge.ts')) && !fs.existsSync(path.join(ROOT, 'app/api/v0/sessions')),
+    'the MCP bridge and /api/v0 do not reach the catalog');
+
   removeDb();
   if (failures > 0) {
     console.log(`\n${failures} failure(s)`);

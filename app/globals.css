@@ -2098,3 +2098,154 @@ button.avatar-pic {
 .cfg-danger {
   border-color: var(--danger);
 }
+
+/* NOT-496: selected-Agent Sessions drawer. Right-hand drawer on wide
+   screens, full width on narrow ones; rows reuse the manage-* list. */
+.sessions-scrim {
+  z-index: 25;
+  justify-content: flex-end;
+  padding: 0;
+  overflow: hidden;
+}
+
+.sessions-drawer {
+  width: 100%;
+  max-width: 520px;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-left: 1px solid var(--hairline);
+  padding: 16px;
+  color: var(--ink);
+}
+
+.sessions-title {
+  margin: 0;
+}
+
+.sessions-sub {
+  margin: 4px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.sessions-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 8px;
+}
+
+.sessions-filter-btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.sessions-filter-btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ink-on-accent);
+}
+
+.sessions-state {
+  padding: 12px 0;
+}
+
+.sessions-list {
+  margin-bottom: 0;
+}
+
+.session-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 0;
+}
+
+.session-title {
+  font-family: var(--mono);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  margin-right: 4px;
+}
+
+.session-status.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.session-row.is-ended .session-title {
+  color: var(--ink-muted);
+}
+
+.session-link {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-toggle {
+  margin-top: 6px;
+}
+
+.session-detail {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.session-attempts {
+  margin: 0 0 8px;
+  padding: 0 0 0 18px;
+  line-height: 1.5;
+}
+
+.session-debug summary {
+  cursor: pointer;
+  color: var(--ink-muted);
+}
+
+.session-debug-note {
+  margin: 4px 0;
+  color: var(--ink-faint);
+}
+
+.session-debug-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.session-debug-value code {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.session-debug-value .pin-word {
+  margin-top: 0;
+}
+
+.sessions-drawer button:focus-visible,
+.sessions-drawer summary:focus-visible,
+.thread-bar .attach-word:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
