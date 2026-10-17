@@ -261,7 +261,7 @@ if (failed) {
 print(`
 Release check PASSED for botmancers@${version}. Nothing was published.
 Operator steps (see packages/mcp-server/RELEASING.md):
-  1. git tag botmancers-v${version} ${commit.slice(0, 12)} && git push origin botmancers-v${version}
+  1. npm run release:tag:push   (repository root; after the release PR is merged)
      -> CI re-runs this check and publishes with provenance to dist-tag "canary"
   2. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
      node packages/mcp-server/scripts/smoke-product-install.mjs --registry ${version}

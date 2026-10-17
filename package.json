@@ -6,6 +6,7 @@
     "dev": "next dev -H 127.0.0.1 -p 43123",
     "build": "next build",
     "start": "next start -H 127.0.0.1 -p 43123",
+    "release:tag:push": "node packages/mcp-server/scripts/release-tag.mjs",
     "lint": "eslint",
     "test:acceptance": "node test-acceptance-engine.js",
     "test:acceptance:harness": "node test-acceptance-harness.js",
