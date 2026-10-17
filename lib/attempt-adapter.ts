@@ -153,6 +153,9 @@ export interface AttemptResult {
   // to stop it: whether the runtime accepted the cancel request. On
   // 'failed' the run may continue and the Attempt is abandoned, not stopped.
   externalCancel?: 'requested' | 'failed';
+  // NOT-497: set when a caller's sanitize step cut output to its bound;
+  // output then holds the bounded text only.
+  outputTruncated?: boolean;
 }
 
 export type AttemptEventSink = (event: AttemptEvent) => void;

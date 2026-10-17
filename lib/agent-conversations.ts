@@ -510,6 +510,8 @@ async function runTurn(requestId: string): Promise<boolean> {
           if (event.type === 'started') dispatchFault('after_run_id_persisted', requestId);
           recordBaselineEvent(lease, attemptId, event);
         },
+        // An exchange hop's output is redacted and bounded before it is stored.
+        sanitize: result => exchanges.sanitizeHopResult(request, result),
         project: (result, attempt) => commitTurn(lease, request, attempt, result),
       });
       if (ran.abandoned) await recordExternalCancel(ran.abandoned, { localSignalled: true, launched: true });
@@ -886,12 +888,13 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
     // here on signals the follow.
     if ((await controlled(() => localWork.set(request.id, { attemptId: attempt.id, controller }))).won) return;
     await withHeartbeat(lease, async () => {
-      const result = await reconciler.follow(followRunId, {
+      const followed = await reconciler.follow(followRunId, {
         resumeSessionId: binding?.external_session_id ?? null,
         prepareFinalization: prepare,
         deadlineAt: typeof snapshot.deadline_at === 'number' ? snapshot.deadline_at : null,
         signal: controller.signal,
       }, event => recordBaselineEvent(lease, attempt.id, event));
+      const result = exchanges.sanitizeHopResult(request, followed);
       let abandoned: LocallyAbandonedAttempt | null = null;
       const committed = engine.transaction(() => {
         // Abandoned meanwhile (cancellation or a deadline): evidence only.

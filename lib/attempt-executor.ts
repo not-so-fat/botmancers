@@ -170,6 +170,10 @@ export interface RunAttemptOptions<T> {
   // later one are dropped, external ids included, and onEvent is not
   // called: the new owner reconciles the run.
   fence?: () => boolean;
+  // NOT-497: rewrites the adapter's result before anything of it is
+  // stored (Attempt output, late-result evidence, projection), for a
+  // caller whose results carry their own redaction and size bounds.
+  sanitize?: (result: AttemptResult) => AttemptResult;
 }
 
 // NOT-473: an Attempt that ended because this process stopped waiting for
@@ -225,6 +229,7 @@ export async function runAttempt<T = undefined>(
       failure: attemptFailure('runtime_failed', error instanceof Error ? error.message : String(error)),
     };
   }
+  if (options.sanitize) result = options.sanitize(result);
   return store.transaction(() => {
     const current = store.getAttempt(prepared.attempt.id);
     if (current && current.finished_at !== null) {

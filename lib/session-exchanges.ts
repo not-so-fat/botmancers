@@ -704,6 +704,27 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       event(row.id, 'hop_started', { hop: 'deliver', request_id: requestId, attempt_id: attemptId }, at);
     },
 
+    // Applied to a hop's adapter result before any of it is stored (the
+    // Attempt output and error, late-result evidence, the projection): the
+    // source session id is redacted and the output cut to the hop's bound.
+    // Any other request's result is returned unchanged.
+    sanitizeHopResult(request: WorkRequest, result: AttemptResult): AttemptResult {
+      const hop = hopOf(request);
+      const row = hop ? store.get(hop.exchangeId) : undefined;
+      if (!hop || !row) return result;
+      const sourceSecret = (getBinding.get(row.source_binding_id) as SessionBinding | undefined)?.external_session_id ?? null;
+      const limit = hop.hop === 'ask' ? EXCHANGE_LIMITS.answerChars
+        : hop.hop === 'extract' ? EXCHANGE_LIMITS.extractionOutputChars
+          : EXCHANGE_LIMITS.replyChars;
+      const bounded = result.output === null ? null : boundOutput(redact(result.output, sourceSecret), limit);
+      return {
+        ...result,
+        output: bounded ? bounded.content : null,
+        outputTruncated: result.outputTruncated === true || bounded?.truncated === true,
+        failure: result.failure ? { ...result.failure, message: redact(result.failure.message, sourceSecret) } : null,
+      };
+    },
+
     // In the dispatcher's terminal commit of a successful hop Attempt
     // (before the hop request completes): projects the result and returns
     // the hop request's result. A cancelled exchange keeps nothing.
@@ -718,7 +739,9 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       const output = result.output ?? '';
       const sourceSecret = (getBinding.get(row.source_binding_id) as SessionBinding | undefined)?.external_session_id ?? null;
       if (hop.hop === 'ask') {
-        const { content, truncated } = boundOutput(redact(output, sourceSecret), EXCHANGE_LIMITS.answerChars);
+        const bounded = boundOutput(redact(output, sourceSecret), EXCHANGE_LIMITS.answerChars);
+        const { content } = bounded;
+        const truncated = bounded.truncated || result.outputTruncated === true;
         const messageId = randomUUID();
         db.prepare(
           'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -729,7 +752,11 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
         return { exchange_id: row.id, answer_message_id: messageId };
       }
       if (hop.hop === 'extract') {
-        const parsed = parseHandoffPacket(output);
+        // Output cut to the extraction bound before it was stored is
+        // refused as oversized, never parsed.
+        const parsed: ReturnType<typeof parseHandoffPacket> = result.outputTruncated
+          ? { ok: false, reason: `The extraction output exceeds ${EXCHANGE_LIMITS.extractionOutputChars} characters.` }
+          : parseHandoffPacket(output);
         if (!parsed.ok) {
           event(row.id, 'packet_rejected', { request_id: request.id, attempt_id: attempt.id, reason: parsed.reason }, at);
           move(row, 'failed', at, { reason: 'packet_invalid', failureCode: 'packet_invalid', failureMessage: parsed.reason });
@@ -774,7 +801,9 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
       // hop request).
       const replyId = randomUUID();
       const conversationId = row.destination_conversation_id as string;
-      const { content, truncated } = boundOutput(redact(output, sourceSecret), EXCHANGE_LIMITS.replyChars);
+      const bounded = boundOutput(redact(output, sourceSecret), EXCHANGE_LIMITS.replyChars);
+      const { content } = bounded;
+      const truncated = bounded.truncated || result.outputTruncated === true;
       db.prepare(
         'INSERT INTO messages (id, conversation_id, sender_type, sender_id, sender_kind, request_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(replyId, conversationId, 'bot', request.target_agent_id, 'bot', request.id, content, at);

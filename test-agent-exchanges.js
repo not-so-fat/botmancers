@@ -326,6 +326,10 @@ async function main() {
     assert(answer.conversation_id === tankConv.id && answer.sender_id === dev.id && answer.request_id === view.hops.source.request_id
       && view.answer.content.includes('dispatcher already owns leases'), 'one answer message in the origin conversation, from the source Agent, linked to the hop request');
     assert(!view.answer.content.includes(SECRETS.dev) && view.answer.content.includes('[redacted session id]'), 'an echoed provider session id is redacted from the answer');
+    const storedOutput = one('SELECT output FROM work_attempts WHERE id = ?', attempt[0].id).output;
+    assert(!storedOutput.includes(SECRETS.dev) && storedOutput.includes('[redacted session id]')
+      && count("SELECT COUNT(*) AS n FROM engine_events WHERE request_id = ? AND data LIKE ?", view.hops.source.request_id, `%${SECRETS.dev}%`) === 0,
+    'the hop Attempt\'s stored output is redacted too, and no hop event carries the provider session id');
     assert(/answer_message_id/.test(threw(() => raw.prepare('DELETE FROM messages WHERE id = ?').run(answer.id))?.message ?? ''),
       'the answer message cannot be deleted under its exchange');
     assert(count("SELECT COUNT(*) AS n FROM messages WHERE request_id = ? AND sender_type = 'bot'", view.hops.source.request_id) === 1
@@ -592,16 +596,23 @@ async function main() {
     const overLimit = await run('ask-over-limit', () => ({ output: 'b'.repeat(L.answerChars * 2) }), ask);
     assert(atLimit.answer.content.length === L.answerChars && !atLimit.answer.content.includes('[truncated]'), `an answer of exactly ${L.answerChars} characters is kept whole`);
     assert(overLimit.answer.content.length === L.answerChars && overLimit.answer.content.endsWith('[truncated]'), `an oversized answer is stored at ${L.answerChars} characters, marker included`);
+    const attemptOutput = hopId => one('SELECT output FROM work_attempts WHERE request_id = ?', hopId).output;
+    assert(attemptOutput(overLimit.hops.source.request_id).length === L.answerChars && attemptOutput(atLimit.hops.source.request_id).length === L.answerChars
+      && overLimit.events.find(event => event.type === 'answer_returned')?.data.truncated === true,
+    'the oversized answer\'s Attempt output is stored bounded as well (and the answer reads truncated)');
     const longReply = await run('deliver-over-limit', (input, kind) => kind === 'extract' ? { output: packetJson() }
       : { output: 'c'.repeat(L.replyChars * 3), session: 'prov-scout-LONG-1313' });
     const replyMessage = one("SELECT content FROM messages WHERE request_id = ?", longReply.hops.destination.request_id);
     assert(longReply.state === 'completed' && replyMessage.content.length === L.replyChars && replyMessage.content.endsWith('[truncated]'),
       `an oversized delivery reply is stored at ${L.replyChars} characters`);
+    assert(attemptOutput(longReply.hops.destination.request_id).length === L.replyChars, 'the oversized delivery Attempt output is stored bounded as well');
     const padded = packetJson() + ' '.repeat(L.extractionOutputChars);
     assert(padded.length > L.extractionOutputChars, 'fixture: the padded extraction output is over its limit');
     const oversized = await run('extract-over-limit', (input, kind) => kind === 'extract' ? { output: padded } : { output: 'MUST NOT DELIVER', session: 'prov-scout-NO-1414' });
     assert(oversized.state === 'failed' && oversized.failure.code === 'packet_invalid' && /extraction output exceeds/.test(oversized.failure.message)
       && oversized.hops.destination === null, 'an extraction output over its limit is refused before any packet is stored or destination launched');
+    assert(attemptOutput(oversized.hops.source.request_id).length === L.extractionOutputChars && oversized.packet === null,
+      `the oversized extraction is never stored whole: its Attempt output is cut to ${L.extractionOutputChars} characters`);
     assert(lib.parseHandoffPacket(packetJson() + ' '.repeat(L.extractionOutputChars - packetJson().length)).ok, 'an extraction output exactly at its limit parses');
     assert(waking.limits.promptChars === L.promptChars && L.instructionChars + L.packetChars + 2000 <= L.promptChars,
       'the hop prompt ceiling covers the bounded instruction and packet');
@@ -610,9 +621,12 @@ async function main() {
   // -------------------------------------------------------------------
   console.log('\n[6] cancellation of a running hop: truthful state, nothing after it');
   {
+    const L = lib.EXCHANGE_LIMITS;
     for (const mode of ['ask', 'continue']) {
       const held = holdAdapter();
-      script = (input, kind) => kind === 'extract' ? { output: packetJson() } : { output: 'Late answer that must be discarded.' };
+      script = (input, kind) => kind === 'extract'
+        ? { output: `${packetJson()}\n(session ${SECRETS.dev})` }
+        : { output: `Late answer that must be discarded. (session ${SECRETS.dev}) ${'d'.repeat(L.answerChars)}` };
       const before = calls.length;
       const created = service.createExchangeCommand(mode === 'ask' ? ask({ idempotencyKey: 'cancel-run-ask' }) : cont({ idempotencyKey: 'cancel-run-continue' }));
       const hopId = created.exchange.hops.source.request_id;
@@ -628,6 +642,13 @@ async function main() {
       assert(view.state === 'cancelled' && engine.getWorkRequest(hopId).state === 'cancelled', `${mode}: once the hop ended, the exchange is cancelled`);
       assert(view.answer === null && view.packet === null && view.hops.destination === null && calls.slice(before).every(call => call.kind !== 'deliver'),
         `${mode}: no answer, packet, or destination launch after cancellation`);
+      const lateEvents = raw.prepare("SELECT data FROM engine_events WHERE request_id = ? AND type = 'late_result_recorded'").all(hopId);
+      const stored = one('SELECT output FROM work_attempts WHERE request_id = ?', hopId).output ?? '';
+      const limit = mode === 'ask' ? L.answerChars : L.extractionOutputChars;
+      assert(lateEvents.length === 1 && lateEvents.every(row => { const output = JSON.parse(row.data).output ?? ''; return !output.includes(SECRETS.dev) && output.length <= limit; })
+        && !stored.includes(SECRETS.dev) && stored.length <= limit
+        && count('SELECT COUNT(*) AS n FROM engine_events WHERE request_id = ? AND data LIKE ?', hopId, `%${SECRETS.dev}%`) === 0,
+      `${mode}: the cancelled hop's late result and Attempt output are redacted and bounded`);
     }
   }
 
