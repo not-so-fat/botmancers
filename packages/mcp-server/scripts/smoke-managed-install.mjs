@@ -58,7 +58,7 @@ const PROVIDER_SESSION = 'prov-relay-SECRET-session-0001';
 const DECK_ID = '00000000-0000-4000-8000-000000000002';
 
 // botmancers.mcp.v2 against the running managed product (see the header).
-async function smokeMcpV2({ base, mcpUrl, mcpToken, serviceToken, home, deck, owner, restart }) {
+async function smokeMcpV2({ base, mcpUrl, mcpToken, serviceToken, home, workdir, deck, owner, restart }) {
   const texts = [];
   const call = async (name, args = {}) => {
     const res = await rpc(mcpUrl, mcpToken, 'tools/call', { name, arguments: args });
@@ -79,9 +79,11 @@ async function smokeMcpV2({ base, mcpUrl, mcpToken, serviceToken, home, deck, ow
     }
   };
 
-  // A Deck-backed Agent, the workspace Agent Deck URL (the owner's settings
-  // route), one seeded session of it, and the owner's grant to the bridge.
-  const relay = await (await fetch(`${base}/api/bots`, { method: 'POST', headers: owner, body: JSON.stringify({ name: 'Relay', title: 'Managed v2 smoke', description: 'v2 smoke', agent: 'claude', deck_id: DECK_ID }) })).json();
+  // A Deck-backed Agent (its working directory outside BOTMANCERS_HOME, so
+  // the home layout check below is unaffected), the workspace Agent Deck URL
+  // (the owner's settings route), one seeded session of it, and the owner's
+  // grant to the bridge.
+  const relay = await (await fetch(`${base}/api/bots`, { method: 'POST', headers: owner, body: JSON.stringify({ name: 'Relay', title: 'Managed v2 smoke', description: 'v2 smoke', agent: 'claude', deck_id: DECK_ID, working_directory: workdir }) })).json();
   check(typeof relay.id === 'string', `created Deck-backed Agent Relay ${relay.id}`);
   const settings = await fetch(`${base}/api/agent-deck/settings`, { method: 'PUT', headers: owner, body: JSON.stringify({ server_url: deck.url }) });
   check(settings.status === 200, `Agent Deck server URL set to the loopback fake ${deck.url}`);
@@ -309,7 +311,7 @@ export async function smoke({ tarball } = {}) {
     // 2b. botmancers.mcp.v2 (NOT-500), surviving one stop/start.
     const serviceToken = /^BOTMANCERS_SERVICE_TOKEN=(\S+)$/m.exec(readFileSync(join(home, 'config/bridge.env'), 'utf8'))[1];
     await smokeMcpV2({
-      base, mcpUrl: `http://127.0.0.1:${mcp}/mcp`, mcpToken, serviceToken, home, deck, owner,
+      base, mcpUrl: `http://127.0.0.1:${mcp}/mcp`, mcpToken, serviceToken, home, workdir: join(root, 'relay-workdir'), deck, owner,
       restart: async () => {
         check((await botmancers(['stop'])).code === 0, 'botmancers stop');
         check((await botmancers(['start', '--daemon'])).code === 0 && (await health()).version === N, `botmancers start --daemon: the product runs ${N} again`);

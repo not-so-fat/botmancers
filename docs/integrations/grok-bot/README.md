@@ -164,7 +164,10 @@ Add an MCP server shaped like [`cursor-mcp.template.json`](cursor-mcp.template.j
 Grok Bot should list exactly four tools: `botmancers_start_task`,
 `botmancers_get_request`, `botmancers_get_conversation`, and `botmancers_health`.
 If it shows more or fewer tools, stop. That would mean you connected to
-something other than the pinned bridge.
+something other than the pinned bridge. (This runbook pins a
+`botmancers.mcp.v1` bridge. Bridge releases that serve `botmancers.mcp.v2`
+list these four tools unchanged plus eight granted tools; see
+[`docs/mcp-bridge.md`](../../mcp-bridge.md). Re-pinning is a separate change.)
 
 **Tool approval.** Keep Cursor's per-call approval on for `botmancers_start_task`,
 because each accepted call creates a durable Work Request. The other three tools
