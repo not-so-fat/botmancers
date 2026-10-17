@@ -13,16 +13,25 @@ import {
   type SessionFilter,
   type SessionRow,
 } from '@/lib/session-view';
+import Link from 'next/link';
+import ExchangeDialog, { type ExchangeAgentOption } from '@/app/components/ExchangeDialog';
+import { detailsHref, sessionActionAvailability, type ExchangeMode } from '@/lib/exchange-view';
 
 // NOT-496: the selected Agent's Sessions drawer. Rows come from the
 // session catalog (GET /api/bots/:id/sessions) and are recognized by title,
 // state, activity, and origin; nothing here asks for or shows an external
 // provider session id except the labeled local debug disclosure.
-export default function SessionsPanel({ agentId, agentName, onClose, onOpenThread }: {
+// NOT-498: each resumable row offers Ask this session and Continue with…;
+// the dialog opens above the drawer (which goes inert) and focus returns to
+// the action that opened it.
+export default function SessionsPanel({ agentId, agentName, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
   agentId: string;
   agentName: string;
+  agents: ExchangeAgentOption[];
+  origin: { conversationId: string; label: string };
   onClose: () => void;
   onOpenThread: (agentId: string) => void;
+  onExchangeStarted: (exchangeId: string | null) => void;
 }) {
   const titleId = useId();
   const [filter, setFilter] = useState<SessionFilter>('all');
@@ -32,6 +41,14 @@ export default function SessionsPanel({ agentId, agentName, onClose, onOpenThrea
   const [openRef, setOpenRef] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [action, setAction] = useState<{ mode: ExchangeMode; row: SessionRow; returnTo: HTMLElement | null } | null>(null);
+  const [started, setStarted] = useState<{ id: string | null; text: string } | null>(null);
+
+  const closeAction = () => {
+    const returnTo = action?.returnTo;
+    setAction(null);
+    requestAnimationFrame(() => { if (returnTo?.isConnected) returnTo.focus(); });
+  };
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -88,8 +105,8 @@ export default function SessionsPanel({ agentId, agentName, onClose, onOpenThrea
   };
 
   return (
-    <div className="modal-scrim sessions-scrim" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div ref={cardRef} className="sessions-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onCardKeyDown}>
+    <div className="modal-scrim sessions-scrim" onMouseDown={e => { if (e.target === e.currentTarget && !action) onClose(); }}>
+      <div ref={cardRef} className="sessions-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onCardKeyDown} inert={!!action}>
         <div className="manage-head">
           <div>
             <h2 id={titleId} className="delete-title sessions-title">Sessions</h2>
@@ -113,6 +130,14 @@ export default function SessionsPanel({ agentId, agentName, onClose, onOpenThrea
             {rows ? `${rows.length} shown` : ''}
           </span>
         </div>
+        <div className="exchange-started" role="status">
+          {started ? (
+            <>
+              {started.text}{' '}
+              {started.id ? <Link className="session-link" href={detailsHref(started.id)}>View in Exchanges</Link> : null}
+            </>
+          ) : null}
+        </div>
         {loadError ? (
           <div className="sessions-state" role="alert">
             <p className="delete-error">{loadError}</p>
@@ -131,23 +156,43 @@ export default function SessionsPanel({ agentId, agentName, onClose, onOpenThrea
                 open={openRef === row.ref}
                 onToggle={() => setOpenRef(current => current === row.ref ? null : row.ref)}
                 onOpenThread={onOpenThread}
+                onAction={(mode, returnTo) => { setStarted(null); setAction({ mode, row, returnTo }); }}
               />
             ))}
           </ul>
         ) : null}
       </div>
+      {action ? (
+        <ExchangeDialog
+          mode={action.mode}
+          session={action.row}
+          agents={agents}
+          origin={origin}
+          onClose={closeAction}
+          onStarted={id => {
+            const what = action.mode === 'ask'
+              ? `Asked ${action.row.agent.name}’s session. The answer arrives in ${origin.label}.`
+              : `Handoff started from ${action.row.agent.name}’s session. Progress shows in ${origin.label}.`;
+            setStarted({ id, text: what });
+            closeAction();
+            onExchangeStarted(id);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-function SessionItem({ agentId, row, open, onToggle, onOpenThread }: {
+function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
   agentId: string;
   row: SessionRow;
   open: boolean;
   onToggle: () => void;
   onOpenThread: (agentId: string) => void;
+  onAction: (mode: ExchangeMode, returnTo: HTMLElement) => void;
 }) {
   const detailId = useId();
+  const availability = sessionActionAvailability(row);
   const conversation = row.origin.conversation;
   const request = workRequestLabel(row);
   return (
@@ -177,6 +222,18 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread }: {
           {row.context.workspace ? <div><dt>Workspace</dt><dd>{row.context.workspace}</dd></div> : null}
           {row.context.deck ? <div><dt>Deck</dt><dd>{row.context.deck}</dd></div> : null}
         </dl>
+        {availability.available ? (
+          <div className="session-actions" role="group" aria-label={`Actions for ${row.title}`}>
+            <button type="button" className="session-action" aria-haspopup="dialog" onClick={e => onAction('ask', e.currentTarget)}>
+              Ask this session
+            </button>
+            <button type="button" className="session-action" aria-haspopup="dialog" onClick={e => onAction('continue', e.currentTarget)}>
+              Continue with…
+            </button>
+          </div>
+        ) : (
+          <p className="session-unavailable">{availability.reason}</p>
+        )}
         <button type="button" className="pin-word session-toggle" aria-expanded={open} aria-controls={detailId} onClick={onToggle}>
           {open ? 'Hide details' : 'Details'}
         </button>

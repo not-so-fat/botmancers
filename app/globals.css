@@ -2249,3 +2249,599 @@ button.avatar-pic {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* NOT-498: session-targeted Ask and Continue. Session-row actions, the
+   exchange dialog, inline exchange cards (same status chrome as Wake and
+   runtime-failure notices), and the Agent Exchanges ledger. */
+.rail-nav {
+  padding: 0 16px 12px;
+}
+
+.rail-nav-link {
+  text-decoration: none;
+}
+
+.rail-nav-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.session-action {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: none;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.session-unavailable {
+  margin: 8px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+.exchange-started:not(:empty) {
+  margin: 0 0 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--accent);
+}
+
+.exchange-scrim {
+  z-index: 35;
+  justify-content: center;
+}
+
+.form-card.exchange-dialog {
+  max-width: 480px;
+  margin-top: 32px;
+  color: var(--ink);
+}
+
+.exchange-source {
+  border: 1px solid var(--hairline);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0 0 16px;
+  background: var(--field);
+}
+
+.exchange-source p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.exchange-source-agent {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.exchange-source-title {
+  font-family: var(--mono);
+  font-size: 14px;
+  margin-top: 2px;
+}
+
+.exchange-source-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+  margin-top: 4px;
+}
+
+.exchange-select {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 12px;
+  background: var(--composer);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-family: var(--chrome);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.form-card.exchange-dialog textarea {
+  margin-bottom: 8px;
+}
+
+.form-card.exchange-dialog [aria-invalid="true"],
+.exchange-select[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.exchange-field-error,
+.exchange-server-error {
+  margin: 0 0 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+
+.exchange-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+.exchange-sending {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.exchange-sending:not(:empty) {
+  margin-bottom: 8px;
+}
+
+.exchange-dialog .create-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.exchange-dialog select:focus-visible,
+.session-action:focus-visible,
+.exchange-card a:focus-visible,
+.exchange-card button:focus-visible,
+.ledger-page a:focus-visible,
+.ledger-page button:focus-visible,
+.ledger-page select:focus-visible,
+.ledger-detail-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.exchange-card {
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: var(--field);
+  color: var(--ink);
+  font-family: var(--chrome);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.exchange-card:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.exchange-card.is-stopped {
+  border-left-color: var(--danger);
+}
+
+.exchange-card.is-done {
+  border-left-color: var(--ink-muted);
+}
+
+.exchange-card p {
+  margin: 0;
+}
+
+.exchange-card p + p {
+  margin-top: 4px;
+}
+
+.exchange-card-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.exchange-card-mode {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.exchange-card-title {
+  font-weight: 600;
+}
+
+.exchange-card-state {
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 0 6px;
+  color: var(--ink);
+}
+
+.exchange-card.is-active .exchange-card-state {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.exchange-card.is-stopped .exchange-card-state {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.exchange-card-session,
+.exchange-card-time {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.exchange-card-key {
+  color: var(--ink-muted);
+}
+
+.exchange-card-outcome.is-failure,
+.exchange-card-error {
+  color: var(--danger);
+}
+
+.exchange-card-advice {
+  color: var(--ink-muted);
+}
+
+.exchange-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+}
+
+.exchange-card-link {
+  color: var(--accent);
+}
+
+.exchange-card-cancel {
+  font-family: var(--chrome);
+  font-size: 14px;
+  color: var(--danger);
+  background: none;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.exchange-card-cancel:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+/* Ledger: a narrow list beside a wide detail on desktop; one full-height
+   page (list, or detail with a back control) on narrow screens. */
+.ledger-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--field);
+  color: var(--ink);
+  font-family: var(--chrome);
+  padding: 16px;
+}
+
+.ledger-head {
+  flex: 0 0 auto;
+  margin-bottom: 16px;
+}
+
+.ledger-title {
+  margin: 12px 0 4px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.ledger-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.ledger-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ledger-pane-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.ledger-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ledger-mode {
+  margin: 0;
+}
+
+.ledger-selects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.ledger-select-label {
+  flex: 1 1 140px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.ledger-select-label .exchange-select {
+  margin: 0;
+}
+
+.ledger-count {
+  margin: 0;
+}
+
+.ledger-state {
+  margin: 0;
+  padding: 12px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+.ledger-state p {
+  margin: 0;
+}
+
+.ledger-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.ledger-row-item {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.ledger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-left: 3px solid transparent;
+  padding: 10px 8px;
+  color: var(--ink);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.ledger-row[aria-current="true"] {
+  background: var(--card);
+  border-left-color: var(--accent);
+}
+
+.ledger-row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.ledger-row-who {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.ledger-row-state {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.ledger-row.is-stopped .ledger-row-state {
+  color: var(--danger);
+}
+
+.ledger-row.is-done .ledger-row-state {
+  color: var(--ink-muted);
+}
+
+.ledger-row-session {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.ledger-row-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.ledger-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ledger-detail-back {
+  margin-top: 0;
+  align-self: flex-start;
+}
+
+.ledger-detail-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ledger-section {
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+}
+
+.ledger-section-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+
+.ledger-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ledger-packet-list {
+  margin-top: 8px;
+}
+
+.ledger-packet-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ledger-packet-list ul,
+.ledger-links {
+  margin: 4px 0 0;
+  padding: 0 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ledger-links {
+  list-style: none;
+  padding: 0;
+}
+
+.ledger-thread-link {
+  font-size: 13px;
+}
+
+.ledger-link-role {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.ledger-timeline {
+  margin: 0;
+  padding: 0 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ledger-timeline li {
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+
+.ledger-timeline-time {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.ledger-foot {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 799px) {
+  .ledger-page.has-detail .ledger-list-pane,
+  .ledger-page:not(.has-detail) .ledger-detail-pane {
+    display: none;
+  }
+}
+
+@media (min-width: 800px) {
+  .ledger-page {
+    height: 100vh;
+    padding: 24px;
+  }
+
+  .ledger-main {
+    flex-direction: row;
+    gap: 24px;
+  }
+
+  .ledger-list-pane {
+    flex: 0 0 22rem;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .ledger-detail-pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    max-width: 56rem;
+    border-left: 1px solid var(--hairline);
+    padding-left: 24px;
+  }
+
+  .ledger-detail-back {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exchange-card,
+  .ledger-row,
+  .session-action {
+    transition: none;
+    animation: none;
+    scroll-behavior: auto;
+  }
+}

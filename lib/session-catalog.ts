@@ -219,6 +219,26 @@ export function getAgentSession(db: Db, agentId: string, ref: string): SessionDe
   return { ...summarize(row), attempts };
 }
 
+// NOT-498: the recognizable title of one session (the same title its
+// catalog row shows), for exchange cards and the Agent Exchanges ledger.
+export function sessionTitle(db: Db, agentId: string, ref: string): string | null {
+  const row = agentRow(db, agentId, ref);
+  return row ? summarize(row).title : null;
+}
+
+// NOT-498: a conversation labeled the way a session's origin is.
+export function conversationRef(db: Db, conversationId: string): SessionOriginConversation | null {
+  const row = db.prepare(`
+    SELECT c.id AS origin_conversation_id, c.type AS conversation_type, c.bot_id AS conversation_bot_id,
+      tb.name AS thread_agent_name, g.name AS group_name
+    FROM conversations c
+    LEFT JOIN bots tb ON tb.id = c.bot_id
+    LEFT JOIN groups g ON g.id = c.group_id
+    WHERE c.id = ?
+  `).get(conversationId) as CatalogRow | undefined;
+  return row ? originConversation(row) : null;
+}
+
 // The local debug disclosure only. Never part of a summary or a detail.
 export function sessionDebugExternalId(db: Db, agentId: string, ref: string): string | undefined {
   return agentRow(db, agentId, ref)?.external_session_id;

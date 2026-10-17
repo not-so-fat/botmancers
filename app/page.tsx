@@ -32,6 +32,8 @@ import { classifyRuntimeFailure } from '@/lib/runtime-failure';
 import { latestLine } from '@/lib/message-preview';
 import WakeNotice from '@/app/components/WakeNotice';
 import { wakeNotices, type WakeEventView, type WakeNotice as WakeNoticeItem } from '@/lib/wake-notice';
+import ExchangeCard from '@/app/components/ExchangeCard';
+import type { ExchangeSummary } from '@/lib/exchange-view';
 
 interface Bot {
   id: string;
@@ -180,8 +182,11 @@ export default function Home() {
   const [botsLoaded, setBotsLoaded] = useState(false);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
+  const linkedAgentRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [notices, setNotices] = useState<WakeNoticeItem[]>([]);
+  const [exchangeCards, setExchangeCards] = useState<ExchangeSummary[]>([]);
+  const focusExchange = useRef<string | null>(null);
   const [threadLoad, setThreadLoad] = useState<ThreadLoad | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const [inputMessage, setInputMessage] = useState('');
@@ -237,8 +242,17 @@ export default function Home() {
       window.location.replace(importedConfigPath(imported));
       return;
     }
-    const deleted = Number(new URLSearchParams(window.location.search).get('deleted'));
+    const query = new URLSearchParams(window.location.search);
+    const deleted = Number(query.get('deleted'));
     if (deleted > 0) window.history.replaceState(null, '', '/');
+    // NOT-498: an Agent Exchanges backlink opens that Agent's thread and
+    // brings the exchange's card into view.
+    const linkedAgent = query.get('agent');
+    if (linkedAgent) {
+      linkedAgentRef.current = linkedAgent;
+      focusExchange.current = query.get('exchange');
+      window.history.replaceState(null, '', '/');
+    }
     void loadBots().then(() => {
       if (deleted > 0) setRosterStatus(deletedStatusLine(deleted));
     });
@@ -252,7 +266,8 @@ export default function Home() {
 
   useEffect(() => {
     if (defaulted.current || bots.length === 0 || activeConversation) return;
-    const first = [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b))[0] || bots[0];
+    const linked = bots.find(bot => bot.id === linkedAgentRef.current);
+    const first = linked || [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b))[0] || bots[0];
     defaulted.current = true;
     void openBot(first.id);
   }, [bots, activeConversation]);
@@ -310,6 +325,16 @@ export default function Home() {
     scroller.scrollTop = scroller.scrollHeight;
   }, [messages, computerOpen]);
 
+  useEffect(() => {
+    const id = focusExchange.current;
+    if (!id) return;
+    const card = document.getElementById(`exchange-${id}`);
+    if (!card) return;
+    focusExchange.current = null;
+    card.scrollIntoView({ block: 'center' });
+    card.focus({ preventScroll: true });
+  }, [exchangeCards]);
+
   useLayoutEffect(() => {
     setWorkingIds(current => {
       if (current.length === 0) return current;
@@ -355,6 +380,14 @@ export default function Home() {
         return res.ok && Array.isArray(body?.events) ? body.events as WakeEventView[] : null;
       })
       .catch(() => null);
+    // NOT-498: exchanges linked to this thread, typed from the exchange
+    // API; a failed read keeps the last cards.
+    const exchangesRead = fetch(`/api/exchanges?conversation=${encodeURIComponent(id)}`, { cache: 'no-store' })
+      .then(async res => {
+        const body = await res.json();
+        return res.ok && Array.isArray(body?.exchanges) ? body.exchanges as ExchangeSummary[] : null;
+      })
+      .catch(() => null);
     try {
       const res = await fetch(`/api/conversations/${id}/messages`);
       data = await res.json();
@@ -363,10 +396,12 @@ export default function Home() {
       ok = false;
     }
     const events = await eventsRead;
+    const linkedExchanges = await exchangesRead;
     // A reply for a thread the owner already left must not paint this one.
     if (activeIdRef.current !== id) return;
     if (ok) setMessages(data as Message[]);
     if (events) setNotices(wakeNotices(events));
+    if (linkedExchanges) setExchangeCards(linkedExchanges);
     setThreadLoad({ conversationId: id, status: ok ? 'ready' : 'error' });
   }
 
@@ -426,6 +461,7 @@ export default function Home() {
     if (conv.id !== activeConversation?.id) {
       setMessages([]);
       setNotices([]);
+      setExchangeCards([]);
     }
     // Retarget the stale-read guard before the new thread commits, so a read
     // for the previous thread that resolves in between is dropped.
@@ -832,6 +868,21 @@ export default function Home() {
       <WakeNotice notice={notice} onDone={() => { void loadMessages(); }} />
     </div>
   );
+  // NOT-498: linked exchanges sit where they started, among messages and
+  // notices, one card per exchange id.
+  const shownExchanges = new Set<string>();
+  const exchangeRow = (summary: ExchangeSummary) => (
+    <div key={`exchange-${summary.id}`} className="msg-status">
+      <ExchangeCard summary={summary} onChanged={() => { void loadMessages(); }} />
+    </div>
+  );
+  const exchangesBefore = (at: number) => {
+    const due = exchangeCards
+      .filter(summary => !shownExchanges.has(summary.id) && summary.created_at < at)
+      .sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : 1));
+    due.forEach(summary => shownExchanges.add(summary.id));
+    return due.map(exchangeRow);
+  };
 
   const closeBotModal = () => {
     setShowBotModal(false);
@@ -878,6 +929,11 @@ export default function Home() {
             Settings
           </Link>
         </div>
+        {noBots ? null : (
+          <nav className="rail-nav" aria-label="Workspace">
+            <Link href="/exchanges" className="add-btn rail-nav-link">Exchanges</Link>
+          </nav>
+        )}
         <p className="roster-status" role="status">{rosterStatus}</p>
         {noBots ? null : (
           <div className={rowMenu ? 'roster menu-open' : 'roster'}>
@@ -1002,12 +1058,14 @@ export default function Home() {
                 // Notices recorded before this message sit above it.
                 const before = notices.filter(notice => !shownNotices.has(notice.eventId) && notice.createdAt < msg.created_at);
                 before.forEach(notice => shownNotices.add(notice.eventId));
+                const cardsBefore = exchangesBefore(msg.created_at);
                 const mine = msg.sender_type === 'user';
                 const failure = mine ? null : classifyRuntimeFailure(stripStoredPrefix(msg.content));
                 if (failure) {
                   return (
                     <Fragment key={msg.id}>
                       {before.map(wakeNoticeRow)}
+                      {cardsBefore}
                       <div className="msg-status">
                         <RuntimeFailureNotice failure={failure} />
                       </div>
@@ -1029,6 +1087,7 @@ export default function Home() {
                 return (
                   <Fragment key={msg.id}>
                   {before.map(wakeNoticeRow)}
+                  {cardsBefore}
                   <div className={mine ? 'msg-you' : 'msg-bot'} ref={run && run.state === 'running' ? runningLineRef : undefined}>
                     <div
                       className={mine ? 'msg-name msg-name-you' : 'msg-name'}
@@ -1100,6 +1159,7 @@ export default function Home() {
                 );
               })}
               {notices.filter(notice => !shownNotices.has(notice.eventId)).map(wakeNoticeRow)}
+              {exchangesBefore(Number.POSITIVE_INFINITY)}
               <div ref={computerRoomRef} />
               <div ref={messagesEndRef} />
             </div>
@@ -1225,6 +1285,9 @@ export default function Home() {
           key={activeConversation.details.id}
           agentId={activeConversation.details.id}
           agentName={activeConversation.details.name}
+          agents={bots.map(bot => ({ id: bot.id, name: bot.name }))}
+          origin={{ conversationId: activeConversation.id, label: `${activeConversation.details.name} thread` }}
+          onExchangeStarted={() => { void loadMessages(); }}
           onClose={() => {
             setSessionsOpen(false);
             requestAnimationFrame(() => sessionsRef.current?.focus());
