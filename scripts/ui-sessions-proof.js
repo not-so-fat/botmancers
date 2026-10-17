@@ -15,13 +15,16 @@
 //   shows the empty state;
 // - desktop only: the labeled local debug disclosure is the one place the
 //   provider session id appears, with a Copy action.
-// Writes screenshots and a trace under --out, stamped with HEAD. No mocks.
+// Writes screenshots, a trace, and sessions-proof-receipt.json (HEAD, clean
+// tree, viewports, sha256 of every screenshot) under --out. Refuses to run on
+// a dirty worktree so the receipt binds to exactly the committed HEAD. No mocks.
 //
 // Usage: node scripts/seed-sessions-fixture.js
 //        BOTMANCERS_DB_PATH=.temporal/sessions-fixture.db BOTMANCERS_NO_AUTOPROCESS=1 npx next dev -H 127.0.0.1 -p 43496   (other shell)
 //        node scripts/ui-sessions-proof.js [--url http://127.0.0.1:43496] [--out .agent-dealer-visual-qa]
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -41,6 +44,7 @@ const VIEWPORTS = [
 ];
 const KEYS = { Tab: 9, Enter: 13, Escape: 27 };
 const HEAD = execSync('git rev-parse HEAD').toString().trim();
+const DIRTY = execSync('git status --porcelain --untracked-files=no').toString().trim();
 const SECRETS = [...Object.values(EXTERNAL_IDS), `${EXTERNAL_IDS.direct}-next`];
 
 let failures = 0;
@@ -122,6 +126,8 @@ const LAYOUT = `(() => {
 })()`;
 
 async function run() {
+  if (DIRTY) throw new Error(`worktree has uncommitted tracked changes; commit before proving HEAD:\n${DIRTY}`);
+  fs.rmSync(OUT, { recursive: true, force: true });
   fs.mkdirSync(OUT, { recursive: true });
   log(`HEAD ${HEAD}`);
   log(`app ${URL_BASE} (real Next.js app on the seeded sessions fixture; no mocks)`);
@@ -151,11 +157,14 @@ async function run() {
   };
   const click = selectorExpr => evaluate(`(() => { const el = ${selectorExpr}; if (!el) return false; el.click(); return true; })()`);
   const byText = (selector, text) => `[...document.querySelectorAll(${JSON.stringify(selector)})].find(el => el.textContent.trim() === ${JSON.stringify(text)})`;
+  const screenshots = [];
   const shot = async (vp, state) => {
     await sleep(250);
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
     const file = path.join(OUT, `${vp.name}-${state}.png`);
-    fs.writeFileSync(file, Buffer.from(data, 'base64'));
+    const png = Buffer.from(data, 'base64');
+    fs.writeFileSync(file, png);
+    screenshots.push({ viewport: vp.name, state, file, sha256: crypto.createHash('sha256').update(png).digest('hex') });
     log(`  screenshot ${file}`);
   };
   const noSecrets = async label => {
@@ -269,8 +278,12 @@ async function run() {
 
   cdp.close();
   chrome.proc.kill();
-  fs.writeFileSync(path.join(OUT, 'sessions-proof-trace.txt'), `${trace.join('\n')}\n`);
   log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}`);
+  fs.writeFileSync(path.join(OUT, 'sessions-proof-trace.txt'), `${trace.join('\n')}\n`);
+  fs.writeFileSync(path.join(OUT, 'sessions-proof-receipt.json'), `${JSON.stringify({
+    head: HEAD, cleanTree: true, app: URL_BASE, mocks: false, result: failures === 0 ? 'pass' : 'fail', failures,
+    viewports: VIEWPORTS.map(v => `${v.width}x${v.height}`), screenshots, capturedAt: new Date().toISOString(),
+  }, null, 2)}\n`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
