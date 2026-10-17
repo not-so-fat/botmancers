@@ -3,8 +3,9 @@
 // stream, so GET and DELETE are 405), and an unauthenticated GET /healthz.
 //
 // initialize, ping, and tools/list are answered locally from the bundled
-// botmancers.mcp.v1 schema; tools/call for a contract tool is forwarded
-// unchanged to Botmancers' /api/v0/mcp with the service token. MCP clients
+// botmancers.mcp.v2 schema (every v1 tool included); tools/call for any
+// contract tool, v1 or v2, is forwarded unchanged to Botmancers' /api/v0/mcp
+// with the service token. MCP clients
 // authenticate to the bridge with their own bearer token and never see the
 // service token.
 //
@@ -16,7 +17,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import type { BridgeConfig } from './config.js';
 import { isLoopbackHost } from './config.js';
-import { MCP_CONTRACT, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS, loadToolContract, negotiateProtocolVersion, packageVersion } from './contract.js';
+import { MCP_CONTRACT, MCP_CONTRACTS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS, loadToolContract, negotiateProtocolVersion, packageVersion } from './contract.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { UpstreamError, createUpstream, type Upstream } from './upstream.js';
 
@@ -228,7 +229,7 @@ export function createBridge(options: BridgeOptions): Bridge {
     const route = async () => {
       if (path === HEALTH_PATH) {
         if (req.method !== 'GET' && req.method !== 'HEAD') return envelope(res, 405, 'method_not_allowed', 'Use GET.', { allow: 'GET, HEAD' });
-        return sendJson(res, 200, { status: 'ok', contract: MCP_CONTRACT, version });
+        return sendJson(res, 200, { status: 'ok', contract: MCP_CONTRACT, contracts: [...MCP_CONTRACTS], version });
       }
       if (path === MCP_PATH) {
         if (req.method === 'POST') return handleMcpPost(req, res);

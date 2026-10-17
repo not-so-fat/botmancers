@@ -178,8 +178,8 @@ export function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliCommand {
 
 export const HELP = `Usage: botmancers [options]
 
-Run the Botmancers MCP bridge: a Streamable HTTP MCP server (contract
-botmancers.mcp.v1) that forwards tool calls to a running Botmancers app.
+Run the Botmancers MCP bridge: a Streamable HTTP MCP server (contracts
+botmancers.mcp.v1 and v2) that forwards tool calls to a running Botmancers app.
 
 Options:
   --botmancers-url <url>  Botmancers base URL            (env ${ENV.url}, required)

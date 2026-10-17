@@ -9,11 +9,15 @@ private Botmancers app, which has the same name and `"private": true`.
 
 - The package follows SemVer. While it is `0.x`, a minor bump may change the
   CLI or its configuration, and a patch release is for fixes only.
-- The MCP tool contract (`botmancers.mcp.v1`, in
-  `schemas/botmancers.mcp.v1.tools.json`) is a copy of
-  `docs/contracts/mcp-bridge-v1.tools.json`. `npm test` fails if the two
-  differ. A contract change is made in the app first, then copied here and
-  released.
+- The MCP tool contract (`botmancers.mcp.v2`, in
+  `schemas/botmancers.mcp.v2.tools.json`) is a byte-for-byte copy of
+  `docs/contracts/mcp-bridge-v2.tools.json`, and the frozen
+  `schemas/botmancers.mcp.v1.tools.json` of
+  `docs/contracts/mcp-bridge-v1.tools.json`. `npm test` fails if either pair
+  differs. A contract change is made in the app first
+  (`npm run test:mcp-bridge -- --write-contract`), then copied here and
+  released. v1 never changes; changes within v2 are additive, and a breaking
+  change is a new contract version (`docs/mcp-bridge.md`, Versioning).
 - One version is recorded in four places: `package.json` `version`, a
   `## [x.y.z] - YYYY-MM-DD` entry in `CHANGELOG.md`, every
   `npx botmancers@x.y.z` example in `README.md`, and the git tag

@@ -7,11 +7,11 @@ import { createServer } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { startFakeBotmancers } from '../scripts/fake-botmancers.mjs';
+import { PARTIAL_V2_MISSING, startFakeBotmancers } from '../scripts/fake-botmancers.mjs';
 import { mcpPost, mcpSession, rpc, runBridge, stopBridge } from '../scripts/harness.mjs';
 
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
-const SCHEMA = JSON.parse(readFileSync(new URL('../schemas/botmancers.mcp.v1.tools.json', import.meta.url), 'utf8'));
+const SCHEMA = JSON.parse(readFileSync(new URL('../schemas/botmancers.mcp.v2.tools.json', import.meta.url), 'utf8'));
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const SERVICE_TOKEN = 'svc-0123456789abcdef-SERVICE-SECRET';
@@ -135,6 +135,10 @@ test('an unrelated MCP server, or a Botmancers missing contract tools, exits 4',
   const cases = [
     ['generic', /is an MCP endpoint but not a compatible Botmancers \(serverInfo\.name is not "botmancers"\)/],
     ['partial_tools', /not a compatible Botmancers \(missing botmancers\.mcp\.v1 tools: botmancers_start_task\)/],
+    // NOT-500: the bridge needs the whole botmancers.mcp.v2 surface.
+    ['v1_only', /not a compatible Botmancers \(it serves only botmancers\.mcp\.v1; this bridge needs botmancers\.mcp\.v2 \(missing botmancers_capabilities, botmancers_list_agents, botmancers_list_sessions, botmancers_list_conversations, botmancers_send_to_session, botmancers_create_exchange, botmancers_get_exchange, botmancers_list_exchanges\)\. Upgrade Botmancers to a release that serves botmancers\.mcp\.v2\)/],
+    ['partial_v2', new RegExp(`not a compatible Botmancers \\(missing botmancers\\.mcp\\.v2 tools: ${PARTIAL_V2_MISSING.join(', ')}\\)`)],
+    ['no_v2_path', /not a compatible Botmancers \(botmancers_get_conversation lacks the botmancers\.mcp\.v2 agent_id path\)/],
   ];
   for (const [mode, message] of cases) {
     const fake = await startFakeBotmancers({ serviceToken: SERVICE_TOKEN, mode });
@@ -202,7 +206,7 @@ test('serves health and the MCP tool surface, forwarding tool calls with the ser
 
     const health = await fetch(`${base}/healthz`);
     assert.equal(health.status, 200);
-    assert.deepEqual(await health.json(), { status: 'ok', contract: 'botmancers.mcp.v1', version: VERSION });
+    assert.deepEqual(await health.json(), { status: 'ok', contract: 'botmancers.mcp.v2', contracts: ['botmancers.mcp.v1', 'botmancers.mcp.v2'], version: VERSION });
 
     const session = await mcpSession(url, MCP_TOKEN);
     assert.equal(session.initialize.status, 200);
@@ -225,6 +229,30 @@ test('serves health and the MCP tool surface, forwarding tool calls with the ser
     const missing = await rpc(url, MCP_TOKEN, 'tools/call', { name: 'botmancers_get_request', arguments: { request_id: 'nope' } });
     assert.equal(missing.json.result.isError, true);
     assert.equal(missing.json.result.structuredContent.error.code, 'request_not_found');
+
+    // Every v2 tool call is forwarded unchanged (arguments included) and its
+    // result passed back unchanged.
+    const v2Calls = {
+      botmancers_capabilities: {},
+      botmancers_list_agents: { limit: 5, cursor: 'opaque-cursor' },
+      botmancers_list_sessions: { agent_id: 'agent-1', status: 'active' },
+      botmancers_list_conversations: { agent_id: 'agent-1', limit: 1 },
+      botmancers_send_to_session: { session_ref: 'session-1', content: 'Hello, same session', idempotency_key: 'send-1' },
+      botmancers_create_exchange: { mode: 'continue', source: { session_ref: 'session-1' }, destination: { agent_id: 'agent-2' }, instruction: 'Carry on', idempotency_key: 'cont-1' },
+      botmancers_get_exchange: { exchange_id: 'exchange-1' },
+      botmancers_list_exchanges: { limit: 2 },
+      // Unknown fields too: Botmancers, not the bridge, refuses them.
+      botmancers_get_conversation: { conversation_id: 'conversation-1', agent_id: 'agent-1', limit: 10, deck: 'x' },
+    };
+    for (const [name, args] of Object.entries(v2Calls)) {
+      const count = fake.received.length;
+      const answer = await rpc(url, MCP_TOKEN, 'tools/call', { name, arguments: args });
+      const forwardedCall = fake.received[count];
+      assert.equal(fake.received.length, count + 1, name);
+      assert.deepEqual(forwardedCall.message.params, { name, arguments: args }, `${name} forwarded unchanged`);
+      assert.equal(forwardedCall.headers.authorization, `Bearer ${SERVICE_TOKEN}`);
+      if (name !== 'botmancers_get_conversation') assert.deepEqual(answer.json.result.structuredContent, { contract: 'botmancers.mcp.v2', echo: { name, arguments: args } }, `${name} result unchanged`);
+    }
 
     // Unknown tools are refused locally, never forwarded.
     const before = fake.received.length;

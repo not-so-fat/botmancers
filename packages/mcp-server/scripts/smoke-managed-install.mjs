@@ -13,15 +13,23 @@
 // user-state file hashes survive, and that BOTMANCERS_DISABLE_AUTOUPDATER=1
 // stops every automatic registry request.
 //
+// NOT-500: between those, botmancers.mcp.v2 through the managed bridge. With
+// an owner grant for the bridge's service principal, an MCP client lists the
+// v2 tools, discovers a seeded session of a Deck-backed Agent, sends one
+// same-session message and creates one Ask exchange (their runs go to a
+// loopback fake Agent Deck), and after stop/start finds the same durable
+// records through MCP, the REST /api/v0 API, and the owner UI routes.
+//
 //   node scripts/smoke-managed-install.mjs --tarball botmancers-X.Y.Z.tgz [--out transcript.txt]
 //   node scripts/smoke-managed-install.mjs                    pack this directory first
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { PACKAGE_DIR, freePort, run, waitFor } from './product-harness.mjs';
-import { mcpSession } from './harness.mjs';
+import { mcpSession, rpc } from './harness.mjs';
 import { integrityOf, pack, startRegistry } from './managed-harness.mjs';
 
 const REPO_ROOT = realpathSync(join(PACKAGE_DIR, '..', '..'));
@@ -43,6 +51,105 @@ function check(condition, message) {
 }
 
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+
+const V2_TOOLS = JSON.parse(readFileSync(join(PACKAGE_DIR, 'schemas/botmancers.mcp.v2.tools.json'), 'utf8')).tools.map(tool => tool.name);
+const DECK_TOKEN = 'adg_managed_smoke_fixture_bearer';
+const PROVIDER_SESSION = 'prov-relay-SECRET-session-0001';
+const DECK_ID = '00000000-0000-4000-8000-000000000002';
+
+// botmancers.mcp.v2 against the running managed product (see the header).
+async function smokeMcpV2({ base, mcpUrl, mcpToken, serviceToken, home, workdir, deck, owner, restart }) {
+  const texts = [];
+  const call = async (name, args = {}) => {
+    const res = await rpc(mcpUrl, mcpToken, 'tools/call', { name, arguments: args });
+    texts.push(res.text);
+    if (!res.json || !res.json.result) throw new Error(`MCP ${name} -> HTTP ${res.status} ${res.text}`);
+    return res.json.result;
+  };
+  const ok = result => (result.isError ? null : result.structuredContent);
+  const pollExchange = async id => {
+    const deadline = Date.now() + 90_000;
+    let wait = 250;
+    for (;;) {
+      const view = ok(await call('botmancers_get_exchange', { exchange_id: id }));
+      if (view && view.terminal) return view;
+      if (Date.now() > deadline) throw new Error(`exchange ${id} not terminal: ${JSON.stringify(view)}`);
+      await new Promise(done => setTimeout(done, wait));
+      wait = Math.min(wait * 2, 2000);
+    }
+  };
+
+  // A Deck-backed Agent (its working directory outside BOTMANCERS_HOME, so
+  // the home layout check below is unaffected), the workspace Agent Deck URL
+  // (the owner's settings route), one seeded session of it, and the owner's
+  // grant to the bridge.
+  const relay = await (await fetch(`${base}/api/bots`, { method: 'POST', headers: owner, body: JSON.stringify({ name: 'Relay', title: 'Managed v2 smoke', description: 'v2 smoke', agent: 'claude', deck_id: DECK_ID, working_directory: workdir }) })).json();
+  check(typeof relay.id === 'string', `created Deck-backed Agent Relay ${relay.id}`);
+  const settings = await fetch(`${base}/api/agent-deck/settings`, { method: 'PUT', headers: owner, body: JSON.stringify({ server_url: deck.url }) });
+  check(settings.status === 200, `Agent Deck server URL set to the loopback fake ${deck.url}`);
+  const thread = await (await fetch(`${base}/api/conversations?botId=${relay.id}`)).json();
+  const Database = createRequire(join(home, 'current', 'node_modules', 'botmancers', 'app', 'package.json'))('better-sqlite3');
+  const db = new Database(join(home, 'data', 'botmancers.db'));
+  db.pragma('busy_timeout = 5000');
+  const ref = randomUUID();
+  db.prepare('INSERT INTO session_bindings (id, agent_id, adapter, conversation_id, external_session_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(ref, relay.id, 'claude', thread.id, PROVIDER_SESSION, Date.now());
+  db.close();
+  log(`seeded session ${ref} of Relay (conversation ${thread.id}) with the packaged better-sqlite3`);
+  const grantsPath = join(home, 'config', 'service-grants.json');
+  writeFileSync(grantsPath, `${JSON.stringify({ version: 1, grants: [{ service: 'botmancers-bridge', agent: relay.id,
+    capabilities: ['agents:read', 'sessions:read', 'conversations:read', 'sessions:message', 'exchanges:read', 'exchanges:create'] }] }, null, 2)}\n`);
+  chmodSync(grantsPath, 0o600);
+  log(`owner grant: ${grantsPath} (0600) grants service botmancers-bridge every capability on Relay`);
+
+  const listed = await rpc(mcpUrl, mcpToken, 'tools/list');
+  const names = listed.json.result.tools.map(tool => tool.name);
+  check(names.join(',') === V2_TOOLS.join(','), `MCP tools/list -> ${names.length} tools: ${names.join(', ')}`);
+  const caps = ok(await call('botmancers_capabilities'));
+  check(caps && caps.mode === 'granted' && caps.contracts_supported.join(',') === 'botmancers.mcp.v1,botmancers.mcp.v2'
+    && caps.operations.some(op => op.tool === 'botmancers_send_to_session' && op.agent_ids.includes(relay.id)), `botmancers_capabilities -> granted; v1+v2; send_to_session on Relay`);
+  const agents = ok(await call('botmancers_list_agents'));
+  check(agents && agents.items.map(agent => agent.name).join(',') === 'Relay', 'botmancers_list_agents -> Relay (only the granted Agent)');
+  const sessions = ok(await call('botmancers_list_sessions', { agent_id: relay.id, status: 'active' }));
+  check(sessions && sessions.items.length === 1 && sessions.items[0].ref === ref, `botmancers_list_sessions discovers the seeded session ${ref} ("${sessions && sessions.items[0] && sessions.items[0].title}")`);
+  const uiSessions = await (await fetch(`${base}/api/bots/${relay.id}/sessions?status=active`)).json();
+  check(JSON.stringify(uiSessions).includes(ref), 'the owner UI Sessions route lists the same session reference');
+
+  const sent = ok(await call('botmancers_send_to_session', { session_ref: ref, content: 'managed v2 smoke: same session?', idempotency_key: 'managed-v2-send-1' }));
+  check(sent && sent.session_ref === ref && sent.agent_id === relay.id && sent.replayed === false, `botmancers_send_to_session -> exchange ${sent && sent.exchange_id}, request ${sent && sent.request_id}`);
+  const sentDone = await pollExchange(sent.exchange_id);
+  check(sentDone.exchange.state === 'completed' && sentDone.exchange.kind === 'session_message' && sentDone.exchange.answer, `polled botmancers_get_exchange -> ${sentDone.exchange.state}: "${sentDone.exchange.answer && sentDone.exchange.answer.content}"`);
+  const resumed = deck.calls('POST', '/api/agent-runs').map(entry => entry.body);
+  check(resumed.length >= 1 && resumed.every(body => body.resumeSessionId === PROVIDER_SESSION && body.deckId === DECK_ID),
+    `the Agent Deck run resumed exactly the seeded provider session on Relay's Deck (${resumed.length} run)`);
+  const asked = ok(await call('botmancers_create_exchange', { mode: 'ask', source: { session_ref: ref }, instruction: 'managed v2 smoke: one Ask exchange', idempotency_key: 'managed-v2-ask-1' }));
+  check(asked && asked.exchange.mode === 'ask' && asked.replayed === false, `botmancers_create_exchange (Ask) -> exchange ${asked && asked.exchange.id}`);
+  const askedDone = await pollExchange(asked.exchange.id);
+  check(askedDone.exchange.state === 'completed', `the Ask exchange -> ${askedDone.exchange.state}: "${askedDone.exchange.answer && askedDone.exchange.answer.content}"`);
+
+  // Stop and start: the records are durable and shared.
+  await restart();
+  const after = ok(await call('botmancers_get_exchange', { exchange_id: sent.exchange_id }));
+  const afterAsk = ok(await call('botmancers_get_exchange', { exchange_id: asked.exchange.id }));
+  check(after && after.terminal && after.exchange.state === 'completed' && afterAsk && afterAsk.exchange.state === 'completed'
+    && after.exchange.answer.content === sentDone.exchange.answer.content, 'after stop/start MCP reads both exchanges, completed, with the same answer');
+  const replay = ok(await call('botmancers_send_to_session', { session_ref: ref, content: 'managed v2 smoke: same session?', idempotency_key: 'managed-v2-send-1' }));
+  check(replay && replay.replayed === true && replay.exchange_id === sent.exchange_id, 'after stop/start the same idempotency key replays the same exchange (nothing new written)');
+  const again = ok(await call('botmancers_list_sessions', { agent_id: relay.id }));
+  check(again && again.items.some(item => item.ref === ref), 'after stop/start the session is still discoverable by its reference');
+  const listedExchanges = ok(await call('botmancers_list_exchanges', { limit: 10 }));
+  check(listedExchanges && [sent.exchange_id, asked.exchange.id].every(id => listedExchanges.items.some(item => item.id === id)), 'botmancers_list_exchanges holds both');
+  const rest = await fetch(`${base}/api/v0/exchanges/${asked.exchange.id}`, { headers: { authorization: `Bearer ${serviceToken}` } });
+  const restBody = await rest.json();
+  check(rest.status === 200 && restBody.id === asked.exchange.id && restBody.state === askedDone.exchange.state, 'REST GET /api/v0/exchanges/{id} (the bridge service token) returns the same exchange');
+  const audit = await (await fetch(`${base}/api/service-grants`)).json();
+  const mine = audit.audit.filter(row => row.principal === 'service:botmancers-bridge');
+  check(audit.state === 'loaded' && mine.some(row => row.operation === 'sessions.message' && row.outcome === 'allowed')
+    && mine.some(row => row.operation === 'exchanges.create' && row.outcome === 'allowed'), 'the owner UI grants view shows the loaded grant and the audited MCP session message and exchange');
+  const uiAfter = await (await fetch(`${base}/api/bots/${relay.id}/sessions`)).json();
+  check(JSON.stringify(uiAfter).includes(ref), 'after stop/start the owner UI Sessions route still lists the session');
+  check(!texts.join('\n').includes(PROVIDER_SESSION), 'no MCP v2 response carried the provider session id');
+}
 const bump = version => version.replace(/(\d+)$/, patch => String(Number(patch) + 1));
 
 function whichAll(env, name) {
@@ -109,6 +216,7 @@ export async function smoke({ tarball } = {}) {
   } catch { /* not a git checkout */ }
 
   let registry;
+  let deck;
   const env = { PATH: [bin, tools, '/usr/bin', '/bin'].join(':') };
   const botmancers = (cmdArgs, extra = {}) => run('botmancers', cmdArgs, { env: { ...env, ...extra }, cwd: elsewhere, timeoutMs: 180_000 });
   try {
@@ -166,6 +274,13 @@ export async function smoke({ tarball } = {}) {
     check((await botmancers(['setup'])).code === 0, 'botmancers setup');
     const doctor = await botmancers(['doctor']);
     check(doctor.code === 0, `botmancers doctor: ${doctor.stdout.trim().split('\n').pop()}`);
+    // The v2 section's Deck-backed Agent runs against a loopback fake Agent
+    // Deck; the core reads its run token from core.env at start.
+    const { createFakeAgentDeck } = createRequire(import.meta.url)(join(REPO_ROOT, 'test-support', 'fake-agent-deck-api.js'));
+    deck = createFakeAgentDeck({ token: DECK_TOKEN });
+    deck.onStart = body => ({ result: body.resumeSessionId ? 'Relay: yes, the same session.' : 'Relay: fresh session.', sessionId: body.resumeSessionId || 'prov-relay-fresh' });
+    await deck.listen();
+    appendFileSync(join(home, 'config', 'core.env'), `AGENT_DECK_RUN_TOKEN=${DECK_TOKEN}\n`);
     const start = await botmancers(['start', '--daemon']);
     check(start.code === 0, `botmancers start --daemon:\n${start.stdout.trimEnd()}`);
     const status = await botmancers(['status']);
@@ -192,6 +307,16 @@ export async function smoke({ tarball } = {}) {
     writeFileSync(join(home, 'skills', 'smoke', 'SKILL.md'), 'smoke skill\n');
     const session = await mcpSession(`http://127.0.0.1:${mcp}/mcp`, mcpToken);
     check(session.health.json.result.structuredContent.status === 'ok', 'MCP tools/call botmancers_health reaches the same engine');
+
+    // 2b. botmancers.mcp.v2 (NOT-500), surviving one stop/start.
+    const serviceToken = /^BOTMANCERS_SERVICE_TOKEN=(\S+)$/m.exec(readFileSync(join(home, 'config/bridge.env'), 'utf8'))[1];
+    await smokeMcpV2({
+      base, mcpUrl: `http://127.0.0.1:${mcp}/mcp`, mcpToken, serviceToken, home, workdir: join(root, 'relay-workdir'), deck, owner,
+      restart: async () => {
+        check((await botmancers(['stop'])).code === 0, 'botmancers stop');
+        check((await botmancers(['start', '--daemon'])).code === 0 && (await health()).version === N, `botmancers start --daemon: the product runs ${N} again`);
+      },
+    });
     const stateFiles = ['config/core.env', 'config/bridge.env', 'files/managed-smoke.txt', 'skills/smoke/SKILL.md'];
     const hashes = () => Object.fromEntries(stateFiles.map(file => [file, sha256(join(home, file))]));
     const before = hashes();
@@ -265,6 +390,7 @@ export async function smoke({ tarball } = {}) {
       } catch { /* already stopped */ }
     }
     await registry?.close();
+    await deck?.close();
     rmSync(root, { recursive: true, force: true });
   }
 }

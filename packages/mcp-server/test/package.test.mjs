@@ -46,21 +46,37 @@ test('the allowlist rejects unrelated content', () => {
 
 test('the bridge library surface is unchanged', async () => {
   const lib = await import('../dist/index.js');
-  for (const name of ['MCP_CONTRACT', 'MCP_PROTOCOL_VERSIONS', 'TOOL_SCHEMA_URL', 'loadToolContract', 'negotiateProtocolVersion', 'packageVersion',
+  for (const name of ['MCP_CONTRACT', 'MCP_CONTRACT_V1', 'MCP_CONTRACTS', 'MCP_PROTOCOL_VERSIONS', 'TOOL_SCHEMA_URL', 'TOOL_SCHEMA_V1_URL', 'toolContractOf', 'loadToolContract', 'negotiateProtocolVersion', 'packageVersion',
     'DEFAULT_HOST', 'DEFAULT_PORT', 'ENV', 'ConfigError', 'isLoopbackHost', 'parseBotmancersUrl', 'parseCli', 'createRedactor', 'REDACTED',
     'UPSTREAM_PATH', 'UpstreamError', 'createUpstream', 'HEALTH_PATH', 'MAX_BODY_BYTES', 'MCP_PATH', 'createBridge', 'EXIT', 'main']) {
     assert.ok(name in lib, `export ${name}`);
   }
   assert.deepEqual(lib.EXIT, { ok: 0, config: 2, listen: 3, unavailable: 4, credentials: 5 });
   assert.equal(lib.DEFAULT_PORT, 43124);
-  assert.equal(lib.loadToolContract().contract, 'botmancers.mcp.v1');
-  assert.deepEqual(Object.keys(pkg.exports), ['.', './schemas/botmancers.mcp.v1.tools.json', './package.json']);
+  assert.equal(lib.MCP_CONTRACT, 'botmancers.mcp.v2');
+  assert.deepEqual(lib.MCP_CONTRACTS, ['botmancers.mcp.v1', 'botmancers.mcp.v2']);
+  assert.equal(lib.loadToolContract().contract, 'botmancers.mcp.v2');
+  assert.deepEqual(Object.keys(pkg.exports), ['.', './schemas/botmancers.mcp.v1.tools.json', './schemas/botmancers.mcp.v2.tools.json', './package.json']);
 });
 
-test('the bundled schema is the contract the Botmancers app serves', () => {
-  const appContract = new URL('../../../docs/contracts/mcp-bridge-v1.tools.json', import.meta.url);
-  if (!existsSync(appContract)) return; // outside the monorepo
-  assert.deepEqual(JSON.parse(read('../schemas/botmancers.mcp.v1.tools.json')), JSON.parse(readFileSync(appContract, 'utf8')));
+test('the bundled schemas are exactly the contracts the Botmancers app captures', () => {
+  const appV2 = new URL('../../../docs/contracts/mcp-bridge-v2.tools.json', import.meta.url);
+  const appV1 = new URL('../../../docs/contracts/mcp-bridge-v1.tools.json', import.meta.url);
+  if (!existsSync(appV2)) return; // outside the monorepo
+  assert.equal(read('../schemas/botmancers.mcp.v2.tools.json'), readFileSync(appV2, 'utf8'), 'v2 schema byte-identical to the app capture');
+  assert.equal(read('../schemas/botmancers.mcp.v1.tools.json'), readFileSync(appV1, 'utf8'), 'frozen v1 schema byte-identical to the app capture');
+});
+
+test('the bundled v2 schema keeps every v1 tool and adds the eight v2 tools', async () => {
+  const lib = await import('../dist/index.js');
+  const v2 = lib.loadToolContract();
+  const v1 = JSON.parse(read('../schemas/botmancers.mcp.v1.tools.json'));
+  const names = v2.tools.map(tool => tool.name);
+  assert.deepEqual(names.slice(0, 4), v1.tools.map(tool => tool.name));
+  assert.deepEqual(names.slice(4), ['botmancers_capabilities', 'botmancers_list_agents', 'botmancers_list_sessions', 'botmancers_list_conversations',
+    'botmancers_send_to_session', 'botmancers_create_exchange', 'botmancers_get_exchange', 'botmancers_list_exchanges']);
+  for (const tool of v1.tools.filter(tool => tool.name !== 'botmancers_get_conversation')) assert.deepEqual(v2.tools.find(t => t.name === tool.name), tool);
+  assert.deepEqual(v2.tools.map(lib.toolContractOf), [...Array(4).fill('botmancers.mcp.v1'), ...Array(8).fill('botmancers.mcp.v2')]);
 });
 
 test('the manifest is a public package distinct from the private app', () => {

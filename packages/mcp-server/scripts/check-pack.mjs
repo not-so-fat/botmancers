@@ -42,7 +42,7 @@ export const REQUIRED = [
   'package.json', 'README.md', 'LICENSE', 'CHANGELOG.md',
   'dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'dist/product.js', 'dist/setup.js', 'dist/home.js', 'dist/server.js',
   'dist/managed.js', 'dist/upgrade.js',  // managed install: launcher, release trees, updater
-  'schemas/botmancers.mcp.v1.tools.json',
+  'schemas/botmancers.mcp.v1.tools.json', 'schemas/botmancers.mcp.v2.tools.json',
   'app/server.js', 'app/package.json', 'app/BUILD_INFO.json', 'app/.next/BUILD_ID',
   'app/.next/required-server-files.json', 'app/.next/server/app/api/health/route.js',
   'app/public/brand/botmancers-logo-filled-64.png',

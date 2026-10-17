@@ -11,6 +11,16 @@ owner grants it, per Agent and per capability, in one document. The caller
 never receives a provider session or run id, a Deck credential or selection,
 a working directory, or a tool profile choice, and it can never choose them.
 
+The same operations are MCP tools (contract `botmancers.mcp.v2`,
+[`mcp-bridge.md`](mcp-bridge.md)): `botmancers_capabilities`,
+`botmancers_list_agents`, `botmancers_list_sessions`,
+`botmancers_list_conversations`, `botmancers_get_conversation` (with
+`agent_id`), `botmancers_send_to_session`, `botmancers_create_exchange`,
+`botmancers_get_exchange`, and `botmancers_list_exchanges`. Each is one call of
+the same audited, rate-limited service operation (`serviceOperations` in
+`lib/service-api-http.ts`), under the grants below; the audit trail records
+MCP and REST calls alike.
+
 ## The document
 
 Path: `<BOTMANCERS_HOME>/config/service-grants.json` (default

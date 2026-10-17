@@ -154,7 +154,7 @@ function createContext(scenarioName, options = {}) {
 
   // Coordinator (Hermes transport) turns: a per-Agent script when one is
   // set, else a per-conversation plan of steps; each (input, request) =>
-  // reply text.
+  // reply text, or { output, sessionId } to report a runtime session.
   const plans = new Map();
   const hermesScripts = new Map();
   const coordinatorLaunches = [];
@@ -171,9 +171,11 @@ function createContext(scenarioName, options = {}) {
         const script = hermesScripts.get(request.target_agent_id);
         const plan = plans.get(request.source_conversation_id) || [];
         const step = script || plan.shift();
-        const output = step ? step(input, request) : 'Nothing more to do.';
+        const reply = step ? step(input, request) : 'Nothing more to do.';
+        const output = reply && typeof reply === 'object' ? reply.output : reply;
+        const externalSessionId = reply && typeof reply === 'object' ? reply.sessionId ?? null : null;
         const now = Date.now();
-        return { status: 'completed', adapter: 'hermes-gateway', externalRunId: runId, externalSessionId: null, output, artifacts: [], startedAt: now, finishedAt: now, failure: null };
+        return { status: 'completed', adapter: 'hermes-gateway', externalRunId: runId, externalSessionId, output, artifacts: [], startedAt: now, finishedAt: now, failure: null };
       },
     };
   }

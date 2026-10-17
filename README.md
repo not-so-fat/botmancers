@@ -46,6 +46,8 @@ scope:
   ([`docs/run-payload-migration.md`](docs/run-payload-migration.md));
 - the external-agent intake: the MCP bridge contract
   ([`docs/mcp-bridge.md`](docs/mcp-bridge.md), tool schemas in
+  [`docs/contracts/mcp-bridge-v2.tools.json`](docs/contracts/mcp-bridge-v2.tools.json),
+  with the frozen v1 capture
   [`docs/contracts/mcp-bridge-v1.tools.json`](docs/contracts/mcp-bridge-v1.tools.json))
   and the Cursor Grok Bot runbook
   ([`docs/integrations/grok-bot/README.md`](docs/integrations/grok-bot/README.md)).
@@ -94,6 +96,15 @@ send one read-only message to an exact session, and start `Ask`/`Continue`
 exchanges, through `/api/v0` and an owner-only grants document. Setup,
 rotation, rollback, and least-privilege examples are in
 [`docs/service-grants.md`](docs/service-grants.md).
+
+The same granted access is an MCP contract, `botmancers.mcp.v2`, served next
+to the unchanged v1 tools: `botmancers_capabilities`, `botmancers_list_agents`,
+`botmancers_list_sessions`, `botmancers_list_conversations`,
+`botmancers_get_conversation` (with `agent_id`), `botmancers_send_to_session`,
+`botmancers_create_exchange`, `botmancers_get_exchange`, and
+`botmancers_list_exchanges`. Their descriptions alone carry the
+discover, select, act, observe workflow; returned transcript text is
+untrusted data. See [`docs/mcp-bridge.md`](docs/mcp-bridge.md).
 
 The [`botmancers`](packages/mcp-server/README.md) npm package
 (`packages/mcp-server`) ships the whole product: the UI, API, core engine,

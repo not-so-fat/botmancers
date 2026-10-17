@@ -18,6 +18,9 @@ import { PACKAGE_DIR } from './check-pack.mjs';
 import { startFakeBotmancers } from './fake-botmancers.mjs';
 import { mcpSession, runBridge, stopBridge } from './harness.mjs';
 
+// tools/list must be exactly the bundled botmancers.mcp.v2 list (v1 tools first).
+const BUNDLED_TOOL_NAMES = JSON.parse(readFileSync(new URL('../schemas/botmancers.mcp.v2.tools.json', import.meta.url), 'utf8')).tools.map(tool => tool.name);
+
 const args = process.argv.slice(2);
 const option = name => {
   const at = args.indexOf(name);
@@ -112,7 +115,7 @@ export async function smoke({ tarball, registryVersion } = {}) {
       const init = session.initialize.json.result;
       check(init.serverInfo.name === 'botmancers' && init.serverInfo.version === installed.version, `MCP initialize -> ${init.serverInfo.name} ${init.serverInfo.version}, protocol ${init.protocolVersion}`);
       const names = session.tools.json.result.tools.map(tool => tool.name);
-      check(names.join(',') === 'botmancers_start_task,botmancers_get_request,botmancers_get_conversation,botmancers_health', `tools/list -> ${names.join(', ')}`);
+      check(names.join(',') === BUNDLED_TOOL_NAMES.join(','), `tools/list -> ${names.join(', ')}`);
       const result = session.health.json.result;
       check(result.isError === false && result.structuredContent.status === 'ok', `tools/call botmancers_health -> ${JSON.stringify(result.structuredContent)}`);
       check(fake.received.some(entry => entry.headers.authorization === `Bearer ${SERVICE_TOKEN}`), 'fake Botmancers received the service token');

@@ -28,8 +28,10 @@ import { serviceRedactor } from './service-redaction';
 
 export type ServiceApiErrorCode =
   | 'invalid_request'
+  | 'unsupported_field'
   | 'authority_not_allowed'
   | 'principal_not_allowed'
+  | 'grant_required'
   | 'grants_unavailable'
   | 'agent_not_found'
   | 'session_not_found'
@@ -50,8 +52,10 @@ export type ServiceApiErrorCode =
 
 export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   invalid_request: 400,
+  unsupported_field: 400,
   authority_not_allowed: 403,
   principal_not_allowed: 403,
+  grant_required: 403,
   grants_unavailable: 503,
   agent_not_found: 404,
   session_not_found: 404,
@@ -74,7 +78,7 @@ export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
 // denied: the caller may not see or do it (a refusal indistinguishable
 // from a missing target). rejected: the input or the target state.
 const DENIED_CODES: ServiceApiErrorCode[] = [
-  'principal_not_allowed', 'grants_unavailable', 'agent_not_found', 'session_not_found', 'conversation_not_found', 'exchange_not_found', 'rate_limited',
+  'principal_not_allowed', 'grant_required', 'grants_unavailable', 'agent_not_found', 'session_not_found', 'conversation_not_found', 'exchange_not_found', 'rate_limited',
 ];
 
 export class ServiceApiError extends Error {
@@ -82,11 +86,15 @@ export class ServiceApiError extends Error {
   // Internal only (the audit trail): a refusal because of the grants,
   // reported to the caller exactly like a missing target.
   readonly notGranted: boolean;
-  constructor(code: ServiceApiErrorCode, message: string, options: { notGranted?: boolean } = {}) {
+  // The offending input fields, when a caller-side validation names them
+  // (the MCP bridge's tool arguments).
+  readonly fields: string[] | undefined;
+  constructor(code: ServiceApiErrorCode, message: string, options: { notGranted?: boolean; fields?: string[] } = {}) {
     super(message);
     this.name = 'ServiceApiError';
     this.code = code;
     this.notGranted = options.notGranted === true;
+    this.fields = options.fields;
   }
   get status(): number {
     return SERVICE_API_ERROR_STATUS[this.code];
