@@ -36,13 +36,10 @@ export interface SessionAttemptRow {
   finished_at: number | null;
 }
 
-function pad(n: number): string {
-  return String(n).padStart(2, '0');
-}
-
+// UTC, the same clock as the catalog's fallback title
+// (lib/session-catalog formatSessionTime), so a row never shows two zones.
 export function formatSessionDate(ts: number): string {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${new Date(ts).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
 function capitalize(word: string): string {

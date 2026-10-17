@@ -143,6 +143,8 @@ async function main() {
   const sample = all.find(s => s.ref === implementation.id);
   assert(view.runtimeLabel(sample) === 'codex · agent-deck' && view.workRequestLabel(sample) === 'Implementation · completed'
     && view.statusLabel(byRef[replaced.id]) === 'Ended', 'row labels for runtime, origin request, and state');
+  assert(view.formatSessionDate(BASE + 5 * MIN) === '2026-10-15 09:05 UTC' && byRef[direct.id].title.endsWith(view.formatSessionDate(direct.created_at)),
+    'drawer times use the same UTC clock as the fallback title');
   assert(/no active sessions/.test(view.emptySessionsCopy('active', 'Dev')) && /no ended sessions/.test(view.emptySessionsCopy('ended', 'Dev')), 'empty copy follows the filter');
 
   console.log('\nDocumentation contract');
