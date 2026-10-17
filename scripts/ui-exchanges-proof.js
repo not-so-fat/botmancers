@@ -70,6 +70,7 @@ const KEYS = { Tab: 9, Enter: 13, Escape: 27 };
 const HEAD = execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim();
 const DIRTY = execSync('git status --porcelain --untracked-files=no', { cwd: ROOT }).toString().trim();
 const DB_PATH = path.join(ROOT, '.temporal', 'exchanges-proof.db');
+const ROOM_SESSION = 'prov-sess-proof-room-SECRET';
 
 let failures = 0;
 const trace = [];
@@ -97,6 +98,23 @@ function seed(deckUrl) {
   const settings = jiti('../lib/agent-deck-settings.ts');
   const { seedSessionCatalog, EXTERNAL_IDS } = require('../test-support/session-catalog-fixture');
   const fixture = seedSessionCatalog(db);
+  // A resumable session Dev ran for the Design review group: its origin is
+  // the group thread, which has no owner Agent.
+  const { roomConv } = fixture.conversations;
+  const { dev } = fixture.agents;
+  const at = Date.now() - 20 * 60 * 1000;
+  const { request } = db.engine.createOrGetWorkRequest({
+    sourceConversationId: roomConv.id, sourceEventId: 'proof-room-msg', requester: { kind: 'person', id: 'local-owner' }, targetAgentId: dev.id,
+    intent: 'Sketch the design review checklist', executionKind: 'implementation', toolProfile: 'edit', idempotencyKey: 'proof-room', now: at,
+  });
+  db.engine.transitionWorkRequest(request.id, { from: 'queued', to: 'running', now: at });
+  const attempt = db.engine.createAttempt(request.id, { kind: 'launch', adapter: 'codex', toolProfile: 'edit', launchSnapshot: { transport: 'agent-deck', agent: 'codex' }, now: at });
+  db.engine.finishAttempt(attempt.id, { outcome: 'succeeded', output: 'done', now: at + 60000 });
+  db.engine.transitionWorkRequest(request.id, { from: 'running', to: 'completed', now: at + 60000 });
+  fixture.bindings.roomSession = db.engine.bindSession({
+    agentId: dev.id, adapter: 'codex', externalSessionId: ROOM_SESSION, conversationId: roomConv.id,
+    requestId: request.id, sourceAttemptId: attempt.id, now: at + 60000,
+  });
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-exchanges-proof-work-'));
   db.default.prepare('UPDATE bots SET working_directory = ?').run(workdir);
   settings.setAgentDeckServerUrl(deckUrl);
@@ -242,7 +260,7 @@ async function run() {
   const { fixture, EXTERNAL_IDS } = seed(deck.url);
   const { dev, tank, scout } = fixture.agents;
   const implRef = fixture.bindings.implementation.id;
-  const groupRef = fixture.bindings.group.id;
+  const groupRef = fixture.bindings.roomSession.id;
   const roomConvId = fixture.conversations.roomConv.id;
   log(`fake Agent Deck ${deck.url}; app ${URL_BASE} (real Next.js app and engine; the only mocked response is one 503 on POST /api/exchanges)`);
   const app = await startApp(deck.fake.token);
@@ -295,7 +313,7 @@ async function run() {
     screenshots.push({ viewport: vp.name, state, file: path.relative(ROOT, file), sha256: crypto.createHash('sha256').update(png).digest('hex') });
     log(`  screenshot ${path.relative(ROOT, file)}`);
   };
-  const secrets = () => [...Object.values(EXTERNAL_IDS), `${EXTERNAL_IDS.direct}-next`, ...deck.sessionIds()];
+  const secrets = () => [...Object.values(EXTERNAL_IDS), `${EXTERNAL_IDS.direct}-next`, ROOM_SESSION, ...deck.sessionIds()];
   const noSecrets = async label => {
     const page = await evaluate('document.documentElement.outerHTML + "\\n" + document.body.innerText');
     const found = secrets().filter(secret => page.includes(secret));
@@ -553,7 +571,7 @@ async function run() {
     await click(byText('.thread-bar button', 'Sessions'));
     const groupRow = `document.querySelector('.sessions-drawer [data-session-ref="${groupRef}"]')`;
     await waitFor(groupRow, 'Sessions drawer with the group-room row');
-    check(/Design review/.test(await evaluate(`${groupRow}.textContent`)), 'the group-room session is recognizable by its group');
+    check(/Sketch the design review checklist/.test(await evaluate(`${groupRow}.textContent`)) && /Design review/.test(await evaluate(`${groupRow}.textContent`)), 'the group-room session is recognizable by its title and group');
     await focusEl(`${groupRow}.querySelector('.session-action')`);
     await press('Enter');
     await waitFor("document.querySelector('.exchange-dialog[data-exchange-mode=\"ask\"]')", 'group Ask dialog');
