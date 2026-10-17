@@ -41,7 +41,7 @@
 // Continue dialog fit with no clipping or horizontal overflow.
 // Every page: no provider session id in the DOM or text.
 //
-// Refuses a dirty worktree. Writes screenshots, a trace, and
+// Refuses a dirty worktree (tracked changes or untracked, non-ignored files). Writes screenshots, a trace, and
 // exchanges-proof-receipt.json (HEAD, viewports, sha256 per screenshot,
 // recorded POST bodies) under --out.
 //
@@ -68,7 +68,10 @@ const DESKTOP = { name: 'desktop-1280x800', width: 1280, height: 800, mobile: fa
 const NARROW = { name: 'narrow-390x844', width: 390, height: 844, mobile: true };
 const KEYS = { Tab: 9, Enter: 13, Escape: 27 };
 const HEAD = execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim();
-const DIRTY = execSync('git status --porcelain --untracked-files=no', { cwd: ROOT }).toString().trim();
+// Untracked, non-ignored files count: a stray route or config changes what
+// Next.js serves while HEAD stays the same. (Ignored output, e.g. the proof's
+// own --out directory and .temporal, is excluded by .gitignore.)
+const DIRTY = execSync('git status --porcelain --untracked-files=all', { cwd: ROOT }).toString().trim();
 const DB_PATH = path.join(ROOT, '.temporal', 'exchanges-proof.db');
 const ROOM_SESSION = 'prov-sess-proof-room-SECRET';
 
@@ -252,7 +255,7 @@ const LAYOUT = selectors => `(() => {
 })()`;
 
 async function run() {
-  if (DIRTY) throw new Error(`worktree has uncommitted tracked changes; commit before proving HEAD:\n${DIRTY}`);
+  if (DIRTY) throw new Error(`worktree has uncommitted or untracked files; commit or remove them before proving HEAD:\n${DIRTY}`);
   fs.rmSync(OUT, { recursive: true, force: true });
   fs.mkdirSync(OUT, { recursive: true });
   log(`HEAD ${HEAD}`);
@@ -659,7 +662,7 @@ async function run() {
   log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}`);
   fs.writeFileSync(path.join(OUT, 'exchanges-proof-trace.txt'), `${trace.join('\n')}\n`);
   fs.writeFileSync(path.join(OUT, 'exchanges-proof-receipt.json'), `${JSON.stringify({
-    head: HEAD, cleanTree: true, app: URL_BASE, agentDeck: 'test-support/fake-agent-deck-api (loopback, held runs)',
+    head: HEAD, cleanTree: !DIRTY, app: URL_BASE, agentDeck: 'test-support/fake-agent-deck-api (loopback, held runs)',
     mocks: 'one mocked 503 response to the first POST /api/exchanges (CDP Fetch interception); everything else is the real app and engine',
     result: failures === 0 ? 'pass' : 'fail', failures, exchanges: { ask: askId, continue: continueId, groupAsk: groupAskId },
     posts, viewports: [`${DESKTOP.width}x${DESKTOP.height}`, `${NARROW.width}x${NARROW.height}`], screenshots, capturedAt: new Date().toISOString(),
