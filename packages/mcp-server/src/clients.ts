@@ -560,7 +560,7 @@ export function clientDoctorLines(env: NodeJS.ProcessEnv, paths: HomePaths, targ
     const skillText = view.skill.state === 'current'
       ? `skill ${SKILL_NAME} ${manifest.version} current (${where})`
       : view.skill.state === 'missing' ? `skill ${SKILL_NAME} missing (${where})`
-        : `skill ${SKILL_NAME} ${manifest.version} stale (${view.skill.changes} file${view.skill.changes > 1 ? 's' : ''} differ from this release)`;
+        : `skill ${SKILL_NAME} ${manifest.version} stale (${view.skill.changes} file${view.skill.changes > 1 ? 's differ' : ' differs'} from this release)`;
     const healthy = view.mcp.state === 'current' && view.skill.state === 'current';
     out.push([healthy ? 'ok' : 'warn', id, `${mcp}; ${skillText}${healthy ? '' : `; repair: ${repairCommand(id)}`}`]);
   }
