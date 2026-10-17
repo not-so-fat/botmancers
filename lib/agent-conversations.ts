@@ -1343,9 +1343,10 @@ export function getConversation(principal: Principal, conversationId: string): C
   const participants = db.prepare(
     'SELECT participant_kind, participant_id, joined_at FROM conversation_participants WHERE conversation_id = ? ORDER BY joined_at ASC, rowid ASC'
   ).all(conversation.id) as { participant_kind: PrincipalKind; participant_id: string; joined_at: number }[];
-  const rows = db.prepare(
+  const withheld = withheldHops(principal);
+  const rows = (db.prepare(
     'SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid ASC'
-  ).all(conversation.id) as MessageRow[];
+  ).all(conversation.id) as MessageRow[]).filter(row => !withheld(row.request_id));
   const view: ConversationView = {
     conversationId: conversation.id,
     type: CONVERSATION_TYPE_VIEW[conversation.type] ?? 'agent',
@@ -1361,11 +1362,33 @@ export function getConversation(principal: Principal, conversationId: string): C
       requestId: row.request_id,
       createdAt: row.created_at,
     })),
-    events: projector.listConversationEvents(conversation.id),
+    events: projector.listConversationEvents(conversation.id)
+      .filter(event => !withheld(event.requestId))
+      .map((event, index) => ({ ...event, seq: index + 1 })),
   };
   // NOT-499: what a service is shown passes through the service redactor.
   if (principal.kind !== 'service') return view;
   return serviceRedactor().deep(view);
+}
+
+// NOT-499: a service's own conversation also carries what its exchanges
+// wrote there (its session-message question, the Ask answer). Those are
+// shown only while it still holds the grant the exchange-hop request read
+// needs (requestedExchangeHop): a revoked grant hides them on the next read,
+// including an answer that lands after revocation.
+function withheldHops(principal: Principal): (requestId: string | null) => boolean {
+  if (principal.kind !== 'service') return () => false;
+  const decided = new Map<string, boolean>();
+  return requestId => {
+    if (!requestId) return false;
+    let hidden = decided.get(requestId);
+    if (hidden === undefined) {
+      const row = exchanges.forHopRequest(requestId);
+      hidden = !!row && !(row.requester_kind === principal.kind && row.requester_id === principal.id && serviceStillHoldsHop(principal, row));
+      decided.set(requestId, hidden);
+    }
+    return hidden;
+  };
 }
 
 // Legacy UI user messages carry no sender id; they were written by the

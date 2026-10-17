@@ -732,6 +732,20 @@ async function main() {
 
     const hopRequestId = service.exchanges.get(continueId).source_request_id;
     assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200, 'fixture: the requesting service reads its exchange hop while granted');
+    const continueRow = service.exchanges.get(continueId);
+    const hopMessages = async () => {
+      const ask = await api.narrowConversation(TOKENS.grok, message.conversation_id);
+      const dest = await api.narrowConversation(TOKENS.grok, continueRow.destination_conversation_id);
+      return {
+        ask: ask.json.messages.filter(m => m.requestId === message.request_id).length,
+        dest: dest.json.messages.filter(m => m.requestId === continueRow.destination_request_id).length,
+        events: [...ask.json.events, ...dest.json.events]
+          .filter(e => [message.request_id, continueRow.destination_request_id].includes(e.requestId)).length,
+        text: ask.text + dest.text,
+      };
+    };
+    const granted = await hopMessages();
+    assert(granted.ask === 2 && granted.dest === 1, 'fixture: while granted its own conversations show the session-message question/answer and the Continue reply');
 
     // Rotation: removing grok-bot's Codex entry revokes it on the next call.
     const doc = grantsDoc(agents);
@@ -743,9 +757,14 @@ async function main() {
     const revokedHop = await api.narrowRequest(TOKENS.grok, hopRequestId);
     assert(revokedHop.status === 404 && revokedHop.json.error.code === 'request_not_found' && leaks(revokedHop.text).length === 0,
       'the exchange hop request it learned is gone on the next call too (request_not_found)');
+    const revokedConv = await hopMessages();
+    assert(revokedConv.ask === 0 && revokedConv.dest === 0 && revokedConv.events === 0 && !revokedConv.text.includes(PROMPT_MARK),
+      'its own conversations withhold the exchange-written question, answer, and Continue reply on the next call');
     writeGrants(grantsDoc(agents));
     assert((await api.sessions(TOKENS.grok, codex.id)).status === 200, 'rolling the document back restores access');
     assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200, 'and restores the hop read');
+    const restored = await hopMessages();
+    assert(restored.ask === 2 && restored.dest === 1, 'and the exchange-written conversation messages');
     fs.rmSync(GRANTS_PATH, { force: true });
     assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 404, 'with no grants document a service reads no exchange hop');
     writeGrants(grantsDoc(agents));
