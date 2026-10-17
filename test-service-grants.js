@@ -677,6 +677,23 @@ async function main() {
     assert(count("SELECT COUNT(*) AS n FROM service_audit_events WHERE outcome = 'error' AND code = 'internal_error' AND operation IN ('sessions.message', 'exchanges.create')") >= 2
       && count('SELECT COUNT(*) AS n FROM service_audit_events') === beforeAudit + 2, 'each failed mutation is audited as an error, never as allowed');
     serviceAudit.append = appendOriginal;
+
+    // The narrow /api/v0 message route obeys the same rule: its audit event
+    // commits with the message, or the message is never accepted.
+    serviceAudit.append = input => {
+      if (input.outcome === 'allowed') throw new Error('audit store unavailable');
+      return appendOriginal(input);
+    };
+    const narrowRows = rowCounts();
+    const narrowCalls = calls.length;
+    const failNarrow = await api.narrowSend(TOKENS.grok, codex.id, { content: 'unaudited narrow message', idempotencyKey: 'audit-fail-narrow' });
+    await service.waitForAgentDispatchIdle();
+    serviceAudit.append = appendOriginal;
+    assert(failNarrow.status === 500 && failNarrow.json.error.code === 'internal_error' && same(rowCounts(), narrowRows) && calls.length === narrowCalls,
+      'when the audit append fails an unaudited narrow service message leaves no conversation, message, request, Attempt, or launch');
+    const narrowRetry = await api.narrowSend(TOKENS.grok, codex.id, { content: 'unaudited narrow message', idempotencyKey: 'audit-fail-narrow' });
+    await service.waitForAgentDispatchIdle();
+    assert(narrowRetry.status === 202 && narrowRetry.json.replayed === false, 'the same key then accepts once the audit store is back (nothing was recorded)');
     const heldCancel = holdAdapter();
     const toCancel = await api.createExchange(TOKENS.grok, { mode: 'ask', idempotency_key: 'audit-fail-cancel', source: { session_ref: codexB.binding.id }, instruction: 'hold' });
     await waitFor(() => calls.some(c => c.requestId === toCancel.json.exchange.hops.source.request_id), 'held Ask before an unaudited cancel');
@@ -731,7 +748,9 @@ async function main() {
     http.resetServiceApiRateLimits();
 
     const hopRequestId = service.exchanges.get(continueId).source_request_id;
-    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200, 'fixture: the requesting service reads its exchange hop while granted');
+    const destHopRequestId = service.exchanges.get(continueId).destination_request_id;
+    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200 && !!destHopRequestId
+      && (await api.narrowRequest(TOKENS.grok, destHopRequestId)).status === 200, 'fixture: the requesting service reads both exchange hops while granted');
     const continueRow = service.exchanges.get(continueId);
     const hopMessages = async () => {
       const ask = await api.narrowConversation(TOKENS.grok, message.conversation_id);
@@ -760,9 +779,24 @@ async function main() {
     const revokedConv = await hopMessages();
     assert(revokedConv.ask === 0 && revokedConv.dest === 0 && revokedConv.events === 0 && !revokedConv.text.includes(PROMPT_MARK),
       'its own conversations withhold the exchange-written question, answer, and Continue reply on the next call');
+    const revokedDest = await api.narrowRequest(TOKENS.grok, destHopRequestId);
+    assert(revokedDest.status === 404 && revokedDest.json.error.code === 'request_not_found' && leaks(revokedDest.text).length === 0,
+      'a Continue\'s destination hop (a conversation the service participates in) is gone on the next call too');
     writeGrants(grantsDoc(agents));
     assert((await api.sessions(TOKENS.grok, codex.id)).status === 200, 'rolling the document back restores access');
-    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200, 'and restores the hop read');
+    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200 && (await api.narrowRequest(TOKENS.grok, destHopRequestId)).status === 200,
+      'and restores both hop reads');
+
+    // An entry for an Agent that does not exist invalidates the document: the
+    // other entries do not stay quietly in force.
+    const ghost = grantsDoc(agents);
+    ghost.grants.push({ service: 'grok-bot', agent: 'ghost-agent-0001', capabilities: ['agents:read'] });
+    writeGrants(ghost);
+    const ghostState = grantsLib.loadServiceGrants();
+    assert(ghostState.state === 'invalid' && /not a registered Agent/.test(ghostState.reason) && (await api.agents(TOKENS.grok)).status === 503,
+      'a grant naming an unknown Agent makes the whole document invalid (grants_unavailable)');
+    writeGrants(grantsDoc(agents));
+    assert(grantsLib.loadServiceGrants().state === 'loaded', 'the corrected document loads again');
     const restored = await hopMessages();
     assert(restored.ask === 2 && restored.dest === 1, 'and the exchange-written conversation messages');
     fs.rmSync(GRANTS_PATH, { force: true });
@@ -777,6 +811,11 @@ async function main() {
       data: { phase: 'runtime_started', external_run_id: SECRETS.run, externalSessionId: SECRETS.codex, runId: SECRETS.run, resumeSessionId: SECRETS.codexOld },
     });
     assert(shown.request_id === 'req-1' && shown.originConversationId === 'conv-1' && shown.sender_id === 'bot-1', 'Botmancers reference fields are left as they are');
+    // A short provider id is redacted as a whole token (never inside other text).
+    engine.bindSession({ agentId: claude.id, adapter: 'hermes', externalSessionId: 'ab7', conversationId: conversations.getByBotId(claude.id).id });
+    const shortShown = serviceRedactor().deep({ data: { external_run_id: 'ab7' }, text: 'run ab7 finished; tab7 and ab70 are other words' });
+    assert(shortShown.data.external_run_id === '[redacted runtime id]' && shortShown.text === 'run [redacted runtime id] finished; tab7 and ab70 are other words',
+      'a recorded provider run id shorter than six characters is redacted too, without rewriting other text');
     assert(leaks(JSON.stringify(shown)).length === 0 && shown.data.external_run_id === '[redacted runtime id]',
       'a projected runtime_started external_run_id (and other provider id keys) is redacted');
   }

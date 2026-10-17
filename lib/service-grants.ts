@@ -35,6 +35,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import db from './db';
 import { botmancersHome } from './home';
 import { SERVICE_TOKENS_ENV, ServiceTokenConfigError, parseServiceTokens } from './service-token-auth';
 
@@ -98,8 +99,11 @@ function onlyKeys(value: Record<string, unknown>, allowed: string[], where: stri
 // Parses and validates the document text. Throws ServiceGrantsError with
 // the first problem; never returns a partial table. configuredServices,
 // when given, is the set of configured service principal ids every entry
-// must name.
-export function parseServiceGrants(text: string, configuredServices?: ReadonlySet<string>): ServiceGrantTable {
+// must name, and knownAgents, when given, the set of registered Agent ids
+// every entry must name (an entry for an Agent that does not exist makes the
+// whole document invalid: a typo or a deleted Agent never leaves the other
+// entries quietly in force).
+export function parseServiceGrants(text: string, configuredServices?: ReadonlySet<string>, knownAgents?: ReadonlySet<string>): ServiceGrantTable {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -126,6 +130,9 @@ export function parseServiceGrants(text: string, configuredServices?: ReadonlySe
     }
     if (typeof agent !== 'string' || !AGENT_ID.test(agent)) {
       throw new ServiceGrantsError(`${where}.agent must be one Agent id; wildcards are not allowed.`);
+    }
+    if (knownAgents && !knownAgents.has(agent)) {
+      throw new ServiceGrantsError(`${where}.agent is not a registered Agent.`);
     }
     if (!Array.isArray(capabilities) || capabilities.length === 0) {
       throw new ServiceGrantsError(`${where}.capabilities must list at least one capability.`);
@@ -163,8 +170,14 @@ function configuredServiceIds(env: NodeJS.ProcessEnv): ReadonlySet<string> | str
   }
 }
 
+// The registered Agent ids (the document is re-validated when they change).
+function registeredAgentIds(): ReadonlySet<string> {
+  return new Set((db.prepare('SELECT id FROM bots').all() as { id: string }[]).map(row => row.id));
+}
+
 // The current document state. Re-reads the file when its identity, size,
-// mode, owner, or modification time, or the configured service list, changes.
+// mode, owner, or modification time, the configured service list, or the
+// registered Agents change.
 export function loadServiceGrants(env: NodeJS.ProcessEnv = process.env): ServiceGrantsState {
   const file = serviceGrantsPath(env);
   if (!file) return { state: 'absent', path: null };
@@ -176,14 +189,16 @@ export function loadServiceGrants(env: NodeJS.ProcessEnv = process.env): Service
     return { state: 'invalid', path: file, reason: 'The document cannot be read.' };
   }
   const tokens = createHash('sha256').update(env[SERVICE_TOKENS_ENV] ?? '', 'utf8').digest('hex');
-  const key = [file, stat.ino, stat.size, stat.mode, stat.uid, stat.mtimeMs, tokens].join(':');
+  const agents = registeredAgentIds();
+  const agentsDigest = createHash('sha256').update([...agents].sort().join('\n'), 'utf8').digest('hex');
+  const key = [file, stat.ino, stat.size, stat.mode, stat.uid, stat.mtimeMs, tokens, agentsDigest].join(':');
   if (cache && cache.key === key) return cache.state;
-  const state = readState(file, stat, configuredServiceIds(env));
+  const state = readState(file, stat, configuredServiceIds(env), agents);
   cache = { key, state };
   return state;
 }
 
-function readState(file: string, stat: fs.Stats, services: ReadonlySet<string> | string): ServiceGrantsState {
+function readState(file: string, stat: fs.Stats, services: ReadonlySet<string> | string, agents: ReadonlySet<string>): ServiceGrantsState {
   if (!stat.isFile()) return { state: 'invalid', path: file, reason: 'The document is not a regular file.' };
   if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
     return { state: 'invalid', path: file, reason: 'The document must be owned by the user running Botmancers.' };
@@ -200,7 +215,7 @@ function readState(file: string, stat: fs.Stats, services: ReadonlySet<string> |
     return { state: 'invalid', path: file, reason: 'The document cannot be read.' };
   }
   try {
-    return { state: 'loaded', path: file, grants: parseServiceGrants(text, services) };
+    return { state: 'loaded', path: file, grants: parseServiceGrants(text, services, agents) };
   } catch (error) {
     if (error instanceof ServiceGrantsError) return { state: 'invalid', path: file, reason: error.message };
     throw error;

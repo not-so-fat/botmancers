@@ -57,12 +57,29 @@ interface NarrowAudit {
 
 const DENIED_CODES = ['authentication_unavailable', 'unauthenticated', 'principal_mismatch', 'agent_not_found', 'conversation_not_found', 'request_not_found'];
 
-async function withErrors(run: (setPrincipal: (principal: Principal) => void) => Promise<Response>, audit?: NarrowAudit): Promise<Response> {
+async function withErrors(
+  run: (setPrincipal: (principal: Principal) => void, commitAudit: () => void) => Promise<Response>,
+  audit?: NarrowAudit,
+): Promise<Response> {
   let principal: Principal | null = null;
+  // A mutation hands commitAudit to the engine as its pre-commit hook: the
+  // allowed event is appended inside the transaction that records the
+  // mutation, so if the append fails nothing is committed or dispatched.
+  let committed = false;
+  const commitAudit = () => {
+    const caller = principal as Principal | null;
+    if (audit && caller && caller.kind === 'service') {
+      serviceAudit.append({
+        principal: caller, operation: audit.operation, capability: 'participant', targetKind: audit.targetKind, targetRef: audit.targetRef,
+        outcome: 'allowed', code: null,
+      });
+    }
+    committed = true;
+  };
   let response: Response;
   let code: string | null = null;
   try {
-    response = await run(next => { principal = next; });
+    response = await run(next => { principal = next; }, commitAudit);
   } catch (error) {
     if (error instanceof AgentApiError) {
       code = error.code;
@@ -74,6 +91,8 @@ async function withErrors(run: (setPrincipal: (principal: Principal) => void) =>
     }
   }
   const caller = principal as Principal | null;
+  // A committed mutation already holds its allowed event.
+  if (committed && code === null) return response;
   if (audit && caller && caller.kind === 'service') {
     try {
       serviceAudit.append({
@@ -128,7 +147,7 @@ function declaredPrincipal(value: unknown): Principal | null {
 }
 
 export async function handleSendAgentMessage(request: Request, agentId: string): Promise<Response> {
-  return withErrors(async setPrincipal => {
+  return withErrors(async (setPrincipal, commitAudit) => {
     const principal = await authenticate(request);
     setPrincipal(principal);
     let body: Record<string, unknown>;
@@ -157,7 +176,7 @@ export async function handleSendAgentMessage(request: Request, agentId: string):
       content: typeof body.content === 'string' ? body.content : '',
       idempotencyKey,
       conversationId: typeof body.conversationId === 'string' ? body.conversationId : body.conversationId == null ? null : '',
-    });
+    }, commitAudit);
     if (body.wait === true) {
       await dispatched;
       return Response.json({ ...getAgentRequest(principal, accepted.requestId), replayed: accepted.replayed });

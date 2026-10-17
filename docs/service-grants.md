@@ -65,11 +65,14 @@ chmod 600 ~/.botmancers/config/service-grants.json
   route answers 503 `grants_unavailable` for every service. Invalid means:
   not JSON, `version` other than 1, an unknown field anywhere, an unknown,
   empty, or repeated capability, a wildcard or malformed Agent id, a repeated
-  `(service, agent)` pair, a reserved engine principal
+  `(service, agent)` pair, an entry naming an Agent that is not registered,
+  a reserved engine principal
   (`botmancers-exchanges`, `botmancers-engine`), more than 512 entries or
   64 KiB, or a file that is not owner-only. The narrow routes keep working.
-- An entry for an Agent that no longer exists grants nothing. A service with
-  no entry is granted nothing.
+- An entry for an Agent that does not exist (a typo, or an Agent you deleted)
+  makes the document invalid, so the other entries never stay quietly in
+  force: fix or remove the entry. The document is re-validated whenever the
+  registered Agents change. A service with no entry is granted nothing.
 
 The document is re-read whenever the file changes; no restart is needed.
 `GET /api/service-grants` (owner UI boundary, loopback only) shows whether it

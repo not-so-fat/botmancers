@@ -61,7 +61,7 @@ function privateIds(): string[] {
     if (row.external_session_id) ids.add(row.external_session_id);
     if (row.external_run_id) ids.add(row.external_run_id);
   }
-  return [...ids].filter(id => id.length >= 6).sort((a, b) => b.length - a.length);
+  return [...ids].filter(id => id.length > 0).sort((a, b) => b.length - a.length);
 }
 
 // Every working directory, Deck selection, and Hermes profile any Agent is
@@ -83,8 +83,16 @@ function privateValues(): string[] {
   return [...new Set([...configured, ...credentials])].sort((a, b) => b.length - a.length);
 }
 
+// A short id (under SHORT_ID) would rewrite unrelated text as a substring, so
+// it is redacted only as a whole token; a longer one wherever it appears.
+const SHORT_ID = 6;
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 function redactAll(text: string, values: string[], label: string): string {
-  return values.reduce((acc, value) => (acc.includes(value) ? acc.split(value).join(label) : acc), text);
+  return values.reduce((acc, value) => {
+    if (value.length >= SHORT_ID) return acc.includes(value) ? acc.split(value).join(label) : acc;
+    return acc.includes(value) ? acc.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(value)}(?![A-Za-z0-9])`, 'g'), label) : acc;
+  }, text);
 }
 
 export interface Redactor {

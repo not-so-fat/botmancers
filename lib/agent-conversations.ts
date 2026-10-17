@@ -238,7 +238,7 @@ function dispatchAccepted(accepted: AcceptedIntake): Promise<void> {
 
 // Accepts through the shared conversation intake (lib/conversation-intake).
 // A key first used before NOT-465 replays from its migrated intake row.
-export function acceptAgentMessage(principal: Principal, input: SendAgentMessageInput): { accepted: AcceptedAgentRequest; dispatched: Promise<void> } {
+export function acceptAgentMessage(principal: Principal, input: SendAgentMessageInput, beforeCommit?: () => void): { accepted: AcceptedAgentRequest; dispatched: Promise<void> } {
   assertKnownPrincipal(principal);
   if (!nonEmptyString(input.agentId)) throw new AgentApiError('invalid_request', 'agentId is required.');
   if (!nonEmptyString(input.content)) throw new AgentApiError('invalid_request', 'content is required.');
@@ -259,6 +259,7 @@ export function acceptAgentMessage(principal: Principal, input: SendAgentMessage
       content: input.content,
       fingerprint: [input.agentId, input.conversationId ?? null, input.content],
       route: () => ({ deliveries: [{ agentId: input.agentId }] }),
+      beforeCommit,
       dispatch: dispatchAccepted,
     });
   } catch (error) {
@@ -1290,7 +1291,11 @@ export function getAuthorizedWorkRequest(principal: Principal, requestId: string
   assertKnownPrincipal(principal);
   const migrated = db.prepare('SELECT id FROM work_requests WHERE legacy_agent_request_id = ?').get(requestId) as { id: string } | undefined;
   const request = engine.getWorkRequest(migrated ? migrated.id : requestId);
-  if (!request || !(isParticipant(request.source_conversation_id, principal) || requestedExchangeHop(principal, request))) {
+  // A service reads an exchange hop only through its current grants: the
+  // hop's conversation can be one the service participates in (a Continue's
+  // destination), which must not outlive a revoked grant.
+  const serviceHop = !!request && principal.kind === 'service' && !!hopOf(request);
+  if (!request || !(serviceHop ? requestedExchangeHop(principal, request) : (isParticipant(request.source_conversation_id, principal) || requestedExchangeHop(principal, request)))) {
     throw new AgentApiError('request_not_found', 'No request with that id is visible to this principal.');
   }
   return request;
