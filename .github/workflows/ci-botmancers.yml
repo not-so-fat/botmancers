@@ -11,6 +11,7 @@ on:
       - 'lib/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'test-*.js'
       - '.github/workflows/*botmancers.yml'
   workflow_dispatch:
 
@@ -33,6 +34,12 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Install the locked package-local build tools
         run: npm ci --no-audit --no-fund
+      - name: Focused Agent registration/migration suites (NOT-502)
+        working-directory: .
+        run: |
+          npm run test:agent-registration
+          npm run test:agent-registration-ui
+          npm run test:bot-definition
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

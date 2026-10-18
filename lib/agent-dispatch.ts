@@ -1,7 +1,8 @@
 // NOT-446: runtime-neutral dispatch for the agent conversation API.
 //
 // Callers name an agent; this module routes the turn through that bot's
-// stored agent on its selected Agent Deck (NOT-456) and returns only the
+// stored agent on its selected Agent Deck (NOT-456), or directly for a
+// direct launch profile (NOT-502) and returns only the
 // reply text or a typed failure. Every agent follows one contract: it
 // launches only when an Agent Deck is selected, and its adapter
 // (AGENT_TRANSPORTS) serves the turn. Completion is typed by the adapter contract, never read
@@ -45,6 +46,17 @@ export class DispatchFailure extends Error {
 }
 
 export const AGENT_DECK_NOT_SELECTED = 'The agent has no Agent Deck selected.';
+// NOT-502: fixed caller-facing text for the other launch blockers.
+export const LAUNCH_PROFILE_NOT_CHOSEN = 'The agent has no launch profile chosen.';
+export const SESSION_SCOPE_MISSING = 'The agent has no session scope.';
+export const DIRECT_LAUNCH_UNAVAILABLE = 'Direct launch is not available for this agent yet.';
+
+function blockedDispatchMessage(blocker: ReturnType<typeof resolveAgent>['launch_blocker']): string {
+  if (blocker === 'launch_profile') return LAUNCH_PROFILE_NOT_CHOSEN;
+  if (blocker === 'session_scope') return SESSION_SCOPE_MISSING;
+  if (blocker === 'direct_runtime') return DIRECT_LAUNCH_UNAVAILABLE;
+  return AGENT_DECK_NOT_SELECTED;
+}
 
 export interface DispatchHistoryEntry {
   speakerLabel: string;
@@ -142,8 +154,11 @@ export function isInGitWorktree(dir: string): boolean {
 
 export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   const resolved = resolveAgent(turn.bot);
-  if (!resolved.launchable || !resolved.deck_id) {
-    throw new DispatchFailure('agent_unavailable', AGENT_DECK_NOT_SELECTED);
+  // NOT-502: only the agent_deck profile carries (and needs) a deck. A
+  // direct profile is launchable only on a transport that never contacts
+  // Agent Deck (Hermes); nothing here reaches Agent Deck for it.
+  if (!resolved.launchable || (resolved.launch_profile === 'agent_deck' && !resolved.deck_id)) {
+    throw new DispatchFailure('agent_unavailable', blockedDispatchMessage(resolved.launch_blocker));
   }
   const base = {
     prompt: { kind: 'conversation' as const, system: systemPromptFor(turn.bot), history: turn.history },

@@ -2,7 +2,18 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { applyAgentUpdate, DEFAULT_AGENT, migrateLegacyAgentFields, type AgentUpdateFields } from './bot-definition';
+import { applyAgentUpdate, AGENTS, DEFAULT_AGENT, migrateLegacyAgentFields, serializeBot, type AgentUpdateFields, type BotAgent } from './bot-definition';
+import {
+  LOCAL_HOST,
+  localConnectionId,
+  localConnectionLabel,
+  migrateRegistration,
+  registrationColumns,
+  serializeRegistration,
+  storedLaunchProfile,
+  type Registration,
+  type RuntimeConnection,
+} from './agent-registration';
 import { isChiefOfStaffName } from './avatar';
 import type { DeleteAgentRef, DeleteBlocked, DeleteGroupImpact, DeletePreview } from './bot-deletion';
 import { createEngineStore, deleteEngineRecordsForAgent, deleteEngineRecordsForConversation, migrateEngineSchema } from './engine-store';
@@ -312,6 +323,71 @@ if (!botColumns.some(column => column.name === 'avatar_accessory')) {
   db.exec('ALTER TABLE bots ADD COLUMN avatar_accessory TEXT');
 }
 
+// NOT-502: runtime connections and the registered-Agent columns.
+// A runtime connection is one runtime installation/account on one host;
+// it stores no credentials. Registration columns live on the bots row so
+// Agent identity is never duplicated. runtime_connection_id IS NULL marks
+// a row this migration has not reached yet (idempotent, no network).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS runtime_connections (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    label TEXT NOT NULL,
+    host TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+`);
+for (const [column, type] of [
+  ['runtime_connection_id', 'TEXT'],
+  ['launch_profile', 'TEXT'],
+  ['session_scope_kind', 'TEXT'],
+  ['session_scope_items', 'TEXT'],
+  ['default_workspace', 'TEXT'],
+  ['policy_mode', 'TEXT'],
+  ['allow_new_sessions', 'INTEGER'],
+  ['allow_resume_with_edits', 'INTEGER'],
+  ['home_session_id', 'TEXT'],
+] as const) {
+  if (!botColumns.some(existing => existing.name === column)) db.exec(`ALTER TABLE bots ADD COLUMN ${column} ${type}`);
+}
+
+function ensureLocalConnection(provider: BotAgent, at: number = Date.now()): string {
+  const id = localConnectionId(provider);
+  db.prepare('INSERT OR IGNORE INTO runtime_connections (id, provider, label, host, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(id, provider, localConnectionLabel(provider), LOCAL_HOST, at);
+  return id;
+}
+
+// Every supported runtime gets its local connection ("Codex on this
+// computer") so registration works out of the box; the owner can add
+// connections for other hosts/accounts. Labels only, never credentials.
+for (const provider of AGENTS) ensureLocalConnection(provider, 0);
+
+// NOT-502 data migration: migrateRegistration in ./agent-registration.
+// Rows with a selected deck become agent_deck; every other row stays
+// unresolved (launch_profile NULL, unlaunchable) until the owner chooses
+// direct or Agent Deck. deck_id, deck_name, working_directory, and
+// needs_deck_selection are left exactly as stored, and nothing outside
+// the bots row (conversations, work requests, attempts, session
+// bindings, grants, snapshots) is read or written.
+db.transaction(() => {
+  const rows = db.prepare(
+    'SELECT id, agent, deck_id, working_directory, needs_deck_selection, created_at FROM bots WHERE runtime_connection_id IS NULL'
+  ).all() as { id: string; agent: string | null; deck_id: string | null; working_directory: string | null; needs_deck_selection: number | null; created_at: number }[];
+  const apply = db.prepare(
+    `UPDATE bots SET runtime_connection_id = ?, launch_profile = ?, session_scope_kind = ?, session_scope_items = ?,
+       policy_mode = ?, allow_new_sessions = ?, allow_resume_with_edits = ? WHERE id = ?`
+  );
+  for (const row of rows) {
+    const next = migrateRegistration(row);
+    ensureLocalConnection(next.provider, row.created_at);
+    apply.run(
+      next.runtime_connection_id, next.launch_profile, next.session_scope_kind, next.session_scope_items,
+      next.policy_mode, next.allow_new_sessions, next.allow_resume_with_edits, row.id
+    );
+  }
+})();
+
 // NOT-478: instance-unique Agent names. name_key is the canonical
 // trimmed, case-insensitive key from ./agent-names, enforced by a unique
 // index. Every load reconciles stored keys (backfilling rows written
@@ -439,6 +515,17 @@ export interface Bot {
   deck_name?: string | null;
   working_directory?: string | null;
   needs_deck_selection?: number | null;
+  // NOT-502 registration (./agent-registration). launch_profile null is an
+  // unresolved legacy row; session_scope_items is a JSON string list.
+  runtime_connection_id?: string | null;
+  launch_profile?: string | null;
+  session_scope_kind?: string | null;
+  session_scope_items?: string | null;
+  default_workspace?: string | null;
+  policy_mode?: string | null;
+  allow_new_sessions?: number | null;
+  allow_resume_with_edits?: number | null;
+  home_session_id?: string | null;
   avatar_color?: string | null;
   avatar_eyes?: string | null;
   avatar_hands?: string | null;
@@ -591,6 +678,55 @@ export interface Message {
   created_at: number;
 }
 
+// NOT-502: runtime connections (no credentials). Agents reference one by
+// id; several Agents may share a connection.
+export const runtimeConnections = {
+  getAll: (): RuntimeConnection[] => {
+    return db.prepare('SELECT * FROM runtime_connections ORDER BY created_at ASC, id ASC').all() as RuntimeConnection[];
+  },
+  getById: (id: string): RuntimeConnection | undefined => {
+    const row = db.prepare('SELECT * FROM runtime_connections WHERE id = ?').get(id) as RuntimeConnection | undefined;
+    return row && (AGENTS as readonly string[]).includes(row.provider) ? row : undefined;
+  },
+  create: (fields: { provider: BotAgent; label: string; host: string }): RuntimeConnection => {
+    const connection: RuntimeConnection = { id: `rc-${randomUUID()}`, ...fields, created_at: Date.now() };
+    db.prepare('INSERT INTO runtime_connections (id, provider, label, host, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(connection.id, connection.provider, connection.label, connection.host, connection.created_at);
+    return connection;
+  },
+  ensureLocal: (provider: BotAgent): string => ensureLocalConnection(provider),
+  agentCount: (id: string): number => {
+    return (db.prepare('SELECT COUNT(*) AS n FROM bots WHERE runtime_connection_id = ?').get(id) as { n: number }).n;
+  },
+};
+
+// Whether a Botmancers session ref (a session_bindings id) belongs to the
+// Agent. The external provider session id is never read here.
+export function sessionBelongsToAgent(agentId: string | null, ref: string): boolean {
+  if (!agentId) return false;
+  return Boolean(db.prepare('SELECT 1 FROM session_bindings WHERE id = ? AND agent_id = ?').get(ref, agentId));
+}
+
+export const registrationContext = {
+  getConnection: (id: string) => runtimeConnections.getById(id),
+  localConnectionFor: (provider: BotAgent) => ensureLocalConnection(provider),
+  sessionBelongsTo: sessionBelongsToAgent,
+};
+
+const REGISTRATION_STORAGE_KEYS = [
+  'session_scope_kind', 'session_scope_items', 'policy_mode', 'allow_new_sessions', 'allow_resume_with_edits',
+] as const;
+
+// NOT-502: the public Agent read shape: serializeBot plus the registered
+// Agent choices (connection, scope, default workspace, profile, policy,
+// home session). Raw registration storage columns are not exposed.
+export function serializeAgent(bot: Bot): Record<string, unknown> {
+  const base = serializeBot(bot) as unknown as Record<string, unknown>;
+  for (const key of REGISTRATION_STORAGE_KEYS) delete base[key];
+  const connection = bot.runtime_connection_id ? runtimeConnections.getById(bot.runtime_connection_id) : undefined;
+  return { ...base, ...serializeRegistration(bot, connection), launch_profile: storedLaunchProfile(bot) };
+}
+
 export const bots = {
   create: (data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'name_key'>, overrides?: { id?: string; created_at?: number }): Bot => {
     const claimed = claimAgentName(data.name);
@@ -607,8 +743,32 @@ export const bots = {
     bot.agent = bot.agent || DEFAULT_AGENT;
     bot.deck_id = bot.deck_id || null;
     bot.needs_deck_selection = !bot.deck_id || bot.needs_deck_selection ? 1 : 0;
+    // NOT-502: a caller that supplies no registration (internal birth,
+    // duplicate, tests) gets exactly the migration result: the local
+    // connection for its agent, agent_deck only with a selected deck
+    // (otherwise unresolved), and its launch workspace as scope.
+    const fallback = migrateRegistration({ ...bot, needs_deck_selection: bot.needs_deck_selection });
+    if (!bot.runtime_connection_id) bot.runtime_connection_id = ensureLocalConnection(fallback.provider, bot.created_at);
+    if (bot.launch_profile === undefined) bot.launch_profile = fallback.launch_profile;
+    if (bot.launch_profile === 'direct') {
+      bot.deck_id = null;
+      bot.working_directory = null;
+      bot.needs_deck_selection = 0;
+    }
+    if (!bot.session_scope_kind) {
+      bot.session_scope_kind = fallback.session_scope_kind;
+      bot.session_scope_items = fallback.session_scope_items;
+    }
+    if (!bot.policy_mode) {
+      bot.policy_mode = fallback.policy_mode;
+      bot.allow_new_sessions = fallback.allow_new_sessions;
+      bot.allow_resume_with_edits = fallback.allow_resume_with_edits;
+    }
     withNameConstraint(bot.name, () => db.prepare(
-      'INSERT INTO bots (id, name, name_key, title, description, avatar, color, hermes_profile, agent, deck_id, deck_name, working_directory, needs_deck_selection, avatar_color, avatar_eyes, avatar_hands, avatar_accessory, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      `INSERT INTO bots (id, name, name_key, title, description, avatar, color, hermes_profile, agent, deck_id, deck_name, working_directory, needs_deck_selection,
+        runtime_connection_id, launch_profile, session_scope_kind, session_scope_items, default_workspace, policy_mode, allow_new_sessions, allow_resume_with_edits, home_session_id,
+        avatar_color, avatar_eyes, avatar_hands, avatar_accessory, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       bot.id, bot.name, bot.name_key, bot.title, bot.description, bot.avatar || null, bot.color,
       bot.hermes_profile || null,
@@ -617,6 +777,15 @@ export const bots = {
       bot.deck_name || null,
       bot.working_directory || null,
       bot.needs_deck_selection,
+      bot.runtime_connection_id,
+      bot.launch_profile ?? null,
+      bot.session_scope_kind,
+      bot.session_scope_items ?? '[]',
+      bot.default_workspace || null,
+      bot.policy_mode,
+      bot.allow_new_sessions ? 1 : 0,
+      bot.allow_resume_with_edits ? 1 : 0,
+      null,
       bot.avatar_color || null,
       bot.avatar_eyes || null,
       bot.avatar_hands || null,
@@ -634,7 +803,7 @@ export const bots = {
   },
 
   createFromImport: (
-    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile' | 'persistent_runtime' | 'coding_runtime' | 'runtime' | 'agent_client' | 'needs_deck_reselection' | 'agent' | 'deck_id' | 'deck_name' | 'working_directory' | 'needs_deck_selection' | 'name_key'>,
+    data: Omit<Bot, 'id' | 'created_at' | 'color' | 'pinned' | 'hidden' | 'last_seen' | 'unread' | 'source_provider' | 'template_id' | 'template_url' | 'import_schema_version' | 'import_operation_id' | 'import_timestamp' | 'hermes_profile' | 'persistent_runtime' | 'coding_runtime' | 'runtime' | 'agent_client' | 'needs_deck_reselection' | 'agent' | 'deck_id' | 'deck_name' | 'working_directory' | 'needs_deck_selection' | 'name_key' | 'runtime_connection_id' | 'launch_profile' | 'session_scope_kind' | 'session_scope_items' | 'default_workspace' | 'policy_mode' | 'allow_new_sessions' | 'allow_resume_with_edits' | 'home_session_id'>,
     provenance: ImportProvenance
   ): Bot => {
     const claimed = claimAgentName(data.name);
@@ -658,20 +827,36 @@ export const bots = {
       import_operation_id: provenance.import_operation_id,
       import_timestamp: provenance.import_timestamp,
     };
+    // NOT-502: an imported Agent is unresolved (no launch profile) on the
+    // local connection for the default agent, scoped to its own workdir.
+    const registration = migrateRegistration(bot);
+    Object.assign(bot, {
+      runtime_connection_id: ensureLocalConnection(registration.provider, bot.created_at),
+      launch_profile: null,
+      session_scope_kind: registration.session_scope_kind,
+      session_scope_items: registration.session_scope_items,
+      policy_mode: registration.policy_mode,
+      allow_new_sessions: registration.allow_new_sessions,
+      allow_resume_with_edits: registration.allow_resume_with_edits,
+    });
     withNameConstraint(bot.name, () => db.prepare(
       `INSERT INTO bots (
         id, name, name_key, title, description, avatar, color, created_at,
         source_provider, template_id, template_url, import_schema_version,
         import_operation_id, import_timestamp,
         agent, deck_id, deck_name, working_directory,
-        needs_deck_selection
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        needs_deck_selection,
+        runtime_connection_id, launch_profile, session_scope_kind, session_scope_items,
+        policy_mode, allow_new_sessions, allow_resume_with_edits
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       bot.id, bot.name, bot.name_key, bot.title, bot.description, bot.avatar || null, bot.color, bot.created_at,
       bot.source_provider, bot.template_id, bot.template_url, bot.import_schema_version,
       bot.import_operation_id, bot.import_timestamp,
       bot.agent, bot.deck_id, bot.deck_name, bot.working_directory,
-      bot.needs_deck_selection
+      bot.needs_deck_selection,
+      bot.runtime_connection_id, bot.launch_profile, bot.session_scope_kind, bot.session_scope_items,
+      bot.policy_mode, bot.allow_new_sessions, bot.allow_resume_with_edits
     ));
     
     const conversationId = randomUUID();
@@ -733,18 +918,48 @@ export const bots = {
   // NOT-456: owner-supplied agent + Agent Deck selection, merged through
   // applyAgentUpdate: selecting a deck ID resolves a pending deck
   // selection. Legacy runtime columns are never written.
+  // NOT-502: one validated registration (./agent-registration) written
+  // in one statement. The agent column follows the connection provider;
+  // Agent Deck settings are kept for agent_deck profiles only; the legacy
+  // deck_name reference is dropped once a deck ID is selected.
+  updateRegistration: (id: string, provider: BotAgent, registration: Registration): void => {
+    const current = bots.getById(id);
+    if (!current) return;
+    const columns = registrationColumns(registration);
+    const deckName = registration.launch_profile === 'agent_deck' && registration.deck_id ? null : current.deck_name ?? null;
+    db.prepare(
+      `UPDATE bots SET agent = ?, deck_name = ?, runtime_connection_id = ?, launch_profile = ?, deck_id = ?, working_directory = ?,
+         session_scope_kind = ?, session_scope_items = ?, default_workspace = ?, policy_mode = ?, allow_new_sessions = ?,
+         allow_resume_with_edits = ?, home_session_id = ?, needs_deck_selection = ? WHERE id = ?`
+    ).run(
+      provider, deckName, columns.runtime_connection_id, columns.launch_profile, columns.deck_id, columns.working_directory,
+      columns.session_scope_kind, columns.session_scope_items, columns.default_workspace, columns.policy_mode,
+      columns.allow_new_sessions, columns.allow_resume_with_edits, columns.home_session_id, columns.needs_deck_selection, id
+    );
+  },
+
   updateAgentSelection: (id: string, fields: AgentUpdateFields): void => {
     const current = bots.getById(id);
     if (!current) return;
     const next = applyAgentUpdate(current, fields);
+    // NOT-502: selecting a deck ID is the owner choosing the Agent Deck
+    // profile; the connection follows the agent (its local connection
+    // unless the current connection already serves that provider).
+    const profile = fields.deck_id !== undefined ? 'agent_deck' : current.launch_profile ?? null;
+    const currentConnection = current.runtime_connection_id ? runtimeConnections.getById(current.runtime_connection_id) : undefined;
+    const connectionId = currentConnection && currentConnection.provider === next.agent
+      ? currentConnection.id
+      : ensureLocalConnection(next.agent);
     db.prepare(
-      'UPDATE bots SET agent = ?, deck_id = ?, deck_name = ?, working_directory = ?, needs_deck_selection = ? WHERE id = ?'
+      'UPDATE bots SET agent = ?, deck_id = ?, deck_name = ?, working_directory = ?, needs_deck_selection = ?, launch_profile = ?, runtime_connection_id = ? WHERE id = ?'
     ).run(
       next.agent,
-      next.deck_id,
+      profile === 'direct' ? null : next.deck_id,
       next.deck_name,
-      next.working_directory,
-      next.needs_deck_selection ? 1 : 0,
+      profile === 'direct' ? null : next.working_directory,
+      profile === 'direct' ? 0 : next.needs_deck_selection ? 1 : 0,
+      profile,
+      connectionId,
       id
     );
   },

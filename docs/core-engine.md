@@ -24,16 +24,21 @@ queues, and review loops are implementation machinery that serve that experience
 ### Agent
 
 An Agent is the persistent identity the person talks to or wakes. It has a name,
-instructions, capabilities, an Agent type (`Hermes`, `Cursor`, `Claude`, `Codex`,
-or `Muse Code`), a selected Agent Deck, and an optional working directory.
+instructions, capabilities, and a registration (NOT-502, see
+[`docs/design/agent-registration.md`](design/agent-registration.md)): one
+runtime connection (whose provider is the Agent type: `Hermes`, `Cursor`,
+`Claude`, `Codex`, or `Muse Code`), an explicit session scope, an optional
+default workspace, a launch profile (`direct` or `agent_deck`), a launch
+policy, and an optional home session. Only the `agent_deck` profile carries a
+selected Agent Deck and its optional working directory.
 
 Agent names are unique within one Botmancers instance under case-insensitive,
 trimmed comparison. The display name is preserved, while Botmancers resolves every
 wake to exactly one stable Agent ID. Renaming an Agent does not rewrite historical
 wake targets.
 
-Agent Deck is launch configuration. It is not an Agent and it is not presented as
-a runtime. An Agent without a usable launch configuration remains readable, but a
+Agent Deck is an optional launch profile. It is not an Agent and it is not
+presented as a runtime; a direct profile never contacts it. An Agent without a usable launch configuration remains readable, but a
 wake that requires execution must fail closed with a clear explanation.
 
 ### Conversation

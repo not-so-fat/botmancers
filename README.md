@@ -3,12 +3,16 @@
 Botmancers lets a developer stay in one conversation while a persistent bot
 delegates coding work to local coding agents on the Mac.
 
-Each bot has one Agent — Hermes, Cursor, Claude, Codex, or Muse Code — and
-one Agent Deck selected from the workspace Agent Deck server, plus an optional
-working directory. Agent Deck is the deck configuration every agent launches
-with; it is not an agent or a runtime. Hermes turns run on the persistent
-Hermes gateway; the coding agents launch through `agent-deck run`. A bot
-without a selected Agent Deck stays readable but cannot launch.
+Each Agent is registered against one runtime connection — one Hermes,
+Cursor, Claude, Codex, or Muse Code installation/account on one host, such as
+"Codex on this computer" — with an explicit session scope, an optional default
+workspace, a launch policy, and a launch profile: `direct` or `agent_deck`.
+Only the Agent Deck profile selects a deck from the workspace Agent Deck server
+(plus an optional working directory); a direct Agent never contacts Agent Deck.
+Hermes turns run on the persistent Hermes gateway; Agent Deck coding agents
+launch through Agent Deck. An Agent without a chosen launch profile (or, on the
+Agent Deck profile, without a selected deck) stays readable but cannot launch.
+See [`docs/design/agent-registration.md`](docs/design/agent-registration.md).
 
 When asked to implement and review a change, a coordinator Agent such as Tank
 wakes a developer Agent, evaluates the result, wakes a separate reviewer, and
@@ -16,8 +20,8 @@ can wake the developer again to revise in its original coding session. Every
 result returns to the same conversation. The user does not copy prompts or
 session identifiers and does not configure a workflow form.
 
-The roster and per-bot configuration page show `Agent: <agent> · Agent Deck:
-<deck>`. Availability lists only agents with a real, available launch path.
+The roster shows `Agent: <agent> · Agent Deck: <deck>` (or `Launch: Direct`),
+and the per-Agent configuration page shows each registration choice separately. Availability lists only agents with a real, available launch path.
 The thread shows Wakes, Work Request status, results, and failures as
 conversation events.
 
