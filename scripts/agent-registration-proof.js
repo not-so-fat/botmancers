@@ -95,7 +95,8 @@ async function main() {
   fs.mkdirSync(OUT, { recursive: true });
   const stub = await startDeckStub();
   const settings = await fetch(`${URL_BASE}/api/agent-deck/settings`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server_url: stub.url }),
+    // The owner boundary (proxy.ts) needs same-origin proof for writes.
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: new URL(URL_BASE).origin }, body: JSON.stringify({ server_url: stub.url }),
   });
   check(settings.ok, `workspace Agent Deck server -> loopback stub ${stub.url}`);
 
