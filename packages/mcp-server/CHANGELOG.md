@@ -7,7 +7,21 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-17
+
+### Changed
+
+- Releases are published once, straight to `latest`, by the maintainer
+  (`npm run release:publish`). The `canary` dist-tag, the CI publish, npm
+  trusted publishing, and the bootstrap token are gone;
+  `release-botmancers.yml` now only runs the release check on the tag. The
+  package contents are unchanged from 0.4.1.
+- 0.4.1 was tagged but never published, so 0.4.2 carries its contents
+  (below) and the 0.4.0 contents.
+
 ## [0.4.1] - 2026-10-17
+
+Not published; see 0.4.2.
 
 ### Fixed
 

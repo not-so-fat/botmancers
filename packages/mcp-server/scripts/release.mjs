@@ -10,8 +10,8 @@
 // tag), clean git state, locked build toolchain (committed package-lock.json,
 // exact devDependency pins, `npm ci` in the workflow, installed tools match
 // the lock), the packaged app build (app/ built from this commit and
-// version), tests, package contents, provenance/attestation
-// support (including the npm/Node floor for trusted publishing), `npm publish --dry-run`, and canary installs of the exact tarball
+// version), tests, package contents, publish
+// config, `npm publish --dry-run`, and canary installs of the exact tarball
 // into clean temporary projects: bridge-only, the full product, and the
 // managed install (scripts/install.sh, launcher, staged N+1, restart, rollback).
 // Run `npm run build && npm run build:app` first.
@@ -32,10 +32,6 @@ const outFile = outAt >= 0 ? args[outAt + 1] : null;
 
 const REPO_ROOT = join(PACKAGE_DIR, '..', '..');
 const WORKFLOW = join(REPO_ROOT, '.github/workflows/release-botmancers.yml');
-// npm trusted publishing (OIDC) requires npm >= 11.5.1 on Node >= 22.14.0.
-const MIN_NPM = [11, 5, 1];
-const MIN_NODE = [22, 14, 0];
-const WORKFLOW_NODE_MAJOR = 24;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 
 const pkg = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'));
@@ -52,14 +48,6 @@ const finish = code => {
   // Exit only once stdout has drained; a bare process.exit() can cut a piped transcript short.
   process.stdout.write('', () => process.exit(code));
 };
-
-function atLeast(actual, floor) {
-  const parts = actual.replace(/^v/, '').split(/[.-]/).slice(0, 3).map(Number);
-  for (let i = 0; i < 3; i++) {
-    if (parts[i] !== floor[i]) return parts[i] > floor[i];
-  }
-  return true;
-}
 
 function step(name, fn) {
   if (outFile) appendFileSync(outFile, `RUN   ${name}\n`);
@@ -191,34 +179,17 @@ step('package contents', () => {
   return `${entry.entryCount} files, allowlist only: ${entry.files.map(file => file.path).sort().join(' ')}`;
 });
 
-step('provenance and attestation support', () => {
-  assert(pkg.publishConfig?.provenance === true, 'publishConfig.provenance must be true');
+step('publish configuration', () => {
   assert(pkg.publishConfig?.access === 'public', 'publishConfig.access must be public');
-  assert(pkg.publishConfig?.tag === 'canary', 'publishConfig.tag must be canary so a publish never lands on latest directly');
+  assert(pkg.publishConfig?.tag === undefined, 'publishConfig.tag must be unset: a publish goes straight to latest');
   const remote = run('git', ['remote', 'get-url', 'origin'], { cwd: REPO_ROOT }).trim().replace(/\.git$/, '').replace(/^git@github\.com:/, 'https://github.com/');
   const declared = pkg.repository.url.replace(/^git\+/, '').replace(/\.git$/, '');
-  assert(declared === remote, `repository.url ${declared} must match origin ${remote} (provenance verification)`);
+  assert(declared === remote, `repository.url ${declared} must match origin ${remote}`);
   assert(existsSync(WORKFLOW), 'release workflow .github/workflows/release-botmancers.yml is missing');
   const workflow = readFileSync(WORKFLOW, 'utf8');
-  assert(/id-token:\s*write/.test(workflow), 'release workflow must grant id-token: write');
-  assert(/^\s*run:\s*bash scripts\/publish-ci\.sh\s*$/m.test(workflow), 'release workflow must publish through scripts/publish-ci.sh');
-  assert(!/^\s*NODE_AUTH_TOKEN:/m.test(workflow), 'release workflow must not set NODE_AUTH_TOKEN; an empty value suppresses trusted publishing (OIDC)');
-  const publishScript = readFileSync(join(PACKAGE_DIR, 'scripts/publish-ci.sh'), 'utf8');
-  assert(/^npm publish --provenance --access public --tag canary$/m.test(publishScript), 'scripts/publish-ci.sh must publish with --provenance to canary');
+  assert(!/npm publish/.test(workflow.replace(/^\s*#.*$/gm, '')), 'release workflow must not publish: the operator runs npm run release:publish with a 2FA code');
   assert(/release:check[^\n]*--tag/.test(workflow), 'release workflow must run release:check against the tag');
-  return 'publishConfig provenance/public/canary, repository matches origin, workflow has id-token: write, publishes with --provenance via publish-ci.sh (OIDC unless a bootstrap token is present)';
-});
-
-step('trusted publishing toolchain', () => {
-  const workflow = readFileSync(WORKFLOW, 'utf8');
-  const nodeMajor = Number(/node-version:\s*'?(\d+)/.exec(workflow)?.[1]);
-  assert(nodeMajor >= WORKFLOW_NODE_MAJOR, `release workflow must use node-version ${WORKFLOW_NODE_MAJOR} or newer (npm trusted publishing needs npm >= ${MIN_NPM.join('.')})`);
-  assert(/npm --version/.test(workflow) && /npm install -g npm@11\.(?:[5-9]|\d{2,})\.\d+/.test(workflow),
-    `release workflow must enforce npm >= ${MIN_NPM.join('.')} before publishing`);
-  const npmVersion = run('npm', ['--version']).trim();
-  assert(atLeast(npmVersion, MIN_NPM), `npm ${npmVersion} cannot publish through trusted publishing; need >= ${MIN_NPM.join('.')}`);
-  assert(atLeast(process.version, MIN_NODE), `Node ${process.version} is below ${MIN_NODE.join('.')} required by trusted publishing`);
-  return `workflow node ${nodeMajor} with npm floor ${MIN_NPM.join('.')}; this run: node ${process.version}, npm ${npmVersion}`;
+  return 'publishConfig public with no tag, repository matches origin, workflow checks the tag and does not publish';
 });
 
 step('managed install entry point', () => {
@@ -232,7 +203,7 @@ step('managed install entry point', () => {
 
 step('npm publish --dry-run', () => {
   const out = run('npm', ['publish', '--dry-run', '--ignore-scripts', '--provenance=false'], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
-  return `would publish ${out.trim().split('\n').pop()} with dist-tag canary`;
+  return `would publish ${out.trim().split('\n').pop()} to latest`;
 });
 
 step('canary install of the exact tarball', () => {
@@ -262,10 +233,10 @@ print(`
 Release check PASSED for botmancers@${version}. Nothing was published.
 Operator steps (see packages/mcp-server/RELEASING.md):
   1. npm run release:tag:push   (repository root; after the release PR is merged)
-     -> CI re-runs this check and publishes with provenance to dist-tag "canary"
-  2. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
+     -> CI re-runs this check against the tag (it does not publish)
+  2. npm run release:publish -- --otp <code>   (operator; publishes to latest from a clean clone of the tag)
+  3. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
      node packages/mcp-server/scripts/smoke-product-install.mjs --registry ${version}
      BOTMANCERS_VERSION=${version} bash scripts/install.sh   (managed install from the registry, clean account)
-  3. npm dist-tag add botmancers@${version} latest     (2FA; promotes the verified canary to stable)
 `);
 finish(0);
