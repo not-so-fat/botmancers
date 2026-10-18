@@ -113,7 +113,8 @@ the correct session, but users do not have to manage it.
 Each Agent's **Sessions** view (thread header → Sessions) lists its Session
 Bindings so the owner can recognize a runtime context without handling provider
 IDs. It is a read model over `session_bindings` (`lib/session-catalog.ts`); it
-adds no table and writes nothing.
+adds no table and writes nothing; since NOT-503 it also reads the provider-session
+registry (`provider_sessions`).
 
 - **Reference.** A session is named by its Botmancers reference: the Session
   Binding's own id. It is the only identifier in the catalog's normal responses
@@ -144,6 +145,74 @@ adds no table and writes nothing.
   Copy action), which requests `?debug=external_session_id` on the detail
   route. The MCP bridge and `/api/v0` do not expose the catalog, and their
   non-disclosure contract (`docs/mcp-bridge.md`, Privacy) is unchanged.
+- **Native sessions and state (NOT-503).** The catalog also lists the
+  Agent's native sessions from the provider-session registry (see Provider
+  sessions below) beside its bindings, in one reference space. Each row adds
+  `source` (`botmancers` for a binding, `native` for an imported or
+  provider-started session) and `state`: `availability` (`available` |
+  `missing`), `lifecycle` (`open` | `archived`), `resumable` (what the provider
+  last said, `null` when never asked), `busy`, and `synced_at`. These are
+  independent of `status`: a released binding stays `ended` while its provider
+  may still report it resumable, and a missing session is listed with
+  `availability: missing`, never dropped. A native session's `status` follows
+  its lifecycle (`open` is `active`, `archived` is `ended`); its top-level
+  `resumable` stays the NOT-496 engine-resume answer and is always `false`.
+  The service API (`/api/v0`) carries `source` and `state` additively; the MCP
+  v2 session item is frozen and omits them.
+
+### Provider sessions
+
+A **SessionProvider** (`lib/session-provider.ts`) is the transport-neutral
+boundary to the sessions a coding-agent runtime holds natively, including ones
+that existed before Botmancers. It is selected by the registered Agent's
+runtime connection (`registerSessionProvider({ connectionId } | { provider })`),
+never by Agent Deck; nothing is registered by default, so real runtime
+adapters land separately. `AttemptAdapter` remains the per-turn seam of the
+Work Request engine.
+
+- **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,
+  `start`, `cancel`, `usage`, the enforceable authority modes (`read_only`,
+  `workspace_write`), and `max_page_size`. Operations: bounded
+  `listSessions` (scope, optional query, cursor, limit), `getSession`
+  (`null` means missing), paged `readTranscript`, `startSession` (explicit
+  absolute workspace), `sendTurn` (exact session), `observeTurn` (to a
+  terminal result; a signal or deadline ends only the wait), and idempotent
+  `cancelTurn` (`cancelled` | `already_terminal`). Every turn call carries an
+  explicit authority, an idempotency key, cancellation/deadline, and
+  correlation ids. Results are typed `{ ok, value | error }`; a provider
+  never throws for runtime failures.
+- **Registry.** Engine migration 17 adds `provider_sessions`: a stable
+  Botmancers reference (`id`), the owning Agent and runtime connection, the
+  private `provider_session_id`, an optional one-to-one `binding_id`, title,
+  workspace, provider created/updated times, the state facts above,
+  capabilities, and `last_synced_at`. Every existing Session Binding is
+  backfilled under its own id (references never change), and `bindSession`
+  registers new ones the same way. A partial unique index on (Agent,
+  connection, provider session) for unlinked rows makes repeated discovery
+  idempotent; the same provider id on another connection or Agent is another
+  session. `provider_session_turns` records each start/send turn under the
+  requester's idempotency key, and `provider_session_events` is the
+  append-only audit (imports, syncs, refusals by count, missing, turn
+  lifecycle, cancel requests); neither names a provider id.
+- **Botmancers owns policy** (`lib/provider-sessions.ts`). Discovery imports
+  only sessions inside the registered scope (selected workspaces, selected
+  references, or the explicit all-provider-sessions choice; a missing scope
+  imports nothing). Starting requires the `start` capability,
+  `allow_new_sessions`, and a workspace inside the scope; sending requires
+  `resume`, a session the provider reports available, resumable, and idle,
+  and (for native sessions) still in scope. `workspace_write` requires the
+  provider to support it and the Agent's `workspace_write` policy (plus
+  `allow_resume_with_edits` for a send); authority is never inferred from the
+  provider or workspace. An unsupported capability is refused before the
+  provider is called. Turns are replayed by idempotency key (a different body
+  is `idempotency_conflict`), observed from the persisted provider turn id
+  (also after a restart), and a repeated cancel is `already_terminal`.
+- **Disclosure.** Provider session and turn ids appear only in the registry.
+  Turn views, transcript pages (the session's own id is redacted from
+  text), catalog rows, events, and service responses carry Botmancers
+  references only; the service redactor treats every registry id as private.
+  `?debug=external_session_id` on the owner detail route remains the single
+  exception, for native sessions too.
 
 ### Session exchanges
 
