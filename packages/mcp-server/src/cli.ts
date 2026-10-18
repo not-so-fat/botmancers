@@ -55,8 +55,8 @@ Run Botmancers (UI, API, core engine, and MCP bridge) from this package:
                             Connect that client to the MCP bridge and install the
                             optional botmancers-collaboration skill (or remove both);
                             files you edited are never overwritten
-  start [--daemon] [--open] Start the UI/core on 127.0.0.1:43123 and the MCP bridge
-                            on 127.0.0.1:43124 under one supervisor
+  start [--daemon] [--open] Start the UI/core on 127.0.0.1:3333 and the MCP bridge
+                            on 127.0.0.1:3332 under one supervisor
   stop                      Stop the supervisor, core, and bridge
   status                    Report healthy / degraded / stopped, versions, endpoints
   doctor                    Check the installation, home, ports, Hermes, Agent Deck

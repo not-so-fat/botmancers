@@ -143,8 +143,8 @@ runner.
       `checkedAt` is less than 24 hours old, wait, or remove that field to
       force a check.
    3. Run `botmancers stop && botmancers start --daemon`. It prints
-      `activated N+1 (was N)`. `curl -s 127.0.0.1:43123/api/health` and
-      `curl -s 127.0.0.1:43124/healthz` report N+1, the conversation is
+      `activated N+1 (was N)`. `curl -s 127.0.0.1:3333/api/health` and
+      `curl -s 127.0.0.1:3332/healthz` report N+1, the conversation is
       still there, and the hashes match.
    4. Roll back: run `botmancers stop && botmancers install --to N && botmancers start --daemon`.
       Both health endpoints report N, and the same state and hashes are

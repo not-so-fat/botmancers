@@ -88,8 +88,8 @@ export async function smoke({ tarball, registryVersion } = {}) {
   const elsewhere = join(root, 'elsewhere');
   const cache = join(root, 'npm-cache');
   for (const dir of [project, home, elsewhere]) mkdirSync(dir, { recursive: true });
-  const uiPort = await portOrFree(43123);
-  let mcpPort = await portOrFree(43124);
+  const uiPort = await portOrFree(3333);
+  let mcpPort = await portOrFree(3332);
   while (mcpPort === uiPort) mcpPort = await freePort();
   // A clean user: empty HOME and npm cache, no inherited npm config or tokens,
   // no BOTMANCERS_* or NODE_* variables, and a PATH without this repository.
@@ -134,7 +134,7 @@ export async function smoke({ tarball, registryVersion } = {}) {
     }
     log(`checkout commit: ${commit}`);
     log(`node: ${process.version}, npm: ${npm(['--version']).trim()}, platform: ${process.platform}-${process.arch}`);
-    log(`ports: ui/core ${uiPort}${uiPort === 43123 ? ' (default)' : ' (43123 busy; substitute)'}, mcp ${mcpPort}${mcpPort === 43124 ? ' (default)' : ' (43124 busy; substitute)'}`);
+    log(`ports: ui/core ${uiPort}${uiPort === 3333 ? ' (default)' : ' (3333 busy; substitute)'}, mcp ${mcpPort}${mcpPort === 3332 ? ' (default)' : ' (3332 busy; substitute)'}`);
     log(`BOTMANCERS_HOME: unset (default ${botmancersHome}); commands run from ${elsewhere}`);
 
     npm(['init', '-y']);

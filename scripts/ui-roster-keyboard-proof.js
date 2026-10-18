@@ -18,7 +18,7 @@
 // Writes screenshots, AX snapshots and a trace under --out, stamped with HEAD.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm run dev   (other shell)
-//        node scripts/ui-roster-keyboard-proof.js [--url http://127.0.0.1:43123] [--out .agent-dealer-visual-qa]
+//        node scripts/ui-roster-keyboard-proof.js [--url http://127.0.0.1:3333] [--out .agent-dealer-visual-qa]
 'use strict';
 
 const fs = require('fs');
@@ -30,7 +30,7 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
-const URL_BASE = arg('--url', 'http://127.0.0.1:43123');
+const URL_BASE = arg('--url', 'http://127.0.0.1:3333');
 const OUT = arg('--out', '.agent-dealer-visual-qa');
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const VIEWPORTS = [

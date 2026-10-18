@@ -113,7 +113,7 @@ and the bridge, run by one supervisor with no checkout needed:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash
 botmancers setup
-botmancers start --daemon --open    # UI 127.0.0.1:43123, MCP 127.0.0.1:43124/mcp
+botmancers start --daemon --open    # UI 127.0.0.1:3333, MCP 127.0.0.1:3332/mcp
 ```
 
 That is the recommended managed install: the release lives in
@@ -127,7 +127,7 @@ Its state lives under `BOTMANCERS_HOME` (default `~/.botmancers`);
 an app you run yourself, such as this checkout:
 
 ```bash
-BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers
+BOTMANCERS_URL=http://127.0.0.1:3333 npx botmancers
 ```
 
 Setup of the service token and coordinator allowlist is in the package README.
@@ -166,7 +166,7 @@ export HERMES_BASE_URL=http://127.0.0.1:8642  # default gateway origin
 npm run dev
 ```
 
-4. Open http://localhost:43123
+4. Open http://localhost:3333
 
 A checkout keeps its state in `./botmancers.db`, `./files`, `./skills`, and
 `./.temporal` unless `BOTMANCERS_HOME` (or an explicit `BOTMANCERS_DB_PATH`,

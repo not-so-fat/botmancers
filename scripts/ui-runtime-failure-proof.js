@@ -27,7 +27,7 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
-const URL_BASE = arg('--url', 'http://127.0.0.1:43123');
+const URL_BASE = arg('--url', 'http://127.0.0.1:3333');
 const OUT = arg('--out', '.agent-dealer-visual-qa');
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const SENTINEL = '[Hermes configuration missing: HERMES_API_SERVER_KEY is not set. Set it to enable persistent Hermes turns. No fallback transport attempted.]';

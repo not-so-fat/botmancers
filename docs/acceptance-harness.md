@@ -55,7 +55,7 @@ When a scenario covers routes, the context serves the real `app/api/**/route.ts`
 handlers behind the real owner boundary (`proxy.ts`) on a loopback port that the
 OS assigns (`test-support/acceptance/route-host.js`). It never starts `next dev`,
 because that would write `.next/`, `next-env.d.ts`, and `AGENTS.md` into the
-working tree. It never assumes a developer server on port 43123.
+working tree. It never assumes a developer server on port 3333.
 
 ## Cleanup
 

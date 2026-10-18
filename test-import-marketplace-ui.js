@@ -2,7 +2,7 @@
 
 const http = require('http');
 
-const PORT = Number(process.env.BOTMANCERS_TEST_PORT) || 43123;
+const PORT = Number(process.env.BOTMANCERS_TEST_PORT) || 3333;
 const BASE_URL = `http://localhost:${PORT}`;
 
 function request(method, path, body = null) {

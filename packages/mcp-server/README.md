@@ -7,8 +7,8 @@ result. Examples of such agents are Cursor's Grok Bot or any other MCP client.
 No source checkout or separately started app is needed.
 
 - `botmancers setup` / `botmancers start` run the **full product**: the UI and
-  core engine on `http://127.0.0.1:43123` and the MCP bridge on
-  `http://127.0.0.1:43124/mcp`, under one supervisor.
+  core engine on `http://127.0.0.1:3333` and the MCP bridge on
+  `http://127.0.0.1:3332/mcp`, under one supervisor.
 - Bare `botmancers` (or `botmancers mcp`) runs **only the bridge** in front of
   a Botmancers app you run yourself, exactly as in 0.1.0, so existing MCP
   configurations keep working.
@@ -92,7 +92,7 @@ healthy; `--open` opens the UI in your browser.
 
 Then:
 
-1. **Open the UI** at `http://127.0.0.1:43123` (or run `botmancers open`).
+1. **Open the UI** at `http://127.0.0.1:3333` (or run `botmancers open`).
 2. **Configure Hermes** for conversational turns: add
    `HERMES_API_SERVER_KEY=<your gateway key>` (and `HERMES_BASE_URL` if the
    gateway is not `http://127.0.0.1:8642`) to `~/.botmancers/config/core.env`,
@@ -100,7 +100,7 @@ Then:
 3. **Configure Agent Deck** for coding-agent runs: install Agent Deck so
    `agent-deck` is on `PATH` and its server runs on `http://127.0.0.1:1111`,
    and add `AGENT_DECK_RUN_TOKEN=<token issued by Agent Deck>` to `core.env`.
-4. **Connect an MCP client** to `http://127.0.0.1:43124/mcp` with
+4. **Connect an MCP client** to `http://127.0.0.1:3332/mcp` with
    `Authorization: Bearer <BOTMANCERS_MCP_TOKEN>`, taking the token from
    `~/.botmancers/config/bridge.env`. For Codex, Cursor, or Claude Code,
    `botmancers setup --client codex|cursor|claude` does this for you and adds
@@ -163,8 +163,8 @@ Existing explicit path variables still win over these defaults:
 `BOTMANCERS_DB_PATH`, `BOTMANCERS_FILES_ROOT`, `BOTMANCERS_SKILLS_ROOT`, and
 `HERMES_WAIT_LOG_PATH`. A source checkout run with `npm run dev` keeps its
 own `./botmancers.db`, `./files`, `./skills`, and `./.temporal`; nothing is
-moved. `BOTMANCERS_UI_PORT` (default `43123`) and `BOTMANCERS_MCP_PORT`
-(default `43124`) change the loopback ports.
+moved. `BOTMANCERS_UI_PORT` (default `3333`) and `BOTMANCERS_MCP_PORT`
+(default `3332`) change the loopback ports.
 
 ## Client setup and the collaboration skill
 
@@ -250,7 +250,7 @@ Any other MCP client needs no setup and no skill. Connect it to the URL and
 header that `botmancers setup` prints:
 
 ```text
-URL     http://127.0.0.1:43124/mcp
+URL     http://127.0.0.1:3332/mcp
 Header  Authorization: Bearer <BOTMANCERS_MCP_TOKEN from ~/.botmancers/config/bridge.env>
 ```
 
@@ -289,14 +289,14 @@ newer and a running Botmancers app.
 3. **Start the bridge:**
 
    ```sh
-   BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers
+   BOTMANCERS_URL=http://127.0.0.1:3333 npx botmancers
    ```
 
    It prints
-   `botmancers <version>: MCP bridge listening on http://127.0.0.1:43124/mcp ...`
+   `botmancers <version>: MCP bridge listening on http://127.0.0.1:3332/mcp ...`
    and keeps running until you press Ctrl-C.
 
-4. **Connect an MCP client** to `http://127.0.0.1:43124/mcp` with the header
+4. **Connect an MCP client** to `http://127.0.0.1:3332/mcp` with the header
    `Authorization: Bearer <BOTMANCERS_MCP_TOKEN>`. Then call
    `botmancers_health`. It should return `status: "ok"` and each coordinator
    with `available: true`.
@@ -304,18 +304,18 @@ newer and a running Botmancers app.
 To pin an exact release, which is recommended for anything long-running:
 
 ```sh
-BOTMANCERS_URL=http://127.0.0.1:43123 npx botmancers@0.4.2
+BOTMANCERS_URL=http://127.0.0.1:3333 npx botmancers@0.4.2
 ```
 
 ## Bridge configuration
 
 | Variable | Flag | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `BOTMANCERS_URL` | `--botmancers-url` | yes | none | Base URL of the Botmancers app, for example `http://127.0.0.1:43123`. Must be `http://` or `https://`, with no credentials, query, or fragment. The bridge calls `<url>/api/v0/mcp`. |
+| `BOTMANCERS_URL` | `--botmancers-url` | yes | none | Base URL of the Botmancers app, for example `http://127.0.0.1:3333`. Must be `http://` or `https://`, with no credentials, query, or fragment. The bridge calls `<url>/api/v0/mcp`. |
 | `BOTMANCERS_SERVICE_TOKEN` | none (environment only) | yes | none | Bearer token the bridge sends to Botmancers. Its SHA-256 digest must be listed in the app's `BOTMANCERS_SERVICE_TOKENS`. |
 | `BOTMANCERS_MCP_TOKEN` | none (environment only) | yes | none | Bearer token MCP clients must send to the bridge. At least 16 characters, and must differ from the service token. |
 | `BOTMANCERS_MCP_HOST` | `--host` | no | `127.0.0.1` | Address to bind. |
-| `BOTMANCERS_MCP_PORT` | `--port` | no | `43124` | Port to bind. `0` picks a free port. |
+| `BOTMANCERS_MCP_PORT` | `--port` | no | `3332` | Port to bind. `0` picks a free port. |
 
 Flags override environment variables. Secrets are accepted only from the
 environment, because command-line flags are visible to every local user in
