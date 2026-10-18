@@ -44,6 +44,7 @@ function startDeckStub() {
   const hits = [];
   const server = http.createServer((req, res) => {
     hits.push(`${req.method} ${req.url}`);
+    console.log(`  [stub] ${new Date().toISOString()} ${req.method} ${req.url}`);
     if (req.method === 'GET' && req.url === '/api/launch/decks') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, data: { decks: [{ id: 'deck-builder', name: 'builder' }, { id: 'deck-review', name: 'review' }] } }));
@@ -102,8 +103,13 @@ async function main() {
 
   const browserRequests = [];
   const chrome = await launchChrome();
+  // Never leave a headless browser polling the app after a failed run.
+  process.on('exit', () => chrome.proc.kill());
   const cdp = await connect(chrome.wsUrl, msg => {
-    if (msg.method === 'Network.requestWillBeSent') browserRequests.push(msg.params.request.url);
+    if (msg.method === 'Network.requestWillBeSent') {
+      browserRequests.push(msg.params.request.url);
+      if (process.env.PROOF_TRACE) console.log(`  [browser] ${new Date().toISOString()} ${msg.params.request.url} frame=${msg.params.frameId} doc=${msg.params.documentURL}`);
+    }
   });
   await cdp.send('Network.enable');
   await cdp.send('Page.enable');
@@ -135,6 +141,7 @@ async function main() {
   };
   const deckRequests = () => browserRequests.filter(url => url.includes('/api/agent-deck/decks'));
   const reset = () => {
+    console.log(`  [reset] ${new Date().toISOString()}`);
     browserRequests.length = 0;
     stub.hits.length = 0;
   };
