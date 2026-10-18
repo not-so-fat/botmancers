@@ -86,7 +86,7 @@ test('the manifest is a public package distinct from the private app', () => {
   assert.equal(pkg.name, 'botmancers');
   assert.deepEqual(pkg.bin, { botmancers: 'dist/cli.js' });
   assert.match(pkg.engines.node, />=\s*20/);
-  assert.equal(pkg.publishConfig.provenance, true);
+  assert.equal(pkg.publishConfig.tag, undefined, 'a publish goes straight to latest; there is no canary tag');
   assert.equal(pkg.publishConfig.access, 'public');
 });
 

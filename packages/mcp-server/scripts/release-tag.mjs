@@ -1,5 +1,5 @@
 // Tags the merged release and pushes the tag, which starts release-botmancers.yml
-// (publishes to the canary dist-tag). Run it as `npm run release:tag:push` from the
+// (the release check; it does not publish). Run it as `npm run release:tag:push` from the
 // repository root, after the release PR is merged.
 //
 //   npm run release:tag:push            tag origin/main and push botmancers-v<version>
