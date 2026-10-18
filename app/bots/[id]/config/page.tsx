@@ -6,18 +6,23 @@ import { useParams, useRouter } from 'next/navigation';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import { DELETE_KEEPS_COPY, DELETE_REMOVES_COPY } from '@/lib/bot-deletion';
 import {
-  SELECT_DECK_ERROR,
-  configRuntimePatchBody,
-  configRuntimeView,
   configWorkdirHint,
   defaultWorkdirFor,
   isMigratedPending,
-  runtimeFormFromBot,
-  runtimeFormView,
-  type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
-import { AgentSection } from '@/app/components/AgentDeckRuntime';
+import {
+  hasRegistrationErrors,
+  registrationFormFromBot,
+  registrationFormView,
+  registrationPatchBody,
+  registrationReadView,
+  type RegistrationFormInput,
+  type SessionOption,
+} from '@/lib/agent-registration-ui';
+import type { LaunchPolicy, SessionScope } from '@/lib/agent-registration';
+import { RegistrationFields } from '@/app/components/AgentRegistration';
 import { useDeckList } from '@/app/components/useDeckList';
+import { useRuntimeConnections } from '@/app/components/useRuntimeConnections';
 import BotAvatar from '@/app/components/BotAvatar';
 import AvatarChoiceGroup from '@/app/components/AvatarChoiceGroup';
 import { MarketplaceImportControl, useMarketplaceImport } from '@/app/components/MarketplaceImport';
@@ -48,6 +53,15 @@ interface Bot {
   working_directory?: string | null;
   needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
+  launch_blocker?: string | null;
+  // NOT-502 registration (see lib/agent-registration).
+  runtime_connection_id?: string | null;
+  runtime_connection?: { id: string; provider: string; label: string; host: string } | null;
+  launch_profile?: string | null;
+  session_scope?: SessionScope | null;
+  default_workspace?: string | null;
+  policy?: LaunchPolicy | null;
+  home_session_id?: string | null;
   avatar_color?: string | null;
   avatar_eyes?: string | null;
   avatar_hands?: string | null;
@@ -79,6 +93,8 @@ interface ConfigData {
 }
 
 type Phase = 'clean' | 'saving' | 'confirmed' | 'error';
+
+const FIX_FIELDS_ERROR = 'Fix the highlighted fields.';
 
 const SNAPSHOT_FIELDS: Array<{ key: string; label: string }> = [
   { key: 'avatar_accessory', label: 'Avatar accessory' },
@@ -152,9 +168,15 @@ export default function BotConfigPage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [copiedKey, setCopiedKey] = useState('');
 
-  const { state: deckState, retry: retryDecks } = useDeckList();
   const [runtimeEditing, setRuntimeEditing] = useState(false);
-  const [runtimeForm, setRuntimeForm] = useState<RuntimeFormInput | null>(null);
+  const [runtimeForm, setRuntimeForm] = useState<RegistrationFormInput | null>(null);
+  const [runtimeShowErrors, setRuntimeShowErrors] = useState(false);
+  // NOT-502: a direct-profile Agent never requests the Agent Deck list;
+  // it loads only for an Agent Deck Agent or once Agent Deck is picked.
+  const decksEnabled = data?.bot.launch_profile === 'agent_deck' || runtimeForm?.launchProfile === 'agent_deck';
+  const { state: deckState, retry: retryDecks } = useDeckList(Boolean(decksEnabled));
+  const connections = useRuntimeConnections();
+  const [sessions, setSessions] = useState<SessionOption[] | undefined>(undefined);
   const [runtimePhase, setRuntimePhase] = useState<Phase>('clean');
   const [runtimeError, setRuntimeError] = useState('');
   const [runtimeConfirmedAt, setRuntimeConfirmedAt] = useState(0);
@@ -171,6 +193,25 @@ export default function BotConfigPage() {
     setLoadFailed(false);
     setReloadToken(token => token + 1);
   }
+
+  // NOT-502: this Agent's own sessions (Botmancers refs and titles only)
+  // for the sessions scope and the home session.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    fetch(`/api/bots/${encodeURIComponent(id)}/sessions?status=all`, { cache: 'no-store' })
+      .then(res => (res.ok ? res.json() : null))
+      .then((body: { sessions?: Array<{ ref: string; title: string; status: string }> } | null) => {
+        if (cancelled) return;
+        setSessions((body?.sessions ?? []).map(session => ({ ref: session.ref, title: session.title, status: session.status })));
+      })
+      .catch(() => {
+        if (!cancelled) setSessions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, reloadToken]);
 
   useEffect(() => {
     if (!id) return;
@@ -206,7 +247,7 @@ export default function BotConfigPage() {
   const rulesDirty = rulesText !== null && rulesText !== storedRules;
   const storedSkill = data?.skill.content ?? '';
   const skillDirty = skillEditing && skillText !== storedSkill;
-  const storedRuntimeForm = data ? runtimeFormFromBot(data.bot) : null;
+  const storedRuntimeForm = data ? registrationFormFromBot(data.bot) : null;
   const runtimeDirty = runtimeEditing && runtimeForm !== null &&
     JSON.stringify(runtimeForm) !== JSON.stringify(storedRuntimeForm);
   const storedAvatar: AvatarConfig = data?.bot.avatar_config ?? resolveAvatar(data?.bot ?? {});
@@ -280,14 +321,16 @@ export default function BotConfigPage() {
 
   function startRuntimeEdit(): void {
     if (!data) return;
-    setRuntimeForm(runtimeFormFromBot(data.bot));
+    setRuntimeForm(registrationFormFromBot(data.bot));
     setRuntimeEditing(true);
+    setRuntimeShowErrors(false);
     setRuntimePhase('clean');
     setRuntimeError('');
-    retryDecks();
+    if (data.bot.launch_profile === 'agent_deck') retryDecks();
+    connections.retry();
   }
 
-  function patchRuntimeForm(patch: Partial<RuntimeFormInput>): void {
+  function patchRuntimeForm(patch: Partial<RegistrationFormInput>): void {
     setRuntimeForm(current => (current ? { ...current, ...patch } : current));
     setRuntimeError('');
     setRuntimePhase(current => (current === 'error' ? 'clean' : current));
@@ -349,9 +392,10 @@ export default function BotConfigPage() {
 
   async function saveRuntime(): Promise<void> {
     if (!data || !runtimeForm) return;
-    if (!runtimeForm.deckId.trim()) {
+    if (hasRegistrationErrors(registrationFormView(runtimeForm, deckState, connections.state))) {
+      setRuntimeShowErrors(true);
       setRuntimePhase('error');
-      setRuntimeError(SELECT_DECK_ERROR);
+      setRuntimeError(FIX_FIELDS_ERROR);
       return;
     }
     setRuntimePhase('saving');
@@ -360,7 +404,7 @@ export default function BotConfigPage() {
       const res = await fetch('/api/bots', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(configRuntimePatchBody(data.bot.id, runtimeForm)),
+        body: JSON.stringify(registrationPatchBody(data.bot.id, runtimeForm)),
       });
       if (!res.ok) {
         let reason = 'request failed';
@@ -749,13 +793,17 @@ export default function BotConfigPage() {
               </div>
               {(() => {
                 if (!runtimeEditing || !runtimeForm) {
-                  const view = configRuntimeView(bot, deckState);
+                  const view = registrationReadView(bot, bot.launch_profile === 'agent_deck' ? deckState : null, sessions);
                   return (
                     <div data-field="runtime-read">
-                      <p className="text-sm cfg-muted break-words">{view.summary}</p>
-                      {view.workingDirectory ? (
-                        <p className="text-sm cfg-muted mt-1 break-all">{view.workingDirectory}</p>
-                      ) : null}
+                      <dl className="text-sm">
+                        {view.rows.map(row => (
+                          <div key={row.key} data-row={row.key} className="flex flex-col sm:flex-row sm:justify-between gap-x-4 py-1 border-t cfg-line">
+                            <dt className="cfg-faint">{row.label}</dt>
+                            <dd className="sm:text-right break-words cfg-muted">{row.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
                       {view.notices.map(notice => (
                         <p key={notice} className="text-sm cfg-dirty mt-2">
                           {notice}{' '}
@@ -768,30 +816,40 @@ export default function BotConfigPage() {
                         onClick={startRuntimeEdit}
                         className="mt-3 cfg-btn-ghost text-sm w-full sm:w-auto"
                       >
-                        {view.action}
+                        Edit
                       </button>
                     </div>
                   );
                 }
-                const formView = runtimeFormView(runtimeForm, deckState, { includeName: false });
-                const savedDeckId = !isMigratedPending(bot) ? bot.deck_id : null;
+                const formView = registrationFormView(runtimeForm, deckState, connections.state);
+                const savedDeckId = bot.launch_profile === 'agent_deck' && !isMigratedPending(bot) ? bot.deck_id : null;
                 return (
                   <>
-                    <AgentSection
+                    <RegistrationFields
                       idPrefix="cfg"
                       variant="config"
                       form={runtimeForm}
-                      onChange={patchRuntimeForm}
+                      onChange={patch => {
+                        if (patch.launchProfile === 'agent_deck' && runtimeForm.launchProfile !== 'agent_deck') retryDecks();
+                        patchRuntimeForm(patch);
+                      }}
+                      view={formView}
+                      showErrors={runtimeShowErrors}
+                      connections={connections.state}
+                      onRetryConnections={connections.retry}
+                      onAddConnection={connections.add}
                       deckState={deckState}
-                      onRetry={retryDecks}
+                      onRetryDecks={retryDecks}
                       savedDeckId={savedDeckId}
                       workdirPlaceholder={defaultWorkdirFor(bot.id)}
                       workdirHint={configWorkdirHint(bot.id)}
+                      sessions={sessions}
+                      includeHomeSession
                     />
                     {runtimePhase === 'error' && (
-                      <p className="mt-2 text-sm cfg-error">
-                        {runtimeError === SELECT_DECK_ERROR ? runtimeError : `Couldn't save: ${runtimeError}.`}{' '}
-                        {runtimeError === SELECT_DECK_ERROR ? null : (
+                      <p className="mt-2 text-sm cfg-error" role="alert">
+                        {runtimeError === FIX_FIELDS_ERROR ? runtimeError : `Couldn't save: ${runtimeError}.`}{' '}
+                        {runtimeError === FIX_FIELDS_ERROR ? null : (
                           <button onClick={saveRuntime} className="underline hover:no-underline">
                             Retry
                           </button>

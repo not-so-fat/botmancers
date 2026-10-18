@@ -8,17 +8,21 @@ import BotAvatar from '@/app/components/BotAvatar';
 import type { AvatarConfig } from '@/lib/avatar';
 import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 import {
-  DEFAULT_RUNTIME_FORM,
   NEW_BOT_WORKDIR_HINT,
-  SELECT_DECK_ERROR,
   deckEventDisplay,
-  newBotSubmitBody,
-  runtimeFormView,
   type DeckListState,
-  type RuntimeFormInput,
 } from '@/lib/bot-runtime-ui';
-import { AgentSection, RosterRuntimeLine } from '@/app/components/AgentDeckRuntime';
+import {
+  DEFAULT_REGISTRATION_FORM,
+  hasRegistrationErrors,
+  registrationCreateBody,
+  registrationFormView,
+  type RegistrationFormInput,
+} from '@/lib/agent-registration-ui';
+import { RosterRuntimeLine } from '@/app/components/AgentDeckRuntime';
+import { RegistrationFields } from '@/app/components/AgentRegistration';
 import { useDeckList } from '@/app/components/useDeckList';
+import { useRuntimeConnections } from '@/app/components/useRuntimeConnections';
 import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import ManageAgentsPanel from '@/app/components/ManageAgentsPanel';
@@ -58,6 +62,7 @@ interface Bot {
   working_directory?: string | null;
   needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
+  launch_profile?: string | null;
 }
 
 interface Message {
@@ -227,7 +232,11 @@ export default function Home() {
   const pendingAfter = useRef<Record<string, number>>({});
   const logoSettled = useRef(false);
   const [logoDrop, setLogoDrop] = useState(false);
-  const { state: deckState, retry: retryDecks } = useDeckList();
+  // NOT-502: the Agent Deck list is requested only when an Agent Deck
+  // Agent is on the roster or the New Agent dialog picks Agent Deck.
+  const [modalWantsDecks, setModalWantsDecks] = useState(false);
+  const decksEnabled = modalWantsDecks || bots.some(bot => bot.launch_profile === 'agent_deck');
+  const { state: deckState, retry: retryDecks } = useDeckList(decksEnabled);
 
   useEffect(() => {
     if (logoSettled.current || bots.length === 0) return;
@@ -1337,7 +1346,10 @@ export default function Home() {
       <BotModal
         anchorRef={newRef}
         deckState={deckState}
-        onRetryDecks={retryDecks}
+        onRetryDecks={() => {
+          setModalWantsDecks(true);
+          retryDecks();
+        }}
         onClose={closeBotModal}
         onCreated={() => {
           loadBots();
@@ -1514,15 +1526,14 @@ function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
   onCreated: () => void;
 }) {
   const [name, setName] = useState('');
-  const [form, setForm] = useState<RuntimeFormInput>(DEFAULT_RUNTIME_FORM);
+  const [form, setForm] = useState<RegistrationFormInput>(DEFAULT_REGISTRATION_FORM);
   const [botError, setBotError] = useState('');
+  const [showErrors, setShowErrors] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const connections = useRuntimeConnections();
   const [placement, setPlacement] = useState<DialogPlacement | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    onRetryDecks();
-  }, [onRetryDecks]);
 
   // Anchor under New; re-place when the viewport changes.
   useLayoutEffect(() => {
@@ -1561,26 +1572,30 @@ function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
     target.focus();
   };
 
-  const view = runtimeFormView(form, deckState);
+  const view = registrationFormView(form, deckState, connections.state);
 
-  const changeForm = (patch: Partial<RuntimeFormInput>) => {
+  const changeForm = (patch: Partial<RegistrationFormInput>) => {
     setBotError('');
+    // NOT-502: the Agent Deck list is fetched only once Agent Deck is picked.
+    if (patch.launchProfile === 'agent_deck' && form.launchProfile !== 'agent_deck') onRetryDecks();
     setForm(current => ({ ...current, ...patch }));
   };
 
   const handleBot = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (view.submitDisabled) return;
-    if (!form.deckId.trim()) {
-      setBotError(SELECT_DECK_ERROR);
+    if (view.submitDisabled || submitting) return;
+    if (hasRegistrationErrors(view)) {
+      setShowErrors(true);
+      setBotError('Fix the highlighted fields.');
       return;
     }
     setBotError('');
+    setSubmitting(true);
     const res = await fetch('/api/bots', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newBotSubmitBody({ name, ...form })),
-    });
+      body: JSON.stringify(registrationCreateBody(name, form)),
+    }).finally(() => setSubmitting(false));
     if (!res.ok) {
       const body = await res.json().catch(() => null);
       setBotError(typeof body?.error === 'string' && body.error ? body.error : 'Failed to create agent');
@@ -1606,13 +1621,18 @@ function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
           <div className="new-agent-body">
           <label htmlFor="bot-name">Name</label>
           <input ref={nameRef} id="bot-name" type="text" value={name} onChange={e => setName(e.target.value)} required />
-          <AgentSection
+          <RegistrationFields
             idPrefix="bot"
             variant="modal"
             form={form}
             onChange={changeForm}
+            view={view}
+            showErrors={showErrors}
+            connections={connections.state}
+            onRetryConnections={connections.retry}
+            onAddConnection={connections.add}
             deckState={deckState}
-            onRetry={onRetryDecks}
+            onRetryDecks={onRetryDecks}
             workdirPlaceholder=""
             workdirHint={NEW_BOT_WORKDIR_HINT}
           />
@@ -1622,8 +1642,8 @@ function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
             <button type="button" className="cancel-btn" onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" className="create-btn" disabled={view.submitDisabled}>
-              Create
+            <button type="submit" className="create-btn" disabled={view.submitDisabled || submitting}>
+              {submitting ? 'Creating…' : 'Create'}
             </button>
           </div>
         </form>

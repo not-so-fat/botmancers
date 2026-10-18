@@ -46,12 +46,15 @@ const fetchWithTimeout: FetchLike = (url, init) => {
 };
 
 // One deck-list state per surface, re-checked on mount and on retry().
-export function useDeckList(): { state: DeckListState; retry: () => void } {
+// NOT-502: with enabled=false nothing is fetched (a direct-profile Agent
+// never requests the Agent Deck list); enabling it fetches once.
+export function useDeckList(enabled: boolean = true): { state: DeckListState; retry: () => void } {
   const [state, setState] = useState<DeckListState>(() => initialDeckListState());
   const [token, setToken] = useState(0);
   const cacheRef = useRef<DeckOption[] | null>(null);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     const previous = initialDeckListState(cacheRef.current ?? readCache());
     fetchDeckList(fetchWithTimeout, previous).then(next => {
@@ -63,7 +66,7 @@ export function useDeckList(): { state: DeckListState; retry: () => void } {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, enabled]);
 
   const retry = useCallback(() => {
     setState(current => ({ ...current, status: 'loading', decks: [], error: '' }));

@@ -38,6 +38,7 @@ jobs:
         working-directory: .
         run: |
           npm run test:agent-registration
+          npm run test:agent-registration-ui
           npm run test:bot-definition
       - name: Release check (dry run, no registry mutation)
         run: |

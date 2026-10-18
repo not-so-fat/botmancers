@@ -35,6 +35,9 @@ export interface BotRuntimeLike {
   working_directory?: string | null;
   needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
+  // NOT-502: direct | agent_deck | null (unresolved). Only agent_deck
+  // (and unresolved legacy rows) show an Agent Deck.
+  launch_profile?: string | null;
 }
 
 export interface DeckOption {
@@ -238,11 +241,19 @@ export function botAgentLabel(bot: BotRuntimeLike): string {
 // Agent that still needs an Agent Deck picked from the configured server
 // (legacy free-text deck, migrated row, or no deck ID).
 export function isMigratedPending(bot: BotRuntimeLike): boolean {
+  if (isDirectProfile(bot)) return false;
   return needsSelectionFlag(bot) || !(bot.deck_id ?? '').trim();
 }
 
+// NOT-502: a direct launch profile never shows or checks an Agent Deck.
+export function isDirectProfile(bot: BotRuntimeLike): boolean {
+  return bot.launch_profile === 'direct';
+}
+
+export const DIRECT_LAUNCH_SUFFIX = 'Launch: Direct';
+
 export function isDeckUnavailable(bot: BotRuntimeLike, state: DeckListState | null | undefined): boolean {
-  if (isMigratedPending(bot)) return false;
+  if (isMigratedPending(bot) || isDirectProfile(bot)) return false;
   const known = knownDeckIds(state);
   if (!known) return false;
   return !known.includes((bot.deck_id ?? '').trim());
@@ -253,6 +264,7 @@ function agentPrefix(bot: BotRuntimeLike): string {
 }
 
 export function runtimeSummary(bot: BotRuntimeLike, state?: DeckListState | null): string {
+  if (isDirectProfile(bot)) return `Agent: ${botAgentLabel(bot)} · ${DIRECT_LAUNCH_SUFFIX}`;
   if (isMigratedPending(bot)) return `${agentPrefix(bot)}not selected`;
   return agentPrefix(bot) + deckLabel(bot.deck_id ?? '', state);
 }
@@ -273,7 +285,7 @@ export function rosterRuntimeParts(
   state: DeckListState | null | undefined
 ): { prefix: string; deck: string; suffix: string } {
   const line = rosterRuntimeLine(bot, state);
-  if (isMigratedPending(bot)) return { prefix: line, deck: '', suffix: '' };
+  if (isMigratedPending(bot) || isDirectProfile(bot)) return { prefix: line, deck: '', suffix: '' };
   const prefix = agentPrefix(bot);
   const deck = deckLabel(bot.deck_id ?? '', state);
   return { prefix, deck, suffix: line.slice(prefix.length + deck.length) };
