@@ -358,6 +358,11 @@ function ensureLocalConnection(provider: BotAgent, at: number = Date.now()): str
   return id;
 }
 
+// Every supported runtime gets its local connection ("Codex on this
+// computer") so registration works out of the box; the owner can add
+// connections for other hosts/accounts. Labels only, never credentials.
+for (const provider of AGENTS) ensureLocalConnection(provider, 0);
+
 // NOT-502 data migration: migrateRegistration in ./agent-registration.
 // Rows with a selected deck become agent_deck; every other row stays
 // unresolved (launch_profile NULL, unlaunchable) until the owner chooses

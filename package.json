@@ -18,6 +18,7 @@
     "test:snapshot": "node test-snapshot.js",
     "test:avatar-system": "node test-avatar-system.js",
     "test:bot-definition": "node test-bot-definition.js",
+    "test:agent-registration": "node test-agent-registration.js",
     "test:delegation": "node test-delegation.js",
     "test:agent-deck-run": "node test-agent-deck-run.js",
     "test:agent-deck-finalization": "node test-agent-deck-finalization.js",
