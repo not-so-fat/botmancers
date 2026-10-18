@@ -34,7 +34,7 @@ private Botmancers app, which has the same name and `"private": true`.
 ## Publishing
 
 A release is published once, straight to `latest`, by the maintainer from a
-fresh clone of the tag, with an npm 2FA code (`npm run release:publish`). There
+fresh clone of the tag, with npm 2FA (`npm run release:publish`). There
 is no canary dist-tag and no CI publish, so nothing needs configuring on
 npmjs.com. The safety net is before the publish: `release:check` installs the
 exact tarball into clean projects (bridge-only, full product, managed install)
@@ -107,10 +107,11 @@ runner.
 
    The `release-botmancers` workflow then runs `release:check --tag ...` on
    the tag. It never publishes. Wait for it to be green.
-4. **Publish** (maintainer, needs the npm 2FA code), from the repository root:
+4. **Publish** (maintainer, needs your npm 2FA), from the repository root:
 
    ```sh
-   npm run release:publish -- --otp 123456
+   npm run release:publish                    # npm prints a link to approve in the browser
+   npm run release:publish -- --otp 123456    # or use an authenticator code
    ```
 
    It clones the tag into a temporary directory, installs, builds,

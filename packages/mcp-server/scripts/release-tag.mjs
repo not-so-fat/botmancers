@@ -35,4 +35,4 @@ process.stdout.write(`${dry ? 'would tag' : 'tagging'} ${tag} at ${sha.slice(0, 
 if (dry) process.exit(0);
 if (!local) git('tag', tag, sha);
 git('push', 'origin', tag);
-process.stdout.write(`pushed ${tag}; watch release-botmancers, then run the registry smoke and promote to latest (2FA)\n`);
+process.stdout.write(`pushed ${tag}; watch release-botmancers, then the maintainer runs npm run release:publish\n`);
