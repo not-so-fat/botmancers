@@ -1,7 +1,7 @@
 # Runs the release gate (version, changelog, app build, tests, package contents,
 # canary installs of the exact tarball) against a botmancers-v<version> tag pushed
 # by `npm run release:tag:push`. It never publishes: the operator runs
-# `npm run release:publish -- --otp <code>` (2FA) after this check is green.
+# `npm run release:publish` (2FA) after this check is green.
 name: release-botmancers
 
 on:

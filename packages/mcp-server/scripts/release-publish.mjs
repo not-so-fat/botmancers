@@ -2,8 +2,9 @@
 // so the tarball is built from exactly the tagged commit, never from a working tree.
 // Run it from the repository root once release-botmancers.yml is green on the tag:
 //
-//   npm run release:publish -- --otp 123456    publish (the 2FA code is the only manual input)
-//   npm run release:publish -- --dry           do everything except publish
+//   npm run release:publish                     publish; npm prints a link to approve in the browser (passkey/web login)
+//   npm run release:publish -- --otp 123456     publish with an authenticator code instead
+//   npm run release:publish -- --dry            do everything except publish
 //
 // The tag is botmancers-v<version of origin/main>, the one `npm run release:tag:push` created.
 // It refuses when that tag is not on the remote or the version is already on the registry.
@@ -20,7 +21,7 @@ const fail = message => {
   process.stderr.write(`release:publish: ${message}\n`);
   process.exit(1);
 };
-if (!dry && !/^\d{6,8}$/.test(otp ?? '')) fail('pass the npm 2FA code: npm run release:publish -- --otp <code> (or --dry)');
+if (otpAt >= 0 && !/^\d{6,8}$/.test(otp ?? '')) fail('--otp needs the 6 to 8 digit code from your authenticator');
 
 const out = (command, commandArgs, cwd) => execFileSync(command, commandArgs, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const run = (command, commandArgs, cwd) => {
@@ -50,7 +51,7 @@ try {
   run('npm', ['run', 'build'], pkg);
   run('npm', ['run', 'build:app'], pkg);
   run('npm', ['run', 'release:check', '--', '--tag', tag], pkg);
-  run('npm', dry ? ['publish', '--dry-run'] : ['publish', '--otp', otp], pkg);
+  run('npm', dry ? ['publish', '--dry-run'] : otp ? ['publish', '--otp', otp] : ['publish'], pkg);
   if (!dry) {
     process.stdout.write(`published botmancers@${version}\n`);
     process.stdout.write(`${out('npm', ['view', `botmancers@${version}`, 'version', 'dist.integrity', 'dist-tags'], process.cwd())}\n`);

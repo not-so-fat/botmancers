@@ -234,7 +234,7 @@ Release check PASSED for botmancers@${version}. Nothing was published.
 Operator steps (see packages/mcp-server/RELEASING.md):
   1. npm run release:tag:push   (repository root; after the release PR is merged)
      -> CI re-runs this check against the tag (it does not publish)
-  2. npm run release:publish -- --otp <code>   (operator; publishes to latest from a clean clone of the tag)
+  2. npm run release:publish   (operator; approve the npm login link or pass --otp <code>; publishes to latest from a clean clone of the tag)
   3. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
      node packages/mcp-server/scripts/smoke-product-install.mjs --registry ${version}
      BOTMANCERS_VERSION=${version} bash scripts/install.sh   (managed install from the registry, clean account)
