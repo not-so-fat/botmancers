@@ -1627,7 +1627,159 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // NOT-503: the provider-session registry (lib/provider-sessions,
+    // docs/core-engine.md Provider sessions). Every Session Binding gets
+    // its registry row under its own id, so existing references never
+    // change.
+    version: 17,
+    name: 'provider_sessions',
+    up: db => {
+      db.exec(`
+        -- One row per native runtime session Botmancers knows, under a
+        -- stable Botmancers reference (id). provider_session_id is private:
+        -- only the owner-only local debug disclosure ever returns it. A row
+        -- linked to a Session Binding uses the binding's id as its id.
+        -- availability/lifecycle/resumable/busy are independent provider
+        -- facts; resumable NULL means the provider was never asked.
+        CREATE TABLE provider_sessions (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL,
+          runtime_connection_id TEXT NOT NULL,
+          provider_kind TEXT NOT NULL,
+          provider_session_id TEXT NOT NULL,
+          binding_id TEXT UNIQUE,
+          origin TEXT NOT NULL CHECK (origin IN ('binding', 'discovered', 'started')),
+          title TEXT,
+          workspace TEXT,
+          provider_created_at INTEGER,
+          provider_updated_at INTEGER,
+          availability TEXT NOT NULL DEFAULT 'available' CHECK (availability IN ('available', 'missing')),
+          lifecycle TEXT NOT NULL DEFAULT 'open' CHECK (lifecycle IN ('open', 'archived')),
+          resumable INTEGER CHECK (resumable IS NULL OR resumable IN (0, 1)),
+          busy INTEGER NOT NULL DEFAULT 0 CHECK (busy IN (0, 1)),
+          capabilities TEXT,
+          last_synced_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          CHECK (origin <> 'binding' OR binding_id = id),
+          FOREIGN KEY (agent_id) REFERENCES bots(id),
+          FOREIGN KEY (binding_id) REFERENCES session_bindings(id)
+        );
+        -- Repeated discovery is idempotent: at most one unlinked row per
+        -- (Agent, connection, provider session). The same provider id on
+        -- another connection or Agent is another session.
+        CREATE UNIQUE INDEX idx_provider_sessions_native
+          ON provider_sessions(agent_id, runtime_connection_id, provider_session_id) WHERE binding_id IS NULL;
+        CREATE INDEX idx_provider_sessions_lookup
+          ON provider_sessions(agent_id, runtime_connection_id, provider_session_id);
+
+        -- One row per provider turn Botmancers started (start or send),
+        -- keyed by the requester's idempotency key. provider_turn_id is
+        -- private.
+        CREATE TABLE provider_session_turns (
+          id TEXT PRIMARY KEY,
+          session_ref TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('start', 'send')),
+          authority TEXT NOT NULL CHECK (authority IN ('read_only', 'workspace_write')),
+          requester_kind TEXT NOT NULL,
+          requester_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          request_hash TEXT NOT NULL,
+          provider_turn_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('running', 'completed', 'failed', 'cancelled')),
+          output TEXT,
+          failure_code TEXT,
+          correlation TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          finished_at INTEGER,
+          UNIQUE (agent_id, requester_kind, requester_id, idempotency_key),
+          FOREIGN KEY (session_ref) REFERENCES provider_sessions(id)
+        );
+        CREATE INDEX idx_provider_session_turns_session ON provider_session_turns(session_ref, created_at);
+
+        -- Append-only audit of registry syncs and provider turns. Names
+        -- Botmancers rows only, never a provider id.
+        CREATE TABLE provider_session_events (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL,
+          session_ref TEXT,
+          turn_id TEXT,
+          type TEXT NOT NULL,
+          detail TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_provider_session_events_agent ON provider_session_events(agent_id, created_at);
+
+        CREATE TRIGGER trg_provider_sessions_fk BEFORE INSERT ON provider_sessions
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: provider_sessions.agent_id')
+            WHERE NOT EXISTS (SELECT 1 FROM bots WHERE id = NEW.agent_id);
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: provider_sessions.binding_id')
+            WHERE NEW.binding_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM session_bindings WHERE id = NEW.binding_id AND agent_id = NEW.agent_id);
+        END;
+        CREATE TRIGGER trg_provider_sessions_identity BEFORE UPDATE OF
+          id, agent_id, runtime_connection_id, provider_kind, provider_session_id, origin, created_at
+        ON provider_sessions
+        BEGIN
+          SELECT RAISE(ABORT, 'provider_sessions identity is immutable');
+        END;
+        CREATE TRIGGER trg_provider_session_turns_fk BEFORE INSERT ON provider_session_turns
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: provider_session_turns.session_ref')
+            WHERE NOT EXISTS (SELECT 1 FROM provider_sessions WHERE id = NEW.session_ref AND agent_id = NEW.agent_id);
+        END;
+        CREATE TRIGGER trg_provider_session_events_append_only BEFORE UPDATE ON provider_session_events
+        BEGIN
+          SELECT RAISE(ABORT, 'provider_session_events are append-only');
+        END;
+        -- Delete side: the Agent and binding delete paths
+        -- (deleteEngineRecordsForAgent / deleteEngineRecords) remove or
+        -- unlink registry rows first; the catalog joins bots, so a raw
+        -- delete never surfaces an orphan.
+        CREATE TRIGGER trg_provider_sessions_restrict BEFORE DELETE ON provider_sessions
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed: provider_session_turns.session_ref')
+            WHERE EXISTS (SELECT 1 FROM provider_session_turns WHERE session_ref = OLD.id);
+        END;
+      `);
+      backfillProviderSessions(db);
+    },
+  },
 ];
+
+// The runtime connection a Session Binding's Agent uses: its registered
+// connection (NOT-502), else the local connection for the binding's
+// adapter (an engine database opened without the registration columns).
+function bindingConnectionSql(db: Db): string {
+  const columns = db.prepare('PRAGMA table_info(bots)').all() as { name: string }[];
+  return columns.some(column => column.name === 'runtime_connection_id')
+    ? "COALESCE(bot.runtime_connection_id, 'rc-local-' || b.adapter)"
+    : "'rc-local-' || b.adapter";
+}
+
+// Migration 17 backfill: one registry row per existing binding, under the
+// binding's own id (the public reference never changes), origin 'binding'.
+// Nothing was ever asked of a provider, so resumable stays unknown and no
+// sync time is recorded; availability defaults to available because
+// missing needs provider evidence. Idempotent: bindings already linked are
+// skipped.
+function backfillProviderSessions(db: Db): void {
+  db.prepare(`
+    INSERT INTO provider_sessions (
+      id, agent_id, runtime_connection_id, provider_kind, provider_session_id, binding_id, origin,
+      availability, lifecycle, resumable, busy, created_at, updated_at
+    )
+    SELECT b.id, b.agent_id, ${bindingConnectionSql(db)}, b.adapter, b.external_session_id, b.id, 'binding',
+      'available', 'open', NULL, 0, b.created_at, COALESCE(b.released_at, b.created_at)
+    FROM session_bindings b
+    JOIN bots bot ON bot.id = b.agent_id
+    WHERE NOT EXISTS (SELECT 1 FROM provider_sessions p WHERE p.binding_id = b.id)
+    ORDER BY b.created_at ASC, b.id ASC
+  `).run();
+}
 
 // Migration 13 backfill (contract, Migration). Lineage: an intake root is
 // depth 0, a Wake-created request its parent turn's depth + 1, a
@@ -2265,6 +2417,22 @@ export function createEngineStore(db: Db) {
   `);
   const getEvent = db.prepare('SELECT * FROM engine_events WHERE id = ?');
   const getBinding = db.prepare('SELECT * FROM session_bindings WHERE id = ?');
+  // NOT-503: registers a new binding in the provider-session registry
+  // (migration 17). Skipped on a database migrated only through an older
+  // version (migration tests build those).
+  const registerBinding = (bindingId: string) => {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_sessions'").get()) return;
+    db.prepare(`
+      INSERT INTO provider_sessions (
+        id, agent_id, runtime_connection_id, provider_kind, provider_session_id, binding_id, origin,
+        availability, lifecycle, resumable, busy, created_at, updated_at
+      )
+      SELECT b.id, b.agent_id, ${bindingConnectionSql(db)}, b.adapter, b.external_session_id, b.id, 'binding',
+        'available', 'open', NULL, 0, b.created_at, b.created_at
+      FROM session_bindings b JOIN bots bot ON bot.id = b.agent_id
+      WHERE b.id = ?
+    `).run(bindingId);
+  };
 
   function requireRequest(id: string): WorkRequest {
     const row = getRequest.get(id) as WorkRequest | undefined;
@@ -2669,6 +2837,8 @@ export function createEngineStore(db: Db) {
           id, input.agentId, input.adapter, input.conversationId ?? null, input.requestId ?? null,
           input.externalSessionId, input.sourceAttemptId ?? null, now
         );
+        // NOT-503: the binding's registry row, under the binding's id.
+        registerBinding(id);
         if (input.requestId) {
           insertEvent(input.requestId, 'session_bound', { binding_id: id, adapter: input.adapter }, input.sourceAttemptId ?? null, now);
         }
@@ -2771,6 +2941,10 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   } finally {
     authorized.clear();
   }
+  // NOT-503: a binding's own registry row goes with it (with its turns);
+  // a native session the binding was linked to stays, unlinked.
+  deleteProviderSessions(db, `origin = 'binding' AND binding_id IN ${inSet}`, list(bindings));
+  db.prepare(`UPDATE provider_sessions SET binding_id = NULL WHERE binding_id IN ${inSet}`).run(list(bindings));
   // Attempts and bindings reference each other (resume / source), but
   // never in a cycle: each reference was to a row that already existed.
   // Peel unreferenced rows until both sets are empty.
@@ -2820,6 +2994,16 @@ function deleteSessionExchanges(db: Db, where: string, ...args: unknown[]): void
   db.prepare('DELETE FROM session_exchanges WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids));
 }
 
+// NOT-503: removes matching registry rows with their turns and events.
+// Callers run it inside their transaction.
+function deleteProviderSessions(db: Db, where: string, ...args: unknown[]): void {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_sessions'").get()) return;
+  const refs = JSON.stringify((db.prepare(`SELECT id FROM provider_sessions WHERE ${where}`).all(...args) as { id: string }[]).map(row => row.id));
+  db.prepare('DELETE FROM provider_session_events WHERE session_ref IN (SELECT value FROM json_each(?))').run(refs);
+  db.prepare('DELETE FROM provider_session_turns WHERE session_ref IN (SELECT value FROM json_each(?))').run(refs);
+  db.prepare('DELETE FROM provider_sessions WHERE id IN (SELECT value FROM json_each(?))').run(refs);
+}
+
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
   db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM delegation_chains WHERE conversation_id = ?').run(conversationId);
@@ -2842,6 +3026,11 @@ export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
   db.prepare('DELETE FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL)').run(agentId, agentId);
   // NOT-475: deleting either Agent deletes its grants.
   db.prepare('DELETE FROM wake_grants WHERE caller_agent_id = ? OR target_agent_id = ?').run(agentId, agentId);
+  // NOT-503: every registry row of the Agent, native or bound.
+  deleteProviderSessions(db, 'agent_id = ?', agentId);
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_session_events'").get()) {
+    db.prepare('DELETE FROM provider_session_events WHERE agent_id = ?').run(agentId);
+  }
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE target_agent_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE agent_id = ?',

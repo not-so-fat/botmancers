@@ -1,0 +1,249 @@
+// NOT-503: one transport-neutral contract for the native sessions a
+// coding-agent runtime holds, whether or not Botmancers created them.
+//
+// A SessionProvider is selected by a registered Agent's runtime connection
+// (bots.runtime_connection_id, lib/agent-registration), never by Agent
+// Deck. It discovers, reads, starts, resumes, observes, and cancels
+// sessions on that runtime and reports facts only: it never chooses
+// orchestration, never widens authority, never stores Botmancers state,
+// and never writes conversation messages. Grants, scope, authority,
+// idempotency, audit, and the session registry belong to Botmancers
+// (./provider-sessions). AttemptAdapter (./attempt-adapter) stays the
+// per-turn seam of the Work Request engine; a provider may implement its
+// turns with one, or with a provider-native turn handle as here.
+//
+// Provider session and turn identifiers are opaque: Botmancers stores them
+// privately and hands them back verbatim, never parses or synthesizes them,
+// and never returns them in a normal API, MCP, or UI response.
+import type { AttemptCorrelation } from './attempt-adapter';
+import type { ScopeKind } from './agent-registration';
+
+// Capabilities are data, not assumptions: each provider says what it can
+// do, and Botmancers refuses an unsupported operation before calling it.
+export const SESSION_PROVIDER_CAPABILITIES = ['list', 'search', 'read', 'resume', 'start', 'cancel', 'usage'] as const;
+export type SessionProviderCapability = (typeof SESSION_PROVIDER_CAPABILITIES)[number];
+
+// The authority a turn runs with. Always explicit on every start/send; a
+// provider never infers it from the runtime or the workspace.
+export const SESSION_AUTHORITIES = ['read_only', 'workspace_write'] as const;
+export type SessionAuthority = (typeof SESSION_AUTHORITIES)[number];
+
+export interface SessionProviderCapabilities {
+  list: boolean;
+  search: boolean;
+  read: boolean;
+  resume: boolean;
+  start: boolean;
+  cancel: boolean;
+  usage: boolean;
+  // The authority modes the runtime can enforce. A mode not listed is
+  // refused, never downgraded or upgraded.
+  authorities: SessionAuthority[];
+  // The largest list/transcript page the provider returns. Botmancers clamps
+  // every request to it.
+  max_page_size: number;
+}
+
+// Independent session facts. Availability and lifecycle are the
+// provider's; resumable is what the provider says about continuing it (an
+// archived or long-idle session may still be resumable); busy is whether a
+// turn is in flight right now.
+export type SessionAvailability = 'available' | 'missing';
+export type SessionLifecycle = 'open' | 'archived';
+
+export interface ProviderSessionRecord {
+  // Opaque provider identifier. Private to Botmancers.
+  provider_session_id: string;
+  title: string | null;
+  // Absolute workspace the session runs in, when the provider knows it.
+  workspace: string | null;
+  created_at: number | null;
+  updated_at: number | null;
+  lifecycle: SessionLifecycle;
+  resumable: boolean;
+  busy: boolean;
+}
+
+// The registered scope, translated for the provider. For a 'sessions'
+// scope the list holds the provider ids of the selected Botmancers refs.
+// Botmancers re-checks every returned record against it regardless.
+export interface ProviderScope {
+  kind: ScopeKind;
+  workspaces: string[];
+  provider_session_ids: string[];
+}
+
+export interface ProviderPage<T> {
+  items: T[];
+  // Opaque continuation, or null on the last page.
+  next_cursor: string | null;
+}
+
+export interface TranscriptEntry {
+  // Stable per session; ordering key within the transcript.
+  seq: number;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  text: string;
+  at: number | null;
+}
+
+export interface ProviderCallContext {
+  signal?: AbortSignal | null;
+  // Epoch ms after which the call is abandoned.
+  deadline_at?: number | null;
+  correlation: AttemptCorrelation;
+}
+
+export interface ListSessionsInput extends ProviderCallContext {
+  scope: ProviderScope;
+  // Free-text search; only with the 'search' capability.
+  query?: string | null;
+  cursor?: string | null;
+  limit: number;
+}
+
+export interface ReadTranscriptInput extends ProviderCallContext {
+  provider_session_id: string;
+  cursor?: string | null;
+  limit: number;
+}
+
+interface TurnInputBase extends ProviderCallContext {
+  prompt: string;
+  authority: SessionAuthority;
+  // Botmancers' idempotency key for this turn. A provider that sees the same
+  // key twice returns the original turn instead of starting another.
+  idempotency_key: string;
+}
+
+export interface StartSessionInput extends TurnInputBase {
+  // Explicit, absolute. Botmancers has already checked it against scope.
+  workspace: string;
+}
+
+export interface SendTurnInput extends TurnInputBase {
+  provider_session_id: string;
+}
+
+export interface ProviderTurnHandle {
+  // Opaque provider turn identifier. Private to Botmancers.
+  provider_turn_id: string;
+  provider_session_id: string;
+}
+
+export interface ObserveTurnInput extends ProviderCallContext {
+  provider_turn_id: string;
+}
+
+export interface ProviderTurnResult {
+  status: 'completed' | 'failed' | 'cancelled';
+  provider_session_id: string;
+  output: string | null;
+  failure: { code: string; message: string } | null;
+  usage?: { input_tokens: number | null; output_tokens: number | null } | null;
+  finished_at: number;
+}
+
+export interface CancelTurnInput extends ProviderCallContext {
+  provider_turn_id: string;
+}
+
+// cancelled: this call stopped the turn. already_terminal: it had already
+// ended (a repeated cancel lands here, so cancel is idempotent).
+export type ProviderCancelOutcome = 'cancelled' | 'already_terminal';
+
+export type ProviderErrorCode =
+  | 'unsupported'
+  | 'unsupported_authority'
+  | 'not_found'
+  | 'unavailable'
+  | 'invalid_input'
+  | 'busy'
+  | 'not_resumable'
+  | 'cancelled'
+  | 'timed_out';
+
+export interface ProviderError {
+  code: ProviderErrorCode;
+  // Internal diagnostic text; never shown verbatim to a caller.
+  message: string;
+}
+
+export type ProviderResult<T> = { ok: true; value: T } | { ok: false; error: ProviderError };
+
+export interface SessionProvider {
+  // Stable provider kind (for example 'fake-direct'); recorded on the
+  // registry row, never used to infer authority.
+  readonly kind: string;
+  capabilities(): SessionProviderCapabilities;
+  listSessions(input: Readonly<ListSessionsInput>): Promise<ProviderResult<ProviderPage<ProviderSessionRecord>>>;
+  // ok with null value: the provider no longer has the session (missing).
+  getSession(input: Readonly<ProviderCallContext & { provider_session_id: string }>): Promise<ProviderResult<ProviderSessionRecord | null>>;
+  readTranscript(input: Readonly<ReadTranscriptInput>): Promise<ProviderResult<ProviderPage<TranscriptEntry>>>;
+  startSession(input: Readonly<StartSessionInput>): Promise<ProviderResult<ProviderTurnHandle>>;
+  sendTurn(input: Readonly<SendTurnInput>): Promise<ProviderResult<ProviderTurnHandle>>;
+  // Resolves once the turn is terminal (or the signal/deadline fires, as
+  // a 'cancelled' / 'timed_out' error that leaves the turn running).
+  observeTurn(input: Readonly<ObserveTurnInput>): Promise<ProviderResult<ProviderTurnResult>>;
+  cancelTurn(input: Readonly<CancelTurnInput>): Promise<ProviderResult<ProviderCancelOutcome>>;
+}
+
+export function providerError(code: ProviderErrorCode, message: string): { ok: false; error: ProviderError } {
+  return { ok: false, error: { code, message: message.slice(0, 500) } };
+}
+
+export function providerOk<T>(value: T): { ok: true; value: T } {
+  return { ok: true, value };
+}
+
+// Defensive copy of what a provider reported: unknown keys dropped, bad
+// values refused, page size clamped, authorities filtered to known modes.
+export function normalizeCapabilities(raw: Partial<SessionProviderCapabilities> | null | undefined): SessionProviderCapabilities {
+  const flag = (value: unknown) => value === true;
+  const size = Number(raw?.max_page_size);
+  return {
+    list: flag(raw?.list),
+    search: flag(raw?.search),
+    read: flag(raw?.read),
+    resume: flag(raw?.resume),
+    start: flag(raw?.start),
+    cancel: flag(raw?.cancel),
+    usage: flag(raw?.usage),
+    authorities: SESSION_AUTHORITIES.filter(mode => Array.isArray(raw?.authorities) && raw.authorities.includes(mode)),
+    max_page_size: Number.isInteger(size) && size > 0 ? Math.min(size, MAX_PROVIDER_PAGE) : DEFAULT_PROVIDER_PAGE,
+  };
+}
+
+export const DEFAULT_PROVIDER_PAGE = 25;
+export const MAX_PROVIDER_PAGE = 100;
+
+// ---- provider selection ----
+//
+// Providers register per runtime connection id, or per connection provider
+// (codex, claude, ...) as the fallback for every connection of that kind.
+// Nothing is registered by default: real runtime adapters land in their own
+// tickets. A connection without a provider has no native-session support;
+// Botmancers-launched sessions stay in the catalog either way.
+
+export type SessionProviderFactory = (connection: { id: string; provider: string }) => SessionProvider;
+
+const byConnection = new Map<string, SessionProviderFactory>();
+const byProviderKind = new Map<string, SessionProviderFactory>();
+
+export function registerSessionProvider(target: { connectionId: string } | { provider: string }, factory: SessionProviderFactory | null): void {
+  const map = 'connectionId' in target ? byConnection : byProviderKind;
+  const key = 'connectionId' in target ? target.connectionId : target.provider;
+  if (factory) map.set(key, factory);
+  else map.delete(key);
+}
+
+export function clearSessionProviders(): void {
+  byConnection.clear();
+  byProviderKind.clear();
+}
+
+export function sessionProviderFor(connection: { id: string; provider: string } | null | undefined): SessionProvider | null {
+  if (!connection) return null;
+  const factory = byConnection.get(connection.id) ?? byProviderKind.get(connection.provider);
+  return factory ? factory(connection) : null;
+}
