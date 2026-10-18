@@ -1748,6 +1748,20 @@ const MIGRATIONS: Migration[] = [
       backfillProviderSessions(db);
     },
   },
+  {
+    // NOT-506: what the runtime reported for a provider turn (Claude Code's
+    // result usage and total_cost_usd). Nullable: NULL is "not reported";
+    // an explicit zero is stored as zero. Never estimated from prices.
+    version: 18,
+    name: 'provider_turn_usage',
+    up: db => {
+      db.exec(`
+        ALTER TABLE provider_session_turns ADD COLUMN input_tokens INTEGER;
+        ALTER TABLE provider_session_turns ADD COLUMN output_tokens INTEGER;
+        ALTER TABLE provider_session_turns ADD COLUMN total_cost_usd REAL;
+      `);
+    },
+  },
 ];
 
 // The runtime connection a Session Binding's Agent uses: its registered

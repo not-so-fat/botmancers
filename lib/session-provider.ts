@@ -140,8 +140,18 @@ export interface ProviderTurnResult {
   provider_session_id: string;
   output: string | null;
   failure: { code: string; message: string } | null;
-  usage?: { input_tokens: number | null; output_tokens: number | null } | null;
+  // What the runtime reported, never estimated: each field is null when the
+  // runtime did not report it (or reported something malformed), and an
+  // explicit zero stays zero. total_cost_usd is the runtime's own figure;
+  // Botmancers never infers a price from tokens.
+  usage?: ProviderReportedUsage | null;
   finished_at: number;
+}
+
+export interface ProviderReportedUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_cost_usd?: number | null;
 }
 
 export interface CancelTurnInput extends ProviderCallContext {
@@ -161,7 +171,13 @@ export type ProviderErrorCode =
   | 'busy'
   | 'not_resumable'
   | 'cancelled'
-  | 'timed_out';
+  | 'timed_out'
+  // NOT-506: runtime-reported refusals with a stable meaning. None of them
+  // is ever answered by starting a different session.
+  | 'auth_required'
+  | 'permission_denied'
+  | 'incompatible_version'
+  | 'usage_limit';
 
 export interface ProviderError {
   code: ProviderErrorCode;
@@ -221,14 +237,16 @@ export const MAX_PROVIDER_PAGE = 100;
 //
 // Providers register per runtime connection id, or per connection provider
 // (codex, claude, ...) as the fallback for every connection of that kind.
-// Nothing is registered by default: real runtime adapters land in their own
-// tickets. A connection without a provider has no native-session support;
+// Below both sit the built-in direct adapters (NOT-506: Claude Code, see
+// ./claude-session-provider), registered by ./provider-sessions; a
+// connection kind without one has no native-session support, and
 // Botmancers-launched sessions stay in the catalog either way.
 
 export type SessionProviderFactory = (connection: { id: string; provider: string }) => SessionProvider;
 
 const byConnection = new Map<string, SessionProviderFactory>();
 const byProviderKind = new Map<string, SessionProviderFactory>();
+const builtins = new Map<string, SessionProviderFactory>();
 
 export function registerSessionProvider(target: { connectionId: string } | { provider: string }, factory: SessionProviderFactory | null): void {
   const map = 'connectionId' in target ? byConnection : byProviderKind;
@@ -237,13 +255,22 @@ export function registerSessionProvider(target: { connectionId: string } | { pro
   else map.delete(key);
 }
 
-export function clearSessionProviders(): void {
+// The default adapter for every connection of a provider kind, used when
+// nothing more specific is registered.
+export function registerBuiltinSessionProvider(provider: string, factory: SessionProviderFactory): void {
+  builtins.set(provider, factory);
+}
+
+// Clears explicit registrations; { builtins: true } also drops the built-in
+// adapters (tests that must never reach a real runtime).
+export function clearSessionProviders(options: { builtins?: boolean } = {}): void {
   byConnection.clear();
   byProviderKind.clear();
+  if (options.builtins) builtins.clear();
 }
 
 export function sessionProviderFor(connection: { id: string; provider: string } | null | undefined): SessionProvider | null {
   if (!connection) return null;
-  const factory = byConnection.get(connection.id) ?? byProviderKind.get(connection.provider);
+  const factory = byConnection.get(connection.id) ?? byProviderKind.get(connection.provider) ?? builtins.get(connection.provider);
   return factory ? factory(connection) : null;
 }
