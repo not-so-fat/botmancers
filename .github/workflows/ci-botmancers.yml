@@ -40,6 +40,14 @@ jobs:
           npm run test:agent-registration
           npm run test:agent-registration-ui
           npm run test:bot-definition
+      - name: Focused session provider/catalog suites (NOT-503)
+        working-directory: .
+        run: |
+          npm run test:session-provider
+          npm run test:session-catalog
+          npm run test:engine-store
+          npm run test:service-grants
+          npm run test:mcp-bridge
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

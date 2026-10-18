@@ -299,6 +299,9 @@ export interface ServiceSessionView {
   title: string;
   status: SessionSummary['status'];
   resumable: boolean;
+  // NOT-503: additive. Independent provider facts and the session's source.
+  source: SessionSummary['source'];
+  state: SessionSummary['state'];
   created_at: number;
   ended_at: number | null;
   last_activity_at: number;
@@ -316,6 +319,8 @@ function sessionView(summary: SessionSummary): ServiceSessionView {
     title: summary.title,
     status: summary.status,
     resumable: summary.resumable,
+    source: summary.source,
+    state: { ...summary.state },
     created_at: summary.created_at,
     ended_at: summary.ended_at,
     last_activity_at: summary.last_activity_at,
@@ -612,7 +617,15 @@ export function sendServiceSessionMessage(
   ctx: ServiceContext, ref: string, input: { content: string; idempotencyKey: string }, onCommit?: CommitHook,
 ): { accepted: SessionMessageAccepted; dispatched: Promise<void> } {
   const binding = bindingOf(ref);
-  if (!binding) throw NOT_FOUND.session();
+  if (!binding) {
+    // NOT-503: a native session (no binding) is listed but cannot take a
+    // session message yet; the grant check still comes first.
+    const native = db.prepare('SELECT agent_id FROM provider_sessions WHERE id = ? AND binding_id IS NULL').get(ref) as { agent_id: string } | undefined;
+    if (native && holds(ctx, native.agent_id, 'sessions:message')) {
+      throw new ServiceApiError('session_not_resumable', 'This session is not reachable through session messages.');
+    }
+    throw NOT_FOUND.session();
+  }
   if (!holds(ctx, binding.agent_id, 'sessions:message')) throw notGranted('session');
   const principal = ctx.principal;
   const key = `${MESSAGE_KEY_PREFIX}${input.idempotencyKey}`;

@@ -15,6 +15,7 @@
 //
 // Fields holding a Botmancers id or reference are left as they are.
 import db, { bots } from './db';
+import { privateProviderIds } from './provider-sessions';
 
 // Launch-context and Agent configuration fields whose values are
 // engine-private (working directory, Deck selection, Hermes profile).
@@ -55,6 +56,8 @@ function collectPrivate(value: unknown, into: Set<string>, privateKey = false): 
 function privateIds(): string[] {
   const ids = new Set<string>();
   for (const row of db.prepare('SELECT external_session_id AS id FROM session_bindings').all() as { id: string }[]) ids.add(row.id);
+  // NOT-503: native provider session and turn ids (lib/provider-sessions).
+  for (const id of privateProviderIds(db)) ids.add(id);
   const attempts = db.prepare('SELECT external_session_id, external_run_id FROM work_attempts WHERE external_session_id IS NOT NULL OR external_run_id IS NOT NULL')
     .all() as { external_session_id: string | null; external_run_id: string | null }[];
   for (const row of attempts) {
