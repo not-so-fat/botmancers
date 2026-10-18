@@ -140,8 +140,19 @@ export interface ProviderTurnResult {
   provider_session_id: string;
   output: string | null;
   failure: { code: string; message: string } | null;
-  usage?: { input_tokens: number | null; output_tokens: number | null } | null;
+  usage?: ProviderTurnUsage | null;
   finished_at: number;
+}
+
+// The common usage sample: what the provider reported for one turn, from
+// structured events only. cached_input_tokens is a subset of input_tokens.
+// cost_usd is null unless the provider itself reports a cost; it is never
+// estimated from model prices or plans.
+export interface ProviderTurnUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens?: number | null;
+  cost_usd?: number | null;
 }
 
 export interface CancelTurnInput extends ProviderCallContext {
@@ -157,6 +168,8 @@ export type ProviderErrorCode =
   | 'unsupported_authority'
   | 'not_found'
   | 'unavailable'
+  // The runtime is installed and reachable but not signed in.
+  | 'auth_required'
   | 'invalid_input'
   | 'busy'
   | 'not_resumable'
@@ -176,6 +189,11 @@ export interface SessionProvider {
   // registry row, never used to infer authority.
   readonly kind: string;
   capabilities(): SessionProviderCapabilities;
+  // Optional readiness check, awaited before every call. A provider that
+  // learns its capabilities at runtime (an installed-version probe) does it
+  // here; capabilities() reflects the result afterwards. An error
+  // (unavailable, unsupported, auth_required) refuses the call.
+  ready?(input: Readonly<ProviderCallContext>): Promise<ProviderResult<void>>;
   listSessions(input: Readonly<ListSessionsInput>): Promise<ProviderResult<ProviderPage<ProviderSessionRecord>>>;
   // ok with null value: the provider no longer has the session (missing).
   getSession(input: Readonly<ProviderCallContext & { provider_session_id: string }>): Promise<ProviderResult<ProviderSessionRecord | null>>;
@@ -221,14 +239,17 @@ export const MAX_PROVIDER_PAGE = 100;
 //
 // Providers register per runtime connection id, or per connection provider
 // (codex, claude, ...) as the fallback for every connection of that kind.
-// Nothing is registered by default: real runtime adapters land in their own
-// tickets. A connection without a provider has no native-session support;
-// Botmancers-launched sessions stay in the catalog either way.
+// A runtime adapter may also install a default for its provider kind
+// (NOT-504: lib/codex-session-provider for 'codex'); explicit registrations
+// win, and clearSessionProviders removes defaults too. A connection without
+// a provider has no native-session support; Botmancers-launched sessions
+// stay in the catalog either way.
 
 export type SessionProviderFactory = (connection: { id: string; provider: string }) => SessionProvider;
 
 const byConnection = new Map<string, SessionProviderFactory>();
 const byProviderKind = new Map<string, SessionProviderFactory>();
+const defaults = new Map<string, SessionProviderFactory>();
 
 export function registerSessionProvider(target: { connectionId: string } | { provider: string }, factory: SessionProviderFactory | null): void {
   const map = 'connectionId' in target ? byConnection : byProviderKind;
@@ -237,13 +258,19 @@ export function registerSessionProvider(target: { connectionId: string } | { pro
   else map.delete(key);
 }
 
+export function registerDefaultSessionProvider(provider: string, factory: SessionProviderFactory | null): void {
+  if (factory) defaults.set(provider, factory);
+  else defaults.delete(provider);
+}
+
 export function clearSessionProviders(): void {
   byConnection.clear();
   byProviderKind.clear();
+  defaults.clear();
 }
 
 export function sessionProviderFor(connection: { id: string; provider: string } | null | undefined): SessionProvider | null {
   if (!connection) return null;
-  const factory = byConnection.get(connection.id) ?? byProviderKind.get(connection.provider);
+  const factory = byConnection.get(connection.id) ?? byProviderKind.get(connection.provider) ?? defaults.get(connection.provider);
   return factory ? factory(connection) : null;
 }

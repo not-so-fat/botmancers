@@ -39,6 +39,9 @@ import {
   type TranscriptEntry,
 } from './session-provider';
 import type { AttemptCorrelation } from './attempt-adapter';
+// NOT-504: installs the direct Codex provider as the default for 'codex'
+// runtime connections (an explicit registration still wins).
+import './codex-session-provider';
 
 type Db = Database.Database;
 
@@ -47,6 +50,7 @@ export type ProviderSessionErrorCode =
   | 'session_not_found'
   | 'turn_not_found'
   | 'provider_unavailable'
+  | 'auth_required'
   | 'unsupported'
   | 'scope_missing'
   | 'out_of_scope'
@@ -177,6 +181,16 @@ function agentContext(db: Db, agentId: string): AgentContext {
   };
 }
 
+// agentContext plus the provider's readiness check (an installed-version
+// probe, for example). Capabilities are re-read once the provider is ready.
+async function readyContext(db: Db, agentId: string, input: { correlation?: AttemptCorrelation | null; signal?: AbortSignal | null; deadlineAt?: number | null } = {}): Promise<AgentContext> {
+  const ctx = agentContext(db, agentId);
+  if (!ctx.provider.ready) return ctx;
+  const ready = await ctx.provider.ready(callContext(input));
+  if (!ready.ok) failWith(ready.error);
+  return { ...ctx, capabilities: normalizeCapabilities(ctx.provider.capabilities()) };
+}
+
 function requireCapability(ctx: AgentContext, capability: SessionProviderCapability): void {
   if (!ctx.capabilities[capability]) {
     throw new ProviderSessionError('unsupported', `The session provider does not support ${capability}.`);
@@ -203,7 +217,8 @@ function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'pr
           : error.code === 'not_resumable' ? 'not_resumable'
             : error.code === 'invalid_input' ? 'invalid_input'
               : error.code === 'unavailable' ? 'provider_unavailable'
-                : fallback;
+                : error.code === 'auth_required' ? 'auth_required'
+                  : fallback;
   // Provider diagnostics never reach the caller verbatim.
   throw new ProviderSessionError(code, `The session provider refused the call (${error.code}).`);
 }
@@ -364,7 +379,7 @@ export interface SyncInput {
 // scope. Repeating it imports nothing twice: each provider session maps to
 // one reference (findRow), and the partial unique index backs that up.
 export async function syncAgentSessions(db: Db, agentId: string, input: SyncInput = {}): Promise<SyncResult> {
-  const ctx = agentContext(db, agentId);
+  const ctx = await readyContext(db, agentId, input);
   requireCapability(ctx, 'list');
   const query = typeof input.query === 'string' && input.query.trim() ? input.query.trim().slice(0, 200) : null;
   if (query) requireCapability(ctx, 'search');
@@ -397,7 +412,7 @@ export async function syncAgentSessions(db: Db, agentId: string, input: SyncInpu
 // Re-reads one session's metadata from the provider. A session the provider
 // no longer has becomes availability 'missing' (never deleted).
 export async function refreshProviderSession(db: Db, agentId: string, ref: string, input: SyncInput = {}): Promise<ProviderSessionRow> {
-  const ctx = agentContext(db, agentId);
+  const ctx = await readyContext(db, agentId, input);
   const row = requireSession(db, agentId, ref);
   if (row.runtime_connection_id !== ctx.connection.id) {
     throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
@@ -431,7 +446,7 @@ function redactor(row: ProviderSessionRow, turnIds: string[] = []): (text: strin
 export async function readProviderTranscript(
   db: Db, agentId: string, ref: string, input: { cursor?: string | null; limit?: number | null; correlation?: AttemptCorrelation | null; signal?: AbortSignal | null; now?: number } = {},
 ): Promise<TranscriptPage> {
-  const ctx = agentContext(db, agentId);
+  const ctx = await readyContext(db, agentId, input);
   requireCapability(ctx, 'read');
   const row = requireSession(db, agentId, ref);
   if (row.runtime_connection_id !== ctx.connection.id) {
@@ -566,10 +581,11 @@ export async function startProviderSession(db: Db, agentId: string, input: Start
   checkTurnInput(input);
   const workspace = absoluteWorkspace(input.workspace);
   if (!workspace) throw new ProviderSessionError('invalid_input', 'workspace must be an absolute path.');
-  const ctx = agentContext(db, agentId);
+  agentContext(db, agentId);
   const hash = turnHash({ kind: 'start', workspace, prompt: input.prompt, authority: input.authority });
   const replay = replayOrConflict(existingTurn(db, agentId, input), hash);
   if (replay) return { turn: turnView(db, replay), replayed: true };
+  const ctx = await readyContext(db, agentId, input);
   requireCapability(ctx, 'start');
   const scope = requireScope(ctx);
   if (scope.kind === 'sessions') throw new ProviderSessionError('out_of_scope', 'The Agent is scoped to selected sessions; it cannot start new ones.');
@@ -614,11 +630,12 @@ export async function startProviderSession(db: Db, agentId: string, input: Start
 // released Session Binding is not, by itself, a reason to refuse.
 export async function sendProviderTurn(db: Db, agentId: string, ref: string, input: TurnInput): Promise<{ turn: ProviderTurnView; replayed: boolean }> {
   checkTurnInput(input);
-  const ctx = agentContext(db, agentId);
+  agentContext(db, agentId);
   const row = requireSession(db, agentId, ref);
   const hash = turnHash({ kind: 'send', ref, prompt: input.prompt, authority: input.authority });
   const replay = replayOrConflict(existingTurn(db, agentId, input), hash);
   if (replay) return { turn: turnView(db, replay), replayed: true };
+  const ctx = await readyContext(db, agentId, input);
   requireCapability(ctx, 'resume');
   if (row.runtime_connection_id !== ctx.connection.id) {
     throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
@@ -678,7 +695,12 @@ function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: numb
         SELECT 1 FROM provider_session_turns WHERE session_ref = ? AND state = 'running') THEN 1 ELSE 0 END,
         provider_updated_at = ?, updated_at = ? WHERE id = ?
     `).run(turn.session_ref, now, now, turn.session_ref);
-    appendEvent(db, { agentId: turn.agent_id, sessionRef: turn.session_ref, turnId: turn.id, type: `turn_${state}`, now });
+    // The provider's usage sample, when it reported one (never an estimate).
+    const usage = result.usage ? {
+      input_tokens: result.usage.input_tokens ?? null, output_tokens: result.usage.output_tokens ?? null,
+      cached_input_tokens: result.usage.cached_input_tokens ?? null, cost_usd: result.usage.cost_usd ?? null,
+    } : null;
+    appendEvent(db, { agentId: turn.agent_id, sessionRef: turn.session_ref, turnId: turn.id, type: `turn_${state}`, detail: usage ? { usage } : {}, now });
   }).immediate();
 }
 
@@ -691,7 +713,7 @@ export async function observeProviderTurn(
 ): Promise<ProviderTurnView> {
   const turn = requireTurn(db, agentId, turnRef);
   if (turn.state !== 'running') return turnView(db, turn);
-  const ctx = agentContext(db, agentId);
+  const ctx = await readyContext(db, agentId, input);
   const result = await ctx.provider.observeTurn({ ...callContext(input), provider_turn_id: turn.provider_turn_id });
   if (!result.ok) {
     if (result.error.code === 'cancelled' || result.error.code === 'timed_out') return turnView(db, requireTurn(db, agentId, turnRef));
@@ -708,7 +730,7 @@ export async function cancelProviderTurn(
 ): Promise<{ turn: ProviderTurnView; outcome: 'cancelled' | 'already_terminal' }> {
   const turn = requireTurn(db, agentId, turnRef);
   if (turn.state !== 'running') return { turn: turnView(db, turn), outcome: 'already_terminal' };
-  const ctx = agentContext(db, agentId);
+  const ctx = await readyContext(db, agentId, input);
   requireCapability(ctx, 'cancel');
   const now = input.now ?? Date.now();
   appendEvent(db, { agentId, sessionRef: turn.session_ref, turnId: turn.id, type: 'cancel_requested', now });
