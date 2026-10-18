@@ -166,9 +166,9 @@ A **SessionProvider** (`lib/session-provider.ts`) is the transport-neutral
 boundary to the sessions a coding-agent runtime holds natively, including ones
 that existed before Botmancers. It is selected by the registered Agent's
 runtime connection (`registerSessionProvider({ connectionId } | { provider })`),
-never by Agent Deck; nothing is registered by default, so real runtime
-adapters land separately. `AttemptAdapter` remains the per-turn seam of the
-Work Request engine.
+never by Agent Deck. Only Muse connections have a default provider (below);
+other runtime adapters land separately. `AttemptAdapter` remains the
+per-turn seam of the Work Request engine.
 
 - **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,
   `start`, `cancel`, `usage`, the enforceable authority modes (`read_only`,
@@ -213,6 +213,48 @@ Work Request engine.
   references only; the service redactor treats every registry id as private.
   `?debug=external_session_id` on the owner detail route remains the single
   exception, for native sessions too.
+
+#### Direct Muse Code sessions
+
+`lib/muse-session-provider.ts` is the provider for runtime connections whose
+provider is `muse` (kind `muse-msp`). It speaks the stable Muse Session
+Protocol (MSP v1) to `muse serve` over stdio; Agent Deck stays an optional
+alternate launch profile and is never required.
+
+- **Probe.** The `initialize` handshake supplies the Muse version, the MSP
+  envelope schema version, and session durability. Muse older than 1.4.0 or
+  a schema other than 1 is `unsupported` and reports no capability; an
+  ephemeral host can start sessions but cannot list, read, or resume them;
+  a credential failure is `auth_required` and a missing binary
+  `binary_missing` (both `provider_unavailable` to callers).
+- **Operations.** `session/list` (host cursor, bounded limit, `sessionId`
+  filter for a selected-sessions scope, `name`/`title` text filter for
+  search, refused as `unsupported` when the host does not echo it),
+  `session/read` (metadata, inline history paged locally, `lastTurn`; it
+  never attaches), `session/start` + `turn/start` in the explicit workspace,
+  `session/resume` + `turn/start` on the exact session, `turn/completed` and
+  `session/tokenUsage` notifications for observation, and `turn/cancel`.
+  Every command carries a fresh UUIDv7 `commandId`; nothing else is sent.
+- **Authority.** `muse serve` fixes its sandbox at startup, so there is one
+  host per authority: `read_only` runs with `--disable-write
+  --disable-shell`, `workspace_write` with the default posture. Approval mode
+  is `denyUnmatched`. A busy session is refused, never queued or steered.
+- **Facts.** MSP v1 has no archive state, so lifecycle is `open`;
+  resumable means a durable host persisted the session; busy means
+  `running` or an active turn. Subagent children and malformed rows are
+  skipped. Usage is `turn/completed.usage`, else the sum of the turn's
+  `session/tokenUsage` records (a field any record omits is unknown), else
+  null. MSP reports no per-turn cost, so cost is never estimated.
+- **Restart.** Muse ids stay private (the turn id is
+  `<sessionId>:<turnId>`). After a Botmancers restart, observe reads the
+  durable session: its `lastTurn` gives the terminal; a turn that died with
+  its host is `failed` with `host_lost`, and no replacement session is
+  started. Resume reloads the same session in its own workspace.
+- **Configuration.** `BOTMANCERS_MUSE_BIN` (default `muse`) and
+  `BOTMANCERS_MUSE_SERVE_ARGS` (a JSON array of extra `muse serve` flags,
+  for example `["--provider","echo"]`).
+- **Smoke.** `node scripts/muse-msp-smoke.js` imports and resumes a real
+  past session through a real `muse serve` across a Botmancers restart.
 
 ### Session exchanges
 

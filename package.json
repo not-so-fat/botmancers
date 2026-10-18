@@ -69,7 +69,9 @@
     "test:grok-handoff": "node test-grok-handoff.js",
     "test:home-paths": "node test-home-paths.js",
     "test:service-grants": "node test-service-grants.js",
-    "test:session-provider": "node test-session-provider.js"
+    "test:session-provider": "node test-session-provider.js",
+    "test:muse-session-provider": "node test-muse-session-provider.js",
+    "smoke:muse-msp": "node scripts/muse-msp-smoke.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

@@ -39,8 +39,13 @@ import {
   type TranscriptEntry,
 } from './session-provider';
 import type { AttemptCorrelation } from './attempt-adapter';
+import { registerMuseSessionProvider } from './muse-session-provider';
 
 type Db = Database.Database;
+
+// NOT-508: Muse connections get the direct MSP provider by default; other
+// runtimes keep no default until their own adapters land.
+registerMuseSessionProvider();
 
 export type ProviderSessionErrorCode =
   | 'agent_not_found'
