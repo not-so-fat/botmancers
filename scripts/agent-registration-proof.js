@@ -151,6 +151,16 @@ async function main() {
     true;
   `;
 
+  async function scrollDialogToEnd() {
+    await evaluate('(() => { const b = document.querySelector(".new-agent-body"); b.scrollTop = b.scrollHeight; return true; })()');
+    await sleep(200);
+  }
+
+  async function showAgentCard(selector = '[data-field=runtime-read]') {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).closest('section').scrollIntoView({ block: 'start' }), true`);
+    await sleep(200);
+  }
+
   async function openNewAgent() {
     await evaluate(helpers);
     await waitFor('!!document.querySelector("button.add-btn")', 'New button');
@@ -177,6 +187,8 @@ async function main() {
   await sleep(300);
   check(await evaluate('!document.querySelector("[data-field=deck]") && !document.querySelector("#bot-workdir")'), 'Direct chosen: no Agent Deck controls rendered');
   await shot('desktop-1440x900-new-agent-direct');
+  await scrollDialogToEnd();
+  await shot('desktop-1440x900-new-agent-direct-profile-policy');
   await evaluate('document.querySelector(".new-agent-dialog button[type=submit]").click(), true');
   await waitFor('!document.querySelector(".new-agent-dialog")', 'dialog closes after Create');
   check(deckRequests().length === 0 && stub.hits.length === 0, `no Agent Deck request while registering the direct Agent (browser=${deckRequests().length}, stub=${stub.hits.length})`);
@@ -189,6 +201,8 @@ async function main() {
   await waitFor('!!document.querySelector("#bot-deck") && document.querySelectorAll("#bot-deck option").length > 1', 'deck list from the stub');
   await evaluate(`__setValue('#bot-deck', 'deck-builder')`);
   check(deckRequests().length > 0 && stub.hits.includes('GET /api/launch/decks'), 'picking Agent Deck loads the verified deck list');
+  await evaluate(`document.querySelector('[data-field=launch-profile]').scrollIntoView({ block: 'start' }), true`);
+  await sleep(200);
   await shot('desktop-1440x900-new-agent-agent-deck');
   await evaluate('document.querySelector(".new-agent-dialog button[type=submit]").click(), true');
   await waitFor('!document.querySelector(".new-agent-dialog")', 'dialog closes after Create');
@@ -206,11 +220,13 @@ async function main() {
   reset();
   await navigate(`${URL_BASE}/bots/${direct.id}/config`);
   await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'direct Config read view');
+  await showAgentCard();
   await shot('desktop-1440x900-config-direct');
   await evaluate(helpers);
   await evaluate(`Array.from(document.querySelectorAll('[data-field=runtime-read] button')).find(b => b.textContent.trim() === 'Edit').click(), true`);
   await waitFor('!!document.querySelector("#cfg-connection")', 'direct Config edit form');
   await sleep(500);
+  await showAgentCard('.registration-fields');
   await shot('desktop-1440x900-config-direct-edit');
   await navigate(`${URL_BASE}/bots/${direct.id}/config`);
   await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'direct Config after reload');
@@ -218,6 +234,7 @@ async function main() {
   check(deckRequests().length === 0 && stub.hits.length === 0, `direct Agent Config (read, Edit, reload) requested no deck (browser=${deckRequests().length}, stub=${stub.hits.length})`);
   await navigate(`${URL_BASE}/bots/${deck.id}/config`);
   await waitFor(`!!document.querySelector("[data-field=runtime-read]") && document.querySelector("[data-field=runtime-read]").innerText.includes('builder')`, 'Agent Deck Config shows its deck');
+  await showAgentCard();
   await shot('desktop-1440x900-config-agent-deck');
 
   console.log('\n(4) Mobile 390x800');
@@ -231,9 +248,9 @@ async function main() {
   check(deckRequests().length === 0, 'mobile: direct Config requested no deck');
   await navigate(`${URL_BASE}/`);
   await openNewAgent();
+  await evaluate(helpers);
   await evaluate(`__click('input[name="bot-profile"][value="direct"]')`);
-  await evaluate(`document.querySelector('[data-field=launch-profile]').scrollIntoView({ block: 'center' }), true`);
-  await sleep(300);
+  await scrollDialogToEnd();
   const fits = await evaluate('(() => { const r = document.querySelector(".new-agent-dialog").getBoundingClientRect(); return r.left >= 16 && r.right <= innerWidth - 16 && r.bottom <= innerHeight - 16; })()');
   check(fits, 'mobile: New Agent dialog stays inside a 16px inset');
   await shot('mobile-390x800-new-agent-direct');
