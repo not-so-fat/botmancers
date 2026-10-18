@@ -166,8 +166,9 @@ A **SessionProvider** (`lib/session-provider.ts`) is the transport-neutral
 boundary to the sessions a coding-agent runtime holds natively, including ones
 that existed before Botmancers. It is selected by the registered Agent's
 runtime connection (`registerSessionProvider({ connectionId } | { provider })`),
-never by Agent Deck; nothing is registered by default, so real runtime
-adapters land separately. `AttemptAdapter` remains the per-turn seam of the
+never by Agent Deck. The built-in adapter for `claude` connections is the
+direct Claude Code provider ([claude-session-provider.md](claude-session-provider.md),
+NOT-506); other runtimes have none yet. `AttemptAdapter` remains the per-turn seam of the
 Work Request engine.
 
 - **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,
@@ -207,6 +208,10 @@ Work Request engine.
   provider is called. Turns are replayed by idempotency key (a different body
   is `idempotency_conflict`), observed from the persisted provider turn id
   (also after a restart), and a repeated cancel is `already_terminal`.
+- **Reported usage.** Engine migration 18 adds nullable `input_tokens`,
+  `output_tokens`, and `total_cost_usd` to `provider_session_turns`, exactly
+  as the runtime reported them (explicit zero kept, never estimated); turn
+  views carry them as `usage`.
 - **Disclosure.** Provider session and turn ids appear only in the registry.
   Turn views, transcript pages (the session's own id is redacted from
   text), catalog rows, events, and service responses carry Botmancers

@@ -1,0 +1,3 @@
+{"sessionId":"{{ID}}","version":"2.1.302","isSidechain":false,"userType":"external","entrypoint":"cli","gitBranch":"main","type":"user","timestamp":"2026-03-01T10:00:00.000Z","cwd":"{{ROOT}}/alpha","uuid":"u-2026-03-01T10:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Try a spike on caching"}]}}
+{"sessionId":"{{ID}}","version":"2.1.302","isSidechain":false,"userType":"external","entrypoint":"cli","gitBranch":"main","type":"assistant","timestamp":"2026-03-01T10:00:05.000Z","cwd":"{{ROOT}}/alpha","uuid":"a-2026-03-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Spike done"}]}}
+{"type": "summary", "summary": "Caching spike", "leafUuid": "x"}

@@ -48,6 +48,13 @@ jobs:
           npm run test:engine-store
           npm run test:service-grants
           npm run test:mcp-bridge
+      - name: Focused Claude provider and Agent Deck compatibility suites (NOT-506)
+        working-directory: .
+        run: |
+          npm run test:claude-session-provider
+          npm run test:agent-deck-run
+          npm run test:agent-deck-finalization
+          npm run test:agent-deck-settings
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

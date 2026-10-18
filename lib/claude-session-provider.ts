@@ -96,6 +96,8 @@ export interface ClaudeProviderOptions {
   // How long start/send wait for the first structured event (default 60s).
   startupTimeoutMs?: number;
   pollMs?: number;
+  // Clock for archive classification only (tests).
+  now?: () => number;
 }
 
 export function defaultClaudeStateDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -172,6 +174,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
   const isAlive = options.isPidAlive ?? pidAlive;
   const startupTimeoutMs = options.startupTimeoutMs ?? 60_000;
   const pollMs = options.pollMs ?? 100;
+  const clock = options.now ?? Date.now;
   const turnsDir = path.join(stateDir, 'turns');
   const keysDir = path.join(stateDir, 'keys');
 
@@ -394,7 +397,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
       const start = Math.max(0, Number(input.cursor ?? 0) || 0);
       const query = (input.query ?? '').trim().toLowerCase();
       const busy = busySessions();
-      const now = Date.now();
+      const now = clock();
       const archiveAfter = cleanupPeriodDays(configDir) * DAY_MS;
       const items: ProviderSessionRecord[] = [];
       // Each page parses a bounded number of files, in scope or not.
@@ -414,7 +417,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
       const file = findSessionFile(configDir, input.provider_session_id);
       if (!file) return providerOk(null);
       const meta = readSessionMeta({ id: input.provider_session_id, file, mtime_ms: fs.statSync(file).mtimeMs });
-      return providerOk(meta ? record(meta, busySessions(), Date.now(), cleanupPeriodDays(configDir) * DAY_MS) : null);
+      return providerOk(meta ? record(meta, busySessions(), clock(), cleanupPeriodDays(configDir) * DAY_MS) : null);
     },
 
     async readTranscript(input) {
