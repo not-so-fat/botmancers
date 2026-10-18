@@ -11,6 +11,7 @@
 // in state.calls so tests can count them.
 'use strict';
 
+/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS fixture consumed by standalone Node tests. */
 const fs = require('fs');
 
 const BASE = Date.UTC(2026, 9, 1, 8, 0, 0);

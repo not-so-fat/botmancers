@@ -8,6 +8,10 @@
 // unknown or foreign references are 404; external provider session ids
 // never appear in normal JSON, only behind the labeled debug parameter.
 // The routes run behind the real owner boundary (proxy.ts) on loopback.
+// NOT-503: native sessions from a fake direct provider share the catalog;
+// availability, lifecycle, provider resumability, and busy are independent
+// (released, archived, missing, resumable combinations), on the owner
+// routes and the service API, without disclosing provider ids.
 // Self-contained: isolated SQLite file, no network.
 'use strict';
 
@@ -171,6 +175,97 @@ async function main() {
   } finally {
     await host.close();
   }
+
+  console.log('\nNOT-503: native sessions and independent state');
+  // A separate Agent on its own runtime connection with a fake direct
+  // provider, so the fixture's Dev/Scout counts above stay fixed.
+  const contract = jiti('./lib/session-provider.ts');
+  const ps = jiti('./lib/provider-sessions.ts');
+  const fake = require('./test-support/fake-session-provider');
+  const statePath = path.join(os.tmpdir(), `botmancers-session-catalog-provider-${process.pid}.json`);
+  fs.rmSync(statePath, { force: true });
+  const connection = dbModule.runtimeConnections.create({ provider: 'codex', label: 'Codex native', host: 'This computer' });
+  contract.registerSessionProvider({ connectionId: connection.id }, () => fake.createFakeSessionProvider({ statePath }));
+  const nat = bots.create({
+    name: 'Native', title: 'Implementer', description: 'Native sessions', agent: 'codex', runtime_connection_id: connection.id, launch_profile: 'direct',
+    session_scope_kind: 'all_provider_sessions', session_scope_items: '[]', policy_mode: 'read_only', allow_new_sessions: 1, allow_resume_with_edits: 0,
+  });
+  const natConv = conversations.getByBotId(nat.id);
+  // A released binding whose provider still resumes it, and its active
+  // replacement no provider has synced yet.
+  const releasedBinding = engine.bindSession({ agentId: nat.id, adapter: 'codex', externalSessionId: 'prov-released-SECRET', conversationId: natConv.id, now: BASE + 80 * MIN });
+  const activeBinding = engine.bindSession({ agentId: nat.id, adapter: 'codex', externalSessionId: 'prov-active-SECRET', conversationId: natConv.id, now: BASE + 81 * MIN });
+  fake.seedFakeProvider(statePath, [
+    { id: 'prov-released-SECRET', title: 'Released but resumable', workspace: '/work/n', resumable: true },
+    { id: 'prov-archived-SECRET', title: 'Archived but resumable', workspace: '/work/n', lifecycle: 'archived', resumable: true },
+    { id: 'prov-gone-SECRET', title: 'Gone later', workspace: '/work/n', resumable: true },
+    { id: 'prov-stuck-SECRET', title: 'Never resumable', workspace: '/work/n', resumable: false },
+    { id: 'prov-busy-SECRET', title: 'Busy now', workspace: '/work/n', resumable: true },
+  ]);
+  let natCursor = null;
+  do natCursor = (await ps.syncAgentSessions(db, nat.id, { cursor: natCursor })).next_cursor; while (natCursor);
+  const refOf = id => db.prepare('SELECT id FROM provider_sessions WHERE agent_id = ? AND provider_session_id = ?').get(nat.id, id).id;
+  const archivedRef = refOf('prov-archived-SECRET');
+  const goneRef = refOf('prov-gone-SECRET');
+  const stuckRef = refOf('prov-stuck-SECRET');
+  const busyRef = refOf('prov-busy-SECRET');
+  assert(refOf('prov-released-SECRET') === releasedBinding.id, 'a discovered session matching a binding keeps the binding\'s reference');
+  fake.mutateFakeProvider(statePath, state => { state.sessions['prov-gone-SECRET'].deleted = true; });
+  await ps.refreshProviderSession(db, nat.id, goneRef);
+  const busyTurn = await ps.sendProviderTurn(db, nat.id, busyRef, { prompt: '[hold] keep working', authority: 'read_only', idempotencyKey: 'busy-1', requester: { kind: 'person', id: 'local-owner' } });
+  const natRows = Object.fromEntries(catalog.listAgentSessions(db, nat.id, 'all').map(s => [s.ref, s]));
+  const rel = natRows[releasedBinding.id];
+  assert(rel.source === 'botmancers' && rel.status === 'ended' && rel.resumable === false && rel.state.resumable === true
+    && rel.state.availability === 'available' && rel.state.synced_at !== null, 'released + provider-resumable: ended, not engine-resumable, provider resumable');
+  const act = natRows[activeBinding.id];
+  assert(act.source === 'botmancers' && act.status === 'active' && act.state.resumable === null && act.state.synced_at === null && act.state.lifecycle === 'open',
+    'active binding never synced: provider resumability unknown (null), not guessed');
+  const arc = natRows[archivedRef];
+  assert(arc.source === 'native' && arc.status === 'ended' && arc.state.lifecycle === 'archived' && arc.state.resumable === true && arc.resumable === false
+    && arc.ended_at !== null, 'archived + resumable: ended by lifecycle, still resumable by its provider');
+  assert(natRows[goneRef].state.availability === 'missing' && natRows[goneRef].status === 'active', 'missing is its own fact: listed, open, availability missing');
+  assert(natRows[stuckRef].state.resumable === false && natRows[stuckRef].state.availability === 'available', 'available but not resumable');
+  assert(natRows[busyRef].state.busy === true && Object.values(natRows).filter(s => s.state.busy).length === 1, 'busy only where a turn is in flight');
+  assert(Object.keys(natRows).length === 6 && natRows[archivedRef].title === 'Archived but resumable' && natRows[archivedRef].context.workspace === '/work/n'
+    && natRows[archivedRef].context.deck === null && natRows[archivedRef].origin.work_request === null, 'native rows carry provider title and workspace, no Deck or origin');
+  assert(JSON.stringify(catalog.listAgentSessions(db, nat.id, 'ended').map(s => s.ref).sort()) === JSON.stringify([releasedBinding.id, archivedRef].sort()),
+    'the ended filter takes released bindings and archived native sessions');
+  const natLeaks = text => /SECRET/.test(text);
+  assert(!natLeaks(JSON.stringify(natRows)), 'no provider id in any native or bound summary');
+  const host2 = await startRouteHost({ jiti, repoRoot: ROOT });
+  try {
+    const natList = await host2.owner('GET', `/api/bots/${nat.id}/sessions`);
+    assert(natList.status === 200 && natList.json.sessions.length === 6 && !natLeaks(natList.text) && !natList.text.includes('external_session_id'),
+      'GET /api/bots/:id/sessions lists native and bound sessions without provider ids');
+    assert(natList.json.sessions.every(s => s.state && typeof s.state.busy === 'boolean' && ['available', 'missing'].includes(s.state.availability)),
+      'route rows carry the independent state');
+    const natActive = await host2.owner('GET', `/api/bots/${nat.id}/sessions?status=active`);
+    assert(natActive.status === 200 && natActive.json.sessions.length === 4, '?status=active excludes released and archived');
+    const natOne = await host2.owner('GET', `/api/bots/${nat.id}/sessions/${archivedRef}`);
+    assert(natOne.status === 200 && natOne.json.session.ref === archivedRef && natOne.json.session.source === 'native'
+      && JSON.stringify(natOne.json.session.attempts) === '[]' && !natLeaks(natOne.text), 'GET /api/bots/:id/sessions/:ref for a native reference');
+    const natDebug = await host2.owner('GET', `/api/bots/${nat.id}/sessions/${archivedRef}?debug=external_session_id`);
+    assert(natDebug.status === 200 && natDebug.json.debug.external_session_id === 'prov-archived-SECRET', 'the debug disclosure covers native sessions');
+    const natForeign = await host2.owner('GET', `/api/bots/${dev.id}/sessions/${archivedRef}`);
+    assert(natForeign.status === 404 && !natLeaks(natForeign.text), 'a native reference under another Agent is 404');
+  } finally {
+    await host2.close();
+  }
+  // The service API view is additive and redacted; its message path refuses
+  // a native reference without disclosing anything.
+  const serviceApi = jiti('./lib/service-api.ts');
+  const ctx = { principal: { kind: 'service', id: 'svc-native' }, mode: 'granted', agents: new Map([[nat.id, new Set(['sessions:read', 'sessions:message'])]]) };
+  const servicePage = serviceApi.listServiceSessions(ctx, nat.id, { cursor: null, limit: 2, status: 'all' });
+  const servicePage2 = serviceApi.listServiceSessions(ctx, nat.id, { cursor: servicePage.next_cursor, limit: 10, status: 'all' });
+  assert(servicePage.items.length === 2 && servicePage2.items.length === 4 && servicePage.items.every(item => item.state && item.source),
+    'service sessions paginate across native and bound sessions with additive source/state');
+  assert(!natLeaks(JSON.stringify([servicePage, servicePage2])) && servicePage.items.every(item => !('context' in item)), 'service views stay redacted');
+  let serviceError = null;
+  try { serviceApi.sendServiceSessionMessage(ctx, archivedRef, { content: 'hi', idempotencyKey: 'n-1' }); } catch (error) { serviceError = error; }
+  assert(serviceError && serviceError.code === 'session_not_resumable', 'a session message to a native reference is session_not_resumable');
+  await ps.cancelProviderTurn(db, nat.id, busyTurn.turn.turn_ref);
+  contract.clearSessionProviders();
+  fs.rmSync(statePath, { force: true });
 
   console.log('\nSessions UI source contract');
   const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
