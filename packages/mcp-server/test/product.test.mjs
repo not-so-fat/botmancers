@@ -20,20 +20,19 @@ const SENTINEL_HERMES = 'hermes-SENTINEL-0123456789abcdef';
 const SENTINEL_DECK = 'deck-SENTINEL-0123456789abcdef';
 const SENTINEL_CURSOR = 'cursor-SENTINEL-0123456789abcdef';
 
-async function sandbox(t, { version = VERSION } = {}) {
+async function sandbox(t, { version = VERSION, defaultPorts = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'botmancers-product-')));
   const home = join(root, 'home');
   const app = makeFakeApp(join(root, 'app'), { version });
-  const ui = await freePort();
-  let mcp = await freePort();
+  const ui = defaultPorts ? 3333 : await freePort();
+  let mcp = defaultPorts ? 3332 : await freePort();
   while (mcp === ui) mcp = await freePort();
   const env = (extra = {}) => ({
     PATH: process.env.PATH,
     HOME: join(root, 'user'),
     BOTMANCERS_HOME: home,
     BOTMANCERS_APP_DIR: app,
-    BOTMANCERS_UI_PORT: String(ui),
-    BOTMANCERS_MCP_PORT: String(mcp),
+    ...(defaultPorts ? {} : { BOTMANCERS_UI_PORT: String(ui), BOTMANCERS_MCP_PORT: String(mcp) }),
     BOTMANCERS_STARTUP_TIMEOUT_MS: '15000',
     BOTMANCERS_AGENT_DECK_URL: `http://127.0.0.1:${mcp}`,
     ...extra,
@@ -65,6 +64,32 @@ function assertNoTokens(home, ...outputs) {
 const mode = path => statSync(path).mode & 0o777;
 const record = runFile => JSON.parse(readFileSync(runFile, 'utf8'));
 
+test('fresh setup, stopped status, and help agree on the default UI and MCP ports', async t => {
+  const s = await sandbox(t, { defaultPorts: true });
+  const setup = await s.run(['setup']);
+  assert.equal(setup.code, 0, setup.stderr);
+  assert.match(setup.stdout, /UI http:\/\/127\.0\.0\.1:3333 {3}MCP http:\/\/127\.0\.0\.1:3332\/mcp/);
+
+  const status = await s.run(['status']);
+  assert.equal(status.code, 3, status.stdout);
+  assert.match(status.stdout, /ui\/core {5}http:\/\/127\.0\.0\.1:3333 {2}\(not running\)/);
+  assert.match(status.stdout, /mcp bridge {2}http:\/\/127\.0\.0\.1:3332\/mcp {2}\(not running\)/);
+
+  const help = await s.run(['start', '--help']);
+  assert.equal(help.code, 0, help.stderr);
+  assert.match(help.stdout, /UI\/core on 127\.0\.0\.1:3333 and the MCP bridge\n {28}on 127\.0\.0\.1:3332/);
+
+  const custom = await s.run(['setup'], { BOTMANCERS_UI_PORT: '43333', BOTMANCERS_MCP_PORT: '43332' });
+  assert.equal(custom.code, 0, custom.stderr);
+  assert.match(custom.stdout, /UI http:\/\/127\.0\.0\.1:43333 {3}MCP http:\/\/127\.0\.0\.1:43332\/mcp/);
+  for (const [name, value] of [['BOTMANCERS_UI_PORT', 'bad-ui-port'], ['BOTMANCERS_MCP_PORT', 'bad-mcp-port']]) {
+    const invalid = await s.run(['status'], { [name]: value });
+    assert.equal(invalid.code, 2);
+    assert.match(invalid.stderr, new RegExp(`${name} must be an integer port`));
+    assert.ok(!invalid.stderr.includes(value));
+  }
+});
+
 test('setup creates an owner-only home with distinct credentials and only the service-token digest in core.env', async t => {
   const s = await sandbox(t);
   const env = { HERMES_API_SERVER_KEY: SENTINEL_HERMES, AGENT_DECK_RUN_TOKEN: SENTINEL_DECK, CURSOR_API_KEY: SENTINEL_CURSOR };
@@ -74,6 +99,7 @@ test('setup creates an owner-only home with distinct credentials and only the se
   assert.match(first.stdout, /HERMES_API_SERVER_KEY=<your Hermes gateway key>/);
   assert.match(first.stdout, /AGENT_DECK_RUN_TOKEN=<token issued by Agent Deck>/);
   assert.match(first.stdout, /botmancers start --daemon/);
+  assert.match(first.stdout, new RegExp(`UI http://127\\.0\\.0\\.1:${s.ui} {3}MCP http://127\\.0\\.0\\.1:${s.mcp}/mcp`), 'explicit port overrides reach setup output');
 
   assert.equal(mode(s.home), 0o700);
   for (const dir of ['config', 'data', 'files', 'skills', 'logs', 'run']) assert.equal(mode(join(s.home, dir)), 0o700, dir);
@@ -265,11 +291,12 @@ test('a bridge that cannot authenticate to the core exits 7 and the core is stop
 test('occupied ports are reported by start (exit 6) and doctor', async t => {
   const s = await sandbox(t);
   assert.equal((await s.run(['setup'])).code, 0);
-  for (const [port, label] of [[s.ui, 'UI/core'], [s.mcp, 'MCP bridge']]) {
+  for (const [port, label, variable] of [[s.ui, 'UI/core', 'BOTMANCERS_UI_PORT'], [s.mcp, 'MCP bridge', 'BOTMANCERS_MCP_PORT']]) {
     const blocker = await listenOn(port);
     const start = await s.run(['start', '--daemon']);
     assert.equal(start.code, 6, `${label}: ${start.stderr}`);
     assert.match(start.stderr, new RegExp(`port ${port} on 127\\.0\\.0\\.1 \\(${label}\\) is in use by another process`));
+    assert.match(start.stderr, new RegExp(`choose another port with ${variable}`));
     const doctor = await s.run(['doctor']);
     assert.equal(doctor.code, 1);
     assert.match(doctor.stdout, new RegExp(`fail {2}ports {7}port ${port} on 127\\.0\\.0\\.1 is in use by another process`));

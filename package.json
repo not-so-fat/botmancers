@@ -3,9 +3,9 @@
   "version": "0.4.2",
   "private": true,
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 43123",
+    "dev": "next dev -H 127.0.0.1 -p 3333",
     "build": "next build",
-    "start": "next start -H 127.0.0.1 -p 43123",
+    "start": "next start -H 127.0.0.1 -p 3333",
     "release:tag:push": "node packages/mcp-server/scripts/release-tag.mjs",
     "release:publish": "node packages/mcp-server/scripts/release-publish.mjs",
     "lint": "eslint",

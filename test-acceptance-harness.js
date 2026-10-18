@@ -112,7 +112,7 @@ async function main() {
   `;
   const probed = await run(process.execPath, ['-e', probe], harness.env(), harness.root);
   const guards = (() => { try { return JSON.parse(probed.out.split('\n').find(line => line.startsWith('GUARDS ')).slice(7)); } catch { return null; } })();
-  assert(guards && guards.port > 0 && guards.port !== 43123, `the route host listens on an OS-assigned loopback port (${guards && guards.port}), not the developer server port${guards ? '' : `: ${probed.err.slice(-800)}`}`);
+  assert(guards && guards.port > 0 && guards.port !== 3333, `the route host listens on an OS-assigned loopback port (${guards && guards.port}), not the developer server port${guards ? '' : `: ${probed.err.slice(-800)}`}`);
   assert(guards && Object.values(guards.refused).every(Boolean) && guards.recorded === Object.keys(guards.refused).length,
     `spawn guard refuses every non-git/node process and shell command (${guards && JSON.stringify(guards.refused)})`);
   assert(!fs.existsSync(marker), 'no refused command ever started (its marker file does not exist)');

@@ -23,7 +23,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
 import { homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ENV } from './config.js';
+import { ENV, LEGACY_DEFAULT_PORT } from './config.js';
 import { PRODUCT_HOST, type HomePaths, ensurePrivateDir, readEnvFile, writePrivateFile } from './home.js';
 
 export const SKILL_NAME = 'botmancers-collaboration';
@@ -318,7 +318,12 @@ export function inspectClient(id: ClientId, env: NodeJS.ProcessEnv, paths: HomeP
   else if (state!.found === 'unmanageable') mcp = { state: 'conflict', reason: `${layout.config}: ${state!.reason}` };
   else if (state!.found === 'absent') mcp = { state: manifest ? 'missing' : 'absent' };
   else if (target && state!.hash === wantedEntry(layout, target).hash) mcp = { state: 'current' };
-  else if (manifest && state!.hash === manifest.mcp.hash) mcp = { state: 'stale', reason: 'its URL or token no longer matches this Botmancers' };
+  else if (manifest && state!.hash === manifest.mcp.hash) {
+    const legacy = target && wantedEntry(layout, { ...target, url: `http://${PRODUCT_HOST}:${LEGACY_DEFAULT_PORT}/mcp` });
+    mcp = state!.hash === legacy?.hash
+      ? { state: 'stale', reason: `it still points to the old default http://${PRODUCT_HOST}:${LEGACY_DEFAULT_PORT}/mcp` }
+      : { state: 'stale', reason: 'its URL or token no longer matches this Botmancers' };
+  }
   else mcp = { state: 'conflict', reason: `${layout.config} already has an MCP server named "${MCP_SERVER_NAME}" that Botmancers did not write or that was edited` };
 
   const conflicts: string[] = [];

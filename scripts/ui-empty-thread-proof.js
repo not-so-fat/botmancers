@@ -16,7 +16,7 @@
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm start   (other shell)
 //        BOTMANCERS_DB_PATH=.temporal/design-fixture.db node scripts/ui-empty-thread-proof.js \
-//          [--url http://127.0.0.1:43123] [--out .agent-dealer-visual-qa]
+//          [--url http://127.0.0.1:3333] [--out .agent-dealer-visual-qa]
 'use strict';
 
 const fs = require('fs');
@@ -28,7 +28,7 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
-const URL_BASE = arg('--url', 'http://127.0.0.1:43123');
+const URL_BASE = arg('--url', 'http://127.0.0.1:3333');
 const OUT = arg('--out', '.agent-dealer-visual-qa');
 process.env.BOTMANCERS_DB_PATH = process.env.BOTMANCERS_DB_PATH || path.join('.temporal', 'design-fixture.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';

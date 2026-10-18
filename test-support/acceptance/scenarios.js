@@ -41,7 +41,7 @@ scenario('talk-answer', 'The owner talks to a coding Agent over the real UI rout
   ctx.deckScripts.set(codex.deck_id, () => ({ result: 'The build is green.', sessionId: 'codex-session-1' }));
   const conversation = ctx.conversations.getByBotId(codex.id);
   const host = await ctx.routeHost();
-  ctx.engineCheck(host.port !== 43123, `route host bound an ephemeral port (${host.port}), not the developer server port`);
+  ctx.engineCheck(host.port !== 3333, `route host bound an ephemeral port (${host.port}), not the developer server port`);
   const sent = await host.owner('POST', `/api/conversations/${conversation.id}/messages`, { content: 'Is the build green?', idempotencyKey: 'talk-1' });
   const requestIds = sent.json && sent.json.intake ? sent.json.intake.requestIds : [];
   ctx.engineCheck(sent.status === 200 && requestIds.length === 1, `the owner message was accepted with one request (status ${sent.status})`);

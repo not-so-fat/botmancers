@@ -1,5 +1,5 @@
 // The supervised Botmancers product: the packaged UI/API/core engine on
-// 127.0.0.1:43123 and the MCP bridge on 127.0.0.1:43124, run as two child
+// 127.0.0.1:3333 and the MCP bridge on 127.0.0.1:3332, run as two child
 // processes of one supervisor and reported as one health model.
 //
 //   start [--daemon] [--open]  launch (idempotent: an already healthy product is left alone)

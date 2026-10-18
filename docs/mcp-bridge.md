@@ -288,7 +288,7 @@ session from step 3.
    messages, exchanges) needs explicit owner grants:
    [`service-grants.md`](service-grants.md).
 
-3. **Point the MCP client** at `http://127.0.0.1:43123/api/v0/mcp` and send the
+3. **Point the MCP client** at `http://127.0.0.1:3333/api/v0/mcp` and send the
    header `Authorization: Bearer $TOKEN`. Botmancers listens on loopback only.
    To reach it from another machine, put a TLS-terminating tunnel or reverse
    proxy in front, and pass the `Authorization` header through unchanged.
@@ -298,7 +298,7 @@ session from step 3.
    exact entry of `BOTMANCERS_MCP_ALLOWED_HOSTS`, and any request carrying an
    `Origin` other than `http://<loopback Host>` or an exact entry of
    `BOTMANCERS_MCP_ALLOWED_ORIGINS`. Either have the proxy rewrite `Host` to
-   `127.0.0.1:43123`, or list its public name:
+   `127.0.0.1:3333`, or list its public name:
 
    ```sh
    BOTMANCERS_MCP_ALLOWED_HOSTS="mcp.example.com"            # comma-separated host[:port]

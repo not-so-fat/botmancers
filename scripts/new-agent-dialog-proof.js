@@ -13,7 +13,7 @@
 // No dependencies beyond Node 22+ (global WebSocket) and a local Chrome.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/design-fixture.db npm run dev   (other shell)
-//        node scripts/new-agent-dialog-proof.js [--url http://localhost:43123] [--out .agent-dealer-visual-qa]
+//        node scripts/new-agent-dialog-proof.js [--url http://localhost:3333] [--out .agent-dealer-visual-qa]
 'use strict';
 
 const fs = require('fs');
@@ -25,7 +25,7 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
-const URL_BASE = arg('--url', 'http://localhost:43123');
+const URL_BASE = arg('--url', 'http://localhost:3333');
 const OUT = arg('--out', '.agent-dealer-visual-qa');
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const INSET = 16;

@@ -52,11 +52,22 @@ test('the bridge library surface is unchanged', async () => {
     assert.ok(name in lib, `export ${name}`);
   }
   assert.deepEqual(lib.EXIT, { ok: 0, config: 2, listen: 3, unavailable: 4, credentials: 5 });
-  assert.equal(lib.DEFAULT_PORT, 43124);
+  assert.equal(lib.DEFAULT_PORT, 3332);
   assert.equal(lib.MCP_CONTRACT, 'botmancers.mcp.v2');
   assert.deepEqual(lib.MCP_CONTRACTS, ['botmancers.mcp.v1', 'botmancers.mcp.v2']);
   assert.equal(lib.loadToolContract().contract, 'botmancers.mcp.v2');
   assert.deepEqual(Object.keys(pkg.exports), ['.', './schemas/botmancers.mcp.v1.tools.json', './schemas/botmancers.mcp.v2.tools.json', './package.json']);
+});
+
+test('the product and development scripts expose one current default port pair', async () => {
+  const root = JSON.parse(read('../../../package.json'));
+  const home = await import('../dist/home.js');
+  const config = await import('../dist/config.js');
+  assert.equal(home.DEFAULT_UI_PORT, 3333);
+  assert.equal(config.DEFAULT_PORT, 3332);
+  assert.match(root.scripts.dev, /(?:^| )-p 3333(?: |$)/);
+  assert.match(root.scripts.start, /(?:^| )-p 3333(?: |$)/);
+  assert.doesNotMatch(`${root.scripts.dev}\n${root.scripts.start}`, /43123|43124/);
 });
 
 test('the bundled schemas are exactly the contracts the Botmancers app captures', () => {

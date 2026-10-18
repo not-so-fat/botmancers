@@ -12,7 +12,8 @@ export const ENV = {
 } as const;
 
 export const DEFAULT_HOST = '127.0.0.1';
-export const DEFAULT_PORT = 43124;
+export const DEFAULT_PORT = 3332;
+export const LEGACY_DEFAULT_PORT = 43124;
 export const MIN_MCP_TOKEN_LENGTH = 16;
 
 export interface BridgeConfig {
@@ -61,7 +62,7 @@ export function parseBotmancersUrl(raw: string): { url?: string; problem?: strin
     parsed = new URL(raw);
   } catch {
     // Never echo the value: an operator may have pasted a token into it.
-    return { problem: `${ENV.url} is not a valid absolute URL. Expected something like http://127.0.0.1:43123.` };
+    return { problem: `${ENV.url} is not a valid absolute URL. Expected something like http://127.0.0.1:3333.` };
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return { problem: `${ENV.url} must use http:// or https:// (got ${parsed.protocol}//).` };
@@ -133,7 +134,7 @@ export function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliCommand {
   const rawUrl = pick('url');
   let botmancersUrl = '';
   if (!rawUrl) {
-    problems.push(`${ENV.url} is required: the Botmancers base URL, for example http://127.0.0.1:43123 (or pass --botmancers-url).`);
+    problems.push(`${ENV.url} is required: the Botmancers base URL, for example http://127.0.0.1:3333 (or pass --botmancers-url).`);
   } else {
     const { url, problem } = parseBotmancersUrl(rawUrl);
     if (problem) problems.push(problem);
@@ -197,7 +198,7 @@ Endpoints:
   GET  /healthz   Liveness (no authentication, no upstream call)
 
 Example:
-  ${ENV.url}=http://127.0.0.1:43123 \\
+  ${ENV.url}=http://127.0.0.1:3333 \\
   ${ENV.serviceToken}=... ${ENV.mcpToken}=$(openssl rand -hex 32) \\
   npx botmancers
 

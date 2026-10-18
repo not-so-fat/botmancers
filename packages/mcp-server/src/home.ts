@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 export const HOME_ENV = 'BOTMANCERS_HOME';
 export const APP_DIR_ENV = 'BOTMANCERS_APP_DIR';
 export const UI_PORT_ENV = 'BOTMANCERS_UI_PORT';
-export const DEFAULT_UI_PORT = 43123;
+export const DEFAULT_UI_PORT = 3333;
 export const PRODUCT_HOST = '127.0.0.1';
 
 export const HOME_DIRS = ['config', 'data', 'files', 'skills', 'logs', 'run'] as const;

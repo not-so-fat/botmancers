@@ -37,12 +37,12 @@ Cursor Grok Bot (remote)
    │  HTTPS, Authorization: Bearer <MCP token>
    ▼
 Operator route: TLS tunnel / reverse proxy (public name, /mcp only)
-   │  plain HTTP on loopback, Host rewritten to 127.0.0.1:43124
+   │  plain HTTP on loopback, Host rewritten to 127.0.0.1:3332
    ▼
-botmancers@0.1.0 bridge   127.0.0.1:43124   checks the MCP token
-   │  http://127.0.0.1:43123/api/v0/mcp, Authorization: Bearer <service token>
+botmancers@0.1.0 bridge   127.0.0.1:3332   checks the MCP token
+   │  http://127.0.0.1:3333/api/v0/mcp, Authorization: Bearer <service token>
    ▼
-Botmancers app            127.0.0.1:43123   checks the service-token digest and the coordinator allowlist
+Botmancers app            127.0.0.1:3333   checks the service-token digest and the coordinator allowlist
 ```
 
 - **Botmancers stays on loopback.** Its UI and `/api/v0` are never routed. Only
@@ -82,7 +82,7 @@ From [`botmancers.env.template`](botmancers.env.template):
 printf %s "<service token>" | shasum -a 256          # -> <SERVICE_TOKEN_SHA256_HEX>
 BOTMANCERS_SERVICE_TOKENS="grok-bot=sha256:<SERVICE_TOKEN_SHA256_HEX>"
 BOTMANCERS_MCP_COORDINATORS="<COORDINATOR_AGENT_NAME>"
-npm start                                            # listens on 127.0.0.1:43123
+npm start                                            # listens on 127.0.0.1:3333
 ```
 
 Allowlist only the coordinators you want Grok Bot to reach. Grok Bot can do
@@ -94,7 +94,7 @@ smoke, use a coordinator whose runtime is not production-critical.
 ```sh
 set -a; . ~/.config/botmancers/grok-bridge.env; set +a
 npx --yes botmancers@0.1.0
-# botmancers 0.1.0: MCP bridge listening on http://127.0.0.1:43124/mcp ...
+# botmancers 0.1.0: MCP bridge listening on http://127.0.0.1:3332/mcp ...
 ```
 
 Always name the exact version. An unpinned `npx botmancers` may resolve a
@@ -107,9 +107,9 @@ Grok Bot runs in Cursor's cloud, so a loopback address cannot reach it. Publish
 **only** the bridge, over HTTPS, using a route that:
 
 - terminates TLS, so the MCP token never travels in cleartext;
-- forwards `/mcp` (POST) to `http://127.0.0.1:43124/mcp` and nothing else;
+- forwards `/mcp` (POST) to `http://127.0.0.1:3332/mcp` and nothing else;
 - passes the `Authorization` header through unchanged;
-- **rewrites `Host` to `127.0.0.1:43124`**. While the bridge is bound to
+- **rewrites `Host` to `127.0.0.1:3332`**. While the bridge is bound to
   loopback, it refuses any other `Host` as a DNS-rebinding guard.
 
 Examples (adapt to your tool and confirm against its documentation):
@@ -119,9 +119,9 @@ Examples (adapt to your tool and confirm against its documentation):
 ingress:
   - hostname: <BRIDGE_PUBLIC_HOST>
     path: ^/mcp$
-    service: http://127.0.0.1:43124
+    service: http://127.0.0.1:3332
     originRequest:
-      httpHostHeader: 127.0.0.1:43124
+      httpHostHeader: 127.0.0.1:3332
   - service: http_status:404
 ```
 
@@ -129,7 +129,7 @@ ingress:
 # Caddyfile
 <BRIDGE_PUBLIC_HOST> {
   handle /mcp {
-    reverse_proxy 127.0.0.1:43124 {
+    reverse_proxy 127.0.0.1:3332 {
       header_up Host {upstream_hostport}
     }
   }
@@ -140,7 +140,7 @@ ingress:
 A private-network route (VPN or tailnet) is acceptable only if Cursor's Grok Bot
 can actually reach it and your security owner has approved it. The same rules
 apply: TLS, `/mcp` only, and the `Host` rewrite. Never bind Botmancers or the
-bridge to `0.0.0.0` on a public interface. Never route port 43123.
+bridge to `0.0.0.0` on a public interface. Never route port 3333.
 
 Check the route before connecting Grok Bot:
 

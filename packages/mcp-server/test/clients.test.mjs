@@ -51,7 +51,7 @@ function seedClient(id, user) {
   return layout;
 }
 
-function sandbox(t) {
+function sandbox(t, { defaultPorts = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'botmancers-clients-')));
   t.after(() => {
     try { chmodSync(join(root, 'user'), 0o700); } catch { /* fine */ }
@@ -62,7 +62,9 @@ function sandbox(t) {
   const home = join(root, 'bm');
   const env = (version, extra = {}) => ({
     PATH: process.env.PATH, HOME: user, BOTMANCERS_HOME: home, BOTMANCERS_DISABLE_AUTOUPDATER: '1',
-    BOTMANCERS_APP_DIR: join(packages()[version], 'app'), BOTMANCERS_MCP_PORT: '43999', BOTMANCERS_UI_PORT: '43998', BOTMANCERS_AGENT_DECK_URL: 'http://127.0.0.1:9', ...extra,
+    BOTMANCERS_APP_DIR: join(packages()[version], 'app'),
+    ...(defaultPorts ? {} : { BOTMANCERS_MCP_PORT: '43999', BOTMANCERS_UI_PORT: '43998' }),
+    BOTMANCERS_AGENT_DECK_URL: 'http://127.0.0.1:9', ...extra,
   });
   const outputs = [];
   const bm = async (args, { version = VERSION, extra } = {}) => {
@@ -98,6 +100,44 @@ const skillHashes = dir => Object.fromEntries(['SKILL.md', 'references/workflows
 const packagedHashes = version => skillHashes(join(packages()[version], 'skills', SKILL));
 
 for (const id of ['codex', 'cursor', 'claude']) {
+  test(`${id}: an owned old-default connection refreshes, while an edited one is preserved`, async t => {
+    const s = sandbox(t, { defaultPorts: true });
+    const layout = seedClient(id, s.user);
+    assert.equal((await s.bm(['setup'])).code, 0);
+
+    const old = await s.bm(['setup', '--client', id], { extra: { BOTMANCERS_MCP_PORT: '43124' } });
+    assert.equal(old.code, 0, old.stderr);
+    assert.equal(entryOf(id, layout).url, 'http://127.0.0.1:43124/mcp');
+
+    const doctor = await s.bm(['doctor']);
+    assert.match(doctor.stdout, new RegExp(`warn +${id} +MCP entry stale \\(it still points to the old default http://127\\.0\\.0\\.1:43124/mcp\\).*repair: botmancers setup --client ${id}$`, 'm'));
+
+    const refreshed = await s.bm(['setup']);
+    assert.equal(refreshed.code, 0, refreshed.stderr);
+    assert.equal(entryOf(id, layout).url, 'http://127.0.0.1:3332/mcp');
+    assert.match(refreshed.stdout, /\(updated\)/);
+
+    // Recreate the legacy URL as a user edit. Its hash no longer matches the
+    // manifest, so neither explicit nor upgrade-style plain setup may rewrite it.
+    if (id === 'codex') {
+      writeFileSync(layout.config, readFileSync(layout.config, 'utf8').replace('url = "http://127.0.0.1:3332/mcp"', 'url = "http://127.0.0.1:43124/mcp"'));
+    } else {
+      const doc = JSON.parse(readFileSync(layout.config, 'utf8'));
+      doc.mcpServers.botmancers.url = 'http://127.0.0.1:43124/mcp';
+      writeFileSync(layout.config, `${JSON.stringify(doc, null, 2)}\n`);
+    }
+    const edited = sha(layout.config);
+    const conflict = await s.bm(['setup', '--client', id]);
+    assert.equal(conflict.code, 12);
+    assert.match(conflict.stderr, /changed nothing/);
+    assert.equal(sha(layout.config), edited);
+    const upgradeStyle = await s.bm(['setup'], { version: NEXT });
+    assert.equal(upgradeStyle.code, 0);
+    assert.match(upgradeStyle.stderr, /changed nothing/);
+    assert.equal(sha(layout.config), edited);
+    s.noLeaks();
+  });
+
   test(`${id}: install, repeat, upgrade, conflict, rollback, and removal keep user files and credentials`, async t => {
     const s = sandbox(t);
     const layout = seedClient(id, s.user);
