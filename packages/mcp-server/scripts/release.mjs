@@ -202,8 +202,17 @@ step('managed install entry point', () => {
 });
 
 step('npm publish --dry-run', () => {
-  const out = run('npm', ['publish', '--dry-run', '--ignore-scripts', '--provenance=false'], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
-  return `would publish ${out.trim().split('\n').pop()} to latest`;
+  try {
+    const out = run('npm', ['publish', '--dry-run', '--ignore-scripts', '--provenance=false'], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+    return `would publish ${out.trim().split('\n').pop()} to latest`;
+  } catch (error) {
+    // Pull-request runs (no --tag) for changes that are not a release bump see the
+    // already-published current version; only the tag run must prove it is publishable.
+    if (!gitTag && /cannot publish over the previously published/i.test(String(error?.message ?? error))) {
+      return `skipped: ${version} is already on the registry (no --tag, so this is not a release run)`;
+    }
+    throw error;
+  }
 });
 
 step('canary install of the exact tarball', () => {
