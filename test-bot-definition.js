@@ -120,7 +120,9 @@ async function main() {
   check('POST without agent defaults to hermes (deck still required)', defaulted.status === 200 && defaulted.json.agent === 'hermes');
 
   const rejectCases = [
-    ['missing deck', { name: 'NoDeck', agent: 'codex' }, /Deck ID is required/],
+    // NOT-502: without a deck the request is not the legacy Agent Deck
+    // shape, so it fails closed on the missing registration instead.
+    ['missing deck', { name: 'NoDeck', agent: 'codex' }, /Runtime connection is required/],
     ['blank deck', { name: 'BlankDeck', agent: 'hermes', deck_id: '   ' }, /Deck ID is required/],
     ['non-string deck', { name: 'ObjDeck', agent: 'claude', deck_id: { id: 'x' } }, /Invalid deck ID/],
     ['numeric deck', { name: 'NumDeck', agent: 'claude', deck_id: 42 }, /Invalid deck ID/],

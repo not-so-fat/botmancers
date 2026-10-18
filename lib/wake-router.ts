@@ -333,9 +333,17 @@ function availabilityOutcome(target: { id: string; name: string }, policy: Execu
   const bot = bots.getById(target.id) as Bot;
   const agent = resolveAgent(bot);
   if (!agent.launchable) {
-    const reason = agent.needs_deck_selection
-      ? `${target.name} has no Agent Deck selected.`
-      : `${target.name} has an unsupported Agent type.`;
+    // NOT-502: one reason per launch blocker; a direct profile never
+    // reports a missing deck.
+    const reason = agent.launch_blocker === 'launch_profile'
+      ? `${target.name} has no Agent Deck selected and no launch profile chosen.`
+      : agent.launch_blocker === 'session_scope'
+        ? `${target.name} has no session scope.`
+        : agent.launch_blocker === 'direct_runtime'
+          ? `${target.name} launches directly; direct ${agent.agent} sessions are not available yet.`
+          : agent.needs_deck_selection
+            ? `${target.name} has no Agent Deck selected.`
+            : `${target.name} has an unsupported Agent type.`;
     return { status: 'blocked', code: 'target_unconfigured', reason, target, policy, grant };
   }
   const availability = (availabilityOverride ?? defaultAvailability)(bot);

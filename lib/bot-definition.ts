@@ -21,6 +21,11 @@
 // API rejects them on write, serialization strips them, and new rows
 // never write them.
 //
+// NOT-502: Agent Deck is now one of two launch profiles (direct |
+// agent_deck, see ./agent-registration). Only the agent_deck profile
+// needs a deck ID; a direct profile never contacts Agent Deck. A stored
+// null profile is an unresolved legacy row: readable, not launchable.
+//
 // This module is pure (no I/O, no network) so the plain-node test suite
 // can load it through jiti. The DB migration in ./db.ts applies
 // migrateLegacyAgentFields to every row without an agent.
@@ -96,6 +101,13 @@ export interface BotLike {
   deck_name?: string | null;
   working_directory?: string | null;
   needs_deck_selection?: boolean | number | null;
+  // NOT-502 registration columns (see ./agent-registration). A row that
+  // carries the launch_profile key reads it verbatim (null = unresolved);
+  // an in-memory shape without the key is a legacy NOT-456 bot whose
+  // profile follows its deck.
+  launch_profile?: string | null;
+  session_scope_kind?: string | null;
+  session_scope_items?: string | null;
   avatar_color?: string | null;
   avatar_eyes?: string | null;
   avatar_hands?: string | null;
@@ -172,19 +184,47 @@ export function normalizeNeedsDeckSelection(value: unknown): boolean {
   return normalizeFlag(value);
 }
 
+export type ResolvedLaunchProfile = 'direct' | 'agent_deck';
+
+// Why a bot cannot launch, most fundamental first. Null when launchable.
+export type LaunchBlocker = 'agent' | 'launch_profile' | 'session_scope' | 'deck' | 'direct_runtime' | null;
+
 export interface ResolvedAgent {
   agent: BotAgent;
   deck_id: string | null;
   deck_name: string | null;
   working_directory: string | null;
+  // Agent Deck profiles (and unresolved legacy rows) need a deck ID; a
+  // direct profile never does.
   needs_deck_selection: boolean;
-  // Launches only with a valid agent, a selected deck ID, and no pending
-  // deck selection. Identical rule for every agent, Hermes included.
+  launch_profile: ResolvedLaunchProfile | null;
+  needs_launch_profile: boolean;
+  // Launches only with a valid agent, a chosen launch profile, a
+  // non-empty session scope, and (Agent Deck only) a selected deck ID. A
+  // direct profile launches on a transport that never contacts Agent
+  // Deck: today only Hermes; direct coding-agent sessions arrive with
+  // provider session execution (launch_blocker = direct_runtime).
   launchable: boolean;
+  launch_blocker: LaunchBlocker;
 }
 
-// Resolved agent + deck for a stored bot row. A missing agent reads as
-// the default; an unknown stored agent fails closed (not launchable).
+function storedScopeUsable(bot: BotLike): boolean {
+  if (!('session_scope_kind' in bot)) return true;
+  const kind = bot.session_scope_kind;
+  let items: unknown = [];
+  try {
+    items = bot.session_scope_items ? JSON.parse(bot.session_scope_items) : [];
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(items)) return false;
+  const count = items.filter(item => typeof item === 'string' && item.trim()).length;
+  if (kind === 'all_provider_sessions') return count === 0;
+  return (kind === 'workspaces' || kind === 'sessions') && count > 0;
+}
+
+// Resolved agent + launch state for a stored bot row. A missing agent
+// reads as the default; an unknown stored agent fails closed.
 export function resolveAgent(bot: BotLike): ResolvedAgent {
   let agent: BotAgent = DEFAULT_AGENT;
   let agentValid = true;
@@ -196,9 +236,33 @@ export function resolveAgent(bot: BotLike): ResolvedAgent {
   const deck_id = normalizeDeckId(bot.deck_id);
   const deck_name = normalizeDeckName(bot.deck_name);
   const working_directory = normalizeWorkingDirectory(bot.working_directory);
-  const needs_deck_selection = deck_id === null || normalizeNeedsDeckSelection(bot.needs_deck_selection);
-  const launchable = agentValid && !needs_deck_selection;
-  return { agent, deck_id, deck_name, working_directory, needs_deck_selection, launchable };
+  let launch_profile: ResolvedLaunchProfile | null;
+  if ('launch_profile' in bot) {
+    const stored = bot.launch_profile;
+    launch_profile = stored === 'direct' || stored === 'agent_deck' ? stored : null;
+  } else {
+    launch_profile = deck_id ? 'agent_deck' : null;
+  }
+  const needs_deck_selection = launch_profile === 'direct'
+    ? false
+    : deck_id === null || normalizeNeedsDeckSelection(bot.needs_deck_selection);
+  let launch_blocker: LaunchBlocker = null;
+  if (!agentValid) launch_blocker = 'agent';
+  else if (!launch_profile) launch_blocker = 'launch_profile';
+  else if (!storedScopeUsable(bot)) launch_blocker = 'session_scope';
+  else if (launch_profile === 'agent_deck' && needs_deck_selection) launch_blocker = 'deck';
+  else if (launch_profile === 'direct' && agentTransport(agent) !== 'hermes-gateway') launch_blocker = 'direct_runtime';
+  return {
+    agent,
+    deck_id: launch_profile === 'direct' ? null : deck_id,
+    deck_name,
+    working_directory: launch_profile === 'direct' ? null : working_directory,
+    needs_deck_selection,
+    launch_profile,
+    needs_launch_profile: launch_profile === null,
+    launchable: launch_blocker === null,
+    launch_blocker,
+  };
 }
 
 export function isLaunchable(bot: BotLike): boolean {
@@ -310,7 +374,10 @@ export interface SerializedBot {
   deck_name: string | null;
   working_directory: string | null;
   needs_deck_selection: boolean;
+  launch_profile: ResolvedLaunchProfile | null;
+  needs_launch_profile: boolean;
   launchable: boolean;
+  launch_blocker: LaunchBlocker;
   avatar_config: AvatarConfig;
 }
 
@@ -328,7 +395,10 @@ export function serializeBot<T extends BotLike>(bot: T): Omit<T, LegacyKey> & Se
     deck_name: resolved.deck_name,
     working_directory: resolved.working_directory,
     needs_deck_selection: resolved.needs_deck_selection,
+    launch_profile: resolved.launch_profile,
+    needs_launch_profile: resolved.needs_launch_profile,
     launchable: resolved.launchable,
+    launch_blocker: resolved.launch_blocker,
     avatar_config: resolveAvatar(bot),
   } as Omit<T, LegacyKey> & SerializedBot;
 }

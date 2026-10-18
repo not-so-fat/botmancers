@@ -553,7 +553,13 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
     const bot = getBot.get(agentId) as ({ id: string; name: string } & Record<string, unknown>) | undefined;
     if (!bot) throw new ExchangeError('agent_not_found', `No ${label} Agent ${agentId}.`);
     const resolved = resolveAgent(bot as Parameters<typeof resolveAgent>[0]);
-    if (!resolved.launchable) throw new ExchangeError('agent_unavailable', `The ${label} Agent ${bot.name} has no Agent Deck selected.`);
+    if (!resolved.launchable) {
+      const why = resolved.launch_blocker === 'launch_profile' ? 'has no launch profile chosen'
+        : resolved.launch_blocker === 'session_scope' ? 'has no session scope'
+          : resolved.launch_blocker === 'direct_runtime' ? 'launches directly, which is not available yet'
+            : 'has no Agent Deck selected';
+      throw new ExchangeError('agent_unavailable', `The ${label} Agent ${bot.name} ${why}.`);
+    }
     return { id: bot.id, name: bot.name, agent: resolved.agent };
   }
 

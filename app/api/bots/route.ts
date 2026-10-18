@@ -1,20 +1,22 @@
 import { NextResponse } from 'next/server';
-import db, { BotDeletionError, bots, conversations, messages } from '@/lib/db';
+import { randomUUID } from 'crypto';
+import db, { BotDeletionError, bots, conversations, messages, registrationContext, serializeAgent } from '@/lib/db';
 import { uiTurns } from '@/lib/ui-turns';
 import { blockedReasonCopy, parseDeleteIds, type DeletePreview } from '@/lib/bot-deletion';
 import { processUiTurns } from '@/lib/agent';
+import { hasAgentUpdate, LEGACY_DECK_NAME_FIELD_ERROR, LEGACY_RUNTIME_FIELD_ERROR, validateUpdateAgent } from '@/lib/bot-definition';
 import {
-  hasAgentUpdate,
-  serializeBot,
-  validateCreateAgent,
-  validateUpdateAgent,
-} from '@/lib/bot-definition';
+  hasRegistrationUpdate,
+  isLegacyCreate,
+  validateCreateRegistration,
+  validateUpdateRegistration,
+} from '@/lib/agent-registration';
 import { validateAvatarInput } from '@/lib/avatar';
 import { AgentNameConflictError, agentNameConflictBody } from '@/lib/agent-names';
 
 export async function GET() {
   try {
-    const allBots = bots.getAll().map(bot => ({ ...(serializeBot(bot) as unknown as Record<string, unknown>), unread: bot.unread ? 1 : 0, hidden: bot.hidden ? 1 : 0, latest: messages.latestFromBot(bot.id) }));
+    const allBots = bots.getAll().map(bot => ({ ...serializeAgent(bot), unread: bot.unread ? 1 : 0, hidden: bot.hidden ? 1 : 0, latest: messages.latestFromBot(bot.id) }));
     return NextResponse.json(allBots);
   } catch (error) {
     console.error('Error fetching bots:', error);
@@ -34,16 +36,27 @@ export async function POST(request: Request) {
       );
     }
 
-    // NOT-456: one agent (hermes|cursor|claude|codex|muse, Hermes when
-    // omitted) plus a required Agent Deck selection. Unknown agents,
-    // malformed or missing deck IDs, and legacy runtime fields are
-    // rejected before anything is written.
-    const selection = validateCreateAgent(body);
-    if (selection.errors.length > 0) {
+    // NOT-502: the registered Agent: a runtime connection, an explicit
+    // session scope, an optional default workspace, a launch profile
+    // (direct | agent_deck; only agent_deck needs a deck ID), and a launch
+    // policy. The NOT-456 shape { agent, deck_id } is still accepted as an
+    // Agent Deck registration on the agent's local connection. Every
+    // field is validated before anything is written.
+    const legacyErrors: string[] = [];
+    if (body.runtime !== undefined || body.agent_client !== undefined) legacyErrors.push(LEGACY_RUNTIME_FIELD_ERROR);
+    if (body.deck_name !== undefined) legacyErrors.push(LEGACY_DECK_NAME_FIELD_ERROR);
+    if (legacyErrors.length > 0) return NextResponse.json({ error: legacyErrors[0], errors: legacyErrors }, { status: 400 });
+    const selection = validateCreateRegistration(body, registrationContext);
+    if (selection.errors.length > 0 || !selection.registration || !selection.provider) {
       return NextResponse.json(
         { error: selection.errors[0], errors: selection.errors },
         { status: 400 }
       );
+    }
+    const registration = selection.registration;
+    const botId = randomUUID();
+    if (isLegacyCreate(body) && registration.session_scope.workspaces.length === 0) {
+      registration.session_scope.workspaces = [`~/.botmancers/${botId}`];
     }
 
     // NOT-431: optional nested avatar config object. A string avatar stays
@@ -67,22 +80,33 @@ export async function POST(request: Request) {
       title: title ? String(title) : '',
       description: description ? String(description) : '',
       avatar: typeof avatar === 'string' ? avatar : undefined,
-      agent: selection.normalized.agent,
-      deck_id: selection.normalized.deck_id,
+      agent: selection.provider,
+      deck_id: registration.launch_profile === 'agent_deck' ? registration.deck_id : null,
       deck_name: null,
-      working_directory: selection.normalized.working_directory,
+      working_directory: registration.launch_profile === 'agent_deck' ? registration.working_directory : null,
       needs_deck_selection: 0,
+      runtime_connection_id: registration.runtime_connection_id,
+      launch_profile: registration.launch_profile,
+      session_scope_kind: registration.session_scope.kind,
+      session_scope_items: JSON.stringify(
+        registration.session_scope.kind === 'workspaces' ? registration.session_scope.workspaces : registration.session_scope.sessions
+      ),
+      default_workspace: registration.default_workspace,
+      policy_mode: registration.policy.mode,
+      allow_new_sessions: registration.policy.allow_new_sessions ? 1 : 0,
+      allow_resume_with_edits: registration.policy.allow_resume_with_edits ? 1 : 0,
       avatar_color: avatarConfig.fields.avatar_color ?? null,
       avatar_eyes: avatarConfig.fields.avatar_eyes ?? null,
       avatar_hands: avatarConfig.fields.avatar_hands ?? null,
       avatar_accessory: avatarConfig.fields.avatar_accessory ?? null,
-    });
+    }, { id: botId });
     const conversation = conversations.getByBotId(bot.id);
     if (conversation) {
       uiTurns.enqueue(conversation.id, bot.id, { reason: 'greeting' });
       processUiTurns().catch(console.error);
     }
-    return NextResponse.json(serializeBot(bot));
+    const created = bots.getById(bot.id);
+    return NextResponse.json(created ? serializeAgent(created) : null);
   } catch (error) {
     if (error instanceof AgentNameConflictError) return NextResponse.json(agentNameConflictBody(error), { status: 409 });
     console.error('Error creating bot:', error);
@@ -132,11 +156,24 @@ export async function PATCH(request: Request) {
       const description = body.description !== undefined ? String(body.description) : bot.description;
       identity = { name, title, description };
     }
-    // NOT-456: agent and Agent Deck selection are independent fields. The
-    // agent can change but never clear; a supplied deck ID must be a
-    // selected ID; legacy runtime fields and deck_name are rejected.
-    const selection = hasAgentUpdate(body) ? validateUpdateAgent(body) : null;
-    if (selection && selection.errors.length > 0) return reject(selection.errors);
+    // NOT-502: registration fields (and the NOT-456 agent/deck_id/
+    // working_directory fields) merge over the stored registration and the
+    // whole candidate is validated: an invalid combination writes nothing.
+    // Legacy runtime fields and deck_name are rejected.
+    const legacyErrors: string[] = [];
+    if (body.runtime !== undefined || body.agent_client !== undefined) legacyErrors.push(LEGACY_RUNTIME_FIELD_ERROR);
+    if (body.deck_name !== undefined) legacyErrors.push(LEGACY_DECK_NAME_FIELD_ERROR);
+    if (legacyErrors.length > 0) return reject(legacyErrors);
+    // An unresolved legacy row edited through the NOT-456 fields alone
+    // (agent and/or working_directory, no deck, no registration) keeps
+    // its unresolved state: nothing here chooses a profile for the owner.
+    const unresolvedLegacyEdit = !bot.launch_profile && !hasRegistrationUpdate(body) && body.deck_id === undefined && hasAgentUpdate(body);
+    const legacySelection = unresolvedLegacyEdit ? validateUpdateAgent(body) : null;
+    if (legacySelection && legacySelection.errors.length > 0) return reject(legacySelection.errors);
+    const selection = !unresolvedLegacyEdit && (hasAgentUpdate(body) || hasRegistrationUpdate(body))
+      ? validateUpdateRegistration(id, bot, body, registrationContext)
+      : null;
+    if (selection && (selection.errors.length > 0 || !selection.registration || !selection.provider)) return reject(selection.errors);
 
     db.transaction(() => {
       if (avatarImage !== undefined) bots.setAvatar(id, avatarImage);
@@ -148,10 +185,11 @@ export async function PATCH(request: Request) {
         else bots.markRead(id);
       }
       if (identity) bots.updateIdentity(id, identity.name, identity.title, identity.description);
-      if (selection) bots.updateAgentSelection(id, selection.fields);
+      if (legacySelection) bots.updateAgentSelection(id, legacySelection.fields);
+      if (selection?.registration && selection.provider) bots.updateRegistration(id, selection.provider, selection.registration);
     })();
     const updated = bots.getById(id);
-    return NextResponse.json(updated ? serializeBot(updated) : updated);
+    return NextResponse.json(updated ? serializeAgent(updated) : updated);
   } catch (error) {
     if (error instanceof AgentNameConflictError) return NextResponse.json(agentNameConflictBody(error), { status: 409 });
     console.error('Error setting avatar:', error);

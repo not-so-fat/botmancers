@@ -63,6 +63,7 @@ import {
 import { recoverCoordinatorLoops, startAgentDispatch, sweepDispatch } from './agent-conversations';
 import { selectExecutionPolicy } from './execution-policy';
 import {
+  agentLabel,
   agentTransport,
   resolveAgent,
   type BotAgent,
@@ -121,7 +122,24 @@ function transportForBot(bot: Pick<Bot, 'agent'>): string {
 // select; no deck discovery runs here and no ID is ever guessed from it.
 export function deckNeedsSelectionMessage(botName: string, legacyDeckName: string | null): string {
   const legacy = legacyDeckName ? ` (legacy deck "${legacyDeckName}")` : '';
-  return `[Deck needs selection] ${botName} cannot launch: no Agent Deck is selected${legacy}. Select a deck before launching.`;
+  return `[Deck needs selection] ${botName} cannot launch: no Agent Deck is selected${legacy}. Select a deck, or choose the Direct launch profile in Config, before launching.`;
+}
+
+// NOT-502: visible thread notice per launch blocker. A missing deck on an
+// Agent Deck row and an unresolved legacy row (no profile yet) use the
+// Agent Deck notice above; a direct profile never mentions a deck.
+export function launchBlockedMessage(bot: Pick<Bot, 'name'> & Parameters<typeof resolveAgent>[0]): string {
+  const resolved = resolveAgent(bot);
+  switch (resolved.launch_blocker) {
+    case 'session_scope':
+      return `[Session scope needed] ${bot.name} cannot launch: select its session scope in Config.`;
+    case 'direct_runtime':
+      return `[Direct launch unavailable] ${bot.name} is registered for direct launch; direct ${agentLabel(resolved.agent)} sessions are not available in this Botmancers version yet.`;
+    case 'agent':
+      return `[Launch blocked] ${bot.name} has an unsupported Agent type.`;
+    default:
+      return deckNeedsSelectionMessage(bot.name, resolved.deck_name);
+  }
 }
 
 // Visible thread error when the persistent Hermes gateway is not
@@ -510,12 +528,7 @@ function handoffTaskFor(conversationMessages: Message[], botName: string): strin
 // Agent Deck posts a visible notice (naming any legacy deck reference)
 // and hands control back to its delegating caller; nothing launches.
 function postDeckNeedsSelection(item: UiTurn, bot: Bot, chain: DelegationChain | null): void {
-  messages.create(
-    item.conversation_id,
-    'bot',
-    deckNeedsSelectionMessage(bot.name, resolveAgent(bot).deck_name),
-    bot.id
-  );
+  messages.create(item.conversation_id, 'bot', launchBlockedMessage(bot), bot.id);
   returnToCaller(item, chain, bot.id);
   continueUiTurns();
 }
@@ -556,6 +569,13 @@ async function processAgentDeckTurn(args: {
   }
   const resolved = resolveAgent(bot);
   if (!resolved.launchable || !resolved.deck_id) {
+    // NOT-502: registering an Agent never starts a session, and a direct
+    // profile's auto-greeting is not a request: stay silent.
+    if (resolved.launch_profile === 'direct' && !latestUser && !delegated) {
+      dropSnapshot(item);
+      continueUiTurns();
+      return;
+    }
     postDeckNeedsSelection(item, bot, chain);
     return;
   }
