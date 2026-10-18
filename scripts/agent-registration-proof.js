@@ -46,7 +46,7 @@ function startDeckStub() {
     hits.push(`${req.method} ${req.url}`);
     if (req.method === 'GET' && req.url === '/api/launch/decks') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ decks: [{ id: 'deck-builder', name: 'builder' }, { id: 'deck-review', name: 'review' }] }));
+      res.end(JSON.stringify({ success: true, data: { decks: [{ id: 'deck-builder', name: 'builder' }, { id: 'deck-review', name: 'review' }] } }));
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
