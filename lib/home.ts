@@ -48,14 +48,14 @@ export function filesRootPath(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = override(env, 'BOTMANCERS_FILES_ROOT');
   if (explicit) return path.resolve(explicit);
   const home = botmancersHome(env);
-  return home ? path.join(home, HOME_LAYOUT.files) : path.resolve(process.cwd(), 'files');
+  return home ? path.join(/* turbopackIgnore: true */ home, HOME_LAYOUT.files) : path.resolve(process.cwd(), 'files');
 }
 
 export function skillsRootPath(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = override(env, 'BOTMANCERS_SKILLS_ROOT');
   if (explicit) return path.resolve(explicit);
   const home = botmancersHome(env);
-  return home ? path.join(home, HOME_LAYOUT.skills) : path.resolve(process.cwd(), 'skills');
+  return home ? path.join(/* turbopackIgnore: true */ home, HOME_LAYOUT.skills) : path.resolve(process.cwd(), 'skills');
 }
 
 export function waitLogPath(env: NodeJS.ProcessEnv = process.env): string {
