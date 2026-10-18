@@ -593,6 +593,19 @@ function capabilitiesView(raw: Record<string, unknown>, v1Operations: McpV1Opera
 }
 
 const page = (body: Record<string, unknown>) => ({ contract: MCP_CONTRACT_V2, items: body.items, next_cursor: body.next_cursor });
+// NOT-503: the v2 session item is frozen (docs/contracts/mcp-bridge-v2.tools.json);
+// the service API's additive source/state fields are not part of it.
+const sessionsPage = (body: Record<string, unknown>) => ({
+  ...page(body),
+  items: Array.isArray(body.items)
+    ? body.items.map(item => {
+      const rest = { ...(item as Record<string, unknown>) };
+      delete rest.source;
+      delete rest.state;
+      return rest;
+    })
+    : body.items,
+});
 
 const HANDLERS: Record<McpV2ToolName, V2Handler> = {
   botmancers_capabilities: {
@@ -608,7 +621,7 @@ const HANDLERS: Record<McpV2ToolName, V2Handler> = {
   botmancers_list_sessions: {
     capability: 'sessions:read',
     call: (principal, args, guard) => serviceOperations.listSessions(principal, text(args.agent_id), { ...listParams(args), status: typeof args.status === 'string' ? args.status : null }, guard),
-    view: page,
+    view: sessionsPage,
   },
   botmancers_list_conversations: {
     capability: 'conversations:read',

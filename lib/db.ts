@@ -700,11 +700,13 @@ export const runtimeConnections = {
   },
 };
 
-// Whether a Botmancers session ref (a session_bindings id) belongs to the
-// Agent. The external provider session id is never read here.
+// Whether a Botmancers session ref (a session_bindings id, or NOT-503 a
+// provider_sessions reference for an imported native session) belongs to
+// the Agent. The external provider session id is never read here.
 export function sessionBelongsToAgent(agentId: string | null, ref: string): boolean {
   if (!agentId) return false;
-  return Boolean(db.prepare('SELECT 1 FROM session_bindings WHERE id = ? AND agent_id = ?').get(ref, agentId));
+  return Boolean(db.prepare('SELECT 1 FROM session_bindings WHERE id = ? AND agent_id = ?').get(ref, agentId))
+    || Boolean(db.prepare('SELECT 1 FROM provider_sessions WHERE id = ? AND agent_id = ?').get(ref, agentId));
 }
 
 export const registrationContext = {

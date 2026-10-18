@@ -1,0 +1,745 @@
+// NOT-503: Botmancers' side of the SessionProvider boundary
+// (./session-provider). The provider-session registry (engine migration 17,
+// provider_sessions) gives every native runtime session a stable Botmancers
+// reference: a Session Binding keeps its own id, a discovered or started
+// session gets a new one. The provider session id is stored privately and
+// never leaves this module except through providerSessionDebugId (the
+// owner-only local debug disclosure) and the service redactor's id list.
+//
+// Everything a provider must not decide lives here: the registered scope
+// (lib/agent-registration session_scope), launch policy (authority is
+// always the caller's explicit choice, checked against the Agent's policy
+// and the provider's capabilities, never inferred from the runtime or the
+// workspace), idempotency (provider_session_turns), and audit
+// (provider_session_events). The provider is selected by the Agent's
+// runtime connection; Agent Deck is never consulted.
+import type Database from 'better-sqlite3';
+import { createHash, randomUUID } from 'crypto';
+import {
+  readStoredPolicy,
+  readStoredScope,
+  workspaceContains,
+  type LaunchPolicy,
+  type SessionScope,
+} from './agent-registration';
+import {
+  normalizeCapabilities,
+  sessionProviderFor,
+  type ProviderCallContext,
+  type ProviderError,
+  type ProviderScope,
+  type ProviderSessionRecord,
+  type ProviderTurnResult,
+  type SessionAuthority,
+  type SessionAvailability,
+  type SessionLifecycle,
+  type SessionProvider,
+  type SessionProviderCapabilities,
+  type SessionProviderCapability,
+  type TranscriptEntry,
+} from './session-provider';
+import type { AttemptCorrelation } from './attempt-adapter';
+
+type Db = Database.Database;
+
+export type ProviderSessionErrorCode =
+  | 'agent_not_found'
+  | 'session_not_found'
+  | 'turn_not_found'
+  | 'provider_unavailable'
+  | 'unsupported'
+  | 'scope_missing'
+  | 'out_of_scope'
+  | 'authority_not_allowed'
+  | 'new_sessions_not_allowed'
+  | 'invalid_input'
+  | 'idempotency_conflict'
+  | 'session_missing'
+  | 'not_resumable'
+  | 'busy'
+  | 'provider_failed';
+
+export class ProviderSessionError extends Error {
+  readonly code: ProviderSessionErrorCode;
+  constructor(code: ProviderSessionErrorCode, message: string) {
+    super(message);
+    this.name = 'ProviderSessionError';
+    this.code = code;
+  }
+}
+
+export interface ProviderSessionRow {
+  id: string;
+  agent_id: string;
+  runtime_connection_id: string;
+  provider_kind: string;
+  provider_session_id: string;
+  binding_id: string | null;
+  origin: 'binding' | 'discovered' | 'started';
+  title: string | null;
+  workspace: string | null;
+  provider_created_at: number | null;
+  provider_updated_at: number | null;
+  availability: SessionAvailability;
+  lifecycle: SessionLifecycle;
+  resumable: number | null;
+  busy: number;
+  capabilities: string | null;
+  last_synced_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export type TurnState = 'running' | 'completed' | 'failed' | 'cancelled';
+
+interface TurnRow {
+  id: string;
+  session_ref: string;
+  agent_id: string;
+  kind: 'start' | 'send';
+  authority: SessionAuthority;
+  requester_kind: string;
+  requester_id: string;
+  idempotency_key: string;
+  request_hash: string;
+  provider_turn_id: string;
+  state: TurnState;
+  output: string | null;
+  failure_code: string | null;
+  correlation: string;
+  created_at: number;
+  finished_at: number | null;
+}
+
+// The public turn shape: Botmancers references only.
+export interface ProviderTurnView {
+  turn_ref: string;
+  session_ref: string;
+  kind: 'start' | 'send';
+  authority: SessionAuthority;
+  state: TurnState;
+  output: string | null;
+  failure_code: string | null;
+  created_at: number;
+  finished_at: number | null;
+}
+
+export interface Requester {
+  kind: 'person' | 'bot' | 'service';
+  id: string;
+}
+
+const TITLE_LIMIT = 80;
+const PROMPT_LIMIT = 20_000;
+const KEY_LIMIT = 200;
+
+// ---- Agent context ----
+
+interface AgentContext {
+  agentId: string;
+  connection: { id: string; provider: string };
+  provider: SessionProvider;
+  capabilities: SessionProviderCapabilities;
+  scope: SessionScope | null;
+  policy: LaunchPolicy | null;
+}
+
+interface BotRegistrationRow {
+  id: string;
+  runtime_connection_id: string | null;
+  session_scope_kind: string | null;
+  session_scope_items: string | null;
+  policy_mode: string | null;
+  allow_new_sessions: number | null;
+  allow_resume_with_edits: number | null;
+}
+
+function agentContext(db: Db, agentId: string): AgentContext {
+  const bot = db.prepare(`
+    SELECT id, runtime_connection_id, session_scope_kind, session_scope_items, policy_mode, allow_new_sessions, allow_resume_with_edits
+    FROM bots WHERE id = ?
+  `).get(agentId) as BotRegistrationRow | undefined;
+  if (!bot) throw new ProviderSessionError('agent_not_found', 'No such Agent.');
+  const connection = bot.runtime_connection_id
+    ? db.prepare('SELECT id, provider FROM runtime_connections WHERE id = ?').get(bot.runtime_connection_id) as { id: string; provider: string } | undefined
+    : undefined;
+  const provider = connection ? sessionProviderFor(connection) : null;
+  if (!connection || !provider) {
+    throw new ProviderSessionError('provider_unavailable', 'The Agent\'s runtime connection has no session provider.');
+  }
+  return {
+    agentId,
+    connection,
+    provider,
+    capabilities: normalizeCapabilities(provider.capabilities()),
+    scope: readStoredScope(bot),
+    policy: readStoredPolicy(bot),
+  };
+}
+
+function requireCapability(ctx: AgentContext, capability: SessionProviderCapability): void {
+  if (!ctx.capabilities[capability]) {
+    throw new ProviderSessionError('unsupported', `The session provider does not support ${capability}.`);
+  }
+}
+
+function requireScope(ctx: AgentContext): SessionScope {
+  // An unconfigured scope is never unrestricted: nothing is imported.
+  if (!ctx.scope) throw new ProviderSessionError('scope_missing', 'The Agent has no session scope.');
+  return ctx.scope;
+}
+
+function clampLimit(ctx: AgentContext, limit: number | null | undefined): number {
+  const n = Number(limit ?? ctx.capabilities.max_page_size);
+  if (!Number.isInteger(n) || n < 1) throw new ProviderSessionError('invalid_input', 'limit must be a positive integer.');
+  return Math.min(n, ctx.capabilities.max_page_size);
+}
+
+function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'provider_failed'): never {
+  const code: ProviderSessionErrorCode = error.code === 'unsupported' ? 'unsupported'
+    : error.code === 'unsupported_authority' ? 'authority_not_allowed'
+      : error.code === 'not_found' ? 'session_missing'
+        : error.code === 'busy' ? 'busy'
+          : error.code === 'not_resumable' ? 'not_resumable'
+            : error.code === 'invalid_input' ? 'invalid_input'
+              : error.code === 'unavailable' ? 'provider_unavailable'
+                : fallback;
+  // Provider diagnostics never reach the caller verbatim.
+  throw new ProviderSessionError(code, `The session provider refused the call (${error.code}).`);
+}
+
+function callContext(input: { correlation?: AttemptCorrelation | null; signal?: AbortSignal | null; deadlineAt?: number | null }): ProviderCallContext {
+  return { correlation: { ...(input.correlation ?? {}) }, signal: input.signal ?? null, deadline_at: input.deadlineAt ?? null };
+}
+
+// ---- registry ----
+
+const ROW_SELECT = 'SELECT * FROM provider_sessions';
+
+export function getProviderSessionRow(db: Db, agentId: string, ref: string): ProviderSessionRow | undefined {
+  return db.prepare(`${ROW_SELECT} WHERE id = ? AND agent_id = ?`).get(ref, agentId) as ProviderSessionRow | undefined;
+}
+
+function requireSession(db: Db, agentId: string, ref: string): ProviderSessionRow {
+  const row = getProviderSessionRow(db, agentId, ref);
+  // Unknown and foreign references are indistinguishable.
+  if (!row) throw new ProviderSessionError('session_not_found', 'No session with that reference.');
+  return row;
+}
+
+function appendEvent(db: Db, event: { agentId: string; sessionRef?: string | null; turnId?: string | null; type: string; detail?: Record<string, unknown>; now: number }): void {
+  db.prepare('INSERT INTO provider_session_events (id, agent_id, session_ref, turn_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(randomUUID(), event.agentId, event.sessionRef ?? null, event.turnId ?? null, event.type, JSON.stringify(event.detail ?? {}), event.now);
+}
+
+function excerpt(text: string | null | undefined): string | null {
+  const line = (text ?? '').split('\n').map(part => part.trim()).find(part => part.length > 0);
+  if (!line) return null;
+  return line.length > TITLE_LIMIT ? `${line.slice(0, TITLE_LIMIT - 1).trimEnd()}…` : line;
+}
+
+function absoluteWorkspace(value: unknown): string | null {
+  return typeof value === 'string' && value.startsWith('/') ? value : null;
+}
+
+// Whether a provider-reported session is inside the registered scope. A
+// 'sessions' scope admits exactly the selected references' provider ids.
+function inScope(scope: SessionScope, record: { workspace: string | null; provider_session_id: string }, selectedProviderIds: Set<string>): boolean {
+  if (scope.kind === 'all_provider_sessions') return true;
+  if (scope.kind === 'sessions') return selectedProviderIds.has(record.provider_session_id);
+  const workspace = absoluteWorkspace(record.workspace);
+  return workspace !== null && scope.workspaces.some(root => workspaceContains(root, workspace));
+}
+
+function selectedProviderIds(db: Db, ctx: AgentContext, scope: SessionScope): Set<string> {
+  if (scope.kind !== 'sessions' || scope.sessions.length === 0) return new Set();
+  const rows = db.prepare(`
+    SELECT provider_session_id FROM provider_sessions
+    WHERE agent_id = ? AND runtime_connection_id = ? AND id IN (SELECT value FROM json_each(?))
+  `).all(ctx.agentId, ctx.connection.id, JSON.stringify(scope.sessions)) as { provider_session_id: string }[];
+  return new Set(rows.map(row => row.provider_session_id));
+}
+
+function providerScope(scope: SessionScope, selected: Set<string>): ProviderScope {
+  return { kind: scope.kind, workspaces: [...scope.workspaces], provider_session_ids: [...selected] };
+}
+
+// The registry row a provider session maps to for this Agent and
+// connection: the unlinked native row when there is one, else the newest
+// Botmancers-launched row (a binding) reporting that provider id. One
+// provider session therefore keeps one reference across syncs.
+function findRow(db: Db, ctx: AgentContext, providerSessionId: string): ProviderSessionRow | undefined {
+  return db.prepare(`
+    ${ROW_SELECT} WHERE agent_id = ? AND runtime_connection_id = ? AND provider_session_id = ?
+    ORDER BY (binding_id IS NULL) DESC, created_at DESC, id DESC LIMIT 1
+  `).get(ctx.agentId, ctx.connection.id, providerSessionId) as ProviderSessionRow | undefined;
+}
+
+// Insert-or-update one provider record. Returns the reference and whether
+// it was new. Identity columns never change; facts are overwritten with
+// what the provider reported now.
+function upsertRecord(
+  db: Db, ctx: AgentContext, record: ProviderSessionRecord, origin: 'discovered' | 'started', now: number, fallbackTitle: string | null = null,
+): { ref: string; created: boolean } {
+  const existing = findRow(db, ctx, record.provider_session_id);
+  if (existing) {
+    updateRow(db, ctx, existing.id, record, now);
+    return { ref: existing.id, created: false };
+  }
+  const ref = randomUUID();
+  db.prepare(`
+    INSERT INTO provider_sessions (
+      id, agent_id, runtime_connection_id, provider_kind, provider_session_id, binding_id, origin, title, workspace,
+      provider_created_at, provider_updated_at, availability, lifecycle, resumable, busy, capabilities, last_synced_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    ref, ctx.agentId, ctx.connection.id, ctx.provider.kind, record.provider_session_id, origin,
+    excerpt(record.title) ?? fallbackTitle, absoluteWorkspace(record.workspace), record.created_at, record.updated_at,
+    record.lifecycle === 'archived' ? 'archived' : 'open', record.resumable ? 1 : 0, record.busy ? 1 : 0, JSON.stringify(ctx.capabilities), now, now, now,
+  );
+  return { ref, created: true };
+}
+
+// Overwrites one row's provider facts with what the provider reported now.
+function updateRow(db: Db, ctx: AgentContext, id: string, record: ProviderSessionRecord, now: number): void {
+  db.prepare(`
+    UPDATE provider_sessions SET title = COALESCE(?, title), workspace = COALESCE(?, workspace),
+      provider_created_at = COALESCE(?, provider_created_at), provider_updated_at = COALESCE(?, provider_updated_at),
+      availability = 'available', lifecycle = ?, resumable = ?, busy = ?, capabilities = ?, last_synced_at = ?, updated_at = ?
+    WHERE id = ?
+  `).run(
+    excerpt(record.title), absoluteWorkspace(record.workspace), record.created_at, record.updated_at,
+    record.lifecycle === 'archived' ? 'archived' : 'open', record.resumable ? 1 : 0, record.busy ? 1 : 0, JSON.stringify(ctx.capabilities), now, now, id,
+  );
+}
+
+function markMissing(db: Db, row: ProviderSessionRow, now: number): void {
+  if (row.availability === 'missing') {
+    db.prepare('UPDATE provider_sessions SET last_synced_at = ? WHERE id = ?').run(now, row.id);
+    return;
+  }
+  // Missing is a fact about the provider, never a deletion.
+  db.prepare("UPDATE provider_sessions SET availability = 'missing', busy = 0, last_synced_at = ?, updated_at = ? WHERE id = ?").run(now, now, row.id);
+  appendEvent(db, { agentId: row.agent_id, sessionRef: row.id, type: 'session_missing', now });
+}
+
+// ---- discovery ----
+
+export interface ProviderCapabilitiesView extends SessionProviderCapabilities {
+  provider_kind: string;
+}
+
+// Capability discovery for the Agent's runtime connection, or null when the
+// connection has no session provider.
+export function agentProviderCapabilities(db: Db, agentId: string): ProviderCapabilitiesView | null {
+  try {
+    const ctx = agentContext(db, agentId);
+    return { provider_kind: ctx.provider.kind, ...ctx.capabilities };
+  } catch (error) {
+    if (error instanceof ProviderSessionError && error.code === 'provider_unavailable') return null;
+    throw error;
+  }
+}
+
+export interface SyncResult {
+  imported: string[];
+  updated: string[];
+  // Count only: an out-of-scope record is never stored or named.
+  rejected_out_of_scope: number;
+  // Opaque provider continuation for the next page, or null.
+  next_cursor: string | null;
+}
+
+export interface SyncInput {
+  query?: string | null;
+  cursor?: string | null;
+  limit?: number | null;
+  correlation?: AttemptCorrelation | null;
+  signal?: AbortSignal | null;
+  deadlineAt?: number | null;
+  now?: number;
+}
+
+// Imports one bounded page of the provider's sessions inside the registered
+// scope. Repeating it imports nothing twice: each provider session maps to
+// one reference (findRow), and the partial unique index backs that up.
+export async function syncAgentSessions(db: Db, agentId: string, input: SyncInput = {}): Promise<SyncResult> {
+  const ctx = agentContext(db, agentId);
+  requireCapability(ctx, 'list');
+  const query = typeof input.query === 'string' && input.query.trim() ? input.query.trim().slice(0, 200) : null;
+  if (query) requireCapability(ctx, 'search');
+  const scope = requireScope(ctx);
+  const selected = selectedProviderIds(db, ctx, scope);
+  const limit = clampLimit(ctx, input.limit);
+  const result = await ctx.provider.listSessions({
+    ...callContext(input), scope: providerScope(scope, selected), query, cursor: input.cursor ?? null, limit,
+  });
+  if (!result.ok) failWith(result.error);
+  const now = input.now ?? Date.now();
+  // A provider returning more than asked is cut to the bound.
+  const records = result.value.items.slice(0, limit);
+  return db.transaction(() => {
+    const out: SyncResult = { imported: [], updated: [], rejected_out_of_scope: 0, next_cursor: result.value.next_cursor ?? null };
+    for (const record of records) {
+      if (!record || typeof record.provider_session_id !== 'string' || !record.provider_session_id) continue;
+      if (!inScope(scope, record, selected)) { out.rejected_out_of_scope++; continue; }
+      const { ref, created } = upsertRecord(db, ctx, record, 'discovered', now);
+      (created ? out.imported : out.updated).push(ref);
+      appendEvent(db, { agentId, sessionRef: ref, type: created ? 'session_imported' : 'session_synced', now });
+    }
+    if (out.rejected_out_of_scope > 0) {
+      appendEvent(db, { agentId, type: 'sync_rejected_out_of_scope', detail: { count: out.rejected_out_of_scope }, now });
+    }
+    return out;
+  }).immediate();
+}
+
+// Re-reads one session's metadata from the provider. A session the provider
+// no longer has becomes availability 'missing' (never deleted).
+export async function refreshProviderSession(db: Db, agentId: string, ref: string, input: SyncInput = {}): Promise<ProviderSessionRow> {
+  const ctx = agentContext(db, agentId);
+  const row = requireSession(db, agentId, ref);
+  if (row.runtime_connection_id !== ctx.connection.id) {
+    throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
+  }
+  const result = await ctx.provider.getSession({ ...callContext(input), provider_session_id: row.provider_session_id });
+  if (!result.ok) failWith(result.error);
+  const now = input.now ?? Date.now();
+  db.transaction(() => {
+    if (result.value === null) markMissing(db, row, now);
+    else {
+      updateRow(db, ctx, row.id, result.value, now);
+      appendEvent(db, { agentId, sessionRef: row.id, type: 'session_synced', now });
+    }
+  }).immediate();
+  return requireSession(db, agentId, ref);
+}
+
+// ---- transcript ----
+
+export interface TranscriptPage {
+  session_ref: string;
+  entries: TranscriptEntry[];
+  next_cursor: string | null;
+}
+
+function redactor(row: ProviderSessionRow, turnIds: string[] = []): (text: string) => string {
+  const secrets = [row.provider_session_id, ...turnIds].filter(id => id.length > 0).sort((a, b) => b.length - a.length);
+  return text => secrets.reduce((out, secret) => out.split(secret).join('[redacted]'), text);
+}
+
+export async function readProviderTranscript(
+  db: Db, agentId: string, ref: string, input: { cursor?: string | null; limit?: number | null; correlation?: AttemptCorrelation | null; signal?: AbortSignal | null; now?: number } = {},
+): Promise<TranscriptPage> {
+  const ctx = agentContext(db, agentId);
+  requireCapability(ctx, 'read');
+  const row = requireSession(db, agentId, ref);
+  if (row.runtime_connection_id !== ctx.connection.id) {
+    throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
+  }
+  const limit = clampLimit(ctx, input.limit);
+  const result = await ctx.provider.readTranscript({ ...callContext(input), provider_session_id: row.provider_session_id, cursor: input.cursor ?? null, limit });
+  if (!result.ok) {
+    if (result.error.code === 'not_found') db.transaction(() => markMissing(db, row, input.now ?? Date.now())).immediate();
+    failWith(result.error);
+  }
+  const redact = redactor(row);
+  return {
+    session_ref: row.id,
+    entries: result.value.items.slice(0, limit).map(entry => ({
+      seq: Number(entry.seq), role: entry.role, text: redact(String(entry.text ?? '')), at: typeof entry.at === 'number' ? entry.at : null,
+    })),
+    next_cursor: result.value.next_cursor ?? null,
+  };
+}
+
+// ---- turns ----
+
+export interface TurnInput {
+  prompt: string;
+  authority: SessionAuthority;
+  idempotencyKey: string;
+  requester: Requester;
+  correlation?: AttemptCorrelation | null;
+  signal?: AbortSignal | null;
+  deadlineAt?: number | null;
+  now?: number;
+}
+
+function checkTurnInput(input: TurnInput): void {
+  if (typeof input.prompt !== 'string' || !input.prompt.trim()) throw new ProviderSessionError('invalid_input', 'prompt is required.');
+  if (input.prompt.length > PROMPT_LIMIT) throw new ProviderSessionError('invalid_input', `prompt is longer than ${PROMPT_LIMIT} characters.`);
+  if (input.authority !== 'read_only' && input.authority !== 'workspace_write') {
+    // Never defaulted: the caller states the authority every time.
+    throw new ProviderSessionError('invalid_input', 'authority must be read_only or workspace_write.');
+  }
+  if (typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > KEY_LIMIT) {
+    throw new ProviderSessionError('invalid_input', 'idempotencyKey is required.');
+  }
+  if (!input.requester || !['person', 'bot', 'service'].includes(input.requester.kind) || !input.requester.id) {
+    throw new ProviderSessionError('invalid_input', 'requester is required.');
+  }
+}
+
+function checkAuthority(ctx: AgentContext, authority: SessionAuthority, kind: 'start' | 'send'): void {
+  if (!ctx.capabilities.authorities.includes(authority)) {
+    throw new ProviderSessionError('authority_not_allowed', `The session provider cannot enforce ${authority}.`);
+  }
+  if (!ctx.policy) throw new ProviderSessionError('authority_not_allowed', 'The Agent has no launch policy.');
+  if (authority === 'workspace_write') {
+    if (ctx.policy.mode !== 'workspace_write') {
+      throw new ProviderSessionError('authority_not_allowed', 'The Agent\'s policy is read only.');
+    }
+    if (kind === 'send' && !ctx.policy.allow_resume_with_edits) {
+      throw new ProviderSessionError('authority_not_allowed', 'The Agent\'s policy does not allow resuming with edits.');
+    }
+  }
+}
+
+function turnHash(fields: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify(fields)).digest('hex');
+}
+
+// The key the provider sees: derived, so one requester's key never collides
+// with another's on the runtime.
+function providerKey(agentId: string, requester: Requester, key: string): string {
+  return `bm-${createHash('sha256').update(`${agentId}\n${requester.kind}\n${requester.id}\n${key}`).digest('hex').slice(0, 32)}`;
+}
+
+function existingTurn(db: Db, agentId: string, input: TurnInput): TurnRow | undefined {
+  return db.prepare('SELECT * FROM provider_session_turns WHERE agent_id = ? AND requester_kind = ? AND requester_id = ? AND idempotency_key = ?')
+    .get(agentId, input.requester.kind, input.requester.id, input.idempotencyKey) as TurnRow | undefined;
+}
+
+function replayOrConflict(row: TurnRow | undefined, hash: string): TurnRow | undefined {
+  if (!row) return undefined;
+  if (row.request_hash !== hash) {
+    throw new ProviderSessionError('idempotency_conflict', 'That idempotency key was used for a different turn.');
+  }
+  return row;
+}
+
+function turnView(db: Db, row: TurnRow): ProviderTurnView {
+  const session = db.prepare(`${ROW_SELECT} WHERE id = ?`).get(row.session_ref) as ProviderSessionRow;
+  const redact = redactor(session, [row.provider_turn_id]);
+  return {
+    turn_ref: row.id,
+    session_ref: row.session_ref,
+    kind: row.kind,
+    authority: row.authority,
+    state: row.state,
+    output: row.output === null ? null : redact(row.output),
+    failure_code: row.failure_code,
+    created_at: row.created_at,
+    finished_at: row.finished_at,
+  };
+}
+
+function insertTurn(db: Db, fields: Omit<TurnRow, 'state' | 'output' | 'failure_code' | 'finished_at'>): TurnRow {
+  db.prepare(`
+    INSERT INTO provider_session_turns (
+      id, session_ref, agent_id, kind, authority, requester_kind, requester_id, idempotency_key, request_hash,
+      provider_turn_id, state, output, failure_code, correlation, created_at, finished_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', NULL, NULL, ?, ?, NULL)
+  `).run(
+    fields.id, fields.session_ref, fields.agent_id, fields.kind, fields.authority, fields.requester_kind, fields.requester_id,
+    fields.idempotency_key, fields.request_hash, fields.provider_turn_id, fields.correlation, fields.created_at,
+  );
+  db.prepare('UPDATE provider_sessions SET busy = 1, updated_at = ? WHERE id = ?').run(fields.created_at, fields.session_ref);
+  appendEvent(db, { agentId: fields.agent_id, sessionRef: fields.session_ref, turnId: fields.id, type: 'turn_started', detail: { kind: fields.kind, authority: fields.authority }, now: fields.created_at });
+  return db.prepare('SELECT * FROM provider_session_turns WHERE id = ?').get(fields.id) as TurnRow;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed: provider_session_turns/.test(error.message);
+}
+
+export interface StartInput extends TurnInput {
+  // Explicit and absolute; never taken from default_workspace.
+  workspace: string;
+}
+
+// Starts a new provider session in an explicit workspace and records its
+// first turn. Requires the 'start' capability, the Agent's
+// allow_new_sessions policy, and a workspace inside the registered scope.
+export async function startProviderSession(db: Db, agentId: string, input: StartInput): Promise<{ turn: ProviderTurnView; replayed: boolean }> {
+  checkTurnInput(input);
+  const workspace = absoluteWorkspace(input.workspace);
+  if (!workspace) throw new ProviderSessionError('invalid_input', 'workspace must be an absolute path.');
+  const ctx = agentContext(db, agentId);
+  const hash = turnHash({ kind: 'start', workspace, prompt: input.prompt, authority: input.authority });
+  const replay = replayOrConflict(existingTurn(db, agentId, input), hash);
+  if (replay) return { turn: turnView(db, replay), replayed: true };
+  requireCapability(ctx, 'start');
+  const scope = requireScope(ctx);
+  if (scope.kind === 'sessions') throw new ProviderSessionError('out_of_scope', 'The Agent is scoped to selected sessions; it cannot start new ones.');
+  if (scope.kind === 'workspaces' && !scope.workspaces.some(root => workspaceContains(root, workspace))) {
+    throw new ProviderSessionError('out_of_scope', 'The workspace is outside the Agent\'s session scope.');
+  }
+  if (!ctx.policy?.allow_new_sessions) throw new ProviderSessionError('new_sessions_not_allowed', 'The Agent\'s policy does not allow new sessions.');
+  checkAuthority(ctx, input.authority, 'start');
+  const started = await ctx.provider.startSession({
+    ...callContext(input), workspace, prompt: input.prompt, authority: input.authority,
+    idempotency_key: providerKey(agentId, input.requester, input.idempotencyKey),
+  });
+  if (!started.ok) failWith(started.error);
+  const handle = started.value;
+  const record = await ctx.provider.getSession({ ...callContext(input), provider_session_id: handle.provider_session_id });
+  const now = input.now ?? Date.now();
+  try {
+    const row = db.transaction(() => {
+      const known = record.ok && record.value
+        ? { ...record.value, provider_session_id: handle.provider_session_id, workspace: record.value.workspace ?? workspace }
+        : { provider_session_id: handle.provider_session_id, title: null, workspace, created_at: now, updated_at: now, lifecycle: 'open' as const, resumable: false, busy: true };
+      const { ref, created } = upsertRecord(db, ctx, known, 'started', now, excerpt(input.prompt));
+      if (created) appendEvent(db, { agentId, sessionRef: ref, type: 'session_started', detail: { authority: input.authority }, now });
+      return insertTurn(db, {
+        id: randomUUID(), session_ref: ref, agent_id: agentId, kind: 'start', authority: input.authority,
+        requester_kind: input.requester.kind, requester_id: input.requester.id, idempotency_key: input.idempotencyKey,
+        request_hash: hash, provider_turn_id: handle.provider_turn_id, correlation: JSON.stringify(input.correlation ?? {}), created_at: now,
+      });
+    }).immediate();
+    return { turn: turnView(db, row), replayed: false };
+  } catch (error) {
+    // A concurrent caller with the same key won the insert.
+    if (isUniqueViolation(error)) return { turn: turnView(db, replayOrConflict(existingTurn(db, agentId, input), hash) as TurnRow), replayed: true };
+    throw error;
+  }
+}
+
+// Sends one turn to an exact session (a resume). The session is refreshed
+// from the provider first, so resumability, availability, and busy are
+// the provider's current answer, also after a Botmancers restart. A past
+// or archived session is resumable whenever the provider says so; a
+// released Session Binding is not, by itself, a reason to refuse.
+export async function sendProviderTurn(db: Db, agentId: string, ref: string, input: TurnInput): Promise<{ turn: ProviderTurnView; replayed: boolean }> {
+  checkTurnInput(input);
+  const ctx = agentContext(db, agentId);
+  const row = requireSession(db, agentId, ref);
+  const hash = turnHash({ kind: 'send', ref, prompt: input.prompt, authority: input.authority });
+  const replay = replayOrConflict(existingTurn(db, agentId, input), hash);
+  if (replay) return { turn: turnView(db, replay), replayed: true };
+  requireCapability(ctx, 'resume');
+  if (row.runtime_connection_id !== ctx.connection.id) {
+    throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
+  }
+  const scope = requireScope(ctx);
+  // A Botmancers-launched session (a binding) is the Agent's own; a native
+  // one must still be inside the registered scope.
+  if (row.origin !== 'binding') {
+    const allowed = scope.kind === 'all_provider_sessions'
+      || (scope.kind === 'sessions' && scope.sessions.includes(row.id))
+      || (scope.kind === 'workspaces' && row.workspace !== null && scope.workspaces.some(root => workspaceContains(root, row.workspace as string)));
+    if (!allowed) throw new ProviderSessionError('out_of_scope', 'The session is outside the Agent\'s session scope.');
+  }
+  checkAuthority(ctx, input.authority, 'send');
+  const fresh = await refreshProviderSession(db, agentId, ref, input);
+  if (fresh.availability === 'missing') throw new ProviderSessionError('session_missing', 'The provider no longer has this session.');
+  if (fresh.resumable !== 1) throw new ProviderSessionError('not_resumable', 'The provider cannot resume this session.');
+  const running = db.prepare("SELECT 1 FROM provider_session_turns WHERE session_ref = ? AND state = 'running'").get(ref);
+  if (fresh.busy === 1 || running) throw new ProviderSessionError('busy', 'The session has a turn in flight.');
+  const sent = await ctx.provider.sendTurn({
+    ...callContext(input), provider_session_id: row.provider_session_id, prompt: input.prompt, authority: input.authority,
+    idempotency_key: providerKey(agentId, input.requester, input.idempotencyKey),
+  });
+  if (!sent.ok) failWith(sent.error);
+  const now = input.now ?? Date.now();
+  try {
+    const turn = db.transaction(() => insertTurn(db, {
+      id: randomUUID(), session_ref: ref, agent_id: agentId, kind: 'send', authority: input.authority,
+      requester_kind: input.requester.kind, requester_id: input.requester.id, idempotency_key: input.idempotencyKey,
+      request_hash: hash, provider_turn_id: sent.value.provider_turn_id, correlation: JSON.stringify(input.correlation ?? {}), created_at: now,
+    })).immediate();
+    return { turn: turnView(db, turn), replayed: false };
+  } catch (error) {
+    if (isUniqueViolation(error)) return { turn: turnView(db, replayOrConflict(existingTurn(db, agentId, input), hash) as TurnRow), replayed: true };
+    throw error;
+  }
+}
+
+function requireTurn(db: Db, agentId: string, turnRef: string): TurnRow {
+  const row = db.prepare('SELECT * FROM provider_session_turns WHERE id = ? AND agent_id = ?').get(turnRef, agentId) as TurnRow | undefined;
+  if (!row) throw new ProviderSessionError('turn_not_found', 'No turn with that reference.');
+  return row;
+}
+
+// Records a terminal provider result once. Later calls find the turn
+// terminal and change nothing (no duplicate events).
+function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: number): void {
+  db.transaction(() => {
+    const state: TurnState = result.status === 'completed' ? 'completed' : result.status === 'cancelled' ? 'cancelled' : 'failed';
+    const changed = db.prepare(`
+      UPDATE provider_session_turns SET state = ?, output = ?, failure_code = ?, finished_at = ? WHERE id = ? AND state = 'running'
+    `).run(state, typeof result.output === 'string' ? result.output : null, result.failure ? String(result.failure.code).slice(0, 100) : null,
+      typeof result.finished_at === 'number' ? result.finished_at : now, turn.id).changes;
+    if (changed === 0) return;
+    db.prepare(`
+      UPDATE provider_sessions SET busy = CASE WHEN EXISTS (
+        SELECT 1 FROM provider_session_turns WHERE session_ref = ? AND state = 'running') THEN 1 ELSE 0 END,
+        provider_updated_at = ?, updated_at = ? WHERE id = ?
+    `).run(turn.session_ref, now, now, turn.session_ref);
+    appendEvent(db, { agentId: turn.agent_id, sessionRef: turn.session_ref, turnId: turn.id, type: `turn_${state}`, now });
+  }).immediate();
+}
+
+// Observes a turn to its terminal result. Works for any running turn the
+// registry holds, including one started before a Botmancers restart: the
+// provider turn id is read from the database, never from process memory.
+// A signal or deadline ends the wait only; the turn stays running.
+export async function observeProviderTurn(
+  db: Db, agentId: string, turnRef: string, input: { signal?: AbortSignal | null; deadlineAt?: number | null; correlation?: AttemptCorrelation | null; now?: number } = {},
+): Promise<ProviderTurnView> {
+  const turn = requireTurn(db, agentId, turnRef);
+  if (turn.state !== 'running') return turnView(db, turn);
+  const ctx = agentContext(db, agentId);
+  const result = await ctx.provider.observeTurn({ ...callContext(input), provider_turn_id: turn.provider_turn_id });
+  if (!result.ok) {
+    if (result.error.code === 'cancelled' || result.error.code === 'timed_out') return turnView(db, requireTurn(db, agentId, turnRef));
+    failWith(result.error);
+  }
+  finishTurn(db, turn, result.value, input.now ?? Date.now());
+  return turnView(db, requireTurn(db, agentId, turnRef));
+}
+
+// Cancels a turn. Idempotent: a terminal turn is returned unchanged with
+// outcome 'already_terminal' and the provider is not called again.
+export async function cancelProviderTurn(
+  db: Db, agentId: string, turnRef: string, input: { correlation?: AttemptCorrelation | null; now?: number } = {},
+): Promise<{ turn: ProviderTurnView; outcome: 'cancelled' | 'already_terminal' }> {
+  const turn = requireTurn(db, agentId, turnRef);
+  if (turn.state !== 'running') return { turn: turnView(db, turn), outcome: 'already_terminal' };
+  const ctx = agentContext(db, agentId);
+  requireCapability(ctx, 'cancel');
+  const now = input.now ?? Date.now();
+  appendEvent(db, { agentId, sessionRef: turn.session_ref, turnId: turn.id, type: 'cancel_requested', now });
+  const result = await ctx.provider.cancelTurn({ ...callContext(input), provider_turn_id: turn.provider_turn_id });
+  if (!result.ok) failWith(result.error);
+  if (result.value === 'cancelled') {
+    finishTurn(db, turn, { status: 'cancelled', provider_session_id: '', output: null, failure: { code: 'cancelled', message: '' }, finished_at: now }, now);
+    return { turn: turnView(db, requireTurn(db, agentId, turnRef)), outcome: 'cancelled' };
+  }
+  // The provider had already finished it: record the real terminal result.
+  return { turn: await observeProviderTurn(db, agentId, turnRef, input), outcome: 'already_terminal' };
+}
+
+export function listProviderTurns(db: Db, agentId: string, ref: string): ProviderTurnView[] {
+  requireSession(db, agentId, ref);
+  const rows = db.prepare('SELECT * FROM provider_session_turns WHERE session_ref = ? ORDER BY created_at ASC, id ASC').all(ref) as TurnRow[];
+  return rows.map(row => turnView(db, row));
+}
+
+// ---- disclosure helpers ----
+
+// The owner-only local debug disclosure. Never part of a normal response.
+export function providerSessionDebugId(db: Db, agentId: string, ref: string): string | undefined {
+  return getProviderSessionRow(db, agentId, ref)?.provider_session_id;
+}
+
+// Every private provider identifier the registry holds, for the service
+// redactor (lib/service-redaction).
+export function privateProviderIds(db: Db): string[] {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_sessions'").get()) return [];
+  const sessions = db.prepare('SELECT provider_session_id AS id FROM provider_sessions').all() as { id: string }[];
+  const turns = db.prepare('SELECT provider_turn_id AS id FROM provider_session_turns').all() as { id: string }[];
+  return [...sessions, ...turns].map(row => row.id);
+}

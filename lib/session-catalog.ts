@@ -6,8 +6,18 @@ import type { ExecutionKind, SessionBinding, WorkRequestState } from './engine-s
 // session_bindings table (lib/engine-store) joined with the Conversation,
 // Work Request, Attempts, and the source Attempt's launch snapshot that
 // already exist. It owns no table and writes nothing: a session reference
-// is the binding's own Botmancers id, and its state is the binding's
+// is the binding's own Botmancers id, and its status is the binding's
 // released_at.
+//
+// NOT-503: it also reads the provider-session registry (provider_sessions,
+// lib/provider-sessions). A binding shows its registry row's provider facts;
+// a native session the runtime held before Botmancers (no binding) is
+// listed under its own registry reference. Both kinds share one reference
+// space and one shape. `state` carries the independent facts:
+// availability (available|missing), lifecycle (open|archived), provider
+// resumability (null until the provider was asked), and busy. They are
+// never folded into `status`: a released binding may still be resumable
+// by its provider, and a missing session is reported, never dropped.
 //
 // The opaque external provider session id never appears in a summary or a
 // detail. sessionDebugExternalId is the one exception, for the explicitly
@@ -38,12 +48,31 @@ export interface SessionOriginWorkRequest {
   state: WorkRequestState;
 }
 
+export interface SessionState {
+  availability: 'available' | 'missing';
+  lifecycle: 'open' | 'archived';
+  // What the provider last said about continuing the session; null when
+  // it was never asked (a binding no provider has synced yet).
+  resumable: boolean | null;
+  busy: boolean;
+  // Last successful provider sync, or null.
+  synced_at: number | null;
+}
+
 export interface SessionSummary {
   ref: string;
+  // botmancers: a Session Binding the engine created; native: a session
+  // imported from (or started through) the Agent's session provider.
+  source: 'botmancers' | 'native';
   agent: { id: string; name: string; adapter: string; transport: string | null };
   title: string;
   status: SessionStatus;
+  // NOT-496 contract, unchanged: exactly the binding a revision (or a
+  // session message) would resume. Always false for a native session,
+  // which those engine paths do not reach; the provider's own answer is
+  // state.resumable (lib/provider-sessions sendProviderTurn).
   resumable: boolean;
+  state: SessionState;
   created_at: number;
   ended_at: number | null;
   last_activity_at: number;
@@ -83,6 +112,35 @@ interface CatalogRow extends SessionBinding {
   source_snapshot: string | null;
   source_finished_at: number | null;
   resumed_last_at: number | null;
+  attempt_running: number;
+  ps_availability: 'available' | 'missing' | null;
+  ps_lifecycle: 'open' | 'archived' | null;
+  ps_resumable: number | null;
+  ps_busy: number | null;
+  ps_workspace: string | null;
+  ps_synced_at: number | null;
+  ps_running: number;
+}
+
+// A registry row with no binding: a native provider session.
+interface NativeRow {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  provider_kind: string;
+  title: string | null;
+  workspace: string | null;
+  provider_created_at: number | null;
+  provider_updated_at: number | null;
+  availability: 'available' | 'missing';
+  lifecycle: 'open' | 'archived';
+  resumable: number | null;
+  busy: number;
+  last_synced_at: number | null;
+  created_at: number;
+  updated_at: number;
+  turn_last_at: number | null;
+  running: number;
 }
 
 const TITLE_LIMIT = 80;
@@ -116,14 +174,30 @@ const SELECT = `
     r.intent AS request_intent, r.execution_kind AS request_kind, r.state AS request_state,
     r.source_conversation_id AS request_conversation_id, r.target_agent_id AS request_target_agent_id,
     sa.launch_snapshot AS source_snapshot, sa.finished_at AS source_finished_at,
-    (SELECT MAX(COALESCE(ra.finished_at, ra.started_at)) FROM work_attempts ra WHERE ra.resumed_session_binding_id = b.id) AS resumed_last_at
+    (SELECT MAX(COALESCE(ra.finished_at, ra.started_at)) FROM work_attempts ra WHERE ra.resumed_session_binding_id = b.id) AS resumed_last_at,
+    EXISTS (SELECT 1 FROM work_attempts oa WHERE oa.resumed_session_binding_id = b.id AND oa.finished_at IS NULL) AS attempt_running,
+    ps.availability AS ps_availability, ps.lifecycle AS ps_lifecycle, ps.resumable AS ps_resumable, ps.busy AS ps_busy,
+    ps.workspace AS ps_workspace, ps.last_synced_at AS ps_synced_at,
+    EXISTS (SELECT 1 FROM provider_session_turns pt WHERE pt.session_ref = ps.id AND pt.state = 'running') AS ps_running
   FROM session_bindings b
   JOIN bots bot ON bot.id = b.agent_id
+  LEFT JOIN provider_sessions ps ON ps.binding_id = b.id
   LEFT JOIN work_attempts sa ON sa.id = b.source_attempt_id
   LEFT JOIN work_requests r ON r.id = COALESCE(b.request_id, sa.request_id)
   LEFT JOIN conversations c ON c.id = COALESCE(b.conversation_id, r.source_conversation_id)
   LEFT JOIN bots tb ON tb.id = c.bot_id
   LEFT JOIN groups g ON g.id = c.group_id
+`;
+
+const NATIVE_SELECT = `
+  SELECT ps.id, ps.agent_id, bot.name AS agent_name, ps.provider_kind, ps.title, ps.workspace,
+    ps.provider_created_at, ps.provider_updated_at, ps.availability, ps.lifecycle, ps.resumable, ps.busy,
+    ps.last_synced_at, ps.created_at, ps.updated_at,
+    (SELECT MAX(COALESCE(t.finished_at, t.created_at)) FROM provider_session_turns t WHERE t.session_ref = ps.id) AS turn_last_at,
+    EXISTS (SELECT 1 FROM provider_session_turns t WHERE t.session_ref = ps.id AND t.state = 'running') AS running
+  FROM provider_sessions ps
+  JOIN bots bot ON bot.id = ps.agent_id
+  WHERE ps.binding_id IS NULL
 `;
 
 export function formatSessionTime(ms: number): string {
@@ -167,10 +241,18 @@ function summarize(row: CatalogRow): SessionSummary {
     ?? `${row.agent_name} · ${formatSessionTime(row.created_at)}`;
   return {
     ref: row.id,
+    source: 'botmancers',
     agent: { id: row.agent_id, name: row.agent_name, adapter: row.adapter, transport: snapshotField(snapshot, 'transport') },
     title,
     status,
     resumable: isResumable(row),
+    state: {
+      availability: row.ps_availability ?? 'available',
+      lifecycle: row.ps_lifecycle ?? 'open',
+      resumable: row.ps_resumable === null || row.ps_resumable === undefined ? null : row.ps_resumable === 1,
+      busy: row.ps_busy === 1 || !!row.attempt_running || !!row.ps_running,
+      synced_at: row.ps_synced_at ?? null,
+    },
     created_at: row.created_at,
     ended_at: row.released_at,
     last_activity_at: Math.max(row.created_at, row.released_at ?? 0, row.source_finished_at ?? 0, row.resumed_last_at ?? 0),
@@ -180,7 +262,36 @@ function summarize(row: CatalogRow): SessionSummary {
         ? { id: row.origin_request_id, execution_kind: row.request_kind, state: row.request_state }
         : null,
     },
-    context: { workspace: snapshotField(snapshot, 'cwd'), deck: snapshotField(snapshot, 'deck') },
+    context: { workspace: snapshotField(snapshot, 'cwd') ?? row.ps_workspace ?? null, deck: snapshotField(snapshot, 'deck') },
+  };
+}
+
+// A native session: status follows the provider lifecycle (open is
+// active, archived is ended); it has no Conversation or Work Request
+// origin and no Deck.
+function summarizeNative(row: NativeRow): SessionSummary {
+  const created = row.provider_created_at ?? row.created_at;
+  const resumable = row.resumable === null ? null : row.resumable === 1;
+  const archivedAt = row.lifecycle === 'archived' ? (row.provider_updated_at ?? row.updated_at) : null;
+  return {
+    ref: row.id,
+    source: 'native',
+    agent: { id: row.agent_id, name: row.agent_name, adapter: row.provider_kind, transport: null },
+    title: row.title ?? `${row.agent_name} · ${formatSessionTime(created)}`,
+    status: row.lifecycle === 'open' ? 'active' : 'ended',
+    resumable: false,
+    state: {
+      availability: row.availability,
+      lifecycle: row.lifecycle,
+      resumable,
+      busy: row.busy === 1 || !!row.running,
+      synced_at: row.last_synced_at,
+    },
+    created_at: created,
+    ended_at: archivedAt,
+    last_activity_at: Math.max(created, row.provider_updated_at ?? 0, row.turn_last_at ?? 0),
+    origin: { conversation: null, work_request: null },
+    context: { workspace: row.workspace, deck: null },
   };
 }
 
@@ -197,7 +308,13 @@ export function agentExists(db: Db, agentId: string): boolean {
 export function listAgentSessions(db: Db, agentId: string, filter: SessionFilter = 'all'): SessionSummary[] {
   const where = filter === 'active' ? 'AND b.released_at IS NULL' : filter === 'ended' ? 'AND b.released_at IS NOT NULL' : '';
   const rows = db.prepare(`${SELECT} WHERE b.agent_id = ? ${where}`).all(agentId) as CatalogRow[];
-  return rows.map(summarize).sort(byActivity);
+  const nativeWhere = filter === 'active' ? "AND ps.lifecycle = 'open'" : filter === 'ended' ? "AND ps.lifecycle = 'archived'" : '';
+  const native = db.prepare(`${NATIVE_SELECT} AND ps.agent_id = ? ${nativeWhere}`).all(agentId) as NativeRow[];
+  return [...rows.map(summarize), ...native.map(summarizeNative)].sort(byActivity);
+}
+
+function nativeRow(db: Db, agentId: string, ref: string): NativeRow | undefined {
+  return db.prepare(`${NATIVE_SELECT} AND ps.id = ? AND ps.agent_id = ?`).get(ref, agentId) as NativeRow | undefined;
 }
 
 function agentRow(db: Db, agentId: string, ref: string): CatalogRow | undefined {
@@ -208,7 +325,10 @@ function agentRow(db: Db, agentId: string, ref: string): CatalogRow | undefined 
 // Agent: the two are indistinguishable to the caller.
 export function getAgentSession(db: Db, agentId: string, ref: string): SessionDetail | undefined {
   const row = agentRow(db, agentId, ref);
-  if (!row) return undefined;
+  if (!row) {
+    const native = nativeRow(db, agentId, ref);
+    return native ? { ...summarizeNative(native), attempts: [] } : undefined;
+  }
   const attempts = db.prepare(`
     SELECT a.attempt_number, a.kind, a.request_id, a.outcome, a.started_at, a.finished_at,
       CASE WHEN a.id = ? THEN 'source' ELSE 'resume' END AS role
@@ -223,7 +343,9 @@ export function getAgentSession(db: Db, agentId: string, ref: string): SessionDe
 // catalog row shows), for exchange cards and the Agent Exchanges ledger.
 export function sessionTitle(db: Db, agentId: string, ref: string): string | null {
   const row = agentRow(db, agentId, ref);
-  return row ? summarize(row).title : null;
+  if (row) return summarize(row).title;
+  const native = nativeRow(db, agentId, ref);
+  return native ? summarizeNative(native).title : null;
 }
 
 // NOT-498: a conversation labeled the way a session's origin is.
@@ -241,5 +363,9 @@ export function conversationRef(db: Db, conversationId: string): SessionOriginCo
 
 // The local debug disclosure only. Never part of a summary or a detail.
 export function sessionDebugExternalId(db: Db, agentId: string, ref: string): string | undefined {
-  return agentRow(db, agentId, ref)?.external_session_id;
+  const binding = agentRow(db, agentId, ref)?.external_session_id;
+  if (binding !== undefined) return binding;
+  if (!nativeRow(db, agentId, ref)) return undefined;
+  const row = db.prepare('SELECT provider_session_id FROM provider_sessions WHERE id = ? AND agent_id = ?').get(ref, agentId) as { provider_session_id: string } | undefined;
+  return row?.provider_session_id;
 }
