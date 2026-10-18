@@ -46,7 +46,7 @@ export function dbPath(env: NodeJS.ProcessEnv = process.env): string {
 
 export function filesRootPath(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = override(env, 'BOTMANCERS_FILES_ROOT');
-  if (explicit) return path.resolve(explicit);
+  if (explicit) return path.resolve(/* turbopackIgnore: true */ explicit);
   const home = botmancersHome(env);
   return home ? path.join(/* turbopackIgnore: true */ home, HOME_LAYOUT.files) : path.resolve(process.cwd(), 'files');
 }
@@ -62,5 +62,5 @@ export function waitLogPath(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = override(env, 'HERMES_WAIT_LOG_PATH');
   if (explicit) return explicit;
   const home = botmancersHome(env);
-  return home ? path.join(home, HOME_LAYOUT.waitLog) : path.join(process.cwd(), '.temporal', 'specialist-waits.jsonl');
+  return home ? path.join(/* turbopackIgnore: true */ home, HOME_LAYOUT.waitLog) : path.join(process.cwd(), '.temporal', 'specialist-waits.jsonl');
 }
