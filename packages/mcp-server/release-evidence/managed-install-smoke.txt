@@ -1,15 +1,15 @@
-source: tarball botmancers-0.5.0.tgz = botmancers@0.5.0, integrity sha512-x9RhEE165u7j6f19lTBxiW/kQIKF3m0IUpMvsOLLjX4X1KQoPK8KktMeiPXg0SC13SulLm2o7r8iFdNzksOrMw==
-checkout commit: 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae
-N+1: botmancers@0.5.1 repacked from the same tarball, integrity sha512-Np1SZeHQFsUtswAMYkHAWWTPzOHtEU8/6MR6II6OUEM0G3EiOVe+M37r5xoDdSGvB8kYDU40ECXpG2xiRWosnQ==
-node v26.10.0, npm 11.19.1, darwin-arm64; registry http://127.0.0.1:65233; ports ui 65234, mcp 65235
-PATH=/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.local/bin:/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/tools:/usr/bin:/bin
-  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/tools: node, npm, npx
+source: tarball botmancers-0.5.1.tgz = botmancers@0.5.1, integrity sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==
+checkout commit: ca905df19f64e4dcb9dce06e02cc3874168e8641
+N+1: botmancers@0.5.2 repacked from the same tarball, integrity sha512-JrSH3R58uUwxGLVC3J3d6QEqjm8moEQiktP4Ys7bFi9F9z8DGphwNRFjqqKc5v4LCPBgPNJGDc1opyWvpJS5iQ==
+node v26.10.0, npm 11.19.1, darwin-arm64; registry http://127.0.0.1:56346; ports ui 56347, mcp 56348
+PATH=/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.local/bin:/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/tools:/usr/bin:/bin
+  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/tools: node, npm, npx
 ok  before install, no botmancers anywhere on PATH
-    | Installing botmancers@latest into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers (existing data kept) ...
-    | botmancers: installing botmancers@0.5.0 into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/versions (data under /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers is left unchanged)
-    | botmancers: downloaded botmancers@0.5.0 (sha512-x9RhEE165u7j6f19lTBxiW/kQIKF3m0IUpMvsOLLjX4X1KQoPK8KktMeiPXg0SC13SulLm2o7r8iFdNzksOrMw==) into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/versions/0.5.0
-    | botmancers: activated 0.5.0; /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/current -> versions/0.5.0
-    | Launcher: /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.local/bin/botmancers
+    | Installing botmancers@latest into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers (existing data kept) ...
+    | botmancers: installing botmancers@0.5.1 into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/versions (data under /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers is left unchanged)
+    | botmancers: downloaded botmancers@0.5.1 (sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==) into /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/versions/0.5.1
+    | botmancers: activated 0.5.1; /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/current -> versions/0.5.1
+    | Launcher: /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.local/bin/botmancers
     | Next: botmancers doctor && botmancers setup && botmancers start --daemon --open
     | 
     | Make sure ~/.local/bin is on your PATH, then:
@@ -17,10 +17,10 @@ ok  before install, no botmancers anywhere on PATH
     |   botmancers setup
     |   botmancers start --daemon --open
 ok  scripts/install.sh exits 0
-ok  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/versions holds only 0.5.0
-ok  current -> versions/0.5.0
-ok  versions/0.5.0 was installed from the exact tarball (sha512-x9RhEE165u7j6f19lTBxiW/kQIKF3m0IUpMvsOLLjX4X1KQoPK8KktMeiPXg0SC13SulLm2o7r8iFdNzksOrMw==)
-ok  PATH resolves botmancers only to the launcher /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.local/bin/botmancers
+ok  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/versions holds only 0.5.1
+ok  current -> versions/0.5.1
+ok  versions/0.5.1 was installed from the exact tarball (sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==)
+ok  PATH resolves botmancers only to the launcher /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.local/bin/botmancers
 launcher:
     | #!/usr/bin/env bash
     | # botmancers managed launcher: runs the release <home>/current points at.
@@ -33,80 +33,80 @@ launcher:
     |   exit 1
     | fi
     | exec node "$BIN" "$@"
-ok  botmancers --version -> 0.5.0
-    | botmancers doctor 0.5.0 (home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers)
+ok  botmancers --version -> 0.5.1
+    | botmancers doctor 0.5.1 (home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers)
     |   ok    node        Node v26.10.0
-    |   ok    assets      packaged UI/core 0.5.0 (commit 1d26bbcb2dbf)
-    |   info  install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/versions/0.5.0/node_modules/botmancers/dist/cli.js)
-    |   ok    path        PATH resolves botmancers to /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.local/bin/botmancers
-    |   info  versions    cli 0.5.0, current 0.5.0
+    |   ok    assets      packaged UI/core 0.5.1 (commit ca905df19f64)
+    |   info  install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/versions/0.5.1/node_modules/botmancers/dist/cli.js)
+    |   ok    path        PATH resolves botmancers to /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.local/bin/botmancers
+    |   info  versions    cli 0.5.1, current 0.5.1
     |   ok    updater     automatic updates on (not checked yet)
-    |   fail  home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers is not fully set up; run botmancers setup.
-    |   fail  config      /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/bridge.env is missing; /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/core.env is missing; run botmancers setup.
+    |   fail  home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers is not fully set up; run botmancers setup.
+    |   fail  config      /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/bridge.env is missing; /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/core.env is missing; run botmancers setup.
     |   ok    native      better-sqlite3 loads on darwin-arm64
-    |   ok    ports       127.0.0.1:65234 and 127.0.0.1:65235 are free (product stopped)
-    |   warn  hermes      Hermes is not configured: conversational turns post a Hermes error until HERMES_API_SERVER_KEY is set in /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/core.env.
+    |   ok    ports       127.0.0.1:56347 and 127.0.0.1:56348 are free (product stopped)
+    |   warn  hermes      Hermes is not configured: conversational turns post a Hermes error until HERMES_API_SERVER_KEY is set in /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/core.env.
     |   warn  agent-deck  Agent Deck is unavailable: `agent-deck` is not on PATH; coding-agent runs cannot launch.
     |   info  clients     no MCP client set up by Botmancers (optional): botmancers setup --client codex|cursor|claude, or connect any MCP client by hand
     | result: FAILED (2 problems, 2 warnings)
 ok  doctor reports a managed install resolved through the launcher
 ok  botmancers setup (prints the MCP-only URL and header)
 ok  botmancers doctor: result: ok (2 warnings)
-    | botmancers setup --client codex: Codex is connected to Botmancers 0.5.0.
-    |   MCP    ~/.codex/config.toml "botmancers" -> http://127.0.0.1:65235/mcp (added)
-    |   skill  ~/.codex/skills/botmancers-collaboration botmancers-collaboration 0.5.0 (installed)
-    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/clients/codex.json records what Botmancers manages; edited files are never overwritten.
+    | botmancers setup --client codex: Codex is connected to Botmancers 0.5.1.
+    |   MCP    ~/.codex/config.toml "botmancers" -> http://127.0.0.1:56348/mcp (added)
+    |   skill  ~/.codex/skills/botmancers-collaboration botmancers-collaboration 0.5.1 (installed)
+    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/clients/codex.json records what Botmancers manages; edited files are never overwritten.
     | Restart Codex (or reload its MCP servers) to pick up changes. Remove with: botmancers setup --client codex --remove
 ok  botmancers setup --client codex -> exit 0
-    | botmancers setup --client claude: Claude Code is connected to Botmancers 0.5.0.
-    |   MCP    ~/.claude.json "botmancers" -> http://127.0.0.1:65235/mcp (added)
-    |   skill  ~/.claude/skills/botmancers-collaboration botmancers-collaboration 0.5.0 (installed)
-    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/clients/claude.json records what Botmancers manages; edited files are never overwritten.
+    | botmancers setup --client claude: Claude Code is connected to Botmancers 0.5.1.
+    |   MCP    ~/.claude.json "botmancers" -> http://127.0.0.1:56348/mcp (added)
+    |   skill  ~/.claude/skills/botmancers-collaboration botmancers-collaboration 0.5.1 (installed)
+    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/clients/claude.json records what Botmancers manages; edited files are never overwritten.
     | Restart Claude Code (or reload its MCP servers) to pick up changes. Remove with: botmancers setup --client claude --remove
 ok  botmancers setup --client claude -> exit 0
-ok  both clients hold the 0.5.0 skill (botmancers-collaboration)
+ok  both clients hold the 0.5.1 skill (botmancers-collaboration)
 ok  the user's own Codex/Claude configuration and skill are kept
 ok  setup --client codex again: unchanged (idempotent)
 ok  unsupported client: exit 2 with the MCP-only path
 ok  doctor: codex and claude connected, skill current
 ok  botmancers start --daemon:
-botmancers 0.5.0: running
-  UI   http://127.0.0.1:65234
-  MCP  http://127.0.0.1:65235/mcp
-  home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers
-    | botmancers 0.5.0: healthy
-    |   home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers
-    |   install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/versions/0.5.0/node_modules/botmancers/dist/cli.js)
-    |   launcher    /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.local/bin/botmancers
-    |   versions    cli 0.5.0, current 0.5.0
-    |   running     core 0.5.0, bridge 0.5.0 (started by 0.5.0)
-    |   ui/core     http://127.0.0.1:65234  ok version 0.5.0 (pid 60718)
-    |   mcp bridge  http://127.0.0.1:65235/mcp  ok version 0.5.0 (pid 60723)
+botmancers 0.5.1: running
+  UI   http://127.0.0.1:56347
+  MCP  http://127.0.0.1:56348/mcp
+  home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers
+    | botmancers 0.5.1: healthy
+    |   home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers
+    |   install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/versions/0.5.1/node_modules/botmancers/dist/cli.js)
+    |   launcher    /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.local/bin/botmancers
+    |   versions    cli 0.5.1, current 0.5.1
+    |   running     core 0.5.1, bridge 0.5.1 (started by 0.5.1)
+    |   ui/core     http://127.0.0.1:56347  ok version 0.5.1 (pid 1494)
+    |   mcp bridge  http://127.0.0.1:56348/mcp  ok version 0.5.1 (pid 1499)
     |   bridge→core ok (service:botmancers-bridge)
-    |   supervisor  pid 60713, started 2026-10-19T17:30:57.867Z
-ok  status: healthy, running 0.5.0
-ok  supervisor and bridge run <tmp>/user/.botmancers/versions/0.5.0/node_modules/botmancers/dist/cli.js
+    |   supervisor  pid 1489, started 2026-10-19T23:40:56.216Z
+ok  status: healthy, running 0.5.1
+ok  supervisor and bridge run <tmp>/user/.botmancers/versions/0.5.1/node_modules/botmancers/dist/cli.js
 ok  GET / -> 200, the Botmancers UI
-ok  /api/health and bridge /healthz -> 0.5.0
+ok  /api/health and bridge /healthz -> 0.5.1
 ok  Codex config.toml points at this bridge with the MCP token
-ok  created Agent b838d262-328f-4b46-8464-d0c4619b8bad and a message in conversation b9ecba93-a9d5-477c-8af5-55f3287d8f0e
+ok  created Agent d83fbcff-7626-4c5c-ba91-d41d0eb999cd and a message in conversation 26e0f97b-1253-454e-8123-f5c8e0e8d11a
 ok  MCP tools/call botmancers_health reaches the same engine
-ok  created Deck-backed Agent Relay f7d03c11-8176-490a-a785-571a95c78917
-ok  Agent Deck server URL set to the loopback fake http://127.0.0.1:65244
-seeded session f4dbba47-2988-408f-b450-b3effbbf516e of Relay (conversation 48c223a3-c5df-4ea8-94f4-2371379ddc1e) with the packaged better-sqlite3
-owner grant: /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/service-grants.json (0600) grants service botmancers-bridge every capability on Relay
+ok  created Deck-backed Agent Relay 90f83949-f934-4a5a-a920-35b24e78a3b0
+ok  Agent Deck server URL set to the loopback fake http://127.0.0.1:56354
+seeded session 6b1912da-c916-4611-b8c4-040c48c0026e of Relay (conversation 1c675cb6-2ab1-4a3d-a602-c512673dc186) with the packaged better-sqlite3
+owner grant: /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/service-grants.json (0600) grants service botmancers-bridge every capability on Relay
 ok  MCP tools/list -> 17 tools: botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health, botmancers_capabilities, botmancers_list_agents, botmancers_list_sessions, botmancers_list_conversations, botmancers_send_to_session, botmancers_create_exchange, botmancers_get_exchange, botmancers_list_exchanges, botmancers_message_agent, botmancers_pin_session, botmancers_send_to_pin, botmancers_get_pin, botmancers_detach_pin
 ok  botmancers_capabilities -> granted; v1+v2; send_to_session on Relay
 ok  botmancers_list_agents -> Relay (only the granted Agent)
-ok  botmancers_list_sessions discovers the seeded session f4dbba47-2988-408f-b450-b3effbbf516e ("Relay · 2026-10-19 17:30 UTC")
+ok  botmancers_list_sessions discovers the seeded session 6b1912da-c916-4611-b8c4-040c48c0026e ("Relay · 2026-10-19 23:40 UTC")
 ok  the owner UI Sessions route lists the same session reference
-ok  botmancers_send_to_session -> exchange 594b1684-f55d-46e9-a171-dcf81b4ffcf3, request 3aba911f-c24b-48b4-afdd-b4b1c94972f7
+ok  botmancers_send_to_session -> exchange 82e1fbcf-f647-48d3-8012-29ef3a223350, request a9adacc6-93ba-440d-bede-e546c70e9b3b
 ok  polled botmancers_get_exchange -> completed: "Relay: yes, the same session."
 ok  the Agent Deck run resumed exactly the seeded provider session on Relay's Deck (1 run)
-ok  botmancers_create_exchange (Ask) -> exchange b4278a20-d823-4c83-b77b-1a45f8dee453
+ok  botmancers_create_exchange (Ask) -> exchange 983b2abb-e347-47b6-b299-346e2d30a4d1
 ok  the Ask exchange -> completed: "Relay: yes, the same session."
 ok  botmancers stop
-ok  botmancers start --daemon: the product runs 0.5.0 again
+ok  botmancers start --daemon: the product runs 0.5.1 again
 ok  after stop/start MCP reads both exchanges, completed, with the same answer
 ok  after stop/start the same idempotency key replays the same exchange (nothing new written)
 ok  after stop/start the session is still discoverable by its reference
@@ -115,64 +115,64 @@ ok  REST GET /api/v0/exchanges/{id} (the bridge service token) returns the same 
 ok  the owner UI grants view shows the loaded grant and the audited MCP session message and exchange
 ok  after stop/start the owner UI Sessions route still lists the session
 ok  no MCP v2 response carried the provider session id
-user-state hashes: {"config/core.env":"bfc15f38d8b15cbd35d138a80257aed17b9c6add5a8d37298432ecfb547b8818","config/bridge.env":"a30746ec9cb22c70d35ab0c112016a72de9d00342e815d36a04549f034b003ba","files/managed-smoke.txt":"78051faade059d70866df6a3fb83ef348721fd74a87e93ef95c493f87d0d236b","skills/smoke/SKILL.md":"b86ce8a55c116250c2ee939e63bc19ce98b03a4942739c651a77dd223599ac4b"}
-ok  the product's own daily check already ran at 2026-10-19T17:30:56.680Z (latest 0.5.0); nothing pending
+user-state hashes: {"config/core.env":"6d132b47269a8bf0397d8400b408158e266e254f11400bdfcc0f3b0af269b5bd","config/bridge.env":"d1bb00cd111add9ac95f7fc613c12b0b0df3ea6b7950ef3ea209cb8f2f4ad374","files/managed-smoke.txt":"78051faade059d70866df6a3fb83ef348721fd74a87e93ef95c493f87d0d236b","skills/smoke/SKILL.md":"b86ce8a55c116250c2ee939e63bc19ce98b03a4942739c651a77dd223599ac4b"}
+ok  the product's own daily check already ran at 2026-10-19T23:40:55.080Z (latest 0.5.1); nothing pending
 ok  within 24 hours no second check runs, even though N+1 is now on latest
 (simulating the next day: checkedAt set to 25 hours ago)
 ok  botmancers status (schedules the daily update check) exits 0 at once
-ok  the detached updater staged 0.5.1: { "checkedAt": "2026-10-19T17:31:00.917Z", "latest": "0.5.1", "pendingVersion": "0.5.1", "pendingIntegrity": "sha512-Np1SZeHQFsUtswAMYkHAWWTPzOHtEU8/6MR6II6OUEM0G3EiOVe+M37r5xoDdSGvB8kYDU40ECXpG2xiRWosnQ==", "stagedAt": "2026-10-19T17:31:01.893Z", "declinedVersion": null, "lastError": null } 
-ok  versions/0.5.1 staged; current still -> versions/0.5.0
-ok  the live product was not interrupted: supervisor pid 60776, core and bridge still 0.5.0
-    | botmancers 0.5.0: healthy
-    |   home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers
-    |   install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/versions/0.5.0/node_modules/botmancers/dist/cli.js)
-    |   launcher    /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.local/bin/botmancers
-    |   versions    cli 0.5.0, current 0.5.0, pending 0.5.1 (staged, not running)
-    |   running     core 0.5.0, bridge 0.5.0 (started by 0.5.0)
-    |   ui/core     http://127.0.0.1:65234  ok version 0.5.0 (pid 60781)
-    |   mcp bridge  http://127.0.0.1:65235/mcp  ok version 0.5.0 (pid 60787)
+ok  the detached updater staged 0.5.2: { "checkedAt": "2026-10-19T23:40:59.202Z", "latest": "0.5.2", "pendingVersion": "0.5.2", "pendingIntegrity": "sha512-JrSH3R58uUwxGLVC3J3d6QEqjm8moEQiktP4Ys7bFi9F9z8DGphwNRFjqqKc5v4LCPBgPNJGDc1opyWvpJS5iQ==", "stagedAt": "2026-10-19T23:41:00.169Z", "declinedVersion": null, "lastError": null } 
+ok  versions/0.5.2 staged; current still -> versions/0.5.1
+ok  the live product was not interrupted: supervisor pid 1567, core and bridge still 0.5.1
+    | botmancers 0.5.1: healthy
+    |   home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers
+    |   install     managed (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/versions/0.5.1/node_modules/botmancers/dist/cli.js)
+    |   launcher    /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.local/bin/botmancers
+    |   versions    cli 0.5.1, current 0.5.1, pending 0.5.2 (staged, not running)
+    |   running     core 0.5.1, bridge 0.5.1 (started by 0.5.1)
+    |   ui/core     http://127.0.0.1:56347  ok version 0.5.1 (pid 1576)
+    |   mcp bridge  http://127.0.0.1:56348/mcp  ok version 0.5.1 (pid 1584)
     |   bridge→core ok (service:botmancers-bridge)
-    |   supervisor  pid 60776, started 2026-10-19T17:30:59.854Z
-    |   restart     botmancers stop && botmancers start --daemon   (activates 0.5.1)
-ok  status shows 0.5.0 running, 0.5.1 pending, and the restart action
+    |   supervisor  pid 1567, started 2026-10-19T23:40:58.159Z
+    |   restart     botmancers stop && botmancers start --daemon   (activates 0.5.2)
+ok  status shows 0.5.1 running, 0.5.2 pending, and the restart action
 ok  botmancers stop
-    | botmancers: activated 0.5.1 (was 0.5.0).
-    | botmancers 0.5.1: running
-    |   UI   http://127.0.0.1:65234
-    |   MCP  http://127.0.0.1:65235/mcp
-    |   home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers
-ok  botmancers start activated 0.5.1
-ok  core and bridge report 0.5.1; current -> versions/0.5.1
+    | botmancers: activated 0.5.2 (was 0.5.1).
+    | botmancers 0.5.2: running
+    |   UI   http://127.0.0.1:56347
+    |   MCP  http://127.0.0.1:56348/mcp
+    |   home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers
+ok  botmancers start activated 0.5.2
+ok  core and bridge report 0.5.2; current -> versions/0.5.2
 ok  status healthy after the upgrade
-ok  after upgrade to 0.5.1: the Agent and its message are still there
-ok  after upgrade to 0.5.1: user-state file hashes unchanged
-ok  doctor after the upgrade: the 0.5.0 client skill is stale, with the repair command
-    | botmancers setup --client codex: Codex is connected to Botmancers 0.5.1.
-    |   MCP    ~/.codex/config.toml "botmancers" -> http://127.0.0.1:65235/mcp (unchanged)
-    |   skill  ~/.codex/skills/botmancers-collaboration botmancers-collaboration 0.5.1 (updated)
-    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/clients/codex.json records what Botmancers manages; edited files are never overwritten.
+ok  after upgrade to 0.5.2: the Agent and its message are still there
+ok  after upgrade to 0.5.2: user-state file hashes unchanged
+ok  doctor after the upgrade: the 0.5.1 client skill is stale, with the repair command
+    | botmancers setup --client codex: Codex is connected to Botmancers 0.5.2.
+    |   MCP    ~/.codex/config.toml "botmancers" -> http://127.0.0.1:56348/mcp (unchanged)
+    |   skill  ~/.codex/skills/botmancers-collaboration botmancers-collaboration 0.5.2 (updated)
+    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/clients/codex.json records what Botmancers manages; edited files are never overwritten.
     | Restart Codex (or reload its MCP servers) to pick up changes. Remove with: botmancers setup --client codex --remove
     | 
-    | botmancers setup --client claude: Claude Code is connected to Botmancers 0.5.1.
-    |   MCP    ~/.claude.json "botmancers" -> http://127.0.0.1:65235/mcp (unchanged)
-    |   skill  ~/.claude/skills/botmancers-collaboration botmancers-collaboration 0.5.1 (updated)
-    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-Qhr9Ir/user/.botmancers/config/clients/claude.json records what Botmancers manages; edited files are never overwritten.
+    | botmancers setup --client claude: Claude Code is connected to Botmancers 0.5.2.
+    |   MCP    ~/.claude.json "botmancers" -> http://127.0.0.1:56348/mcp (unchanged)
+    |   skill  ~/.claude/skills/botmancers-collaboration botmancers-collaboration 0.5.2 (updated)
+    |   owner  /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-managed-smoke-uQrfuS/user/.botmancers/config/clients/claude.json records what Botmancers manages; edited files are never overwritten.
     | Restart Claude Code (or reload its MCP servers) to pick up changes. Remove with: botmancers setup --client claude --remove
-ok  botmancers setup refreshed both clients to the 0.5.1 skill
-ok  after the client refresh on 0.5.1: the Agent and its message are still there
-ok  after the client refresh on 0.5.1: user-state file hashes unchanged
+ok  botmancers setup refreshed both clients to the 0.5.2 skill
+ok  after the client refresh on 0.5.2: the Agent and its message are still there
+ok  after the client refresh on 0.5.2: user-state file hashes unchanged
 ok  the user's own Codex files are unchanged
-ok  doctor on 0.5.1: codex connected, skill current
-ok  reconnected client: capabilities granted; list_agents -> Relay; list_sessions discovers f4dbba47-2988-408f-b450-b3effbbf516e ("Relay · 2026-10-19 17:30 UTC")
-ok  post-upgrade Ask exchange 9d8e472e-dbf0-4936-8239-cd689d4a59b4 -> completed: "Relay: yes, the same session."
+ok  doctor on 0.5.2: codex connected, skill current
+ok  reconnected client: capabilities granted; list_agents -> Relay; list_sessions discovers 6b1912da-c916-4611-b8c4-040c48c0026e ("Relay · 2026-10-19 23:40 UTC")
+ok  post-upgrade Ask exchange dd80390f-c77d-46f2-8613-f4af2270e931 -> completed: "Relay: yes, the same session."
 ok  botmancers stop
-ok  botmancers install --to 0.5.0 (rollback) activated 0.5.0 without a download
-ok  after rollback the product runs 0.5.0
-ok  after rollback to 0.5.0: the Agent and its message are still there
-ok  after rollback to 0.5.0: user-state file hashes unchanged
-ok  after rollback botmancers setup puts the 0.5.0 skill back
+ok  botmancers install --to 0.5.1 (rollback) activated 0.5.1 without a download
+ok  after rollback the product runs 0.5.1
+ok  after rollback to 0.5.1: the Agent and its message are still there
+ok  after rollback to 0.5.1: user-state file hashes unchanged
+ok  after rollback botmancers setup puts the 0.5.1 skill back
 ok  BOTMANCERS_DISABLE_AUTOUPDATER=1: no registry request, update-state unchanged, current unchanged across status/doctor/stop/start
 ok  botmancers stop
 ok  BOTMANCERS_HOME holds config,current,data,files,logs,run,skills,update-state.json,versions
 ok  nothing was written to the launch directory
-PASS managed install smoke for botmancers@0.5.0 -> 0.5.1 -> 0.5.0 (integrity sha512-x9RhEE165u7j6f19lTBxiW/kQIKF3m0IUpMvsOLLjX4X1KQoPK8KktMeiPXg0SC13SulLm2o7r8iFdNzksOrMw==) at checkout 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae
+PASS managed install smoke for botmancers@0.5.1 -> 0.5.2 -> 0.5.1 (integrity sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==) at checkout ca905df19f64e4dcb9dce06e02cc3874168e8641

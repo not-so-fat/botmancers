@@ -1,13 +1,13 @@
-commit 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae
-botmancers@0.5.0  botmancers-0.5.0.tgz
-size 17637060 B, unpacked 51606631 B, 1782 files
-shasum bba28cb05664bbda6780e2cdb7dff82ae953a8dd
-integrity sha512-x9RhEE165u7j6f19lTBxiW/kQIKF3m0IUpMvsOLLjX4X1KQoPK8KktMeiPXg0SC13SulLm2o7r8iFdNzksOrMw==
-app build 0.5.0 commit 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae, next 16.3.8
+commit ca905df19f64e4dcb9dce06e02cc3874168e8641
+botmancers@0.5.1  botmancers-0.5.1.tgz
+size 17723226 B, unpacked 51846539 B, 1782 files
+shasum e1568cce61e5a567eb51b077c2cd66326a062982
+integrity sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==
+app build 0.5.1 commit ca905df19f64e4dcb9dce06e02cc3874168e8641, next 16.3.8
      143  app/BUILD_INFO.json
       94  app/package.json
     7455  app/server.js
-    9735  CHANGELOG.md
+   10063  CHANGELOG.md
     3136  dist/cli.d.ts
    11631  dist/cli.js
     3248  dist/clients.d.ts
@@ -49,7 +49,7 @@ app build 0.5.0 commit 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae, next 16.3.8
     3969  app/.next/prerender-manifest.json  (1 files)
    10124  app/.next/required-server-files.json  (1 files)
    15128  app/.next/routes-manifest.json  (1 files)
-16436538  app/.next/server/  (628 files)
+16676118  app/.next/server/  (628 files)
  1018515  app/.next/static/  (30 files)
    11000  app/node_modules/@next/env@16.3.8  (2 files)
    30691  app/node_modules/@swc/helpers@0.5.23  (5 files)
