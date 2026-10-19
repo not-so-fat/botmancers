@@ -176,7 +176,8 @@ function probeSdk(r: Resolved): CursorBackendProbe {
 
 export function probeCursor(options: CursorProviderOptions = {}): CursorProbe {
   const r = resolve(options, 'probe');
-  const key = `${r.cliPath}\n${r.sdkModule}`;
+  // An explicit env (tests, per-connection overrides) is part of the key.
+  const key = `${r.cliPath}\n${r.sdkModule}\n${r.env === process.env ? '' : JSON.stringify(r.env)}`;
   const cached = probes.get(key);
   if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.probe;
   const cli = probeCli(r);
