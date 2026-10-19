@@ -47,7 +47,10 @@ session, state) live in the provider state directory
 Botmancers database), so `observeTurn` and `cancelTurn` work the same after a
 Botmancers restart. Cancel sends SIGTERM to the process group. Idempotency
 keys are claimed exclusively on disk, so a repeated key returns the original
-turn without a second process.
+turn without a second process. Claude Code writes its `result` event before
+it exits and keeps the session live until then, so `observeTurn` waits up to
+`exitGraceMs` (default 10s) for the process to exit before reporting the turn
+terminal; a resume sent right after is not refused as `busy`.
 
 ## Resume never becomes a new session
 
