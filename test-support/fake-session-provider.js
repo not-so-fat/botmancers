@@ -186,13 +186,19 @@ function createFakeSessionProvider(options) {
 
     async sendTurn(input) {
       return withState(state => {
-        call(state, 'sendTurn', { authority: input.authority });
+        call(state, 'sendTurn', { authority: input.authority, session: input.provider_session_id });
         const existing = state.keys[input.idempotency_key];
         if (existing) return ok({ provider_turn_id: existing, provider_session_id: state.turns[existing].session });
         const s = state.sessions[input.provider_session_id];
         if (!s || s.deleted) return err('not_found', 'no such session');
         if (!s.resumable) return err('not_resumable', 'cannot resume');
         if (s.busy) return err('busy', 'busy');
+        // NOT-507 failure hook: the next failSends sends fail as a runtime
+        // error (the caller must not retarget).
+        if (state.failSends > 0) {
+          state.failSends -= 1;
+          return err('internal', 'runtime failure');
+        }
         const turn = beginTurn(state, input.provider_session_id, input);
         return ok({ provider_turn_id: turn.id, provider_session_id: input.provider_session_id });
       });

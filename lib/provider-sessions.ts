@@ -380,6 +380,30 @@ export interface ProviderCapabilitiesView extends SessionProviderCapabilities {
 
 // Capability discovery for the Agent's runtime connection, or null when the
 // connection has no session provider.
+// NOT-507: a runtime may learn its capabilities only once it is probed
+// (lib/codex-session-provider after a Botmancers restart). Probes it, bounded,
+// so session actions are judged on the runtime's real capabilities; a
+// runtime that is not ready simply keeps reporting what it can do now.
+const WARM_TIMEOUT_MS = 10_000;
+
+export async function warmAgentProvider(db: Db, agentId: string, options: { onlyWithSessions?: boolean } = {}): Promise<void> {
+  // A listing only needs the probe when a session could take the provider
+  // route; it never starts a runtime for an Agent with none.
+  if (options.onlyWithSessions && !db.prepare('SELECT 1 FROM provider_sessions WHERE agent_id = ? LIMIT 1').get(agentId)) return;
+  let ctx: AgentContext;
+  try {
+    ctx = agentContext(db, agentId);
+  } catch {
+    return;
+  }
+  if (!ctx.provider.ready) return;
+  try {
+    await ctx.provider.ready(callContext({ deadlineAt: Date.now() + WARM_TIMEOUT_MS }));
+  } catch {
+    // Not ready: availability says so from the capabilities it reports.
+  }
+}
+
 export function agentProviderCapabilities(db: Db, agentId: string): ProviderCapabilitiesView | null {
   try {
     const ctx = agentContext(db, agentId);
@@ -857,6 +881,12 @@ export async function cancelProviderTurn(
   }
   // The provider had already finished it: record the real terminal result.
   return { turn: await observeProviderTurn(db, agentId, turnRef, input), outcome: 'already_terminal' };
+}
+
+// NOT-507: one turn by its reference, or undefined.
+export function getProviderTurn(db: Db, agentId: string, turnRef: string): ProviderTurnView | undefined {
+  const row = db.prepare('SELECT * FROM provider_session_turns WHERE id = ? AND agent_id = ?').get(turnRef, agentId) as TurnRow | undefined;
+  return row ? turnView(db, row) : undefined;
 }
 
 export function listProviderTurns(db: Db, agentId: string, ref: string): ProviderTurnView[] {

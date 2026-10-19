@@ -1,7 +1,7 @@
 // The Botmancers side of the bridge: JSON-RPC messages POSTed to the app's
 // /api/v0/mcp endpoint with the service token. Failures are classified so
 // the CLI and the MCP surface can say what to fix, without echoing secrets.
-import { MCP_CONTRACT, MCP_CONTRACT_V1, MCP_PROTOCOL_VERSIONS, loadToolContract, toolContractOf } from './contract.js';
+import { MCP_CONTRACT, MCP_CONTRACT_V1, MCP_PROTOCOL_VERSIONS, isOptionalTool, loadToolContract, toolContractOf } from './contract.js';
 
 // The serverInfo.name the Botmancers app reports from initialize.
 export const MCP_SERVER_NAME = 'botmancers';
@@ -124,7 +124,7 @@ export function createUpstream(options: UpstreamOptions) {
     const offered = (list.result as { tools?: unknown } | undefined)?.tools;
     if (!Array.isArray(offered)) throw incompatible('tools/list returned no tools');
     const byName = new Map(offered.map(tool => [(tool as { name?: unknown } | null)?.name, tool as { inputSchema?: { properties?: Record<string, unknown> } }]));
-    const bundled = loadToolContract().tools;
+    const bundled = loadToolContract().tools.filter(tool => !isOptionalTool(tool));
     const missing = (contract: string) => bundled.filter(tool => toolContractOf(tool) === contract && !byName.has(tool.name)).map(tool => tool.name);
     const missingV1 = missing(MCP_CONTRACT_V1);
     if (missingV1.length) throw incompatible(`missing ${MCP_CONTRACT_V1} tools: ${missingV1.join(', ')}`);

@@ -155,6 +155,20 @@ test('an unrelated MCP server, or a Botmancers missing contract tools, exits 4',
   }
 });
 
+// NOT-507: the registered-Agent and pin tools are optional additions; a
+// Botmancers that serves the original v2 surface without them still starts.
+test('a v2 Botmancers without the optional NOT-507 tools is still compatible', async () => {
+  const fake = await startFakeBotmancers({ serviceToken: SERVICE_TOKEN, mode: 'v2_without_pins' });
+  const started = await run([], { BOTMANCERS_URL: fake.url });
+  try {
+    assert.ok(started.port, started.stderr);
+    assert.match(started.stderr, /MCP bridge listening/);
+  } finally {
+    if (started.child) assert.equal(await stopBridge(started.child), 0);
+    await fake.close();
+  }
+});
+
 test('invalid credentials exit 5 without revealing either token', async () => {
   const fake = await startFakeBotmancers({ serviceToken: 'a-different-token-the-server-knows' });
   try {

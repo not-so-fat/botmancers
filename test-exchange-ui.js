@@ -342,8 +342,56 @@ async function main() {
     assert(html.includes('Dev thread'), `${name} dialog: confirms the origin thread`);
     assert(/<button type="submit"[^>]*>Send<\/button>/.test(html) && html.includes('role="status"'), `${name} dialog: Send and a status region`);
   }
-  assert(/<h2[^>]*>Ask this session<\/h2>/.test(askHtml) && /<label[^>]*>Question<\/label>/.test(askHtml) && !askHtml.includes('<select'), 'Ask dialog: question field, no destination picker');
-  assert(/<h2[^>]*>Continue with…<\/h2>/.test(contHtml) && /<label[^>]*>Continue with<\/label><select/.test(contHtml) && /<label[^>]*>Objective<\/label>/.test(contHtml), 'Continue dialog: destination picker and objective field');
+  assert(/<h2[^>]*>Ask from this context<\/h2>/.test(askHtml) && /<label[^>]*>Question<\/label>/.test(askHtml) && !askHtml.includes('<select'), 'Ask dialog: titled Ask from this context, question field, no destination picker');
+  assert(/<h2[^>]*>Hand off to…<\/h2>/.test(contHtml) && /<label[^>]*>Hand off to<\/label><select/.test(contHtml) && /<label[^>]*>Objective<\/label>/.test(contHtml), 'Hand off dialog: titled Hand off to…, destination picker and objective field');
+  assert(!askHtml.includes('Continue with') && !contHtml.includes('Continue with') && !askHtml.includes('Ask this session'), 'the old Ask this session / Continue with… copy is gone');
+  const resumeRow = { ...resumable, route: 'provider' };
+  const resumeHtml = render(ExchangeDialog, { mode: 'resume', session: resumeRow, agents, origin: originThread, onClose() {}, onStarted() {} });
+  assert(/<h2[^>]*>Resume work here<\/h2>/.test(resumeHtml) && /<label[^>]*>Instruction<\/label>/.test(resumeHtml) && !resumeHtml.includes('<select'), 'Resume dialog: titled Resume work here, instruction field, no destination picker');
+  assert(/<input[^>]*type="checkbox"/.test(resumeHtml) && !/<input[^>]*checked/.test(resumeHtml) && resumeHtml.includes('I approve edits by Dev in this session'), 'Resume dialog: an explicit, unticked approval of edits');
+  assert(resumeHtml.includes('this exact session') && resumeHtml.includes('never moves to another session'), 'Resume dialog: says the turn stays on this exact session');
+  assert(!resumeHtml.includes(resumable.ref) && !resumeHtml.includes(SECRETS.dev), 'Resume dialog: no session id shown');
+  const resumeErrors = view.validateResumeDraft('', false);
+  assert(resumeErrors.instruction && resumeErrors.approval && Object.keys(view.validateResumeDraft('Fix it', true)).length === 0, 'Resume requires an instruction and the approval');
+  assert(JSON.stringify(view.pinRequestBody('resume', ' Fix it ', 'c1', true, 'k1')) === JSON.stringify({ action: 'resume', content: 'Fix it', conversation_id: 'c1', idempotency_key: 'k1', approve_write: true })
+    && !('approve_write' in view.pinRequestBody('ask', 'Why?', 'c1', false, 'k2')), 'pin payloads: resume carries the approval, ask never does');
+  assert(view.sessionDialogUsesPin('resume', 'engine') && view.sessionDialogUsesPin('ask', 'provider') && !view.sessionDialogUsesPin('ask', 'engine') && !view.sessionDialogUsesPin('continue', 'provider'),
+    'Resume and a provider-only Ask pin the session; an engine Ask and Hand off stay exchanges');
+  assert(view.sessionDialogMode('handoff') === 'continue' && view.sessionDialogMode('ask') === 'ask' && view.sessionDialogMode('resume') === 'resume', 'Hand off to… keeps the Continue exchange semantics');
+
+  // NOT-507: row actions and tags per runtime state.
+  const actionsLib = jiti('./lib/session-actions.ts');
+  const sessionView = jiti('./lib/session-view.ts');
+  const baseState = { availability: 'available', lifecycle: 'open', resumable: true, busy: false };
+  const ctxFull = { route: 'provider', provider: { resume: true, authorities: ['read_only', 'workspace_write'] }, policy: { mode: 'workspace_write', allow_resume_with_edits: true } };
+  const stateRow = (state, extra = {}) => {
+    const row = { ...resumable, source: 'native', status: 'active', resumable: false, state: { ...baseState, ...state }, ...extra };
+    return { ...row, route: 'provider', actions: actionsLib.sessionActions(row, ctxFull) };
+  };
+  const matrix = {
+    open: stateRow({}),
+    archived: stateRow({ lifecycle: 'archived' }),
+    busy: stateRow({ busy: true }),
+    missing: stateRow({ availability: 'missing', resumable: true }),
+    notResumable: stateRow({ resumable: false }),
+  };
+  const avail = row => view.sessionRowActions(row).filter(item => item.availability.available).map(item => item.label).join('|');
+  assert(avail(matrix.open) === 'Ask from this context|Resume work here', 'open native session: Ask and Resume; Hand off needs a Botmancers-launched session');
+  assert(avail(matrix.archived) === 'Ask from this context|Resume work here' && sessionView.sessionStateTags(matrix.archived).includes('Archived'), 'archived but resumable: Ask and Resume, tagged Archived');
+  const busyActions = view.sessionRowActions(matrix.busy);
+  assert(avail(matrix.busy) === '' && busyActions.filter(i => i.action !== 'handoff').every(i => i.availability.code === 'source_session_busy' && i.availability.recovery === 'retry_later' && /Try again when it finishes/.test(i.availability.reason))
+    && sessionView.sessionStateTags(matrix.busy).includes('Busy'), 'busy: no action, each says try again when the turn finishes, tagged Busy');
+  const missingActions = view.sessionRowActions(matrix.missing);
+  assert(avail(matrix.missing) === '' && missingActions.filter(i => i.action !== 'handoff').every(i => i.availability.code === 'session_missing' && /choose another session/.test(i.availability.reason))
+    && JSON.stringify(sessionView.sessionStateTags(matrix.missing)) === JSON.stringify(['Missing']), 'missing: no action, recovery says choose another session, tagged Missing only');
+  assert(avail(matrix.notResumable) === '', 'a session the runtime cannot resume offers no action');
+  const readOnly = { ...matrix.open, actions: actionsLib.sessionActions({ ...matrix.open }, { ...ctxFull, policy: { mode: 'read_only', allow_resume_with_edits: false } }) };
+  const ro = view.sessionRowActions(readOnly).find(i => i.action === 'resume').availability;
+  assert(ro.available === false && ro.code === 'authority_not_allowed' && /policy is read only/.test(ro.reason) && ro.recovery === 'ask_owner', 'read-only policy: Resume unavailable with an owner recovery');
+  const engineRow = { ...resumable, route: 'engine', home: true, actions: actionsLib.sessionActions({ ...resumable, source: 'botmancers', state: baseState }, { route: 'engine', provider: null, policy: null }) };
+  assert(avail(engineRow) === 'Ask from this context|Hand off to…' && sessionView.sessionStateTags(engineRow)[0] === 'Home', 'Botmancers session: Ask and Hand off, Resume explains why not; the home session is tagged Home');
+  const legacy = view.sessionRowActions({ status: 'active', resumable: true, agent: { name: 'Dev' } });
+  assert(legacy.map(i => i.availability.available).join() === 'true,false,true', 'a row from an older server: Ask and Hand off, never Resume');
   assert(contHtml.includes(`value="${scout.id}">Scout<`) && !contHtml.includes(`value="${dev.id}"`), 'destination picker lists other Agents, never the source');
   assert(contHtml.includes('receives an extracted handoff') && contHtml.includes('new session of its own'), 'Continue explains the extracted handoff into a new session');
   const askDraft = { mode: 'ask', instruction: '', originConversationId: originThread.conversationId, destinationAgentId: '' };
@@ -374,8 +422,12 @@ async function main() {
   assert(/if \(submittingRef\.current\) return;/.test(dialogSrc) && /disabled=\{submitting\}/.test(dialogSrc), 'a pending submission blocks a second one');
   assert(/keyRef\.current\.payload !== payload/.test(dialogSrc), 'a retry of the unchanged draft reuses its idempotency key');
   assert(/aria-invalid=\{errors\.instruction/.test(dialogSrc) && /aria-describedby/.test(dialogSrc) && /role="alert">\{serverError\}/.test(dialogSrc), 'field errors are associated; server errors are alerts');
-  assert(/returnTo\.focus\(\)/.test(panelSrc) && /inert=\{!!action\}/.test(panelSrc), 'focus returns to the opening action; the drawer is inert under the dialog');
-  assert(/sessionActionAvailability\(row\)/.test(panelSrc) && panelSrc.includes('Ask this session') && panelSrc.includes('Continue with…') && /className="session-unavailable"/.test(panelSrc), 'rows render actions or the unavailable reason');
+  assert(/returnTo\.focus\(\)/.test(panelSrc) && /if \(action \|\| !returnToRef\.current\) return;/.test(panelSrc) && /inert=\{!!action\}/.test(panelSrc), 'focus returns to the opening action; the drawer is inert under the dialog');
+  assert(/sessionRowActions\(row\)/.test(panelSrc) && /onAction\(sessionDialogMode\(item\.action\)/.test(panelSrc) && /className="session-unavailable"/.test(panelSrc) && !panelSrc.includes('Ask this session'), 'rows render the three actions from the server answer and every unavailable reason');
+  assert(/<button key=\{item\.action\} type="button"/.test(panelSrc) && !/disabled=\{!item/.test(panelSrc), 'only available actions are buttons, so keyboard focus never lands on a dead control');
+  assert(/sessions\/\$\{encodeURIComponent\(session\.ref\)\}\/pins/.test(dialogSrc) && /approvalRef\.current\?\.focus\(\)/.test(dialogSrc), 'Resume posts to the owner pin route and focuses the missing approval');
+  assert(/@media \(max-width: 799px\) \{\s*\.session-actions \{\s*flex-direction: column;/.test(css) && /\.exchange-approval input:focus-visible/.test(css), 'narrow screens stack the session actions; the approval has a focus ring');
+  assert(/\.sessions-drawer \{[^}]*max-width: 520px;/.test(css), 'wide screens keep the side drawer');
   assert(/<nav className="rail-nav" aria-label="Workspace">/.test(pageSrc) && /href="\/exchanges"[^>]*>Exchanges</.test(pageSrc), 'the rail exposes an Exchanges destination');
   assert(/\/api\/exchanges\?conversation=/.test(pageSrc) && /<ExchangeCard summary=\{summary\}/.test(pageSrc) && /shownExchanges\.has\(summary\.id\)/.test(pageSrc), 'threads render one card per linked exchange id from the API');
   assert(/aria-current=\{selected === summary\.id/.test(ledgerSrc) && /headingRef\.current\?\.focus\(\)/.test(ledgerSrc), 'ledger marks the selected row and moves focus to the detail heading');

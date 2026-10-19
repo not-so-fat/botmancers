@@ -2,6 +2,8 @@
 // (app/components/SessionsPanel). The shapes mirror lib/session-catalog's
 // JSON; this module never sees an external provider session id.
 
+import type { SessionActions, SessionRoute } from './session-actions';
+
 export type SessionFilter = 'active' | 'ended' | 'all';
 
 export const SESSION_FILTER_OPTIONS: { value: SessionFilter; label: string }[] = [
@@ -27,6 +29,13 @@ export interface SessionRow {
   // NOT-509: provider-reported usage (lib/usage UsageSummary). Optional so
   // a row from an older server still renders.
   usage?: SessionUsageRow;
+  // NOT-507: the Agent's home session, how a turn reaches it, and what each
+  // session action (lib/session-actions) can do now. Optional likewise.
+  home?: boolean;
+  route?: SessionRoute;
+  actions?: SessionActions;
+  // NOT-500: the runtime's view of the session, when the catalog reports it.
+  state?: { availability: 'available' | 'missing'; lifecycle: 'open' | 'archived'; resumable: boolean | null; busy: boolean };
 }
 
 export type UsageQuality = 'complete' | 'partial' | 'unavailable';
@@ -87,6 +96,20 @@ export function workRequestLabel(row: SessionRow): string | null {
 
 export function statusLabel(row: SessionRow): string {
   return row.status === 'active' ? 'Active' : 'Ended';
+}
+
+// NOT-507: the tags that make a past session recognizable at a glance:
+// the Agent's home session, and the runtime's lifecycle and busy state.
+export function sessionStateTags(row: Pick<SessionRow, 'home' | 'state' | 'resumable'>): string[] {
+  const tags: string[] = [];
+  if (row.home) tags.push('Home');
+  // A session the runtime no longer has is only Missing, whatever was
+  // last recorded about it.
+  if (row.state?.availability === 'missing') return [...tags, 'Missing'];
+  if (row.state?.lifecycle === 'archived') tags.push('Archived');
+  if (row.state?.busy) tags.push('Busy');
+  if (row.resumable || row.state?.resumable === true) tags.push('Resumable');
+  return tags;
 }
 
 export function attemptLabel(attempt: SessionAttemptRow): string {

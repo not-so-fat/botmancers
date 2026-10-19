@@ -57,6 +57,18 @@ grants at all).
 | `sessions:message` | `POST /api/v0/sessions/{ref}/messages` on this Agent's sessions |
 | `exchanges:read` | `GET /api/v0/exchanges`, `GET /api/v0/exchanges/{id}` for the caller's exchanges involving it |
 | `exchanges:create` | `POST /api/v0/exchanges`, `POST /api/v0/exchanges/{id}/cancel` involving it |
+| `sessions:start` | NOT-507: let `POST /api/v0/agents/{agentId}/pins` (a registered-Agent message) start a new read-only session when the Agent has none that can take it, its policy allows new sessions, and it has a default workspace. Never implied by `sessions:message`. |
+| `sessions:resume` | NOT-507: `POST /api/v0/sessions/{ref}/pins` with `action: "resume"` (Resume work here: workspace-write turns in that exact session, with `approve_write: true`, only when the Agent's policy allows resuming with edits and its runtime enforces it). Never implied by `sessions:message`. |
+
+NOT-507 pins: `POST /api/v0/agents/{agentId}/pins` (message a registered
+Agent; `sessions:message`), `POST /api/v0/sessions/{ref}/pins` (`action:
+"ask"` needs `sessions:message`), and `GET /api/v0/pins/{pinRef}`,
+`POST /api/v0/pins/{pinRef}/messages`, `POST /api/v0/pins/{pinRef}/detach`
+(the capability the pin was created under, checked again on every call, so a
+withdrawn grant makes the pin answer `pin_not_found`). Each audit event names
+the resolved Agent and session, the capability actually used, and the final
+action (`agents.message`, `agents.message.start`, `pins.ask`, `pins.resume`,
+`pins.send`, `pins.read`, `pins.detach`).
 
 The file must be owned by the user running Botmancers and neither readable
 nor writable by group or others (modes such as `644` or `640` are refused):

@@ -7,6 +7,19 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+### Added
+
+- `botmancers.mcp.v2` (additive): `botmancers_message_agent`,
+  `botmancers_pin_session`, `botmancers_send_to_pin`, `botmancers_get_pin`,
+  and `botmancers_detach_pin` for registered-Agent messaging and exact-session
+  pins; `home` and `actions` on session items, `messaging` on Agent items,
+  and a `recovery` hint on errors. Every existing tool is unchanged.
+  The five new tools are marked `botmancers/optional`: the bridge still
+  starts against a Botmancers that serves the earlier v2 surface without them.
+- The collaboration skill teaches registered-Agent addressing, pinned
+  sessions, and the three session actions: Ask from this context, Resume
+  work here, and Hand off to….
+
 ## [0.4.2] - 2026-10-17
 
 ### Changed

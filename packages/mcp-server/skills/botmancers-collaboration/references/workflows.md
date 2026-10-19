@@ -14,6 +14,10 @@ up. Codex and Grok are example Agent names.
 - [Same-session message](#same-session-message)
 - [Ask](#ask)
 - [Continue](#continue)
+- [Message a registered Agent](#message-a-registered-agent)
+- [Pinned session](#pinned-session)
+- [Resume work here](#resume-work-here)
+- [Detach or switch](#detach-or-switch)
 - [Polling and backoff](#polling-and-backoff)
 - [Permission and grants](#permission-and-grants)
 - [Ended session](#ended-session)
@@ -78,6 +82,9 @@ session?"
 
 ## Continue
 
+Continue is the Hand off to… action: a bounded handoff packet to a
+different Agent, which starts a fresh session of its own.
+
 Codex hands work to Grok: "Hand the uploader work in Codex's retry session
 to Grok so it can add the tests."
 
@@ -97,6 +104,71 @@ to Grok so it can add the tests."
 
 The destination Agent always starts a fresh session of its own. You never
 choose the destination session, Deck, runtime, model, or tool profile.
+
+## Message a registered Agent
+
+"Ask Grok how the release is going." No session is named.
+
+1. `botmancers_capabilities {}`: `botmancers_message_agent` is listed for
+   `<agent_id of Grok>`.
+2. `botmancers_message_agent { "agent_id": "<agent_id of Grok>", "content": "How is the release going?", "idempotency_key": "<new key>" }`.
+   Botmancers picks the session: Grok's home session, else its newest
+   session that can take a message, else a new read-only session only when
+   Grok's owner allows it. `resolution` says which (`home`, `newest`,
+   `started`), and `pin.session.title` names it.
+3. Poll `botmancers_get_pin { "pin_ref": "<pin_ref>" }` until the turn is not
+   `running`; the reply is the turn's `answer`.
+4. Follow-ups go to the same session with
+   `botmancers_send_to_pin { "pin_ref": "<pin_ref>", "content": "And the blockers?", "idempotency_key": "<new key>" }`.
+
+`workspace_required` means Grok has no session that can take a message and
+no default workspace for a new one; `no_eligible_session` means its policy
+does not allow a new one. Both are for the owner (`recovery: ask_owner`).
+Tell the user; do not try another Agent.
+
+## Pinned session
+
+Ask from this context, several times: "In Codex's uploader session, ask
+what it decided about leases, then what it would test next."
+
+1. `botmancers_list_sessions { "agent_id": "<agent_id of Codex>" }`: match
+   the title, and check that the item's `actions.ask.available` is true.
+2. `botmancers_pin_session { "session_ref": "<ref>", "action": "ask", "idempotency_key": "<new key>" }`
+   returns `pin.pin_ref`.
+3. `botmancers_send_to_pin { "pin_ref": "<pin_ref>", "content": "What did you decide about leases?", "idempotency_key": "<new key>" }`,
+   then poll `botmancers_get_pin` until the turn's `state` is not `running`.
+4. Repeat step 3 for the next question with a new key. Every turn goes to
+   the same `pin.session.ref`, also after a Botmancers restart.
+5. `botmancers_detach_pin { "pin_ref": "<pin_ref>" }` when done.
+
+If a turn fails (`source_session_busy`, `provider_failed`,
+`session_missing`), the pin stays on that session. Retry later with the
+same key, or tell the user and let them choose another session. Never
+move the conversation to another session on your own.
+
+## Resume work here
+
+"Have Codex finish the uploader fix in that same session. I approve
+edits." The same Agent, the same exact session, with workspace-write
+authority.
+
+1. Check the session's `actions.resume.available`. If not, report its
+   `reason` (for example a read-only policy the owner must change).
+2. Only after the user explicitly approved edits:
+   `botmancers_pin_session { "session_ref": "<ref>", "action": "resume", "approve_write": true, "idempotency_key": "<new key>" }`.
+   Without `approve_write` the answer is `approval_required`: ask the user.
+3. Send the work with `botmancers_send_to_pin` and poll `botmancers_get_pin`
+   as in [Pinned session](#pinned-session).
+
+To give the work to a different Agent instead, use
+[Continue](#continue) (Hand off to…).
+
+## Detach or switch
+
+- Switch: `botmancers_pin_session { "session_ref": "<other ref>", "action": "ask", "replace_pin_ref": "<pin_ref>", "idempotency_key": "<new key>" }`
+  detaches the old pin and creates the new one in one step.
+- Detach: `botmancers_detach_pin { "pin_ref": "<pin_ref>" }`. A detached pin
+  answers `pin_detached` (`recovery: pin_again`).
 
 ## Polling and backoff
 

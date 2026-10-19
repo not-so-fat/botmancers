@@ -2430,11 +2430,36 @@ button.avatar-pic {
 }
 
 .session-unavailable {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 4px;
   margin: 8px 0 0;
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.5;
   color: var(--ink-muted);
+}
+
+.exchange-approval {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.exchange-approval input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.exchange-approval input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .exchange-started:not(:empty) {
@@ -3009,6 +3034,19 @@ button.avatar-pic {
 @media (min-width: 800px) {
   .group-thread-page {
     height: auto;
+  }
+}
+
+/* NOT-507: on narrow screens the three session actions stack into
+   full-width, touch-sized buttons. */
+@media (max-width: 799px) {
+  .session-actions {
+    flex-direction: column;
+  }
+
+  .session-action {
+    min-height: 40px;
+    text-align: left;
   }
 }
 
