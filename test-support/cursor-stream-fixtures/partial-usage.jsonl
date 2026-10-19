@@ -1,0 +1,9 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/alpha","session_id":"chat-REDACTED","model":"Auto","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with exactly the word PINEAPPLE and nothing else."}]},"session_id":"chat-REDACTED"}
+{"type":"thinking","subtype":"delta","text":"The","session_id":"chat-REDACTED","timestamp_ms":1792359129741}
+{"type":"thinking","subtype":"delta","text":" response will be exactly","session_id":"chat-REDACTED","timestamp_ms":1792359129744}
+{"type":"thinking","subtype":"delta","text":" the word \"PINEAPPLE","session_id":"chat-REDACTED","timestamp_ms":1792359129765}
+{"type":"thinking","subtype":"delta","text":"\".","session_id":"chat-REDACTED","timestamp_ms":1792359129766}
+{"type":"thinking","subtype":"completed","session_id":"chat-REDACTED","timestamp_ms":1792359130042}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PINEAPPLE"}]},"session_id":"chat-REDACTED"}
+{"type":"result","subtype":"success","duration_ms":2656,"duration_api_ms":2656,"is_error":false,"result":"PINEAPPLE","session_id":"chat-REDACTED","request_id":"req-REDACTED","usage":{"inputTokens":12017}}

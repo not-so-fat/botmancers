@@ -271,6 +271,10 @@ async function followRun(runId: string, input: AttemptFollowInput, onEvent: Atte
     if ('interrupted' in settled) {
       // Only an accepted cancel stops the run; a refused or unreachable
       // cancel is reported so the Attempt is recorded abandoned.
+      // NOT-509: usage buffered so far is deliberately not reported: the
+      // run may still be adding to it, and a sample only ever fills
+      // unknown metrics later, so a mid-run count would stick as an
+      // undercount. Unknown now, filled by the late result if it comes.
       let externalCancel: 'requested' | 'failed' = 'requested';
       try { await cancelAgentDeckRun(runId); } catch { externalCancel = 'failed'; }
       return failed(settled.interrupted, { ...ids, externalCancel });
