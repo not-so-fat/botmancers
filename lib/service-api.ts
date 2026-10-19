@@ -31,6 +31,7 @@ import { apiStateOf, cancelExchangeCommand, dispatchExchange, exchanges, getExch
 import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, loadServiceGrants, type ServiceCapability } from './service-grants';
 import { serviceRedactor } from './service-redaction';
 import { recoveryFor, type Recovery, type SessionActions } from './session-actions';
+import { warmAgentProvider } from './provider-sessions';
 import {
   PinError,
   createPin,
@@ -397,6 +398,13 @@ function sessionView(summary: SessionWithActions): ServiceSessionView {
     home: summary.home,
     actions: summary.actions,
   };
+}
+
+// NOT-507: after the grant check, probes the Agent's runtime so the
+// sessions' action availability reflects its real capabilities.
+export async function warmServiceAgent(ctx: ServiceContext, agentId: string): Promise<void> {
+  requireAgent(ctx, agentId, 'sessions:read');
+  await warmAgentProvider(db, agentId, { onlyWithSessions: true });
 }
 
 export function listServiceSessions(ctx: ServiceContext, agentId: string, query: ListQuery & { status: string | null }): Page<ServiceSessionView> {

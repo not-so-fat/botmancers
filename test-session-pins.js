@@ -302,6 +302,25 @@ async function main() {
   const badField = await ownerPost(pin2, { action: 'resume', content: 'x', conversation_id: ownerConv, approve_write: true, idempotency_key: 'own-r2', runtime: 'claude' });
   assert(badField.status === 400 && badField.json.error.code === 'invalid_request', 'owner route refuses a caller-chosen execution control');
 
+  // A runtime that learns its capabilities only once probed (Codex after a
+  // Botmancers restart): the drawer and pins probe it first, so a
+  // resumable session is not reported unreachable.
+  contract.clearSessionProviders({ builtins: true });
+  let probed = false;
+  contract.registerSessionProvider({ connectionId }, () => {
+    const inner = fake.createFakeSessionProvider({ statePath: STATE, ignoreScope: true });
+    return {
+      ...inner,
+      capabilities: () => (probed ? inner.capabilities() : { ...inner.capabilities(), resume: false, start: false, authorities: [] }),
+      ready: async () => { probed = true; return { ok: true, value: undefined }; },
+    };
+  });
+  const cold = pins.sessionsWithActions(writer.id, [ownerRow]).map(row => row.route)[0];
+  const warmList = await (await ownerListRoute.GET(new Request('http://local/x?status=all'), { params: Promise.resolve({ id: writer.id }) })).json();
+  assert(cold === null && probed && warmList.sessions.find(row => row.ref === pin2).actions.resume.available === true,
+    'a runtime that reports capabilities only after a probe: the session list probes it, then Resume work here is available');
+  registerFake(connectionId);
+
   console.log('\nDetach and switch');
   const switched = await pins.createPin({ requester: grok, sessionRef: pin2, action: 'ask', idempotencyKey: 'p2', replacePinRef: pinRef });
   const old = pins.requirePin(grok, pinRef);

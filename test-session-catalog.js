@@ -30,6 +30,8 @@ function removeDb() {
 removeDb();
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
+// NOT-507: the session list probes an Agent's runtime; never this machine's codex.
+process.env.BOTMANCERS_CODEX_PROVIDER = 'off';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });

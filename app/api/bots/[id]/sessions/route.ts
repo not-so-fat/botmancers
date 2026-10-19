@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { agentExists, isSessionFilter, listAgentSessions } from '@/lib/session-catalog';
 import { sessionsWithActions } from '@/lib/session-pins';
+import { warmAgentProvider } from '@/lib/provider-sessions';
 
 // NOT-496: the selected Agent's session catalog (lib/session-catalog).
 // ?status=active|ended|all (default all), newest activity first. External
@@ -18,6 +19,7 @@ export async function GET(
     if (!isSessionFilter(status)) {
       return NextResponse.json({ error: 'status must be active, ended, or all' }, { status: 400 });
     }
+    await warmAgentProvider(db, id, { onlyWithSessions: true });
     return NextResponse.json({ status, sessions: sessionsWithActions(id, listAgentSessions(db, id, status)) });
   } catch (error) {
     console.error('Error listing agent sessions:', error);

@@ -39,6 +39,7 @@ import { getAgentSession, listAgentSessions, type SessionSummary } from './sessi
 import {
   ProviderSessionError,
   agentProviderCapabilities,
+  warmAgentProvider,
   getProviderSessionRow,
   getProviderTurn,
   observeProviderTurn,
@@ -536,6 +537,7 @@ export async function createPin(input: CreatePinInput): Promise<{ pin: PinRow; c
   }
   const agentId = sessionOwner(input.sessionRef);
   if (!agentId || (input.agentId && input.agentId !== agentId)) throw new PinError('session_not_found', 'No session with that reference.');
+  await warmAgentProvider(db, agentId, { onlyWithSessions: true });
   const facts = agentFacts(agentId);
   const summary = await freshSummary(facts, input.sessionRef);
   if (!summary) throw new PinError('session_not_found', 'No session with that reference.');
@@ -816,6 +818,7 @@ export async function messageAgent(input: MessageAgentInput): Promise<MessageAge
   }
   if (input.conversationId) requireVisibleConversation(input.requester, input.conversationId);
   else if (input.requester.kind !== 'service') throw new PinError('invalid_request', 'conversation_id is required: the thread that holds this conversation.');
+  if (bots.getById(input.agentId)) await warmAgentProvider(db, input.agentId);
   const facts = agentFacts(input.agentId);
   const target = await resolveTarget(facts, input.mayStart);
   const now = input.now ?? Date.now();

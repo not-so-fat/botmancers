@@ -61,6 +61,7 @@ import {
   listServiceConversations,
   listServiceExchanges,
   listServiceSessions,
+  warmServiceAgent,
   parseCancelBody,
   parseLimit,
   parseServiceExchangeBody,
@@ -316,11 +317,17 @@ export const serviceOperations = {
 
   listSessions: (principal: Principal, agentId: string, q: ListParams & { status: string | null }, guard?: ServiceGuard) =>
     serveAs(principal, { operation: 'sessions.list', capability: 'sessions:read', targetKind: 'agent', targetRef: agentId, agentId },
-      ctx => ok(listServiceSessions(ctx, agentId, { cursor: q.cursor, limit: parseLimit(q.limit), status: q.status })), guard),
+      async ctx => {
+        await warmServiceAgent(ctx, agentId);
+        return ok(listServiceSessions(ctx, agentId, { cursor: q.cursor, limit: parseLimit(q.limit), status: q.status }));
+      }, guard),
 
   getSession: (principal: Principal, agentId: string, ref: string, guard?: ServiceGuard) =>
     serveAs(principal, { operation: 'sessions.read', capability: 'sessions:read', targetKind: 'session', targetRef: ref, agentId },
-      ctx => ok(getServiceSession(ctx, agentId, ref)), guard),
+      async ctx => {
+        await warmServiceAgent(ctx, agentId);
+        return ok(getServiceSession(ctx, agentId, ref));
+      }, guard),
 
   listConversations: (principal: Principal, agentId: string, q: ListParams, guard?: ServiceGuard) =>
     serveAs(principal, { operation: 'conversations.list', capability: 'conversations:read', targetKind: 'agent', targetRef: agentId, agentId },
