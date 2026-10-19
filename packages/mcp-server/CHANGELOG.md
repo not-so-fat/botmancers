@@ -7,6 +7,8 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-19
+
 ### Added
 
 - `botmancers.mcp.v2` (additive): `botmancers_message_agent`,
@@ -19,6 +21,19 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 - The collaboration skill teaches registered-Agent addressing, pinned
   sessions, and the three session actions: Ask from this context, Resume
   work here, and Hand off to….
+- Native session providers behind a `SessionProvider` boundary: Botmancers
+  discovers and resumes sessions created by Claude Code, Codex, Cursor
+  (Agent CLI or SDK), and Muse Code, and imports them as native sessions.
+- Sessions show reported token usage and cost.
+
+### Changed
+
+- Agent Deck is now an optional launch profile at registration, not a
+  requirement.
+- The default ports are now UI 3333 and MCP 3332. Update any configuration
+  or bookmarks that use the old ports, or set the ports explicitly.
+- `npm run release:publish` no longer needs `--otp`; npm's browser login
+  works.
 
 ## [0.4.2] - 2026-10-17
 
