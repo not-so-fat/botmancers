@@ -45,7 +45,9 @@ const CONTRACT_V2_FILE = path.join(ROOT, 'docs', 'contracts', 'mcp-bridge-v2.too
 const CONTRACT_V1_SHA256 = '64a46eaaf0e63053e75c4fa25c00a1ef7d160a63c1c2a363f882643668b5e166';
 const V1_NAMES = ['botmancers_start_task', 'botmancers_get_request', 'botmancers_get_conversation', 'botmancers_health'];
 const V2_NAMES = ['botmancers_capabilities', 'botmancers_list_agents', 'botmancers_list_sessions', 'botmancers_list_conversations',
-  'botmancers_send_to_session', 'botmancers_create_exchange', 'botmancers_get_exchange', 'botmancers_list_exchanges'];
+  'botmancers_send_to_session', 'botmancers_create_exchange', 'botmancers_get_exchange', 'botmancers_list_exchanges',
+  // NOT-507: registered-Agent addressing and exact-session pins (additive).
+  'botmancers_message_agent', 'botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin'];
 const WRITE_CONTRACT = process.argv.includes('--write-contract');
 
 if (process.env.BOTMANCERS_MCP_BRIDGE_TEST_CHILD) {
@@ -287,7 +289,7 @@ async function child() {
     const names = tools.map(tool => tool.name);
     console.log(`  tools: ${names.join(', ')}`);
     check(JSON.stringify(names) === JSON.stringify([...V1_NAMES, ...V2_NAMES]),
-      'the four v1 tools in their v1 order, then the eight v2 tools');
+      'the four v1 tools in their v1 order, then the eight v2 tools and the five NOT-507 pin tools');
     const v1Capture = fs.readFileSync(CONTRACT_FILE);
     check(createHash('sha256').update(v1Capture).digest('hex') === CONTRACT_V1_SHA256, `the v1 capture ${path.relative(ROOT, CONTRACT_FILE)} is unchanged (frozen)`);
     const captured = JSON.parse(v1Capture.toString('utf8'));
@@ -783,6 +785,9 @@ async function child() {
     check(canonical(ops(capsA.data)) === canonical({
       botmancers_list_agents: [], botmancers_list_sessions: [sage.id], botmancers_list_conversations: both, botmancers_get_conversation: both,
       botmancers_send_to_session: [sage.id], botmancers_create_exchange: both, botmancers_get_exchange: [], botmancers_list_exchanges: [],
+      // NOT-507: the pin tools follow sessions:message (and sessions:resume, not granted here).
+      botmancers_message_agent: [sage.id], botmancers_pin_session: [sage.id], botmancers_send_to_pin: [sage.id], botmancers_get_pin: [sage.id],
+      botmancers_detach_pin: [sage.id],
     }), 'grok-bot: exactly its granted v2 operations, each with the Agents it applies to');
     check(canonical(ops(capsB.data)) === canonical({ botmancers_list_agents: [], botmancers_list_sessions: [vault.id], botmancers_get_exchange: [], botmancers_list_exchanges: [] }),
       'other-svc: only list_agents, list_sessions (Vault), and exchange reads; no send, create, or conversation operation');

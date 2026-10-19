@@ -50,6 +50,9 @@ export const SERVICE_CAPABILITIES = [
   'sessions:message',
   'exchanges:read',
   'exchanges:create',
+  // NOT-507: never implied by another capability (lib/service-api).
+  'sessions:start',
+  'sessions:resume',
 ] as const;
 
 export type ServiceCapability = typeof SERVICE_CAPABILITIES[number];

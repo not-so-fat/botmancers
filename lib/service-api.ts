@@ -23,13 +23,14 @@
 import { randomUUID } from 'crypto';
 import db, { bots, type Bot, type Principal, type PrincipalKind } from './db';
 import { resolveAgent } from './bot-definition';
+import { readStoredPolicy } from './agent-registration';
 import { EXCHANGE_LIMITS, type SessionBinding } from './engine-store';
 import { getAgentSession, isSessionFilter, listAgentSessions, type SessionDetail, type SessionFilter, type SessionSummary } from './session-catalog';
 import { ExchangeError, cancelReasonFromBody, type CreateExchangeInput, type ExchangeMode, type ExchangeView, type SessionExchange } from './session-exchanges';
 import { apiStateOf, cancelExchangeCommand, dispatchExchange, exchanges, getExchangeView } from './agent-conversations';
 import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, loadServiceGrants, type ServiceCapability } from './service-grants';
 import { serviceRedactor } from './service-redaction';
-import { recoveryFor, type Recovery } from './session-actions';
+import { recoveryFor, type Recovery, type SessionActions } from './session-actions';
 import {
   PinError,
   createPin,
@@ -40,9 +41,11 @@ import {
   requirePin,
   sendPinTurn,
   sessionOwner,
+  sessionsWithActions,
   type PinAction,
   type PinResolution,
   type PinRow,
+  type SessionWithActions,
 } from './session-pins';
 
 export type ServiceApiErrorCode =
@@ -292,6 +295,11 @@ export interface ServiceAgentView {
   runtime: string;
   available: boolean;
   capabilities: ServiceCapability[];
+  // NOT-507: additive. How a message to this Agent (POST
+  // /agents/{id}/messages) resolves: its configured home session, if any,
+  // and whether its policy lets it start a new session in its default
+  // workspace. The workspace itself is never shown or chosen by a caller.
+  messaging: { home_session_ref: string | null; new_sessions_allowed: boolean; default_workspace_set: boolean };
   created_at: number;
   last_activity_at: number;
 }
@@ -314,6 +322,11 @@ function agentView(ctx: ServiceContext, bot: Bot): ServiceAgentView {
     runtime: resolved.agent,
     available: resolved.launchable,
     capabilities: SERVICE_CAPABILITIES.filter(cap => caps.has(cap)),
+    messaging: {
+      home_session_ref: bot.home_session_id ?? null,
+      new_sessions_allowed: readStoredPolicy(bot)?.allow_new_sessions === true,
+      default_workspace_set: !!bot.default_workspace,
+    },
     created_at: bot.created_at,
     last_activity_at: agentActivity(bot),
   };
@@ -353,9 +366,13 @@ export interface ServiceSessionView {
   // NOT-509: additive. Normalized provider-reported usage only (sums,
   // known/total coverage, quality); never a raw provider breakdown.
   usage: SessionSummary['usage'];
+  // NOT-507: additive. Whether this is the Agent's home session, and what
+  // each session action (lib/session-actions) can do now.
+  home: boolean;
+  actions: SessionActions;
 }
 
-function sessionView(summary: SessionSummary): ServiceSessionView {
+function sessionView(summary: SessionWithActions): ServiceSessionView {
   const conversation = summary.origin.conversation;
   return {
     ref: summary.ref,
@@ -377,6 +394,8 @@ function sessionView(summary: SessionSummary): ServiceSessionView {
       output_tokens: { ...summary.usage.output_tokens },
       cost_usd: { ...summary.usage.cost_usd },
     },
+    home: summary.home,
+    actions: summary.actions,
   };
 }
 
@@ -385,7 +404,7 @@ export function listServiceSessions(ctx: ServiceContext, agentId: string, query:
   const status = query.status ?? 'all';
   if (!isSessionFilter(status)) throw new ServiceApiError('invalid_request', 'status must be active, ended, or all.');
   const redactor = serviceRedactor();
-  const rows = listAgentSessions(db, agentId, status as SessionFilter).map(summary => redactor.deep(sessionView(summary)));
+  const rows = sessionsWithActions(agentId, listAgentSessions(db, agentId, status as SessionFilter)).map(summary => redactor.deep(sessionView(summary)));
   return paginate(`sessions:${agentId}:${status}`, rows, row => ({ at: row.last_activity_at, tie: row.created_at, id: row.ref }), query.cursor, query.limit);
 }
 
@@ -396,7 +415,7 @@ export function getServiceSession(
   const detail = getAgentSession(db, agentId, ref);
   if (!detail) throw NOT_FOUND.session();
   return serviceRedactor().deep({
-    ...sessionView(detail),
+    ...sessionView(sessionsWithActions(agentId, [detail])[0]),
     attempts: detail.attempts,
     usage_samples: detail.usage_samples.map(sample => ({ ...sample })),
   });
@@ -1011,7 +1030,7 @@ export async function pinServiceSession(
       requester: ctx.principal, sessionRef, action: input.action, approveWrite: input.approveWrite,
       idempotencyKey: input.idempotencyKey, replacePinRef: input.replacePinRef, onCommit: () => hooks.onCommit(),
     });
-    return { pin: pinBody(pin), replaced_pin_ref: replaced?.id ?? (created ? null : pin.id === null ? null : null), replayed: !created };
+    return { pin: pinBody(pin), replaced_pin_ref: replaced?.id ?? null, replayed: !created };
   } catch (error) {
     servicePinError(error);
   }

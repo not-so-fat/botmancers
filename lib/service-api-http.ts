@@ -15,13 +15,26 @@
 //   POST /api/v0/exchanges                                    exchanges:create
 //   GET  /api/v0/exchanges/{id}                               exchanges:read
 //   POST /api/v0/exchanges/{id}/cancel                        exchanges:create
+//   NOT-507: registered-Agent messaging and session pins (lib/session-pins).
+//   POST /api/v0/agents/{agentId}/pins                        sessions:message
+//     body: { content, idempotency_key }  (starting a session: sessions:start)
+//     (/agents/{agentId}/messages stays the v1 narrow bridge, lib/agent-api)
+//   POST /api/v0/sessions/{ref}/pins                          sessions:message (ask)
+//     body: { action, approve_write?, replace_pin_ref?, idempotency_key }
+//                                                             sessions:resume (resume)
+//   GET  /api/v0/pins/{pinRef}                                the pin's capability
+//   POST /api/v0/pins/{pinRef}/messages                       the pin's capability
+//     body: { content, idempotency_key }
+//   POST /api/v0/pins/{pinRef}/detach                         the pin's capability
+//     body: { idempotency_key? }
 //
 // Each call is authenticated, rate limited per service principal
 // (BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE, default 120, rolling 60 s;
 // 429 rate_limited with Retry-After before anything runs), bounded (64 KiB
 // bodies), and appends one audit event (lib/service-audit) whatever its
 // outcome; a mutation's allowed event commits atomically with the mutation,
-// before anything is dispatched. Failures use the /api/v0 envelope { error: { code, message } }.
+// before anything is dispatched. Failures use the /api/v0 envelope { error: { code, message } },
+// plus (NOT-507) a recovery hint when the code has one (lib/session-actions).
 import db, { serviceAudit, type Principal } from './db';
 import { authenticate } from './agent-api';
 import { AgentApiError } from './agent-conversations';
@@ -29,6 +42,14 @@ import type { AuditOutcome, AuditTargetKind } from './service-audit';
 import {
   PAGE_LIMITS,
   ServiceApiError,
+  detachServicePin,
+  messageServiceAgent,
+  parseAgentMessageBody,
+  parsePinBody,
+  pinServiceSession,
+  readServicePin,
+  sendServicePinMessage,
+  type PinAuditHooks,
   cancelServiceExchange,
   capabilitiesView,
   createServiceExchange,
@@ -129,8 +150,8 @@ export interface ServiceResult {
 
 const ok = (body: unknown, status = 200): ServiceResult => ({ status, body });
 
-function failure(status: number, code: string, message: string, headers: Record<string, string> = {}, fields?: string[]): ServiceResult {
-  return { status, body: { error: { code, message, ...(fields ? { fields } : {}) } }, headers };
+function failure(status: number, code: string, message: string, headers: Record<string, string> = {}, fields?: string[], recovery?: string | null): ServiceResult {
+  return { status, body: { error: { code, message, ...(fields ? { fields } : {}), ...(recovery ? { recovery } : {}) } }, headers };
 }
 
 interface Operation {
@@ -147,6 +168,10 @@ interface AuditTarget {
   kind: AuditTargetKind;
   targetRef: string | null;
   agentId: string | null;
+  // NOT-507: a registered-Agent message or pin call refines the audited
+  // capability and operation to the one the resolved action used.
+  capability?: string;
+  operation?: string;
 }
 
 // A caller-side check that runs first inside the audited call (the MCP
@@ -164,7 +189,7 @@ type Run = (ctx: ServiceContext, target: AuditTarget, commitAudit: () => void) =
 async function serveAs(principal: Principal, op: Operation, run: Run, guard?: ServiceGuard): Promise<ServiceResult> {
   const target: AuditTarget = { kind: op.targetKind, targetRef: op.targetRef ?? null, agentId: op.agentId ?? null };
   const append = (outcome: AuditOutcome, code: string | null) => serviceAudit.append({
-    principal, operation: op.operation, capability: op.capability,
+    principal, operation: target.operation ?? op.operation, capability: target.capability ?? op.capability,
     targetKind: target.kind, targetRef: target.targetRef, agentId: target.agentId, outcome, code,
   });
   let committed = false;
@@ -192,7 +217,7 @@ async function serveAs(principal: Principal, op: Operation, run: Run, guard?: Se
     if (error instanceof ServiceApiError) {
       outcome = error.denied ? 'denied' : 'rejected';
       code = error.notGranted ? 'not_granted' : error.code;
-      result = failure(error.status, error.code, error.message, {}, error.fields);
+      result = failure(error.status, error.code, error.message, {}, error.fields, error.recovery);
     } else {
       console.error('Service API error:', error instanceof Error ? error.message : 'unknown error');
       outcome = 'error';
@@ -239,6 +264,21 @@ function sourceTargetOf(body: unknown): Partial<AuditTarget> {
 function sessionOwner(ref: string): string | null {
   const row = db.prepare('SELECT agent_id FROM session_bindings WHERE id = ?').get(ref) as { agent_id: string } | undefined;
   return row?.agent_id ?? null;
+}
+
+// NOT-507: the audit hooks of a pin call. The target becomes the resolved
+// session (and its Agent), with the capability and action it used.
+function pinHooks(target: AuditTarget, commitAudit: () => void): PinAuditHooks {
+  return {
+    onTarget: resolved => {
+      target.kind = resolved.sessionRef ? 'session' : 'agent';
+      target.targetRef = resolved.sessionRef ?? resolved.agentId;
+      target.agentId = resolved.agentId;
+      target.capability = resolved.capability;
+      target.operation = resolved.action;
+    },
+    onCommit: commitAudit,
+  };
 }
 
 function exchangeSource(id: string): string | null {
@@ -341,6 +381,36 @@ export const serviceOperations = {
       });
       return ok(result);
     }, guard),
+
+  // NOT-507: registered-Agent messaging and session pins.
+  messageAgent: (principal: Principal, agentId: string, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'agents.message', capability: 'sessions:message', targetKind: 'agent', targetRef: agentId, agentId }, async (ctx, target, commitAudit) => {
+      const input = parseAgentMessageBody(await body(), idempotencyHeader);
+      const { body: result } = await messageServiceAgent(ctx, agentId, input, pinHooks(target, commitAudit));
+      return ok(result, result.replayed ? 200 : 202);
+    }, guard),
+
+  pinSession: (principal: Principal, ref: string, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'pins.create', capability: 'sessions:message', targetKind: 'session', targetRef: ref }, async (ctx, target, commitAudit) => {
+      const input = parsePinBody(await body(), idempotencyHeader);
+      const result = await pinServiceSession(ctx, ref, input, pinHooks(target, commitAudit));
+      return ok(result, result.replayed ? 200 : 201);
+    }, guard),
+
+  readPin: (principal: Principal, pinRef: string, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'pins.read', capability: 'sessions:message', targetKind: 'session' }, async (ctx, target) =>
+      ok(await readServicePin(ctx, pinRef, pinHooks(target, () => {}))), guard),
+
+  sendToPin: (principal: Principal, pinRef: string, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'pins.send', capability: 'sessions:message', targetKind: 'session' }, async (ctx, target, commitAudit) => {
+      const input = parseAgentMessageBody(await body(), idempotencyHeader);
+      const { body: result } = await sendServicePinMessage(ctx, pinRef, input, pinHooks(target, commitAudit));
+      return ok(result, result.replayed ? 200 : 202);
+    }, guard),
+
+  detachPin: (principal: Principal, pinRef: string, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'pins.detach', capability: 'sessions:message', targetKind: 'session' }, (ctx, target, commitAudit) =>
+      ok(detachServicePin(ctx, pinRef, pinHooks(target, commitAudit))), guard),
 };
 
 function query(request: Request): ListParams & { get: (name: string) => string | null } {
@@ -394,6 +464,26 @@ export function handleCreateExchange(request: Request): Promise<Response> {
 
 export function handleGetExchange(request: Request, id: string): Promise<Response> {
   return serve(request, principal => serviceOperations.getExchange(principal, id));
+}
+
+export function handleMessageAgent(request: Request, agentId: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.messageAgent(principal, agentId, () => readJsonBody(request), request.headers.get('idempotency-key')));
+}
+
+export function handlePinSession(request: Request, ref: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.pinSession(principal, ref, () => readJsonBody(request), request.headers.get('idempotency-key')));
+}
+
+export function handleReadPin(request: Request, pinRef: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.readPin(principal, pinRef));
+}
+
+export function handleSendToPin(request: Request, pinRef: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.sendToPin(principal, pinRef, () => readJsonBody(request), request.headers.get('idempotency-key')));
+}
+
+export function handleDetachPin(request: Request, pinRef: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.detachPin(principal, pinRef));
 }
 
 export function handleCancelExchange(request: Request, id: string): Promise<Response> {
