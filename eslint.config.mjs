@@ -14,6 +14,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Test files use CommonJS:
     "test-*.js",
+    "test-support/**",
     // Seed scripts use CommonJS:
     "scripts/*.js",
     // Gitignored scratch scripts and logs:
