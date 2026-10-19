@@ -268,7 +268,8 @@ alternate launch profile and is never required.
   `BOTMANCERS_MUSE_SERVE_ARGS` (a JSON array of extra `muse serve` flags,
   for example `["--provider","echo"]`).
 - **Smoke.** `node scripts/muse-msp-smoke.js` imports and resumes a real
-  past session through a real `muse serve` across a Botmancers restart.
+  past session through a real `muse serve` across a Botmancers restart
+  (transcript: [evidence/NOT-508/muse-msp-smoke.md](evidence/NOT-508/muse-msp-smoke.md)).
 
 ### Session usage
 
