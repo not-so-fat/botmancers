@@ -354,6 +354,15 @@ async function main() {
   const startedIds = db.prepare("SELECT provider_session_id FROM provider_sessions WHERE origin = 'started'").all().map(row => row.provider_session_id);
   assert(!ALL_IDS.test(views) && startedIds.every(id => !views.includes(id)) && !/ct-[0-9a-f-]{36}/.test(views), 'no Claude session or provider turn id in any turn view, catalog row, or event');
 
+  console.log('\nBack-to-back resumes: the result arrives before the process exits');
+  const lingerCalls = calls().length;
+  const first = await send('a2', '[linger] one', 'linger-1');
+  const firstDone = await ps.observeProviderTurn(db, dev.id, first.turn.turn_ref);
+  const second = await send('a2', '[linger] two', 'linger-2');
+  const secondDone = await ps.observeProviderTurn(db, dev.id, second.turn.turn_ref);
+  assert(firstDone.state === 'completed' && secondDone.state === 'completed' && calls().length === lingerCalls + 2,
+    'observe returns once the process has exited, so the next resume is not refused as busy');
+
   console.log('\nDocumentation contract');
   const docs = fs.readFileSync(path.join(ROOT_DIR, 'docs/claude-session-provider.md'), 'utf8');
   assert(/--resume/.test(docs) && /stream-json/.test(docs) && /total_cost_usd/.test(docs) && /incompatible_version/.test(docs) && /claude-code-projects-jsonl\/v1/.test(docs),

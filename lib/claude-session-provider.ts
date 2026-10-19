@@ -95,6 +95,9 @@ export interface ClaudeProviderOptions {
   isPidAlive?: (pid: number) => boolean;
   // How long start/send wait for the first structured event (default 60s).
   startupTimeoutMs?: number;
+  // How long observeTurn waits for the process to exit after its result
+  // (default 10s).
+  exitGraceMs?: number;
   pollMs?: number;
   // Clock for archive classification only (tests).
   now?: () => number;
@@ -173,6 +176,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
   const spawn = options.spawn ?? (nodeSpawn as SpawnFn);
   const isAlive = options.isPidAlive ?? pidAlive;
   const startupTimeoutMs = options.startupTimeoutMs ?? 60_000;
+  const exitGraceMs = options.exitGraceMs ?? 10_000;
   const pollMs = options.pollMs ?? 100;
   const clock = options.now ?? Date.now;
   const turnsDir = path.join(stateDir, 'turns');
@@ -451,10 +455,22 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
     },
 
     async observeTurn(input) {
+      let resultSeenAt: number | null = null;
       for (;;) {
         const turn = readTurn(input.provider_turn_id);
         if (!turn) return providerError('not_found', 'No such turn.');
         const terminal = terminalOf(turn);
+        // Claude Code writes its result before it exits and keeps the session
+        // open (sessions/<pid>.json) until then; a resume sent in that window
+        // would find the session busy. Wait a bounded time for the exit.
+        if (terminal && turn.state === 'running' && turn.pid !== null && isAlive(turn.pid)) {
+          resultSeenAt ??= Date.now();
+          if (Date.now() - resultSeenAt < exitGraceMs && !input.signal?.aborted
+            && !(typeof input.deadline_at === 'number' && Date.now() >= input.deadline_at)) {
+            await new Promise(resolve => setTimeout(resolve, pollMs));
+            continue;
+          }
+        }
         if (terminal) {
           if (turn.state === 'running') writeTurn({ ...turn, state: 'exited', finished_at: terminal.finished_at });
           return providerOk(terminal);

@@ -37,7 +37,7 @@ function setupEnv(tmp) {
   globalThis.fetch = async () => { throw new Error('network disabled: the direct provider needs no Agent Deck'); };
   const { createJiti } = require('jiti');
   const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-  return { dbModule: jiti('./lib/db.ts'), ps: jiti('./lib/provider-sessions.ts'), catalog: jiti('./lib/session-catalog.ts') };
+  return { dbModule: jiti('@/lib/db.ts'), ps: jiti('@/lib/provider-sessions.ts'), catalog: jiti('@/lib/session-catalog.ts') };
 }
 
 const owner = { kind: 'person', id: 'local-owner' };

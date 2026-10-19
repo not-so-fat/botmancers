@@ -24,6 +24,8 @@
 // Environment knobs: FAKE_CLAUDE_VERSION (default 2.1.302),
 // FAKE_CLAUDE_REJECT_FLAG (exit like an older CLI that lacks that flag),
 // FAKE_CLAUDE_FORGET (a session id the CLI claims not to know).
+// Prompt directive [linger] keeps the process (and its sessions/<pid>.json)
+// alive briefly after the result, as the real CLI does.
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- standalone CommonJS executable. */
@@ -139,6 +141,17 @@ function run() {
     const lines = fs.readFileSync(fixture, 'utf8').split('\n').filter(line => line.trim() && !/"subtype":"init"/.test(line));
     for (const line of lines) process.stdout.write(`${line.split('{{SESSION_ID}}').join(sessionId)}\n`);
     process.exit(0);
+  }
+  if (scenario === 'linger') {
+    // Like the real CLI: the session stays registered as live
+    // (sessions/<pid>.json) after the result until the process exits.
+    const live = path.join(configDir, 'sessions', `${process.pid}.json`);
+    fs.mkdirSync(path.dirname(live), { recursive: true });
+    fs.writeFileSync(live, JSON.stringify({ pid: process.pid, sessionId, cwd: process.cwd(), status: 'busy' }));
+    append(sessionId, [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'lingered' }] } }]);
+    emit(result(sessionId, { result: 'lingered' }));
+    setTimeout(() => { fs.rmSync(live, { force: true }); process.exit(0); }, 400);
+    return;
   }
   const reply = `fake claude: ${stdin.trim()}`;
   emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: reply }] }, session_id: sessionId });
