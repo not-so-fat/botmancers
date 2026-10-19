@@ -16,3 +16,4 @@ botmancers-test-migration.db-wal
 /packages/mcp-server/dist
 /packages/mcp-server/*.tgz
 /packages/mcp-server/app
+/claude-provider/

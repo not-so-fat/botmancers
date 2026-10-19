@@ -730,6 +730,10 @@ async function child() {
   };
   const sageEnded = seedSession(sage, PROVIDER.sageOld, 'sage-ended', { end: true });
   const sageActive = { binding: raw.prepare('SELECT * FROM session_bindings WHERE external_session_id = ?').get(`${PROVIDER.sageOld}-next`), conv: sageEnded.conv };
+  // NOT-509: one provider-reported usage sample on Sage's ended session.
+  engine.recordAttemptUsage(sageEnded.binding.source_attempt_id, {
+    usage: { input_tokens: 1200, output_tokens: 340, cost_usd: 0.0123, source: 'result', breakdown: { cache_read_input_tokens: 99 } }, observedAt: seedClock,
+  });
   const scoutS = seedSession(scout, PROVIDER.scout, 'scout');
   const vaultS = seedSession(vault, PROVIDER.vault, 'vault');
   ctx.db.messages.create(sageEnded.conv.id, 'bot', `I resumed ${PROVIDER.sageOld} in ${ctx.workspace} on ${sage.deck_id}.`, sage.id);
@@ -818,6 +822,21 @@ async function child() {
     check(all.data.items.length === 2 && active.data.items.length === 1 && active.data.items[0].ref === sageActive.binding.id && active.data.items[0].resumable === true
       && all.data.items.some(s => s.ref === sageEnded.binding.id && s.status === 'ended'), 'Sage: one active resumable session and one ended, by exact Botmancers reference');
     check(all.data.items.every(s => s.title && s.agent.name === 'Sage'), 'each session carries a recognizable title and its Agent\'s name');
+    // NOT-509: additive normalized usage under the same grant; unknown is
+    // null, never 0; no raw breakdown; an item without usage still conforms.
+    const endedItem = all.data.items.find(s => s.ref === sageEnded.binding.id);
+    const activeItem = all.data.items.find(s => s.ref === sageActive.binding.id);
+    check(endedItem.usage.input_tokens.sum === 1200 && endedItem.usage.output_tokens.sum === 340 && endedItem.usage.cost_usd.sum === 0.0123
+      && endedItem.usage.cost_usd.quality === 'complete' && endedItem.usage.cost_usd.known === 1 && endedItem.usage.cost_usd.total === 1,
+    'list_sessions carries the session\'s reported usage summary with coverage');
+    check(activeItem.usage.cost_usd.sum === null && activeItem.usage.cost_usd.quality === 'unavailable' && activeItem.usage.input_tokens.total === 0,
+      'a session with no reported usage is unavailable with a null sum, not zero');
+    check(!/breakdown|cache_read/.test(JSON.stringify(all.data)), 'no raw provider breakdown in the MCP result');
+    const itemSchema = tools.find(t => t.name === 'botmancers_list_sessions').outputSchema.properties.items.items;
+    const withoutUsage = { ...endedItem };
+    delete withoutUsage.usage;
+    check(schemaProblems(itemSchema, withoutUsage).length === 0 && !itemSchema.required.includes('usage'),
+      'usage is optional in the v2 session item: a result without it still conforms (backward compatible)');
     const scoutSessions = await v2call('botmancers_list_sessions', { agent_id: scout.id });
     const ghost = await v2call('botmancers_list_sessions', { agent_id: 'no-such-agent' });
     const vaultViaA = await v2call('botmancers_list_sessions', { agent_id: vault.id });

@@ -284,7 +284,7 @@ async function main() {
 
   console.log('\nRegistration: Muse connections get the direct provider; no Agent Deck');
   assert(contract.sessionProviderFor({ id: 'rc-any', provider: 'muse' }).kind === muse.MUSE_PROVIDER_KIND
-    && contract.sessionProviderFor({ id: 'rc-any', provider: 'codex' }) === null, 'the default registration covers muse connections only');
+    && contract.sessionProviderFor({ id: 'rc-any', provider: 'codex' })?.kind !== muse.MUSE_PROVIDER_KIND, 'the default Muse registration covers muse connections only');
   const conn = dbModule.runtimeConnections.create({ provider: 'muse', label: 'Muse laptop', host: 'This computer' }).id;
   contract.registerSessionProvider({ connectionId: conn }, null);
   muse.registerMuseSessionProvider(options('home'), { connectionId: conn });
@@ -399,6 +399,9 @@ async function main() {
   assert(events.session_imported === 3 && events.session_started === 1 && events.turn_started === 5 && events.turn_completed === 3 && events.turn_failed === 1
     && events.turn_cancelled === 1 && events.cancel_requested === 1 && events.session_missing === 1, 'one event per lifecycle fact');
   assert(count('SELECT COUNT(*) AS n FROM provider_sessions WHERE agent_id = ?', dev.id) === 4, 'four registry rows (three imported, one started)');
+  const startedSample = db.prepare('SELECT provider, input_tokens, output_tokens, cost_usd FROM usage_samples WHERE turn_id = ?').get(started.turn.turn_ref);
+  assert(startedSample && startedSample.provider === muse.MUSE_PROVIDER_KIND && startedSample.input_tokens === 120 && startedSample.output_tokens === 45 && startedSample.cost_usd === null,
+    'a Muse turn records one common usage sample: reported tokens, cost unknown');
   const views = [list, ps.listProviderTurns(db, dev.id, a1), ps.listProviderTurns(db, dev.id, g1), db.prepare('SELECT * FROM provider_session_events').all()];
   assert(leaks('home', views).length === 0, 'no Muse session or turn id in turn views or events');
 

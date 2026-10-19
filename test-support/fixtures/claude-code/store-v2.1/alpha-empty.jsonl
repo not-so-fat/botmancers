@@ -1,0 +1,2 @@
+{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-10-11T09:00:00.000Z", "sessionId": "{{ID}}", "content": "hi"}
+{"sessionId":"{{ID}}","version":"2.1.302","isSidechain":false,"userType":"external","entrypoint":"cli","gitBranch":"main","type":"attachment","timestamp":"2026-10-11T09:00:00.100Z","cwd":"{{ROOT}}/alpha/empty","attachment":{"type":"environment"}}

@@ -1,0 +1,73 @@
+{
+  "format": "claude-code-projects-jsonl/v1",
+  "captured_from": "Claude Code 2.1.302 (record shapes), synthetic content",
+  "placeholders": {
+    "{{ROOT}}": "absolute real path of the test workspace root",
+    "{{ID}}": "the session id"
+  },
+  "sessions": [
+    {
+      "key": "a1",
+      "file": "alpha-parser.jsonl",
+      "id": "11111111-1111-4111-8111-111111111111",
+      "project": "alpha/parser",
+      "expect": "open, resumable, titled by custom-title; sidechain/meta/thinking hidden; one malformed line"
+    },
+    {
+      "key": "a2",
+      "file": "alpha-spike.jsonl",
+      "id": "22222222-2222-4222-8222-222222222222",
+      "project": "alpha",
+      "expect": "archived (idle past cleanupPeriodDays), still resumable, titled by summary"
+    },
+    {
+      "key": "a3",
+      "file": "alpha-empty.jsonl",
+      "id": "33333333-3333-4333-8333-333333333333",
+      "project": "alpha/empty",
+      "expect": "no conversation: not resumable"
+    },
+    {
+      "key": "a4",
+      "file": "alpha-busy.jsonl",
+      "id": "44444444-4444-4444-8444-444444444444",
+      "project": "alpha",
+      "expect": "busy while a live sessions/<pid>.json names it"
+    },
+    {
+      "key": "p1",
+      "file": "alpha-two.jsonl",
+      "id": "55555555-5555-4555-8555-555555555555",
+      "project": "alpha-two",
+      "expect": "slug-prefix trap: outside {{ROOT}}/alpha"
+    },
+    {
+      "key": "b1",
+      "file": "beta.jsonl",
+      "id": "66666666-6666-4666-8666-666666666666",
+      "project": "beta",
+      "expect": "another workspace"
+    },
+    {
+      "key": "g1",
+      "file": "garbage.jsonl",
+      "id": "77777777-7777-4777-8777-777777777777",
+      "project": "alpha",
+      "expect": "every line malformed: not a session"
+    },
+    {
+      "key": "n1",
+      "file": "no-cwd.jsonl",
+      "id": "88888888-8888-4888-8888-888888888888",
+      "project": "alpha",
+      "expect": "no cwd recorded: not a session"
+    },
+    {
+      "key": "x1",
+      "file": "notes.jsonl",
+      "name": "notes.jsonl",
+      "project": "alpha",
+      "expect": "not a session uuid file name: ignored"
+    }
+  ]
+}

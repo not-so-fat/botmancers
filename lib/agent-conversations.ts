@@ -848,6 +848,8 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
           if (evidence && finished) recordPreparedEvidence(request, finished, { finalization: evidence } as AttemptResult);
         };
         await controlled(() => {
+          // NOT-509: the run existed, its usage is unknown (one sample).
+          engine.recordAttemptUsage(attempt.id, { usage: null, observedAt: Date.now() });
           keepEvidence(engine.finishAttempt(attempt.id, {
             outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: `Agent Deck run ${runId} died.`,
           }));
@@ -866,6 +868,7 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
         return;
       case 'interrupted':
         await controlled(() => {
+          if (runId) engine.recordAttemptUsage(attempt.id, { usage: null, observedAt: Date.now() });
           engine.finishAttempt(attempt.id, {
             outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: 'The runtime cannot be observed after a restart; the outcome is unknown.',
           });

@@ -264,7 +264,7 @@ async function main() {
   try { serviceApi.sendServiceSessionMessage(ctx, archivedRef, { content: 'hi', idempotencyKey: 'n-1' }); } catch (error) { serviceError = error; }
   assert(serviceError && serviceError.code === 'session_not_resumable', 'a session message to a native reference is session_not_resumable');
   await ps.cancelProviderTurn(db, nat.id, busyTurn.turn.turn_ref);
-  contract.clearSessionProviders();
+  contract.clearSessionProviders({ builtins: true });
   fs.rmSync(statePath, { force: true });
 
   console.log('\nSessions UI source contract');
