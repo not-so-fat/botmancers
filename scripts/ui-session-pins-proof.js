@@ -192,8 +192,8 @@ async function run() {
     const archived = await rowInfo(TITLES.archived);
     check(archived.tags.includes('Archived') && archived.actions.join('|') === 'Ask from this context|Resume work here', `archived session: tags ${archived.tags.join(', ')}; still resumes`);
     const missing = await rowInfo(TITLES.missing);
-    check(missing.tags.join() === 'Missing' && missing.actions.length === 0 && missing.reasons.slice(0, 2).every(r => /choose another session/.test(r)),
-      `missing session: no action; "${missing.reasons[0]}"`);
+    check(missing.tags.includes('Missing') && !missing.tags.includes('Resumable') && missing.actions.length === 0 && missing.reasons.slice(0, 2).every(r => /choose another session/.test(r)),
+      `missing session: tags ${missing.tags.join(', ')}, no action; "${missing.reasons[0]}"`);
     check(!(await evaluate("document.querySelector('.sessions-drawer').innerText")).match(/Ask this session|Continue with/), 'the old Ask this session / Continue with… copy is gone');
     await noSecrets('session rows');
     await layout('session rows', '.sessions-drawer');
@@ -220,8 +220,9 @@ async function run() {
     await waitFor("!document.querySelector('.exchange-dialog')", 'Resume sent', 30000);
     const started = await evaluate("document.querySelector('.exchange-started').textContent.trim()");
     check(/^Resumed work in Forge’s session/.test(started), `drawer confirms: "${started}"`);
-    await sleep(200);
-    check((await focusName()) === 'Resume work here', 'focus returns to Resume work here');
+    await waitFor("document.activeElement?.dataset?.sessionAction === 'resume'", 'focus back on Resume work here', 3000);
+    const focused = await focusName();
+    check(focused === 'Resume work here', `focus returns to Resume work here (focused: ${focused})`);
     await noSecrets('after Resume');
 
     if (!vp.mobile) {
