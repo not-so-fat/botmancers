@@ -43,7 +43,8 @@ const VIEWPORTS = [
 ];
 const KEYS = { Tab: 9, Enter: 13, Escape: 27, ' ': 32 };
 const HEAD = execSync('git rev-parse HEAD').toString().trim();
-const DIRTY = execSync('git status --porcelain').toString().trim();
+// `next dev` rewrites next-env.d.ts while it serves; nothing else may differ.
+const DIRTY = execSync('git status --porcelain').toString().split('\n').filter(line => line.trim() && !line.endsWith(' next-env.d.ts')).join('\n');
 const TITLES = { open: 'Fix the uploader retry', archived: 'Archived parser spike', missing: 'Old dependency audit' };
 
 let failures = 0;
