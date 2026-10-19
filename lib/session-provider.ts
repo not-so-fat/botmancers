@@ -135,24 +135,35 @@ export interface ObserveTurnInput extends ProviderCallContext {
   provider_turn_id: string;
 }
 
+// What the runtime itself reported for one turn. Every field is nullable:
+// an absent or malformed value is unknown, never zero or an estimate.
+// cached_input_tokens (NOT-504, Codex) is a subset of input_tokens, present
+// only for runtimes that report it.
+export interface ProviderUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens?: number | null;
+  cost_usd?: number | null;
+}
+
+export type ProviderTurnUsage = ProviderUsage;
+
 export interface ProviderTurnResult {
   status: 'completed' | 'failed' | 'cancelled';
   provider_session_id: string;
   output: string | null;
   failure: { code: string; message: string } | null;
-  usage?: ProviderTurnUsage | null;
+  usage?: ProviderUsage | null;
   finished_at: number;
 }
 
-// The common usage sample: what the provider reported for one turn, from
-// structured events only. cached_input_tokens is a subset of input_tokens.
-// cost_usd is null unless the provider itself reports a cost; it is never
-// estimated from model prices or plans.
-export interface ProviderTurnUsage {
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cached_input_tokens?: number | null;
-  cost_usd?: number | null;
+// NOT-505: an operator-named session for a provider that cannot enumerate
+// its sessions. The provider confirms what it can (and must refuse what it
+// knows is absent); Botmancers checks the result against scope.
+export interface ImportSessionInput extends ProviderCallContext {
+  provider_session_id: string;
+  // Explicit, absolute.
+  workspace: string;
 }
 
 export interface CancelTurnInput extends ProviderCallContext {
@@ -204,6 +215,22 @@ export interface SessionProvider {
   // a 'cancelled' / 'timed_out' error that leaves the turn running).
   observeTurn(input: Readonly<ObserveTurnInput>): Promise<ProviderResult<ProviderTurnResult>>;
   cancelTurn(input: Readonly<CancelTurnInput>): Promise<ProviderResult<ProviderCancelOutcome>>;
+  // Optional: register one explicitly named session (see ImportSessionInput).
+  importSession?(input: Readonly<ImportSessionInput>): Promise<ProviderResult<ProviderSessionRecord>>;
+}
+
+// A reported count or cost is kept only when it is a finite, non-negative
+// number; anything else (absent, a string, negative) stays null.
+export function normalizeUsage(raw: unknown): ProviderUsage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  const count = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null);
+  const cost = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+  return {
+    input_tokens: count(value.input_tokens), output_tokens: count(value.output_tokens),
+    ...('cached_input_tokens' in value ? { cached_input_tokens: count(value.cached_input_tokens) } : {}),
+    cost_usd: cost(value.cost_usd),
+  };
 }
 
 export function providerError(code: ProviderErrorCode, message: string): { ok: false; error: ProviderError } {
@@ -239,11 +266,12 @@ export const MAX_PROVIDER_PAGE = 100;
 //
 // Providers register per runtime connection id, or per connection provider
 // (codex, claude, ...) as the fallback for every connection of that kind.
-// A runtime adapter may also install a default for its provider kind
-// (NOT-504: lib/codex-session-provider for 'codex'); explicit registrations
-// win, and clearSessionProviders removes defaults too. A connection without
-// a provider has no native-session support; Botmancers-launched sessions
-// stay in the catalog either way.
+// Real runtime adapters register their provider kind from
+// ./provider-sessions (Cursor: ./cursor-session-provider, NOT-505) or
+// install a default for it (Codex: ./codex-session-provider, NOT-504);
+// explicit registrations win, and clearSessionProviders removes defaults
+// too. A connection without a provider has no native-session support;
+// Botmancers-launched sessions stay in the catalog either way.
 
 export type SessionProviderFactory = (connection: { id: string; provider: string }) => SessionProvider;
 

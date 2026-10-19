@@ -52,6 +52,8 @@
     "test:config-layout": "node test-config-layout.js",
     "test:engine-store": "node test-engine-store.js",
     "test:session-catalog": "node test-session-catalog.js",
+    "test:cursor-session-provider": "node test-cursor-session-provider.js",
+    "smoke:cursor-session": "node scripts/cursor-session-smoke.js",
     "test:agent-exchanges": "node test-agent-exchanges.js",
     "test:exchange-ui": "node test-exchange-ui.js",
     "proof:exchanges": "node scripts/ui-exchanges-proof.js",
