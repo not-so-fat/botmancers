@@ -153,12 +153,22 @@ export interface ProviderTurnResult {
   provider_session_id: string;
   output: string | null;
   failure: { code: string; message: string } | null;
-  // NOT-509: provider-reported usage for this turn. Besides the normalized
-  // ProviderUsage, lib/usage usageFromEvent also accepts a Codex
-  // turn.completed or a Claude/Cursor result event here; null or absent
-  // values are unknown, never zero.
-  usage?: ProviderUsage | Record<string, unknown> | null;
+  // What the runtime reported, never estimated: each field is null when the
+  // runtime did not report it (or reported something malformed), and an
+  // explicit zero stays zero; Botmancers never infers a price from tokens.
+  // Besides ProviderUsage / ProviderReportedUsage, lib/usage usageFromEvent
+  // (NOT-509) also accepts a Codex turn.completed or a Claude/Cursor result
+  // event here.
+  usage?: ProviderReportedUsage | ProviderUsage | Record<string, unknown> | null;
   finished_at: number;
+}
+
+// NOT-506: the Claude Code provider's shape: total_cost_usd is the
+// runtime's own figure.
+export interface ProviderReportedUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_cost_usd?: number | null;
 }
 
 // NOT-505: an operator-named session for a provider that cannot enumerate
@@ -189,7 +199,13 @@ export type ProviderErrorCode =
   | 'busy'
   | 'not_resumable'
   | 'cancelled'
-  | 'timed_out';
+  | 'timed_out'
+  // NOT-506: runtime-reported refusals with a stable meaning. None of them
+  // is ever answered by starting a different session.
+  | 'auth_required'
+  | 'permission_denied'
+  | 'incompatible_version'
+  | 'usage_limit';
 
 export interface ProviderError {
   code: ProviderErrorCode;
@@ -271,17 +287,17 @@ export const MAX_PROVIDER_PAGE = 100;
 // Providers register per runtime connection id, or per connection provider
 // (codex, claude, ...) as the fallback for every connection of that kind.
 // Real runtime adapters register their provider kind from
-// ./provider-sessions (Cursor: ./cursor-session-provider, NOT-505) or
-// install a default for it (Codex: ./codex-session-provider, NOT-504);
-// explicit registrations win, and clearSessionProviders removes defaults
-// too. A connection without a provider has no native-session support;
+// ./provider-sessions (NOT-506 Claude Code: ./claude-session-provider, as a
+// built-in; NOT-505 Cursor: ./cursor-session-provider; NOT-504 Codex:
+// ./codex-session-provider, as a built-in). A connection
+// without a provider has no native-session support;
 // Botmancers-launched sessions stay in the catalog either way.
 
 export type SessionProviderFactory = (connection: { id: string; provider: string }) => SessionProvider;
 
 const byConnection = new Map<string, SessionProviderFactory>();
 const byProviderKind = new Map<string, SessionProviderFactory>();
-const defaults = new Map<string, SessionProviderFactory>();
+const builtins = new Map<string, SessionProviderFactory>();
 
 export function registerSessionProvider(target: { connectionId: string } | { provider: string }, factory: SessionProviderFactory | null): void {
   const map = 'connectionId' in target ? byConnection : byProviderKind;
@@ -290,19 +306,22 @@ export function registerSessionProvider(target: { connectionId: string } | { pro
   else map.delete(key);
 }
 
-export function registerDefaultSessionProvider(provider: string, factory: SessionProviderFactory | null): void {
-  if (factory) defaults.set(provider, factory);
-  else defaults.delete(provider);
+// The default adapter for every connection of a provider kind, used when
+// nothing more specific is registered.
+export function registerBuiltinSessionProvider(provider: string, factory: SessionProviderFactory): void {
+  builtins.set(provider, factory);
 }
 
-export function clearSessionProviders(): void {
+// Clears explicit registrations; { builtins: true } also drops the built-in
+// adapters (tests that must never reach a real runtime).
+export function clearSessionProviders(options: { builtins?: boolean } = {}): void {
   byConnection.clear();
   byProviderKind.clear();
-  defaults.clear();
+  if (options.builtins) builtins.clear();
 }
 
 export function sessionProviderFor(connection: { id: string; provider: string } | null | undefined): SessionProvider | null {
   if (!connection) return null;
-  const factory = byConnection.get(connection.id) ?? byProviderKind.get(connection.provider) ?? defaults.get(connection.provider);
+  const factory = byConnection.get(connection.id) ?? byProviderKind.get(connection.provider) ?? builtins.get(connection.provider);
   return factory ? factory(connection) : null;
 }

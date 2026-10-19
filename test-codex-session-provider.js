@@ -91,7 +91,7 @@ function shutdownAll() {
 }
 
 function register(ids) {
-  contract.clearSessionProviders();
+  contract.clearSessionProviders({ builtins: true });
   const main = runtime(STATE.main);
   contract.registerSessionProvider({ connectionId: ids.main }, () => codex.createCodexSessionProvider(main));
   const exec = runtime(STATE.exec);

@@ -65,7 +65,7 @@ const SECRET = /SECRET/;
 const owner = { kind: 'person', id: 'local-owner' };
 
 function registerFakes(ids) {
-  contract.clearSessionProviders();
+  contract.clearSessionProviders({ builtins: true });
   contract.registerSessionProvider({ connectionId: ids.laptop }, () => fake.createFakeSessionProvider({ statePath: STATE.laptop, ignoreScope: true }));
   contract.registerSessionProvider({ connectionId: ids.workstation }, () => fake.createFakeSessionProvider({ statePath: STATE.workstation }));
   contract.registerSessionProvider({ connectionId: ids.limited }, () => fake.createFakeSessionProvider({
@@ -99,7 +99,7 @@ async function main() {
     'no capabilities reported means none supported');
   assert(JSON.stringify(contract.SESSION_PROVIDER_CAPABILITIES) === JSON.stringify(['list', 'search', 'read', 'resume', 'start', 'cancel', 'usage']),
     'the capability vocabulary is list, search, read, resume, start, cancel, usage');
-  contract.clearSessionProviders();
+  contract.clearSessionProviders({ builtins: true });
   assert(contract.sessionProviderFor({ id: 'rc-x', provider: 'codex' }) === null, 'no provider is registered by default (no real runtime adapter in this slice)');
   contract.registerSessionProvider({ provider: 'codex' }, () => ({ kind: 'by-provider' }));
   contract.registerSessionProvider({ connectionId: 'rc-x' }, () => ({ kind: 'by-connection' }));

@@ -233,7 +233,7 @@ function storeFixtures() {
   rows = samplesOf(a6.id);
   assert(rows.length === 1 && rows[0].input_tokens === 300 && rows[0].cost_usd === 0.03 && engine.getAttempt(a6.id).outcome === 'succeeded',
     'the unknown sample written before the crash is filled by the reconciled result; still one sample');
-  assert(store.ENGINE_SCHEMA_VERSION === 18 && db.prepare("SELECT 1 FROM schema_migrations WHERE version = 18 AND name = 'usage_samples'").get(),
+  assert(store.ENGINE_SCHEMA_VERSION >= 18 && db.prepare("SELECT 1 FROM schema_migrations WHERE version = 18 AND name = 'usage_samples'").get(),
     'migration 18 (usage_samples) applied once');
 
   console.log('\nResume Attempts aggregate per session');
@@ -351,7 +351,7 @@ async function providerTurnFixtures() {
   assert(detail.usage_samples.length === 3 && detail.usage_samples.every(sample => sample.kind === 'turn' && sample.attempt_number === null && sample.turn_kind === 'send'),
     'native detail lists provider turns');
   assert(!/SECRET/.test(JSON.stringify(detail)), 'no provider id in the usage detail');
-  contract.clearSessionProviders();
+  contract.clearSessionProviders({ builtins: true });
   fs.rmSync(statePath, { force: true });
 }
 

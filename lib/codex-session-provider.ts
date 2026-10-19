@@ -35,7 +35,7 @@ import { dbPath } from './home';
 import {
   providerError,
   providerOk,
-  registerDefaultSessionProvider,
+  registerBuiltinSessionProvider,
   type ProviderCallContext,
   type ProviderResult,
   type ProviderSessionRecord,
@@ -862,5 +862,5 @@ export function shutdownDefaultCodexRuntime(): void {
 }
 
 if (process.env.BOTMANCERS_CODEX_PROVIDER !== 'off') {
-  registerDefaultSessionProvider('codex', () => createCodexSessionProvider(defaultCodexRuntime()));
+  registerBuiltinSessionProvider('codex', () => createCodexSessionProvider(defaultCodexRuntime()));
 }
