@@ -102,7 +102,7 @@ and the Agent's stored configuration.
 | --- | --- | --- | --- | --- |
 | 1 discover | `botmancers_capabilities` | none | none | `contracts_supported`, `mode` (`granted` or `narrow`), granted `agents` and their capabilities, the granted `operations` (tool, contract, Agents), `limits`, `polling` |
 | 2 discover | `botmancers_list_agents` | `agents:read` | `cursor`, `limit` | `items` (`agent_id`, `name`, `title`, `runtime`, `available`, `capabilities`), `next_cursor` |
-| 3 select | `botmancers_list_sessions` | `sessions:read` | `agent_id`, `status` (`active`, `ended`, `all`), `cursor`, `limit` | `items` (`ref`, recognizable `title`, `status`, `resumable`, `origin`), `next_cursor` |
+| 3 select | `botmancers_list_sessions` | `sessions:read` | `agent_id`, `status` (`active`, `ended`, `all`), `cursor`, `limit` | `items` (`ref`, recognizable `title`, `status`, `resumable`, `origin`, optional additive `usage`: provider-reported input/output tokens and cost, each with `sum` (null when unreported), `known`/`total`, and `quality` `complete`/`partial`/`unavailable`), `next_cursor` |
 | history | `botmancers_list_conversations` | `conversations:read` | `agent_id`, `cursor`, `limit` | `items` (`conversation_id`, `label`, `participants`, `message_count`), `next_cursor` |
 | history | `botmancers_get_conversation` (v2 path) | `conversations:read` | `conversation_id`, `agent_id`, `cursor`, `limit` | `messages` (redacted, `truncated`), `next_cursor` (older messages), `content_trust: "untrusted"` |
 | 4 act, same Agent | `botmancers_send_to_session` | `sessions:message` | `session_ref`, `content`, `idempotency_key` | `exchange_id`, `request_id`, `conversation_id`, `message_id`, `state`, `replayed` |

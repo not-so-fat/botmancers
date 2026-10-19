@@ -148,7 +148,11 @@ export interface ProviderTurnResult {
   provider_session_id: string;
   output: string | null;
   failure: { code: string; message: string } | null;
-  usage?: ProviderUsage | null;
+  // NOT-509: provider-reported usage for this turn. Besides the normalized
+  // ProviderUsage, lib/usage usageFromEvent also accepts a Codex
+  // turn.completed or a Claude/Cursor result event here; null or absent
+  // values are unknown, never zero.
+  usage?: ProviderUsage | Record<string, unknown> | null;
   finished_at: number;
 }
 

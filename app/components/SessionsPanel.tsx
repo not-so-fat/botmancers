@@ -7,11 +7,17 @@ import {
   emptySessionsCopy,
   formatSessionDate,
   runtimeLabel,
+  sessionUsageLine,
   statusLabel,
+  usageMetricView,
+  usageSampleLabel,
+  usageSampleValues,
   workRequestLabel,
   type SessionAttemptRow,
   type SessionFilter,
   type SessionRow,
+  type SessionUsageRow,
+  type SessionUsageSampleRow,
 } from '@/lib/session-view';
 import Link from 'next/link';
 import ExchangeDialog, { type ExchangeAgentOption } from '@/app/components/ExchangeDialog';
@@ -24,6 +30,9 @@ import { detailsHref, sessionActionAvailability, type ExchangeMode } from '@/lib
 // NOT-498: each resumable row offers Ask this session and Continue with…;
 // the dialog opens above the drawer (which goes inert) and focus returns to
 // the action that opened it.
+// NOT-509: each row shows the session's provider-reported usage totals and
+// Details lists it per run. Unknown values read "Not reported" (never $0.00
+// or an estimate) and partial coverage is labeled Partial.
 export default function SessionsPanel({ agentId, agentName, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
   agentId: string;
   agentName: string;
@@ -195,6 +204,7 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
   const availability = sessionActionAvailability(row);
   const conversation = row.origin.conversation;
   const request = workRequestLabel(row);
+  const usage = sessionUsageLine(row.usage);
   return (
     <li className={`manage-row session-row is-${row.status}`} data-session-ref={row.ref}>
       <div className="manage-copy">
@@ -208,6 +218,14 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
           <div><dt>Started</dt><dd>{formatSessionDate(row.created_at)}</dd></div>
           {row.ended_at !== null ? <div><dt>Ended</dt><dd>{formatSessionDate(row.ended_at)}</dd></div> : null}
           <div><dt>Runtime</dt><dd>{runtimeLabel(row)}</dd></div>
+          <div className="session-usage-meta">
+            <dt>Reported usage</dt>
+            <dd>
+              <span className={`session-usage is-${usage.quality}`} aria-hidden="true">{usage.text}</span>
+              <span className="session-sr">{usage.label}</span>
+              {usage.partial ? <span className="manage-tag session-usage-tag">Partial</span> : null}
+            </dd>
+          </div>
           <div>
             <dt>Origin</dt>
             <dd>
@@ -245,6 +263,7 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
 
 function SessionDetail({ id, agentId, sessionRef }: { id: string; agentId: string; sessionRef: string }) {
   const [attempts, setAttempts] = useState<SessionAttemptRow[] | null>(null);
+  const [usage, setUsage] = useState<{ totals: SessionUsageRow | undefined; samples: SessionUsageSampleRow[] } | null>(null);
   const [error, setError] = useState('');
   const [debugId, setDebugId] = useState<string | null>(null);
   const [debugError, setDebugError] = useState('');
@@ -258,7 +277,13 @@ function SessionDetail({ id, agentId, sessionRef }: { id: string; agentId: strin
         const body = await res.json().catch(() => null);
         if (cancelled) return;
         if (!res.ok || !Array.isArray(body?.session?.attempts)) setError('Could not load session details.');
-        else setAttempts(body.session.attempts as SessionAttemptRow[]);
+        else {
+          setAttempts(body.session.attempts as SessionAttemptRow[]);
+          setUsage({
+            totals: body.session.usage as SessionUsageRow | undefined,
+            samples: Array.isArray(body.session.usage_samples) ? body.session.usage_samples as SessionUsageSampleRow[] : [],
+          });
+        }
       })
       .catch(() => { if (!cancelled) setError('Could not load session details.'); });
     return () => { cancelled = true; };
@@ -301,6 +326,7 @@ function SessionDetail({ id, agentId, sessionRef }: { id: string; agentId: strin
           ))}
         </ol>
       ) : null}
+      {usage ? <SessionUsageDetail totals={usage.totals} samples={usage.samples} /> : null}
       <details className="session-debug" onToggle={e => { if ((e.currentTarget as HTMLDetailsElement).open) void loadDebug(); }}>
         <summary>Local debug: provider session ID</summary>
         <p className="session-debug-note">For local troubleshooting only. Botmancers resumes sessions for you; you never need to copy this.</p>
@@ -313,5 +339,50 @@ function SessionDetail({ id, agentId, sessionRef }: { id: string; agentId: strin
         ) : null}
       </details>
     </div>
+  );
+}
+
+const USAGE_METRICS = ['input_tokens', 'output_tokens', 'cost_usd'] as const;
+
+function SessionUsageDetail({ totals, samples }: { totals: SessionUsageRow | undefined; samples: SessionUsageSampleRow[] }) {
+  const headingId = useId();
+  return (
+    <section className="session-usage-detail" aria-labelledby={headingId}>
+      <h3 id={headingId} className="session-usage-head">Reported usage</h3>
+      <dl className="session-usage-totals">
+        {USAGE_METRICS.map(name => {
+          const metric = usageMetricView(name, totals?.[name], true);
+          return (
+            <div key={name}>
+              <dt>{metric.name}</dt>
+              <dd>
+                <span className={`session-usage is-${metric.quality}`} aria-hidden="true">{metric.text}</span>
+                <span className="session-sr">{metric.label}.</span>
+                <span className={`session-usage-coverage is-${metric.quality}`}>{metric.coverage}</span>
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      {samples.length === 0 ? (
+        <p className="session-usage-none">No run in this session reported usage.</p>
+      ) : (
+        <ol className="session-usage-runs" aria-label="Reported usage by run">
+          {samples.map((sample, i) => {
+            const values = usageSampleValues(sample);
+            return (
+              <li key={`${sample.observed_at}-${i}`}>
+                <span className="session-usage-run">{formatSessionDate(sample.observed_at)} · {usageSampleLabel(sample, i)}</span>
+                <span className="session-usage-values">
+                  <span className={sample.input_tokens === null ? 'is-unavailable' : undefined}>In {values.input}</span>
+                  <span className={sample.output_tokens === null ? 'is-unavailable' : undefined}>Out {values.output}</span>
+                  <span className={sample.cost_usd === null ? 'is-unavailable' : undefined}>Cost {values.cost}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
   );
 }

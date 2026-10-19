@@ -15,6 +15,7 @@
 // verbatim, never parsed or synthesized.
 import type { BotAgent } from './bot-definition';
 import type { ToolProfile } from './engine-store';
+import type { NormalizedUsage } from './usage';
 
 // NOT-487: 'agent-deck-api' is the canonical Agent Deck transport (public
 // run HTTP API); 'agent-deck-run' is the legacy CLI compatibility adapter.
@@ -156,6 +157,10 @@ export interface AttemptResult {
   // NOT-497: set when a caller's sanitize step cut output to its bound;
   // output then holds the bounded text only.
   outputTruncated?: boolean;
+  // NOT-509: provider-reported usage, normalized from the runtime's own
+  // structured events (lib/usage). Absent or null: the runtime reported
+  // none; never estimated.
+  usage?: NormalizedUsage | null;
 }
 
 export type AttemptEventSink = (event: AttemptEvent) => void;

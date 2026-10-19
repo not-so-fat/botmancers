@@ -6,7 +6,7 @@
 // (`await fake.listen()`). Every request is captured with its method, path,
 // query, headers, and parsed body. Runs follow a per-test script:
 //
-//   fake.onStart = (body, run) => ({ result, sessionId, state, files, hold, ... })
+//   fake.onStart = (body, run) => ({ result, sessionId, state, files, hold, events, resultFields, ... })
 //
 // A run is terminal on the first read unless the script holds it
 // (`hold: true`, ended by fake.release(runId) or cancel). Prepared runs get
@@ -82,7 +82,12 @@ function createFakeAgentDeck(options = {}) {
       run.events.push({ seq: seq(), ts: 'ts', type: 'canceled', sessionId: run.sessionId });
     } else if (state === 'ended') {
       const result = typeof run.script.result === 'function' ? run.script.result(run) : run.script.result;
-      run.events.push({ seq: seq(), ts: 'ts', type: 'result', subtype: 'success', result, sessionId: run.sessionId });
+      // NOT-509 usage hooks: `events` are structured runtime events emitted
+      // before the result (for example Codex turn.completed with usage);
+      // `resultFields` are merged into the result event (for example a
+      // Claude/Cursor usage object and total_cost_usd).
+      for (const extra of run.script.events || []) run.events.push({ ...extra, seq: seq(), ts: 'ts', sessionId: run.sessionId });
+      run.events.push({ ...(run.script.resultFields || {}), seq: seq(), ts: 'ts', type: 'result', subtype: 'success', result, sessionId: run.sessionId });
       run.events.push({ seq: seq(), ts: 'ts', type: 'end', sessionId: run.sessionId });
     } else if (state === 'error') {
       run.events.push({ seq: seq(), ts: 'ts', type: 'error', message: run.script.errorMessage || 'client failed', sessionId: run.sessionId });

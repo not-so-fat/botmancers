@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import { resolveAgent } from './bot-definition';
 import type { ExecutionKind, SessionBinding, WorkRequestState } from './engine-store';
+import type { UsageSummary } from './usage';
+import { emptyUsage, agentSessionUsage, sessionUsageSamples, type SessionUsageSampleView } from './usage-samples';
 
 // NOT-496: the Agent session catalog. A read model over the canonical
 // session_bindings table (lib/engine-store) joined with the Conversation,
@@ -18,6 +20,11 @@ import type { ExecutionKind, SessionBinding, WorkRequestState } from './engine-s
 // resumability (null until the provider was asked), and busy. They are
 // never folded into `status`: a released binding may still be resumable
 // by its provider, and a missing session is reported, never dropped.
+//
+// NOT-509: every summary carries `usage`, the provider-reported input
+// tokens, output tokens, and cost aggregated over the session's usage
+// samples (lib/usage-samples), each with its own known/total coverage and
+// quality; a detail adds the per-Attempt/turn samples. Unknown is never 0.
 //
 // The opaque external provider session id never appears in a summary or a
 // detail. sessionDebugExternalId is the one exception, for the explicitly
@@ -79,6 +86,8 @@ export interface SessionSummary {
   origin: { conversation: SessionOriginConversation | null; work_request: SessionOriginWorkRequest | null };
   // Only what the source Attempt's stored launch snapshot recorded.
   context: { workspace: string | null; deck: string | null };
+  // NOT-509: additive. Provider-reported usage with explicit coverage.
+  usage: UsageSummary;
 }
 
 export interface SessionAttemptView {
@@ -93,6 +102,9 @@ export interface SessionAttemptView {
 
 export interface SessionDetail extends SessionSummary {
   attempts: SessionAttemptView[];
+  // NOT-509: one entry per Attempt or provider turn that reached a
+  // runtime, oldest first.
+  usage_samples: SessionUsageSampleView[];
 }
 
 interface CatalogRow extends SessionBinding {
@@ -231,7 +243,7 @@ function originConversation(row: CatalogRow): SessionOriginConversation | null {
   return { id, kind: 'agent_api', label: 'Agent API conversation', thread_agent_id: null };
 }
 
-function summarize(row: CatalogRow): SessionSummary {
+function summarize(row: CatalogRow, usage: UsageSummary = emptyUsage()): SessionSummary {
   let snapshot: Record<string, unknown> | null = null;
   try { snapshot = row.source_snapshot ? JSON.parse(row.source_snapshot) as Record<string, unknown> : null; } catch { /* no context */ }
   const conversation = originConversation(row);
@@ -263,13 +275,14 @@ function summarize(row: CatalogRow): SessionSummary {
         : null,
     },
     context: { workspace: snapshotField(snapshot, 'cwd') ?? row.ps_workspace ?? null, deck: snapshotField(snapshot, 'deck') },
+    usage,
   };
 }
 
 // A native session: status follows the provider lifecycle (open is
 // active, archived is ended); it has no Conversation or Work Request
 // origin and no Deck.
-function summarizeNative(row: NativeRow): SessionSummary {
+function summarizeNative(row: NativeRow, usage: UsageSummary = emptyUsage()): SessionSummary {
   const created = row.provider_created_at ?? row.created_at;
   const resumable = row.resumable === null ? null : row.resumable === 1;
   const archivedAt = row.lifecycle === 'archived' ? (row.provider_updated_at ?? row.updated_at) : null;
@@ -292,6 +305,7 @@ function summarizeNative(row: NativeRow): SessionSummary {
     last_activity_at: Math.max(created, row.provider_updated_at ?? 0, row.turn_last_at ?? 0),
     origin: { conversation: null, work_request: null },
     context: { workspace: row.workspace, deck: null },
+    usage,
   };
 }
 
@@ -310,7 +324,11 @@ export function listAgentSessions(db: Db, agentId: string, filter: SessionFilter
   const rows = db.prepare(`${SELECT} WHERE b.agent_id = ? ${where}`).all(agentId) as CatalogRow[];
   const nativeWhere = filter === 'active' ? "AND ps.lifecycle = 'open'" : filter === 'ended' ? "AND ps.lifecycle = 'archived'" : '';
   const native = db.prepare(`${NATIVE_SELECT} AND ps.agent_id = ? ${nativeWhere}`).all(agentId) as NativeRow[];
-  return [...rows.map(summarize), ...native.map(summarizeNative)].sort(byActivity);
+  const usage = agentSessionUsage(db, agentId);
+  return [
+    ...rows.map(row => summarize(row, usage.get(row.id))),
+    ...native.map(row => summarizeNative(row, usage.get(row.id))),
+  ].sort(byActivity);
 }
 
 function nativeRow(db: Db, agentId: string, ref: string): NativeRow | undefined {
@@ -327,7 +345,9 @@ export function getAgentSession(db: Db, agentId: string, ref: string): SessionDe
   const row = agentRow(db, agentId, ref);
   if (!row) {
     const native = nativeRow(db, agentId, ref);
-    return native ? { ...summarizeNative(native), attempts: [] } : undefined;
+    if (!native) return undefined;
+    const { usage, samples } = sessionUsageSamples(db, agentId, ref);
+    return { ...summarizeNative(native, usage), attempts: [], usage_samples: samples };
   }
   const attempts = db.prepare(`
     SELECT a.attempt_number, a.kind, a.request_id, a.outcome, a.started_at, a.finished_at,
@@ -336,7 +356,8 @@ export function getAgentSession(db: Db, agentId: string, ref: string): SessionDe
     WHERE a.id = ? OR a.resumed_session_binding_id = ?
     ORDER BY a.started_at ASC, a.id ASC
   `).all(row.source_attempt_id, row.source_attempt_id, row.id) as SessionAttemptView[];
-  return { ...summarize(row), attempts };
+  const { usage, samples } = sessionUsageSamples(db, agentId, ref);
+  return { ...summarize(row, usage), attempts, usage_samples: samples };
 }
 
 // NOT-498: the recognizable title of one session (the same title its
