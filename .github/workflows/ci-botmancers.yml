@@ -45,6 +45,7 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-provider
+          npm run test:muse-session-provider
           npm run test:session-catalog
           npm run test:engine-store
           npm run test:service-grants

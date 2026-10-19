@@ -76,7 +76,9 @@
     "test:claude-session-provider": "node test-claude-session-provider.js",
     "smoke:claude-provider": "node scripts/claude-provider-smoke.js",
     "test:session-usage": "node test-session-usage.js",
-    "seed:usage-fixture": "node scripts/seed-usage-fixture.js"
+    "seed:usage-fixture": "node scripts/seed-usage-fixture.js",
+    "test:muse-session-provider": "node test-muse-session-provider.js",
+    "smoke:muse-msp": "node scripts/muse-msp-smoke.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

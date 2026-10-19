@@ -43,6 +43,7 @@ import {
 } from './session-provider';
 import { registerBuiltinSessionProvider } from './session-provider';
 import { createClaudeSessionProvider } from './claude-session-provider';
+import { createMuseSessionProvider } from './muse-session-provider';
 import type { AttemptCorrelation } from './attempt-adapter';
 // NOT-504: installs the direct Codex provider as the default for 'codex'
 // runtime connections (an explicit registration still wins).
@@ -60,6 +61,10 @@ type Db = Database.Database;
 // NOT-505: every Cursor runtime connection gets the direct Cursor CLI/SDK
 // provider unless a connection-specific provider is registered.
 registerSessionProvider({ provider: CURSOR_PROVIDER_KIND }, cursorSessionProviderFactory);
+
+// NOT-508: Muse connections get the direct MSP provider (lib/muse-session-provider)
+// by default; Agent Deck is not consulted.
+registerBuiltinSessionProvider('muse', connection => createMuseSessionProvider(connection.id));
 
 export type ProviderSessionErrorCode =
   | 'agent_not_found'
