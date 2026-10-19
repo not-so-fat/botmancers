@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/work","session_id":"{{SESSION_ID}}","claude_code_version":"2.1.302","tools":["Read"],"permissionMode":"dontAsk"}
+this line is terminal text, not an event
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION_ID}}","total_cost_usd":"0.50","usage":{"input_tokens":-4,"output_tokens":2.5}}
+{"type":"result","subtype":"success","is_error":false,"result":"second result is ignored","session_id":"{{SESSION_ID}}","total_cost_usd":9,"usage":{"input_tokens":9,"output_tokens":9}}

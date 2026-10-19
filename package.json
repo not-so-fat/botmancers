@@ -52,6 +52,8 @@
     "test:config-layout": "node test-config-layout.js",
     "test:engine-store": "node test-engine-store.js",
     "test:session-catalog": "node test-session-catalog.js",
+    "test:cursor-session-provider": "node test-cursor-session-provider.js",
+    "smoke:cursor-session": "node scripts/cursor-session-smoke.js",
     "test:agent-exchanges": "node test-agent-exchanges.js",
     "test:exchange-ui": "node test-exchange-ui.js",
     "proof:exchanges": "node scripts/ui-exchanges-proof.js",
@@ -69,7 +71,12 @@
     "test:grok-handoff": "node test-grok-handoff.js",
     "test:home-paths": "node test-home-paths.js",
     "test:service-grants": "node test-service-grants.js",
-    "test:session-provider": "node test-session-provider.js"
+    "test:session-provider": "node test-session-provider.js",
+    "test:codex-session-provider": "node test-codex-session-provider.js",
+    "test:claude-session-provider": "node test-claude-session-provider.js",
+    "smoke:claude-provider": "node scripts/claude-provider-smoke.js",
+    "test:session-usage": "node test-session-usage.js",
+    "seed:usage-fixture": "node scripts/seed-usage-fixture.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

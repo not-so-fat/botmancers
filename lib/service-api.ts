@@ -350,6 +350,9 @@ export interface ServiceSessionView {
     conversation: { id: string; kind: 'direct' | 'group' | 'agent_api'; label: string } | null;
     work_request: SessionSummary['origin']['work_request'];
   };
+  // NOT-509: additive. Normalized provider-reported usage only (sums,
+  // known/total coverage, quality); never a raw provider breakdown.
+  usage: SessionSummary['usage'];
 }
 
 function sessionView(summary: SessionSummary): ServiceSessionView {
@@ -369,6 +372,11 @@ function sessionView(summary: SessionSummary): ServiceSessionView {
       conversation: conversation ? { id: conversation.id, kind: conversation.kind, label: conversation.label } : null,
       work_request: summary.origin.work_request,
     },
+    usage: {
+      input_tokens: { ...summary.usage.input_tokens },
+      output_tokens: { ...summary.usage.output_tokens },
+      cost_usd: { ...summary.usage.cost_usd },
+    },
   };
 }
 
@@ -381,11 +389,17 @@ export function listServiceSessions(ctx: ServiceContext, agentId: string, query:
   return paginate(`sessions:${agentId}:${status}`, rows, row => ({ at: row.last_activity_at, tie: row.created_at, id: row.ref }), query.cursor, query.limit);
 }
 
-export function getServiceSession(ctx: ServiceContext, agentId: string, ref: string): ServiceSessionView & { attempts: SessionDetail['attempts'] } {
+export function getServiceSession(
+  ctx: ServiceContext, agentId: string, ref: string,
+): ServiceSessionView & { attempts: SessionDetail['attempts']; usage_samples: SessionDetail['usage_samples'] } {
   requireAgent(ctx, agentId, 'sessions:read');
   const detail = getAgentSession(db, agentId, ref);
   if (!detail) throw NOT_FOUND.session();
-  return serviceRedactor().deep({ ...sessionView(detail), attempts: detail.attempts });
+  return serviceRedactor().deep({
+    ...sessionView(detail),
+    attempts: detail.attempts,
+    usage_samples: detail.usage_samples.map(sample => ({ ...sample })),
+  });
 }
 
 // ---------------------------------------------------------------------

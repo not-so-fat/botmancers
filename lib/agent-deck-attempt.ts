@@ -34,6 +34,7 @@ import {
   type StartRunBody,
 } from './agent-deck-api';
 import { deckPromptForAttempt, parseDeckRuntime, type DeckRuntime } from './agent-deck-run';
+import { usageFromEvent, usageFromEvents, type NormalizedUsage } from './usage';
 import {
   attemptFailure,
   interruption,
@@ -97,17 +98,24 @@ interface ObservedRun {
   result: string | null;
   resultMismatch: string | null;
   sessionId: string | null;
+  // NOT-509: provider-reported usage from the run's structured events
+  // (a Claude/Cursor result's usage and total_cost_usd, Codex
+  // turn.completed usage), or null when the run reported none.
+  usage: NormalizedUsage | null;
 }
 
 // Reads events from the start until the API reports a terminal state; a
 // terminal state read alongside a page means that page holds the terminal
 // event (Agent Deck docs/AGENT_RUN_API.md, Events).
 async function observeRun(runId: string): Promise<ObservedRun> {
-  const observed: ObservedRun = { state: 'starting', result: null, resultMismatch: null, sessionId: null };
+  const observed: ObservedRun = { state: 'starting', result: null, resultMismatch: null, sessionId: null, usage: null };
+  // Only usage-bearing events are kept (never text), deduplicated by seq.
+  const usageEvents: unknown[] = [];
   let cursor: string | null = null;
   for (;;) {
     const page = await getAgentDeckRunEvents(runId, cursor);
     for (const event of page.events as AgentDeckRunEvent[]) {
+      if (usageFromEvent(event)) usageEvents.push(event);
       if ('sessionId' in event && typeof event.sessionId === 'string' && event.sessionId) observed.sessionId = event.sessionId;
       if (event.type === 'result') {
         if (typeof event.result === 'string' && event.result.length > 0) {
@@ -122,7 +130,10 @@ async function observeRun(runId: string): Promise<ObservedRun> {
     observed.state = page.state;
     const advanced = page.nextCursor !== (cursor ?? '0') && page.events.length > 0;
     cursor = page.nextCursor;
-    if (terminal(page.state) && !advanced) return observed;
+    if (terminal(page.state) && !advanced) {
+      observed.usage = usageFromEvents(usageEvents);
+      return observed;
+    }
     if (!advanced) await sleep(pollMs);
   }
 }
@@ -260,6 +271,10 @@ async function followRun(runId: string, input: AttemptFollowInput, onEvent: Atte
     if ('interrupted' in settled) {
       // Only an accepted cancel stops the run; a refused or unreachable
       // cancel is reported so the Attempt is recorded abandoned.
+      // NOT-509: usage buffered so far is deliberately not reported: the
+      // run may still be adding to it, and a sample only ever fills
+      // unknown metrics later, so a mid-run count would stick as an
+      // undercount. Unknown now, filled by the late result if it comes.
       let externalCancel: 'requested' | 'failed' = 'requested';
       try { await cancelAgentDeckRun(runId); } catch { externalCancel = 'failed'; }
       return failed(settled.interrupted, { ...ids, externalCancel });
@@ -277,11 +292,11 @@ async function followRun(runId: string, input: AttemptFollowInput, onEvent: Atte
     try {
       status = await getAgentDeckRun(runId);
     } catch (error) {
-      if (!prepare) return failed(failureOf(error, 'runtime_failed'), ids);
+      if (!prepare) return failed(failureOf(error, 'runtime_failed'), { ...ids, usage: observed.usage });
     }
     const sessionId = status?.sessionId ?? observed.sessionId;
     const finalization = prepare ? await finalizationEvidence(runId, status) : undefined;
-    const evidence = { ...ids, externalSessionId: sessionId, ...(finalization ? { finalization } : {}) };
+    const evidence = { ...ids, externalSessionId: sessionId, usage: observed.usage, ...(finalization ? { finalization } : {}) };
     if (observed.state === 'canceled') return failed(attemptFailure('cancelled', `Agent Deck run ${runId} was canceled.`), evidence);
     if (observed.state !== 'ended') {
       // Agent Deck-authored event prose is not durable Botmancers
