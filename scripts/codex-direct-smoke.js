@@ -11,7 +11,12 @@
 //    read-only question.
 // 3. Process B (a Botmancers restart on the same database): resumes the same
 //    reference read-only and observes the answer.
-// Each phase checks that no Agent Deck server is running or contacted.
+// Each phase checks that no Agent Deck server is running or contacted; the
+// smoke fails (exit 1) when an Agent Deck backend process is present on the
+// host, so run it on a machine without Agent Deck.
+// Codex runs with `--disable plugins` (through a wrapper set as
+// BOTMANCERS_CODEX_BIN) so user-installed Codex plugins, including an Agent
+// Deck plugin, cannot pull Agent Deck into the native thread.
 // Prints a redacted protocol transcript: Codex thread ids never appear.
 'use strict';
 
@@ -24,7 +29,7 @@ const ROOT = path.join(__dirname, '..');
 const PHASE = process.argv[2] || 'setup';
 const TMP = process.env.NOT504_SMOKE_DIR || path.join(fs.realpathSync(os.tmpdir()), `botmancers-codex-smoke-${process.pid}`);
 const WORKSPACE = path.join(TMP, 'workspace');
-const CODEX = process.env.BOTMANCERS_CODEX_BIN || 'codex';
+const CODEX_WRAPPER = path.join(TMP, 'codex-no-plugins');
 process.env.BOTMANCERS_DB_PATH = path.join(TMP, 'botmancers.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 for (const name of Object.keys(process.env)) if (/^AGENT_DECK/.test(name)) delete process.env[name];
@@ -52,12 +57,19 @@ function ownSockets() {
 async function setup() {
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(WORKSPACE, { recursive: true });
+  const realCodex = process.env.BOTMANCERS_CODEX_BIN
+    || spawnSync('sh', ['-c', 'command -v codex'], { encoding: 'utf8' }).stdout.trim();
+  if (!realCodex) throw new Error('codex is not on PATH');
+  fs.writeFileSync(CODEX_WRAPPER, `#!/bin/sh\nexec ${JSON.stringify(realCodex)} --disable plugins "$@"\n`, { mode: 0o755 });
+  process.env.BOTMANCERS_CODEX_BIN = CODEX_WRAPPER;
+  const CODEX = CODEX_WRAPPER;
   fs.writeFileSync(path.join(WORKSPACE, 'NOTES.md'), 'The project codename is BLUE HERON.\n');
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
   const version = execFileSync(CODEX, ['--version'], { encoding: 'utf8' }).trim();
   log(`HEAD ${head}`);
   log(`codex ${version}`);
   log(`agent-deck process running: ${agentDeckRunning()}`);
+  log('codex launched with --disable plugins');
   // A thread created outside Botmancers.
   const out = execFileSync(CODEX, ['exec', '--json', '--skip-git-repo-check', '-C', WORKSPACE, '-c', 'sandbox_mode="read-only"', '-'], {
     input: 'Read NOTES.md and reply with one short sentence naming the codename.', encoding: 'utf8', timeout: 300_000, stdio: ['pipe', 'pipe', 'ignore'],
@@ -74,6 +86,10 @@ async function setup() {
       process.stdout.write(redact(child.stderr));
       process.exit(1);
     }
+  }
+  if (agentDeckRunning()) {
+    log('smoke FAILED: an Agent Deck backend process is running on this host; re-run on a machine without Agent Deck');
+    process.exit(1);
   }
   log('smoke passed');
   if (!process.env.NOT504_KEEP) fs.rmSync(TMP, { recursive: true, force: true });
@@ -136,7 +152,15 @@ async function phase(name) {
   log(`thread id in views: ${views.includes(process.env.NOT504_THREAD)}`);
   log(`fetch calls (Agent Deck or other HTTP): ${fetchCalls}; Botmancers network sockets: ${ownSockets()}; agent-deck backend process on this machine: ${agentDeckRunning()}`);
   codex.shutdownDefaultCodexRuntime();
-  if (done.state !== 'completed' || fetchCalls !== 0 || ownSockets() !== 0 || views.includes(process.env.NOT504_THREAD)) process.exit(1);
+  const failures = [
+    done.state !== 'completed' && `turn ${done.state}`,
+    fetchCalls !== 0 && 'fetch called',
+    ownSockets() !== 0 && 'Botmancers opened a network socket',
+    views.includes(process.env.NOT504_THREAD) && 'thread id leaked into a view',
+  ].filter(Boolean);
+  // Agent Deck presence on the host is judged once, after both phases.
+  log(failures.length ? `phase FAILED: ${failures.join('; ')}` : 'phase checks passed');
+  if (failures.length) process.exit(1);
   process.exit(0);
 }
 
