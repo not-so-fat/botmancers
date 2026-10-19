@@ -34,3 +34,13 @@ native thread created outside Botmancers via codex exec --json
 [restart] phase checks passed
 smoke FAILED: an Agent Deck backend process is running on this host; re-run on a machine without Agent Deck
 ```
+
+## Operator re-run (closes the "no Agent Deck running" check)
+
+Round 3 could not close this check either: the Agent Deck backend on this host (`@agent-deck/backend`, Agent Deck 2.2.0) serves the agent session that runs the builder and other agent sessions that are running now. Stopping it would break that work. Docker (OrbStack) is not running here, so no isolated host was available.
+
+On a machine (or container) with a signed-in `codex` (0.157.x) and no Agent Deck:
+
+1. `git checkout <branch tip>` and run `pgrep -fl @agent-deck/backend`. It must print nothing.
+2. `node scripts/codex-direct-smoke.js > /tmp/not504-smoke.txt; echo "exit $?"`. It must print `exit 0`, and the last line must be `smoke passed`.
+3. Replace the transcript above with `/tmp/not504-smoke.txt`. It is already redacted, and its `HEAD` line records the tip that was used.
