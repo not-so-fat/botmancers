@@ -7,6 +7,15 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-19
+
+### Changed
+
+- Registering a Claude Code Agent now imports its in-scope past sessions
+  right away, so the Sessions drawer and message routing can use that history
+  immediately. The import is read-only and never starts Claude; if the local
+  session store is unavailable, registration still succeeds.
+
 ## [0.5.0] - 2026-10-19
 
 ### Added
