@@ -10,6 +10,8 @@ import {
   type ToolProfile,
 } from './execution-policy';
 import { requestControlDefaultsFromEnv, validateRetryPolicy, type RetryPolicy } from './request-policy';
+import type { NormalizedUsage } from './usage';
+import { recordAttemptUsageSample } from './usage-samples';
 
 // NOT-463: canonical core-engine persistence (docs/core-engine.md). One
 // Work Request store, immutable Attempts, opaque Session Bindings, and an
@@ -1749,10 +1751,48 @@ const MIGRATIONS: Migration[] = [
     },
   },
   {
+    // NOT-509: provider-reported usage samples (lib/usage-samples,
+    // docs/core-engine.md Session usage).
+    version: 18,
+    name: 'usage_samples',
+    up: db => {
+      db.exec(`
+        -- One row per Attempt or provider turn that reached a runtime,
+        -- keyed by sample_key (attempt:<id> or turn:<id>), so a replayed
+        -- terminal result, a reconciled Attempt after a restart, or a late
+        -- result never adds a second row. Each metric is nullable: NULL is
+        -- not reported, 0 is an explicit provider zero. breakdown holds
+        -- whitelisted numeric counters only. Pre-existing Attempts get no
+        -- row: their usage was never reported.
+        CREATE TABLE usage_samples (
+          id TEXT PRIMARY KEY,
+          sample_key TEXT NOT NULL UNIQUE,
+          agent_id TEXT NOT NULL,
+          attempt_id TEXT,
+          session_ref TEXT,
+          turn_id TEXT,
+          provider TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('codex.turn_completed', 'result', 'normalized', 'none')),
+          input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+          output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+          cost_usd REAL CHECK (cost_usd IS NULL OR cost_usd >= 0),
+          breakdown TEXT,
+          observed_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          CHECK (attempt_id IS NOT NULL OR turn_id IS NOT NULL)
+        );
+        CREATE INDEX idx_usage_samples_attempt ON usage_samples(attempt_id);
+        CREATE INDEX idx_usage_samples_session ON usage_samples(session_ref);
+        CREATE INDEX idx_usage_samples_agent ON usage_samples(agent_id);
+      `);
+    },
+  },
+  {
     // NOT-506: what the runtime reported for a provider turn (Claude Code's
     // result usage and total_cost_usd). Nullable: NULL is "not reported";
     // an explicit zero is stored as zero. Never estimated from prices.
-    version: 18,
+    version: 19,
     name: 'provider_turn_usage',
     up: db => {
       db.exec(`
@@ -2793,6 +2833,17 @@ export function createEngineStore(db: Db) {
       }).immediate();
     },
 
+    // NOT-509: the one usage sample of an Attempt that reached its runtime
+    // (lib/usage-samples). Idempotent per Attempt: a replay, a reconcile,
+    // or a late result fills only metrics still unknown.
+    recordAttemptUsage(attemptId: string, input: { usage: NormalizedUsage | null; observedAt: number; now?: number }): void {
+      const attempt = requireAttempt(attemptId);
+      const request = requireRequest(attempt.request_id);
+      recordAttemptUsageSample(db, attemptId, {
+        agentId: request.target_agent_id, provider: attempt.adapter, usage: input.usage, observedAt: input.observedAt, now: input.now,
+      });
+    },
+
     getAttempt(id: string): WorkAttempt | undefined {
       return getAttemptRow.get(id) as WorkAttempt | undefined;
     },
@@ -2959,6 +3010,10 @@ function deleteEngineRecords(db: Db, seed: { requests: string; bindings: string;
   // a native session the binding was linked to stays, unlinked.
   deleteProviderSessions(db, `origin = 'binding' AND binding_id IN ${inSet}`, list(bindings));
   db.prepare(`UPDATE provider_sessions SET binding_id = NULL WHERE binding_id IN ${inSet}`).run(list(bindings));
+  // NOT-509: usage samples go with the Attempts they measured.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_samples'").get()) {
+    db.prepare(`DELETE FROM usage_samples WHERE attempt_id IN ${inSet}`).run(list(attempts));
+  }
   // Attempts and bindings reference each other (resume / source), but
   // never in a cycle: each reference was to a row that already existed.
   // Peel unreferenced rows until both sets are empty.
@@ -3013,6 +3068,9 @@ function deleteSessionExchanges(db: Db, where: string, ...args: unknown[]): void
 function deleteProviderSessions(db: Db, where: string, ...args: unknown[]): void {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_sessions'").get()) return;
   const refs = JSON.stringify((db.prepare(`SELECT id FROM provider_sessions WHERE ${where}`).all(...args) as { id: string }[]).map(row => row.id));
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_samples'").get()) {
+    db.prepare('DELETE FROM usage_samples WHERE session_ref IN (SELECT value FROM json_each(?))').run(refs);
+  }
   db.prepare('DELETE FROM provider_session_events WHERE session_ref IN (SELECT value FROM json_each(?))').run(refs);
   db.prepare('DELETE FROM provider_session_turns WHERE session_ref IN (SELECT value FROM json_each(?))').run(refs);
   db.prepare('DELETE FROM provider_sessions WHERE id IN (SELECT value FROM json_each(?))').run(refs);
@@ -3042,6 +3100,9 @@ export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
   db.prepare('DELETE FROM wake_grants WHERE caller_agent_id = ? OR target_agent_id = ?').run(agentId, agentId);
   // NOT-503: every registry row of the Agent, native or bound.
   deleteProviderSessions(db, 'agent_id = ?', agentId);
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_samples'").get()) {
+    db.prepare('DELETE FROM usage_samples WHERE agent_id = ?').run(agentId);
+  }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_session_events'").get()) {
     db.prepare('DELETE FROM provider_session_events WHERE agent_id = ?').run(agentId);
   }

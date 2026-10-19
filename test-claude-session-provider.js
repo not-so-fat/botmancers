@@ -323,6 +323,10 @@ async function main() {
   assert(JSON.stringify(usage.partial) === JSON.stringify({ input_tokens: null, output_tokens: 9, total_cost_usd: null }), 'partial stays partial');
   assert(JSON.stringify(usage.absent) === JSON.stringify({ input_tokens: null, output_tokens: null, total_cost_usd: null })
     && JSON.stringify(usage.malformed) === JSON.stringify({ input_tokens: null, output_tokens: null, total_cost_usd: null }), 'absent and malformed are null, never estimated');
+  const sample = db.prepare(`SELECT s.input_tokens, s.output_tokens, s.cost_usd FROM usage_samples s
+    JOIN provider_session_turns t ON t.id = s.turn_id WHERE t.idempotency_key = 'usage-reported'`).get();
+  assert(sample && sample.input_tokens === 1520 && sample.output_tokens === 311 && sample.cost_usd === 0.0421,
+    'the same reported usage is the turn\'s one NOT-509 usage sample (total_cost_usd as cost_usd)');
 
   console.log('\nBefore the restart: one unobserved turn, one held turn');
   const pending = await send('a1', 'Summarize before the restart', 'pre-restart');

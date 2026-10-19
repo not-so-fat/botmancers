@@ -12,6 +12,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'test-*.js'
+      - 'test-support/**'
       - '.github/workflows/*botmancers.yml'
   workflow_dispatch:
 
@@ -55,6 +56,16 @@ jobs:
           npm run test:agent-deck-run
           npm run test:agent-deck-finalization
           npm run test:agent-deck-settings
+      - name: Focused Cursor provider and Agent Deck compatibility suites (NOT-505)
+        working-directory: .
+        run: |
+          npm run test:cursor-session-provider
+          npm run test:agent-deck-run
+          npm run test:agent-deck-finalization
+      - name: Focused session usage suites (NOT-509)
+        working-directory: .
+        run: |
+          npm run test:session-usage
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

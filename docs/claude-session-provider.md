@@ -88,7 +88,7 @@ ends the turn as `failed` with a stable `failure_code`.
 
 The first `result` event's `usage.input_tokens`, `usage.output_tokens`
 (camelCase accepted, as Agent Dealer's `coordinator/usage.ts` reads the same
-stream) and `total_cost_usd` are stored per turn (engine migration 18:
+stream) and `total_cost_usd` are stored per turn (engine migration 19:
 `provider_session_turns.input_tokens`, `output_tokens`, `total_cost_usd`) and
 shown on the turn view as `usage`. Each value is independently nullable: an
 absent or malformed value (string, negative, fractional tokens) is `null`, an

@@ -125,7 +125,25 @@ function recordEvent(store: EngineStore, attempt: WorkAttempt, event: AttemptEve
   });
 }
 
+// NOT-509: whether the result came from a run the runtime started: only
+// then does provider usage apply to it. A launch that failed before any run
+// existed has no sample (it is not unknown usage, it is no usage).
+export function reachedRuntime(result: AttemptResult): boolean {
+  if (result.usage) return true;
+  if (result.status === 'completed' || result.externalRunId) return true;
+  const category = result.failure?.category;
+  return category !== undefined && !['unavailable', 'unsupported_authority', 'launch_failed'].includes(category);
+}
+
+// The Attempt's one usage sample (lib/usage-samples), written with its
+// terminal record. Idempotent per Attempt.
+export function recordResultUsage(store: EngineStore, attemptId: string, result: AttemptResult): void {
+  if (!reachedRuntime(result)) return;
+  store.recordAttemptUsage(attemptId, { usage: result.usage ?? null, observedAt: result.finishedAt });
+}
+
 export function recordAttemptResult(store: EngineStore, attemptId: string, result: AttemptResult): WorkAttempt {
+  recordResultUsage(store, attemptId, result);
   return store.finishAttempt(attemptId, {
     outcome: outcomeForResult(result),
     output: result.output,
@@ -143,6 +161,9 @@ export function recordAttemptResult(store: EngineStore, attemptId: string, resul
 // as evidence on the request's event log and changes nothing else: the
 // Attempt stays as it was finished and the request is never promoted.
 export function recordLateResult(store: EngineStore, attempt: WorkAttempt, result: AttemptResult, now: number = Date.now()): void {
+  // NOT-509: the run did spend what it reports; the per-Attempt key keeps
+  // a late result from counting twice.
+  recordResultUsage(store, attempt.id, result);
   const request = store.getWorkRequest(attempt.request_id);
   store.appendEvent(attempt.request_id, {
     type: 'late_result_recorded',
@@ -271,6 +292,7 @@ export function abandonedLocally(
 // control): the same outcome, category 'abandoned', and an
 // attempt_abandoned record saying the run was not stopped.
 export function recordAbandonedResult(store: EngineStore, abandoned: LocallyAbandonedAttempt, result: AttemptResult): WorkAttempt {
+  recordResultUsage(store, abandoned.attemptId, result);
   const notStopped = abandoned.externalCancel === 'failed'
     ? 'The runtime did not accept the cancel request'
     : 'The runtime cannot stop the run';
