@@ -68,6 +68,16 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-usage
+      - name: Focused session pin, service-grant, MCP, exchange, and skill suites (NOT-507)
+        working-directory: .
+        run: |
+          npm run test:session-pins
+          npm run test:service-grants
+          npm run test:mcp-bridge
+          npm run test:agent-exchanges
+          npm run test:exchange-ui
+          npm run test:session-catalog
+          npm --prefix packages/mcp-server run check:skill
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app
