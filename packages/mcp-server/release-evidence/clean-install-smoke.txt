@@ -1,21 +1,21 @@
-source: tarball botmancers-0.5.0.tgz (integrity sha512-x9RhEE165u7j6f19lTBxiW/kQIKF3m0IUpMvsOLLjX4X1KQoPK8KktMeiPXg0SC13SulLm2o7r8iFdNzksOrMw==)
-commit: 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae
+source: tarball botmancers-0.5.1.tgz (integrity sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==)
+commit: ca905df19f64e4dcb9dce06e02cc3874168e8641
 node: v26.10.0, npm: 11.19.1
 ok  temporary project is empty apart from package.json
-installed: botmancers@0.5.0
+installed: botmancers@0.5.1
 ok  installed package is the public botmancers package
 ok  installed files are only CHANGELOG.md, LICENSE, README.md, app, dist, package.json, schemas, skills
 ok  no transitive dependencies installed
 ok  `npx botmancers --help` exits 0 and prints usage
-ok  installed `botmancers --version` prints 0.5.0
+ok  installed `botmancers --version` prints 0.5.1
 ok  installed binary without configuration exits 2 with guidance
-ok  `npx botmancers` serves: botmancers 0.5.0: MCP bridge listening on http://127.0.0.1:65201/mcp (health: /healthz) -> http://127.0.0.1:65198
-ok  GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v2","contracts":["botmancers.mcp.v1","botmancers.mcp.v2"],"version":"0.5.0"}
-ok  MCP initialize -> botmancers 0.5.0, protocol 2025-06-18
+ok  `npx botmancers` serves: botmancers 0.5.1: MCP bridge listening on http://127.0.0.1:56315/mcp (health: /healthz) -> http://127.0.0.1:56312
+ok  GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v2","contracts":["botmancers.mcp.v1","botmancers.mcp.v2"],"version":"0.5.1"}
+ok  MCP initialize -> botmancers 0.5.1, protocol 2025-06-18
 ok  tools/list -> botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health, botmancers_capabilities, botmancers_list_agents, botmancers_list_sessions, botmancers_list_conversations, botmancers_send_to_session, botmancers_create_exchange, botmancers_get_exchange, botmancers_list_exchanges, botmancers_message_agent, botmancers_pin_session, botmancers_send_to_pin, botmancers_get_pin, botmancers_detach_pin
 ok  tools/call botmancers_health -> {"contract":"botmancers.mcp.v1","status":"ok","principal":{"kind":"service","id":"fake-service"},"coordinators":[{"name":"Tank","available":true}]}
 ok  fake Botmancers received the service token
 ok  SIGTERM stops the bridge (exit SIGTERM)
 ok  the bridge port is closed after SIGTERM
 ok  bridge output contains no token
-PASS clean-install smoke for botmancers@0.5.0 at 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae
+PASS clean-install smoke for botmancers@0.5.1 at ca905df19f64e4dcb9dce06e02cc3874168e8641
