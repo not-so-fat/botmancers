@@ -24,6 +24,8 @@ import {
 } from './agent-registration';
 import {
   normalizeCapabilities,
+  normalizeUsage,
+  registerSessionProvider,
   sessionProviderFor,
   type ProviderCallContext,
   type ProviderError,
@@ -39,8 +41,13 @@ import {
   type TranscriptEntry,
 } from './session-provider';
 import type { AttemptCorrelation } from './attempt-adapter';
+import { CURSOR_PROVIDER_KIND, cursorSessionProviderFactory } from './cursor-session-provider';
 
 type Db = Database.Database;
+
+// NOT-505: every Cursor runtime connection gets the direct Cursor CLI/SDK
+// provider unless a connection-specific provider is registered.
+registerSessionProvider({ provider: CURSOR_PROVIDER_KIND }, cursorSessionProviderFactory);
 
 export type ProviderSessionErrorCode =
   | 'agent_not_found'
@@ -327,6 +334,8 @@ function markMissing(db: Db, row: ProviderSessionRow, now: number): void {
 
 export interface ProviderCapabilitiesView extends SessionProviderCapabilities {
   provider_kind: string;
+  // Whether a session can be named explicitly (importProviderSession).
+  explicit_import: boolean;
 }
 
 // Capability discovery for the Agent's runtime connection, or null when the
@@ -334,7 +343,7 @@ export interface ProviderCapabilitiesView extends SessionProviderCapabilities {
 export function agentProviderCapabilities(db: Db, agentId: string): ProviderCapabilitiesView | null {
   try {
     const ctx = agentContext(db, agentId);
-    return { provider_kind: ctx.provider.kind, ...ctx.capabilities };
+    return { provider_kind: ctx.provider.kind, ...ctx.capabilities, explicit_import: typeof ctx.provider.importSession === 'function' };
   } catch (error) {
     if (error instanceof ProviderSessionError && error.code === 'provider_unavailable') return null;
     throw error;
@@ -413,6 +422,54 @@ export async function refreshProviderSession(db: Db, agentId: string, ref: strin
     }
   }).immediate();
   return requireSession(db, agentId, ref);
+}
+
+export interface ImportInput {
+  // The provider's own session id, as the operator states it. Stored
+  // privately like every discovered id; never echoed back.
+  providerSessionId: string;
+  // Explicit and absolute.
+  workspace: string;
+  correlation?: AttemptCorrelation | null;
+  signal?: AbortSignal | null;
+  now?: number;
+}
+
+// NOT-505: registers one explicitly named provider session, for a provider
+// that cannot (or, in this version, does not) enumerate. The workspace
+// must be inside a workspaces scope or the scope must be the explicit
+// all-provider-sessions choice; a selected-sessions scope names only
+// existing references. Idempotent: the same provider session keeps its one
+// reference. The provider confirms what it can and refuses what it knows
+// is absent.
+export async function importProviderSession(db: Db, agentId: string, input: ImportInput): Promise<{ ref: string; created: boolean }> {
+  const ctx = agentContext(db, agentId);
+  if (typeof ctx.provider.importSession !== 'function') {
+    throw new ProviderSessionError('unsupported', 'The session provider does not support explicit import.');
+  }
+  const providerSessionId = typeof input.providerSessionId === 'string' ? input.providerSessionId.trim() : '';
+  if (!providerSessionId || providerSessionId.length > KEY_LIMIT) throw new ProviderSessionError('invalid_input', 'providerSessionId is required.');
+  const workspace = absoluteWorkspace(input.workspace);
+  if (!workspace) throw new ProviderSessionError('invalid_input', 'workspace must be an absolute path.');
+  const scope = requireScope(ctx);
+  const admits = (where: string | null) => scope.kind === 'all_provider_sessions'
+    || (scope.kind === 'workspaces' && where !== null && scope.workspaces.some(root => workspaceContains(root, where)));
+  if (!admits(workspace)) throw new ProviderSessionError('out_of_scope', 'The session is outside the Agent\'s session scope.');
+  const result = await ctx.provider.importSession({ ...callContext(input), provider_session_id: providerSessionId, workspace });
+  if (!result.ok) failWith(result.error);
+  const reported = { ...result.value, provider_session_id: providerSessionId };
+  const now = input.now ?? Date.now();
+  return db.transaction(() => {
+    // The provider's answer is re-checked: a session it places elsewhere is
+    // refused and not stored.
+    if (!admits(absoluteWorkspace(reported.workspace))) {
+      appendEvent(db, { agentId, type: 'import_rejected_out_of_scope', detail: { count: 1 }, now });
+      throw new ProviderSessionError('out_of_scope', 'The session is outside the Agent\'s session scope.');
+    }
+    const { ref, created } = upsertRecord(db, ctx, reported, 'discovered', now);
+    appendEvent(db, { agentId, sessionRef: ref, type: created ? 'session_imported' : 'session_synced', detail: { explicit: true }, now });
+    return { ref, created };
+  }).immediate();
 }
 
 // ---- transcript ----
@@ -678,7 +735,10 @@ function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: numb
         SELECT 1 FROM provider_session_turns WHERE session_ref = ? AND state = 'running') THEN 1 ELSE 0 END,
         provider_updated_at = ?, updated_at = ? WHERE id = ?
     `).run(turn.session_ref, now, now, turn.session_ref);
-    appendEvent(db, { agentId: turn.agent_id, sessionRef: turn.session_ref, turnId: turn.id, type: `turn_${state}`, now });
+    // NOT-505: the runtime's own reported usage, one sample per turn; each
+    // field null when unreported or malformed, never estimated.
+    const usage = normalizeUsage(result.usage);
+    appendEvent(db, { agentId: turn.agent_id, sessionRef: turn.session_ref, turnId: turn.id, type: `turn_${state}`, detail: usage ? { usage } : {}, now });
   }).immediate();
 }
 
