@@ -223,7 +223,7 @@ async function main() {
 
   console.log('\nBuilt-in selection: a claude runtime connection uses the direct provider');
   assert(contract.sessionProviderFor({ id: 'rc-unregistered', provider: 'claude' }).kind === 'claude-code', 'a claude connection without explicit registration gets the built-in Claude Code provider');
-  assert(contract.sessionProviderFor({ id: 'rc-unregistered', provider: 'codex' }) === null, 'other providers are unchanged');
+  assert(contract.sessionProviderFor({ id: 'rc-unregistered', provider: 'unknown-runtime' }) === null, 'providers without an adapter are unchanged');
 
   console.log('\nRegistry: scoped discovery, idempotent, multiple workspaces');
   const { runtimeConnections } = dbModule;

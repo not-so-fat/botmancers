@@ -351,7 +351,7 @@ async function providerTurnFixtures() {
   assert(detail.usage_samples.length === 3 && detail.usage_samples.every(sample => sample.kind === 'turn' && sample.attempt_number === null && sample.turn_kind === 'send'),
     'native detail lists provider turns');
   assert(!/SECRET/.test(JSON.stringify(detail)), 'no provider id in the usage detail');
-  contract.clearSessionProviders();
+  contract.clearSessionProviders({ builtins: true });
   fs.rmSync(statePath, { force: true });
 }
 

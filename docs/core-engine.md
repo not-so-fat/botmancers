@@ -172,7 +172,10 @@ connections get the direct Claude Code provider
 ([claude-session-provider.md](claude-session-provider.md), NOT-506), and Cursor
 connections get the direct Cursor CLI/SDK provider
 ([providers/cursor.md](providers/cursor.md)), which also supports explicit
-scoped import (`importProviderSession`) for a version that cannot list. `AttemptAdapter` remains the per-turn seam of the
+scoped import (`importProviderSession`) for a version that cannot list. The
+direct Codex provider is installed by default for `codex` connections
+([integrations/codex-direct.md](integrations/codex-direct.md)); explicit
+registrations win. `AttemptAdapter` remains the per-turn seam of the
 Work Request engine.
 
 - **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,

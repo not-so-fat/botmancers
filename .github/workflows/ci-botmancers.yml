@@ -56,12 +56,14 @@ jobs:
           npm run test:agent-deck-run
           npm run test:agent-deck-finalization
           npm run test:agent-deck-settings
-      - name: Focused Cursor provider and Agent Deck compatibility suites (NOT-505)
+      - name: Focused Cursor and direct Codex providers and Agent Deck compatibility suites (NOT-505, NOT-504)
         working-directory: .
         run: |
           npm run test:cursor-session-provider
+          npm run test:codex-session-provider
           npm run test:agent-deck-run
           npm run test:agent-deck-finalization
+          npm run test:agent-deck-settings
       - name: Focused session usage suites (NOT-509)
         working-directory: .
         run: |

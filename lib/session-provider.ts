@@ -137,11 +137,16 @@ export interface ObserveTurnInput extends ProviderCallContext {
 
 // What the runtime itself reported for one turn. Every field is nullable:
 // an absent or malformed value is unknown, never zero or an estimate.
+// cached_input_tokens (NOT-504, Codex) is a subset of input_tokens, present
+// only for runtimes that report it.
 export interface ProviderUsage {
   input_tokens: number | null;
   output_tokens: number | null;
+  cached_input_tokens?: number | null;
   cost_usd?: number | null;
 }
+
+export type ProviderTurnUsage = ProviderUsage;
 
 export interface ProviderTurnResult {
   status: 'completed' | 'failed' | 'cancelled';
@@ -188,6 +193,8 @@ export type ProviderErrorCode =
   | 'unsupported_authority'
   | 'not_found'
   | 'unavailable'
+  // The runtime is installed and reachable but not signed in.
+  | 'auth_required'
   | 'invalid_input'
   | 'busy'
   | 'not_resumable'
@@ -213,6 +220,11 @@ export interface SessionProvider {
   // registry row, never used to infer authority.
   readonly kind: string;
   capabilities(): SessionProviderCapabilities;
+  // Optional readiness check, awaited before every call. A provider that
+  // learns its capabilities at runtime (an installed-version probe) does it
+  // here; capabilities() reflects the result afterwards. An error
+  // (unavailable, unsupported, auth_required) refuses the call.
+  ready?(input: Readonly<ProviderCallContext>): Promise<ProviderResult<void>>;
   listSessions(input: Readonly<ListSessionsInput>): Promise<ProviderResult<ProviderPage<ProviderSessionRecord>>>;
   // ok with null value: the provider no longer has the session (missing).
   getSession(input: Readonly<ProviderCallContext & { provider_session_id: string }>): Promise<ProviderResult<ProviderSessionRecord | null>>;
@@ -234,7 +246,11 @@ export function normalizeUsage(raw: unknown): ProviderUsage | null {
   const value = raw as Record<string, unknown>;
   const count = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null);
   const cost = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
-  return { input_tokens: count(value.input_tokens), output_tokens: count(value.output_tokens), cost_usd: cost(value.cost_usd) };
+  return {
+    input_tokens: count(value.input_tokens), output_tokens: count(value.output_tokens),
+    ...('cached_input_tokens' in value ? { cached_input_tokens: count(value.cached_input_tokens) } : {}),
+    cost_usd: cost(value.cost_usd),
+  };
 }
 
 export function providerError(code: ProviderErrorCode, message: string): { ok: false; error: ProviderError } {
@@ -272,7 +288,8 @@ export const MAX_PROVIDER_PAGE = 100;
 // (codex, claude, ...) as the fallback for every connection of that kind.
 // Real runtime adapters register their provider kind from
 // ./provider-sessions (NOT-506 Claude Code: ./claude-session-provider, as a
-// built-in; NOT-505 Cursor: ./cursor-session-provider). A connection
+// built-in; NOT-505 Cursor: ./cursor-session-provider; NOT-504 Codex:
+// ./codex-session-provider, as a built-in). A connection
 // without a provider has no native-session support;
 // Botmancers-launched sessions stay in the catalog either way.
 
