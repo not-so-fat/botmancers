@@ -239,6 +239,34 @@ export function pinRequestBody(action: 'ask' | 'resume', content: string, conver
   };
 }
 
+// NOT-507: the session dialog's three modes. 'continue' is the NOT-497
+// handoff exchange, shown as Hand off to…; 'resume' is Resume work here.
+export type SessionDialogMode = ExchangeMode | 'resume';
+
+export function sessionDialogMode(action: SessionAction): SessionDialogMode {
+  return action === 'handoff' ? 'continue' : action;
+}
+
+export function sessionDialogTitle(mode: SessionDialogMode): string {
+  return SESSION_ACTION_LABELS[mode === 'continue' ? 'handoff' : mode];
+}
+
+// Ask goes through a pin when only a SessionProvider reaches the session;
+// Resume always does. An engine-route Ask stays a NOT-498 Ask exchange.
+export function sessionDialogUsesPin(mode: SessionDialogMode, route: SessionRow['route']): boolean {
+  return mode === 'resume' || (mode === 'ask' && route === 'provider');
+}
+
+// Resume work here needs an instruction and the owner's explicit approval
+// of edits in this session.
+export function validateResumeDraft(instruction: string, approveWrite: boolean): DraftErrors & { approval?: string } {
+  const errors: DraftErrors & { approval?: string } = {};
+  if (!instruction.trim()) errors.instruction = 'Enter what to work on.';
+  else if (instruction.length > INSTRUCTION_LIMIT) errors.instruction = `Keep it under ${INSTRUCTION_LIMIT} characters.`;
+  if (!approveWrite) errors.approval = 'Approve edits in this session to resume work here.';
+  return errors;
+}
+
 export interface ExchangeDraft {
   mode: ExchangeMode;
   instruction: string;

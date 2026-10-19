@@ -34,6 +34,8 @@ export interface SessionRow {
   home?: boolean;
   route?: SessionRoute;
   actions?: SessionActions;
+  // NOT-500: the runtime's view of the session, when the catalog reports it.
+  state?: { availability: 'available' | 'missing'; lifecycle: 'open' | 'archived'; resumable: boolean | null; busy: boolean };
 }
 
 export type UsageQuality = 'complete' | 'partial' | 'unavailable';
@@ -94,6 +96,20 @@ export function workRequestLabel(row: SessionRow): string | null {
 
 export function statusLabel(row: SessionRow): string {
   return row.status === 'active' ? 'Active' : 'Ended';
+}
+
+// NOT-507: the tags that make a past session recognizable at a glance:
+// the Agent's home session, and the runtime's lifecycle and busy state.
+export function sessionStateTags(row: Pick<SessionRow, 'home' | 'state' | 'resumable'>): string[] {
+  const tags: string[] = [];
+  if (row.home) tags.push('Home');
+  if (row.state?.availability === 'missing') tags.push('Missing');
+  else {
+    if (row.state?.lifecycle === 'archived') tags.push('Archived');
+    if (row.state?.busy) tags.push('Busy');
+  }
+  if (row.resumable || row.state?.resumable === true) tags.push('Resumable');
+  return tags;
 }
 
 export function attemptLabel(attempt: SessionAttemptRow): string {

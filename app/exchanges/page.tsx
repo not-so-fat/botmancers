@@ -165,7 +165,7 @@ export default function ExchangesPage() {
           ) : null}
           {view === 'empty' ? (
             <p className="ledger-state" data-ledger-state="empty">
-              No exchanges yet. Open an Agent’s Sessions and choose Ask this session or Continue with… to start one.
+              No exchanges yet. Open an Agent’s Sessions and choose Ask from this context or Hand off to… to start one.
             </p>
           ) : null}
           {view === 'filtered-out' ? (

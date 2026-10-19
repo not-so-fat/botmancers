@@ -7,6 +7,7 @@ import {
   emptySessionsCopy,
   formatSessionDate,
   runtimeLabel,
+  sessionStateTags,
   sessionUsageLine,
   statusLabel,
   usageMetricView,
@@ -21,15 +22,19 @@ import {
 } from '@/lib/session-view';
 import Link from 'next/link';
 import ExchangeDialog, { type ExchangeAgentOption } from '@/app/components/ExchangeDialog';
-import { detailsHref, sessionActionAvailability, type ExchangeMode } from '@/lib/exchange-view';
+import { detailsHref, sessionDialogMode, sessionRowActions, type SessionDialogMode } from '@/lib/exchange-view';
 
 // NOT-496: the selected Agent's Sessions drawer. Rows come from the
 // session catalog (GET /api/bots/:id/sessions) and are recognized by title,
 // state, activity, and origin; nothing here asks for or shows an external
 // provider session id except the labeled local debug disclosure.
-// NOT-498: each resumable row offers Ask this session and Continue with…;
-// the dialog opens above the drawer (which goes inert) and focus returns to
-// the action that opened it.
+// NOT-498: each resumable row offers its session actions; the dialog opens
+// above the drawer (which goes inert) and focus returns to the action that
+// opened it.
+// NOT-507: the actions are Ask from this context, Resume work here, and
+// Hand off to…, each available from the server's capability- and
+// state-based answer (lib/session-actions); an unavailable action says why
+// and what to do instead.
 // NOT-509: each row shows the session's provider-reported usage totals and
 // Details lists it per run. Unknown values read "Not reported" (never $0.00
 // or an estimate) and partial coverage is labeled Partial.
@@ -50,7 +55,7 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
   const [openRef, setOpenRef] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const [action, setAction] = useState<{ mode: ExchangeMode; row: SessionRow; returnTo: HTMLElement | null } | null>(null);
+  const [action, setAction] = useState<{ mode: SessionDialogMode; row: SessionRow; returnTo: HTMLElement | null } | null>(null);
   const [started, setStarted] = useState<{ id: string | null; text: string } | null>(null);
 
   const closeAction = () => {
@@ -181,7 +186,9 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
           onStarted={id => {
             const what = action.mode === 'ask'
               ? `Asked ${action.row.agent.name}’s session. The answer arrives in ${origin.label}.`
-              : `Handoff started from ${action.row.agent.name}’s session. Progress shows in ${origin.label}.`;
+              : action.mode === 'resume'
+                ? `Resumed work in ${action.row.agent.name}’s session. Progress shows in ${origin.label}.`
+                : `Handoff started from ${action.row.agent.name}’s session. Progress shows in ${origin.label}.`;
             setStarted({ id, text: what });
             closeAction();
             onExchangeStarted(id);
@@ -198,10 +205,12 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
   open: boolean;
   onToggle: () => void;
   onOpenThread: (agentId: string) => void;
-  onAction: (mode: ExchangeMode, returnTo: HTMLElement) => void;
+  onAction: (mode: SessionDialogMode, returnTo: HTMLElement) => void;
 }) {
   const detailId = useId();
-  const availability = sessionActionAvailability(row);
+  const actions = sessionRowActions(row);
+  const available = actions.filter(item => item.availability.available);
+  const reasons = actions.flatMap(item => item.availability.available ? [] : [item.availability.reason]);
   const conversation = row.origin.conversation;
   const request = workRequestLabel(row);
   const usage = sessionUsageLine(row.usage);
@@ -211,7 +220,7 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
         <div className="session-head">
           <span className="session-title">{row.title}</span>
           <span className={`manage-tag session-status is-${row.status}`}>{statusLabel(row)}</span>
-          {row.resumable ? <span className="manage-tag">Resumable</span> : null}
+          {sessionStateTags(row).map(tag => <span key={tag} className={`manage-tag session-state-tag is-${tag.toLowerCase()}`}>{tag}</span>)}
         </div>
         <dl className="manage-meta">
           <div><dt>Last activity</dt><dd>{formatSessionDate(row.last_activity_at)}</dd></div>
@@ -240,18 +249,20 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
           {row.context.workspace ? <div><dt>Workspace</dt><dd>{row.context.workspace}</dd></div> : null}
           {row.context.deck ? <div><dt>Deck</dt><dd>{row.context.deck}</dd></div> : null}
         </dl>
-        {availability.available ? (
+        {available.length > 0 ? (
           <div className="session-actions" role="group" aria-label={`Actions for ${row.title}`}>
-            <button type="button" className="session-action" aria-haspopup="dialog" onClick={e => onAction('ask', e.currentTarget)}>
-              Ask this session
-            </button>
-            <button type="button" className="session-action" aria-haspopup="dialog" onClick={e => onAction('continue', e.currentTarget)}>
-              Continue with…
-            </button>
+            {available.map(item => (
+              <button key={item.action} type="button" className="session-action" data-session-action={item.action} aria-haspopup="dialog" onClick={e => onAction(sessionDialogMode(item.action), e.currentTarget)}>
+                {item.label}
+              </button>
+            ))}
           </div>
-        ) : (
-          <p className="session-unavailable">{availability.reason}</p>
-        )}
+        ) : null}
+        {reasons.length > 0 ? (
+          <ul className="session-unavailable" aria-label={`Unavailable actions for ${row.title}`}>
+            {reasons.map(reason => <li key={reason}>{reason}</li>)}
+          </ul>
+        ) : null}
         <button type="button" className="pin-word session-toggle" aria-expanded={open} aria-controls={detailId} onClick={onToggle}>
           {open ? 'Hide details' : 'Details'}
         </button>

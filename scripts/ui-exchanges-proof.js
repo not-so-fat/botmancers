@@ -14,7 +14,7 @@
 //
 // Desktop (1280x800):
 // - Dev's Sessions: ended and non-resumable rows explain why actions are
-//   unavailable; the resumable row's Ask this session opens with Enter,
+//   unavailable; the resumable row's Ask from this context opens with Enter,
 //   Escape closes it and focus returns to the action;
 // - Ask: empty Send is refused with a field error and no request; a double
 //   Send makes one request while Send is disabled; that request is answered
@@ -25,7 +25,7 @@
 //   and the origin thread;
 // - the Ask card shows "Asking the session" in the origin (Dev) and source
 //   (Tank) threads, then "Answered" after the run is released;
-// - Continue with… → Scout: the card moves Extracting handoff → Delivering
+// - Hand off to… → Scout: the card moves Extracting handoff → Delivering
 //   handoff → Handed off, seen in the origin and destination (Scout)
 //   threads; the payload names the session, destination Agent, objective;
 // - the rail's Exchanges entry opens the ledger: both records, newest
@@ -386,9 +386,9 @@ async function run() {
       reason: li.querySelector('.session-unavailable')?.textContent.trim() ?? null,
     }))`);
     const impl = rowInfo.find(r => r.title === 'Add the session catalog read model' && !r.ended);
-    check(!!impl && impl.actions.join('|') === 'Ask this session|Continue with…', 'the resumable session row offers Ask this session and Continue with…');
+    check(!!impl && impl.actions.join('|') === 'Ask from this context|Hand off to…' && /Resume work here is unavailable/.test(impl.reason || ''), 'the resumable Botmancers session offers Ask from this context and Hand off to…, and says why Resume work here is unavailable');
     check(rowInfo.filter(r => r.ended).every(r => r.actions.length === 0 && /has ended/.test(r.reason)), 'ended rows have no actions and explain why');
-    check(rowInfo.some(r => !r.ended && r.actions.length === 0 && /can’t resume/.test(r.reason || '')), 'an active non-resumable row explains why actions are unavailable');
+    check(rowInfo.some(r => !r.ended && r.actions.length === 0 && /can’t resume|nothing can reach/.test(r.reason || '')), 'an active non-resumable row explains why actions are unavailable');
     await layout('Sessions drawer with actions', '.sessions-drawer .session-row, .session-action, .session-unavailable');
     await shot(vp, 'sessions-actions');
 
@@ -404,7 +404,7 @@ async function run() {
     await press('Escape');
     check(await evaluate("!document.querySelector('.exchange-dialog') && !!document.querySelector('.sessions-drawer')"), 'Escape closes only the dialog');
     await sleep(150);
-    check((await focusName()) === 'Ask this session', 'focus returns to Ask this session');
+    check((await focusName()) === 'Ask from this context', 'focus returns to Ask from this context');
     await press('Enter');
     await waitFor("document.querySelector('.exchange-dialog')", 'Ask dialog (reopened)');
     await click("document.querySelector('.exchange-dialog button[type=\"submit\"]')");
@@ -433,7 +433,7 @@ async function run() {
     check(askPayload.mode === 'ask' && askPayload.source.agent_id === dev.id && askPayload.source.session_ref === implRef && askPayload.instruction === question
       && askPayload.origin_conversation_id === conv && askPayload.destination === undefined, 'Ask payload: the selected session, the question, and the origin (Dev) thread');
     await sleep(150);
-    check((await focusName()) === 'Ask this session', 'focus returns to the action after Send');
+    check((await focusName()) === 'Ask from this context', 'focus returns to the action after Send');
     check(/Asked Dev’s session/.test(await evaluate("document.querySelector('.exchange-started').textContent")), 'the drawer announces the started Ask');
     await press('Escape');
     check(await evaluate("!document.querySelector('.sessions-drawer')"), 'Escape closes the drawer');
@@ -462,7 +462,7 @@ async function run() {
     await noSecrets('Dev thread after Ask');
     await shot(vp, 'ask-terminal-origin-dev');
 
-    log('Continue with… → Scout');
+    log('Hand off to… → Scout');
     await openSessions();
     await focusEl(`${implRow}.querySelectorAll('.session-action')[1]`);
     await press('Enter');
