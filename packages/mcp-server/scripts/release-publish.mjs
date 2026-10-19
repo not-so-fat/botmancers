@@ -53,8 +53,18 @@ try {
   run('npm', ['run', 'release:check', '--', '--tag', tag], pkg);
   run('npm', dry ? ['publish', '--dry-run'] : otp ? ['publish', '--otp', otp] : ['publish'], pkg);
   if (!dry) {
-    process.stdout.write(`published botmancers@${version}\n`);
-    process.stdout.write(`${out('npm', ['view', `botmancers@${version}`, 'version', 'dist.integrity', 'dist-tags'], process.cwd())}\n`);
+    // npm publish can exit 0 before the registry lists the version, or without publishing at all
+    // (browser login), so only claim success once the registry shows it.
+    let seen = '';
+    for (let attempt = 0; attempt < 24 && !seen; attempt++) {
+      try {
+        seen = out('npm', ['view', `botmancers@${version}`, 'version', 'dist.integrity', 'dist-tags', '--prefer-online'], process.cwd());
+      } catch {
+        execFileSync('sleep', ['5']);
+      }
+    }
+    if (!seen) fail(`npm publish exited 0 but botmancers@${version} is not on the registry after 2 minutes; check https://www.npmjs.com/package/botmancers before re-running`);
+    process.stdout.write(`published botmancers@${version}\n${seen}\n`);
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
