@@ -39,11 +39,18 @@ import {
   type SessionProviderCapabilities,
   type SessionProviderCapability,
   type TranscriptEntry,
+  type ProviderReportedUsage,
 } from './session-provider';
+import { registerBuiltinSessionProvider } from './session-provider';
+import { createClaudeSessionProvider } from './claude-session-provider';
 import type { AttemptCorrelation } from './attempt-adapter';
 import { usageFromEvent, type NormalizedUsage } from './usage';
 import { recordTurnUsageSample } from './usage-samples';
 import { CURSOR_PROVIDER_KIND, cursorSessionProviderFactory } from './cursor-session-provider';
+
+// NOT-506: a registered Claude Code Agent talks to the local `claude` CLI
+// directly (lib/claude-session-provider), with no Agent Deck.
+registerBuiltinSessionProvider('claude', () => createClaudeSessionProvider());
 
 type Db = Database.Database;
 
@@ -66,7 +73,12 @@ export type ProviderSessionErrorCode =
   | 'session_missing'
   | 'not_resumable'
   | 'busy'
-  | 'provider_failed';
+  | 'provider_failed'
+  // NOT-506: stable runtime refusals (see ProviderErrorCode).
+  | 'auth_required'
+  | 'permission_denied'
+  | 'incompatible_version'
+  | 'usage_limit';
 
 export class ProviderSessionError extends Error {
   readonly code: ProviderSessionErrorCode;
@@ -118,6 +130,9 @@ interface TurnRow {
   correlation: string;
   created_at: number;
   finished_at: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_cost_usd: number | null;
 }
 
 // The public turn shape: Botmancers references only.
@@ -129,6 +144,8 @@ export interface ProviderTurnView {
   state: TurnState;
   output: string | null;
   failure_code: string | null;
+  // As the runtime reported it (null: not reported); null until terminal.
+  usage: ProviderReportedUsage | null;
   created_at: number;
   finished_at: number | null;
 }
@@ -212,7 +229,9 @@ function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'pr
           : error.code === 'not_resumable' ? 'not_resumable'
             : error.code === 'invalid_input' ? 'invalid_input'
               : error.code === 'unavailable' ? 'provider_unavailable'
-                : fallback;
+                : error.code === 'auth_required' || error.code === 'permission_denied'
+                  || error.code === 'incompatible_version' || error.code === 'usage_limit' ? error.code
+                  : fallback;
   // Provider diagnostics never reach the caller verbatim.
   throw new ProviderSessionError(code, `The session provider refused the call (${error.code}).`);
 }
@@ -589,12 +608,14 @@ function turnView(db: Db, row: TurnRow): ProviderTurnView {
     state: row.state,
     output: row.output === null ? null : redact(row.output),
     failure_code: row.failure_code,
+    usage: row.state === 'running' ? null
+      : { input_tokens: row.input_tokens ?? null, output_tokens: row.output_tokens ?? null, total_cost_usd: row.total_cost_usd ?? null },
     created_at: row.created_at,
     finished_at: row.finished_at,
   };
 }
 
-function insertTurn(db: Db, fields: Omit<TurnRow, 'state' | 'output' | 'failure_code' | 'finished_at'>): TurnRow {
+function insertTurn(db: Db, fields: Omit<TurnRow, 'state' | 'output' | 'failure_code' | 'finished_at' | 'input_tokens' | 'output_tokens' | 'total_cost_usd'>): TurnRow {
   db.prepare(`
     INSERT INTO provider_session_turns (
       id, session_ref, agent_id, kind, authority, requester_kind, requester_id, idempotency_key, request_hash,
@@ -722,6 +743,15 @@ function requireTurn(db: Db, agentId: string, turnRef: string): TurnRow {
   return row;
 }
 
+// Reported numbers only: a finite non-negative number is kept (tokens: an
+// integer), anything else is null. Zero stays zero.
+function reportedCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}
+function reportedDollars(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 // Malformed provider usage fails soft: the turn still finishes, its usage
 // unknown.
 function safeUsage(raw: unknown): NormalizedUsage | null {
@@ -733,11 +763,20 @@ function safeUsage(raw: unknown): NormalizedUsage | null {
 function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: number): void {
   db.transaction(() => {
     const state: TurnState = result.status === 'completed' ? 'completed' : result.status === 'cancelled' ? 'cancelled' : 'failed';
+    const reported = (result.usage ?? null) as Record<string, unknown> | null;
     const changed = db.prepare(`
-      UPDATE provider_session_turns SET state = ?, output = ?, failure_code = ?, finished_at = ? WHERE id = ? AND state = 'running'
+      UPDATE provider_session_turns SET state = ?, output = ?, failure_code = ?, finished_at = ?, input_tokens = ?, output_tokens = ?, total_cost_usd = ?
+      WHERE id = ? AND state = 'running'
     `).run(state, typeof result.output === 'string' ? result.output : null, result.failure ? String(result.failure.code).slice(0, 100) : null,
-      typeof result.finished_at === 'number' ? result.finished_at : now, turn.id).changes;
+      typeof result.finished_at === 'number' ? result.finished_at : now,
+      reportedCount(reported?.input_tokens), reportedCount(reported?.output_tokens), reportedDollars(reported?.total_cost_usd), turn.id).changes;
     if (changed === 0) return;
+    // The runtime said the session is gone: a fact, never a reason to start
+    // another one.
+    if (result.failure?.code === 'session_missing') {
+      const missing = db.prepare(`${ROW_SELECT} WHERE id = ?`).get(turn.session_ref) as ProviderSessionRow;
+      markMissing(db, missing, now);
+    }
     // NOT-509: the turn's one usage sample, keyed by the turn: a repeated
     // observe after a restart never adds a second one.
     const session = db.prepare('SELECT provider_kind FROM provider_sessions WHERE id = ?').get(turn.session_ref) as { provider_kind: string } | undefined;
@@ -752,7 +791,9 @@ function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: numb
     `).run(turn.session_ref, now, now, turn.session_ref);
     // NOT-505: the runtime's own reported usage, one sample per turn; each
     // field null when unreported or malformed, never estimated.
-    const usage = normalizeUsage(result.usage);
+    // Claude Code reports its cost as total_cost_usd (NOT-506).
+    const usage = normalizeUsage(reported && reported.cost_usd === undefined && 'total_cost_usd' in reported
+      ? { ...reported, cost_usd: reported.total_cost_usd } : reported);
     appendEvent(db, { agentId: turn.agent_id, sessionRef: turn.session_ref, turnId: turn.id, type: `turn_${state}`, detail: usage ? { usage } : {}, now });
   }).immediate();
 }

@@ -1,0 +1,1 @@
+{"sessionId":"{{ID}}","version":"2.1.302","isSidechain":false,"userType":"external","entrypoint":"cli","gitBranch":"main","type":"user","timestamp":"2026-10-13T09:00:00.000Z","cwd":"{{ROOT}}/alpha","uuid":"u-2026-10-13T09:00:00.000Z","message":{"role":"user","content":"not a session file name"}}
