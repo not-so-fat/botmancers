@@ -7,6 +7,7 @@
 // message prose; nothing here sees a provider session id.
 
 import { formatSessionDate, type SessionRow } from './session-view';
+import { SESSION_ACTION_LABELS, type ActionAvailability, type SessionAction, type SessionActions } from './session-actions';
 
 export type ExchangeMode = 'ask' | 'continue';
 export type ExchangeState = 'queued' | 'extracting' | 'delivering' | 'completed' | 'failed' | 'cancelled';
@@ -193,19 +194,49 @@ export function linkRoleLabel(roles: ExchangeLinkRole[]): string {
 
 export type SessionActionAvailability = { available: true } | { available: false; reason: string };
 
-// Ask and Continue run only against a session Botmancers can resume
-// (the catalog's `resumable`); others keep their history and say why.
+// Ask from this context and Hand off to… run only against a session
+// Botmancers can resume (the catalog's `resumable`); others keep their
+// history and say why. A row from an older server has no `actions`.
 export function sessionActionAvailability(row: Pick<SessionRow, 'status' | 'resumable' | 'agent'>): SessionActionAvailability {
   if (row.status === 'ended') {
-    return { available: false, reason: 'Ask and Continue are unavailable: this session has ended. Its history stays here.' };
+    return { available: false, reason: 'Ask from this context and Hand off to… are unavailable: this session has ended. Its history stays here.' };
   }
   if (!row.resumable) {
     return {
       available: false,
-      reason: `Ask and Continue are unavailable: Botmancers can’t resume this session under ${row.agent.name}’s current runtime.`,
+      reason: `Ask from this context and Hand off to… are unavailable: Botmancers can’t resume this session under ${row.agent.name}’s current runtime.`,
     };
   }
   return { available: true };
+}
+
+// NOT-507: the three session actions of a row, in display order, from the
+// server's capability- and state-based `actions` (lib/session-actions), or
+// for an older row from `resumable` (no Resume work here).
+export function sessionRowActions(row: Pick<SessionRow, 'status' | 'resumable' | 'agent' | 'actions'>): { action: SessionAction; label: string; availability: ActionAvailability }[] {
+  let actions: SessionActions;
+  if (row.actions) actions = row.actions;
+  else {
+    const legacy = sessionActionAvailability(row);
+    const fallback: ActionAvailability = legacy.available
+      ? { available: true }
+      : { available: false, code: row.status === 'ended' ? 'session_ended' : 'session_not_resumable', reason: legacy.reason, recovery: 'choose_session' };
+    actions = {
+      ask: fallback,
+      resume: { available: false, code: 'action_unavailable', reason: `${SESSION_ACTION_LABELS.resume} is unavailable: this runtime can’t resume a session with edits.`, recovery: 'choose_action' },
+      handoff: fallback,
+    };
+  }
+  return (['ask', 'resume', 'handoff'] as SessionAction[]).map(action => ({ action, label: SESSION_ACTION_LABELS[action], availability: actions[action] }));
+}
+
+// NOT-507: the owner's pin request (Ask from this context on a session only
+// a SessionProvider can reach, or Resume work here).
+export function pinRequestBody(action: 'ask' | 'resume', content: string, conversationId: string, approveWrite: boolean, idempotencyKey: string) {
+  return {
+    action, content: content.trim(), conversation_id: conversationId, idempotency_key: idempotencyKey,
+    ...(action === 'resume' ? { approve_write: approveWrite } : {}),
+  };
 }
 
 export interface ExchangeDraft {
@@ -251,6 +282,12 @@ export function submitErrorMessage(code: string | null, message: string | null):
     case 'source_session_busy': return 'This session already has an exchange in progress. Wait for it or cancel it from its card.';
     case 'agent_unavailable': return message || 'That Agent has no Agent Deck selected.';
     case 'idempotency_conflict': return 'This request changed while it was being sent. Send again.';
+    // NOT-507: pin refusals. The session is never swapped for another.
+    case 'session_missing': return 'The runtime no longer has this session. Its history stays here; choose another session.';
+    case 'approval_required': return 'Resume work here needs your approval of edits. Tick the approval, then send again.';
+    case 'authority_not_allowed': return message || 'This Agent’s policy doesn’t allow edits in a resumed session. Change it in Config.';
+    case 'action_unavailable': return message || 'This runtime can’t do that in this session. Choose another action.';
+    case 'provider_failed': return 'The runtime failed this turn. Nothing moved to another session; try again later.';
     default: return message || 'The exchange could not be started. Your draft is kept; try again.';
   }
 }

@@ -2,6 +2,8 @@
 // (app/components/SessionsPanel). The shapes mirror lib/session-catalog's
 // JSON; this module never sees an external provider session id.
 
+import type { SessionActions, SessionRoute } from './session-actions';
+
 export type SessionFilter = 'active' | 'ended' | 'all';
 
 export const SESSION_FILTER_OPTIONS: { value: SessionFilter; label: string }[] = [
@@ -27,6 +29,11 @@ export interface SessionRow {
   // NOT-509: provider-reported usage (lib/usage UsageSummary). Optional so
   // a row from an older server still renders.
   usage?: SessionUsageRow;
+  // NOT-507: the Agent's home session, how a turn reaches it, and what each
+  // session action (lib/session-actions) can do now. Optional likewise.
+  home?: boolean;
+  route?: SessionRoute;
+  actions?: SessionActions;
 }
 
 export type UsageQuality = 'complete' | 'partial' | 'unavailable';
