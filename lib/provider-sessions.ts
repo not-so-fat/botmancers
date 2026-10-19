@@ -433,6 +433,14 @@ export interface SyncInput {
   now?: number;
 }
 
+export interface SessionHistorySyncResult extends SyncResult {
+  pages: number;
+  // False only when a provider repeats a cursor or exceeds the safety bound.
+  complete: boolean;
+}
+
+const MAX_HISTORY_SYNC_PAGES = 1_000;
+
 // Imports one bounded page of the provider's sessions inside the registered
 // scope. Repeating it imports nothing twice: each provider session maps to
 // one reference (findRow), and the partial unique index backs that up.
@@ -465,6 +473,39 @@ export async function syncAgentSessions(db: Db, agentId: string, input: SyncInpu
     }
     return out;
   }).immediate();
+}
+
+// Imports every page the provider exposes. Registration uses this for Claude
+// Code so an Agent begins with its in-scope local history instead of an empty
+// catalog. A cursor loop or an implausibly large provider listing is stopped
+// without turning registration into an unbounded operation.
+export async function syncAgentSessionHistory(db: Db, agentId: string, input: SyncInput = {}): Promise<SessionHistorySyncResult> {
+  const imported: string[] = [];
+  const updated: string[] = [];
+  let rejected = 0;
+  let cursor = input.cursor ?? null;
+  let pages = 0;
+  const seen = new Set<string>();
+
+  while (pages < MAX_HISTORY_SYNC_PAGES) {
+    if (cursor !== null) {
+      if (seen.has(cursor)) {
+        return { imported, updated, rejected_out_of_scope: rejected, next_cursor: cursor, pages, complete: false };
+      }
+      seen.add(cursor);
+    }
+    const page = await syncAgentSessions(db, agentId, { ...input, cursor });
+    imported.push(...page.imported);
+    updated.push(...page.updated);
+    rejected += page.rejected_out_of_scope;
+    pages++;
+    cursor = page.next_cursor;
+    if (cursor === null) {
+      return { imported, updated, rejected_out_of_scope: rejected, next_cursor: null, pages, complete: true };
+    }
+  }
+
+  return { imported, updated, rejected_out_of_scope: rejected, next_cursor: cursor, pages, complete: false };
 }
 
 // Re-reads one session's metadata from the provider. A session the provider
