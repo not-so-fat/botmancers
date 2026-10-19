@@ -103,11 +103,11 @@ export function statusLabel(row: SessionRow): string {
 export function sessionStateTags(row: Pick<SessionRow, 'home' | 'state' | 'resumable'>): string[] {
   const tags: string[] = [];
   if (row.home) tags.push('Home');
-  if (row.state?.availability === 'missing') tags.push('Missing');
-  else {
-    if (row.state?.lifecycle === 'archived') tags.push('Archived');
-    if (row.state?.busy) tags.push('Busy');
-  }
+  // A session the runtime no longer has is only Missing, whatever was
+  // last recorded about it.
+  if (row.state?.availability === 'missing') return [...tags, 'Missing'];
+  if (row.state?.lifecycle === 'archived') tags.push('Archived');
+  if (row.state?.busy) tags.push('Busy');
   if (row.resumable || row.state?.resumable === true) tags.push('Resumable');
   return tags;
 }

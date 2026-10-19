@@ -372,7 +372,7 @@ async function main() {
     open: stateRow({}),
     archived: stateRow({ lifecycle: 'archived' }),
     busy: stateRow({ busy: true }),
-    missing: stateRow({ availability: 'missing', resumable: null }),
+    missing: stateRow({ availability: 'missing', resumable: true }),
     notResumable: stateRow({ resumable: false }),
   };
   const avail = row => view.sessionRowActions(row).filter(item => item.availability.available).map(item => item.label).join('|');
