@@ -10,6 +10,10 @@
 //   sessions:message     send one read-only turn to an exact active session
 //   exchanges:read       read the exchanges it started (lib/session-exchanges)
 //   exchanges:create     start and cancel an Ask or Continue exchange
+//   sessions:start       NOT-507: let a registered-Agent message start a new
+//                        read-only session when the Agent has none to take it
+//   sessions:resume      NOT-507: pin a session to resume work in it with
+//                        workspace-write authority (explicitly approved)
 //
 // Every service here reads the canonical stores and writes only through
 // them; nothing is copied. A target outside the caller's grants is refused
@@ -25,6 +29,21 @@ import { ExchangeError, cancelReasonFromBody, type CreateExchangeInput, type Exc
 import { apiStateOf, cancelExchangeCommand, dispatchExchange, exchanges, getExchangeView } from './agent-conversations';
 import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, loadServiceGrants, type ServiceCapability } from './service-grants';
 import { serviceRedactor } from './service-redaction';
+import { recoveryFor, type Recovery } from './session-actions';
+import {
+  PinError,
+  createPin,
+  detachPin,
+  messageAgent,
+  pinView,
+  readPin,
+  requirePin,
+  sendPinTurn,
+  sessionOwner,
+  type PinAction,
+  type PinResolution,
+  type PinRow,
+} from './session-pins';
 
 export type ServiceApiErrorCode =
   | 'invalid_request'
@@ -48,7 +67,16 @@ export type ServiceApiErrorCode =
   | 'conflict'
   | 'payload_too_large'
   | 'rate_limited'
-  | 'internal_error';
+  | 'internal_error'
+  // NOT-507: registered-Agent messaging and session pins.
+  | 'pin_not_found'
+  | 'pin_detached'
+  | 'workspace_required'
+  | 'no_eligible_session'
+  | 'session_missing'
+  | 'action_unavailable'
+  | 'approval_required'
+  | 'provider_failed';
 
 export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   invalid_request: 400,
@@ -73,12 +101,21 @@ export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   payload_too_large: 413,
   rate_limited: 429,
   internal_error: 500,
+  pin_not_found: 404,
+  pin_detached: 409,
+  workspace_required: 409,
+  no_eligible_session: 409,
+  session_missing: 410,
+  action_unavailable: 409,
+  approval_required: 403,
+  provider_failed: 502,
 };
 
 // denied: the caller may not see or do it (a refusal indistinguishable
 // from a missing target). rejected: the input or the target state.
 const DENIED_CODES: ServiceApiErrorCode[] = [
   'principal_not_allowed', 'grant_required', 'grants_unavailable', 'agent_not_found', 'session_not_found', 'conversation_not_found', 'exchange_not_found', 'rate_limited',
+  'pin_not_found',
 ];
 
 export class ServiceApiError extends Error {
@@ -89,12 +126,15 @@ export class ServiceApiError extends Error {
   // The offending input fields, when a caller-side validation names them
   // (the MCP bridge's tool arguments).
   readonly fields: string[] | undefined;
+  // NOT-507: what the caller can do next (lib/session-actions recoveryFor).
+  readonly recovery: Recovery | null;
   constructor(code: ServiceApiErrorCode, message: string, options: { notGranted?: boolean; fields?: string[] } = {}) {
     super(message);
     this.name = 'ServiceApiError';
     this.code = code;
     this.notGranted = options.notGranted === true;
     this.fields = options.fields;
+    this.recovery = recoveryFor(code);
   }
   get status(): number {
     return SERVICE_API_ERROR_STATUS[this.code];
@@ -106,6 +146,7 @@ export class ServiceApiError extends Error {
 
 // The one message per missing-or-not-granted target.
 const NOT_FOUND = {
+  pin: () => new ServiceApiError('pin_not_found', 'No pin with that reference is visible to this principal.'),
   agent: () => new ServiceApiError('agent_not_found', 'No Agent with that id is visible to this principal.'),
   session: () => new ServiceApiError('session_not_found', 'No session with that reference is visible to this principal.'),
   conversation: () => new ServiceApiError('conversation_not_found', 'No conversation with that id is visible to this principal.'),
@@ -857,3 +898,142 @@ export async function cancelServiceExchange(
   }
 }
 
+// ---------------------------------------------------------------------
+// NOT-507: registered-Agent messaging and session pins (lib/session-pins).
+// A message to an Agent resolves its home or newest eligible session (or
+// starts one under policy) and pins it; a pin holds every follow-up on that
+// exact session until the caller detaches or switches it. Grants apply to
+// the resolved Agent and the pin's action: sessions:message for Ask
+// (read-only) pins and Agent messages, sessions:start to let an Agent
+// message start a session, sessions:resume for Resume (workspace-write)
+// pins. A pin whose grant was withdrawn answers like a missing one.
+
+const pinCapability = (action: PinAction): ServiceCapability => (action === 'resume' ? 'sessions:resume' : 'sessions:message');
+
+function servicePinError(error: unknown): never {
+  if (error instanceof PinError) {
+    if (error.code === 'session_not_found') throw NOT_FOUND.session();
+    if (error.code === 'agent_not_found') throw NOT_FOUND.agent();
+    if (error.code === 'pin_not_found') throw NOT_FOUND.pin();
+    if (error.code === 'conversation_not_found') throw NOT_FOUND.conversation();
+    throw new ServiceApiError(error.code, error.message);
+  }
+  if (error instanceof ExchangeError) throw serviceErrorFromExchange(error);
+  throw error;
+}
+
+function requireServicePin(ctx: ServiceContext, pinRef: string): PinRow {
+  let pin: PinRow;
+  try {
+    pin = requirePin(ctx.principal, pinRef);
+  } catch (error) {
+    servicePinError(error);
+  }
+  if (!holds(ctx, pin.agent_id, pinCapability(pin.action))) throw notGranted('pin');
+  return pin;
+}
+
+export interface PinAuditHooks {
+  // The resolved Agent and session (and the capability the action used),
+  // before anything is written.
+  onTarget: (target: { agentId: string; sessionRef: string | null; capability: ServiceCapability; action: string }) => void;
+  onCommit: () => void;
+}
+
+function pinBody(pin: PinRow) {
+  return serviceRedactor().deep(pinView(pin));
+}
+
+export function parseAgentMessageBody(body: unknown, header: string | null): { content: string; idempotencyKey: string } {
+  return parseSessionMessageBody(body, header);
+}
+
+export function parsePinBody(body: unknown, header: string | null): { action: PinAction; approveWrite: boolean; replacePinRef: string | null; idempotencyKey: string } {
+  if (!isObject(body)) throw new ServiceApiError('invalid_request', 'The body must be a JSON object.');
+  checkFields(body, ['action', 'approve_write', 'replace_pin_ref', 'idempotency_key'], '');
+  if (body.action !== 'ask' && body.action !== 'resume') throw new ServiceApiError('invalid_request', 'action must be "ask" or "resume".');
+  if (body.approve_write !== undefined && typeof body.approve_write !== 'boolean') throw new ServiceApiError('invalid_request', 'approve_write must be true or false.');
+  return {
+    action: body.action,
+    approveWrite: body.approve_write === true,
+    replacePinRef: body.replace_pin_ref === undefined || body.replace_pin_ref === null ? null : requireText(body.replace_pin_ref, 'replace_pin_ref', 200),
+    idempotencyKey: idempotencyKeyOf(body, header),
+  };
+}
+
+export async function messageServiceAgent(ctx: ServiceContext, agentId: string, input: { content: string; idempotencyKey: string }, hooks: PinAuditHooks) {
+  requireAgent(ctx, agentId, 'sessions:message');
+  try {
+    const result = await messageAgent({
+      requester: ctx.principal, agentId, content: input.content, idempotencyKey: input.idempotencyKey,
+      mayStart: holds(ctx, agentId, 'sessions:start'),
+      onResolved: target => hooks.onTarget({
+        agentId: target.agentId, sessionRef: target.sessionRef,
+        capability: target.resolution === 'started' ? 'sessions:start' : 'sessions:message',
+        action: target.resolution === 'started' ? 'agents.message.start' : 'agents.message',
+      }),
+      onCommit: () => hooks.onCommit(),
+    });
+    return {
+      body: { pin: pinBody(result.pin), turn: serviceRedactor().deep(result.turn), resolution: result.resolution as PinResolution, replayed: result.replayed },
+      settled: result.settled,
+    };
+  } catch (error) {
+    servicePinError(error);
+  }
+}
+
+export async function pinServiceSession(
+  ctx: ServiceContext, sessionRef: string, input: ReturnType<typeof parsePinBody>, hooks: PinAuditHooks,
+) {
+  const agentId = sessionOwner(sessionRef);
+  if (!agentId) throw NOT_FOUND.session();
+  const capability = pinCapability(input.action);
+  hooks.onTarget({ agentId, sessionRef, capability, action: input.action === 'resume' ? 'pins.resume' : 'pins.ask' });
+  if (!holds(ctx, agentId, capability)) throw notGranted('session');
+  if (input.replacePinRef) requireServicePin(ctx, input.replacePinRef);
+  try {
+    const { pin, created, replaced } = await createPin({
+      requester: ctx.principal, sessionRef, action: input.action, approveWrite: input.approveWrite,
+      idempotencyKey: input.idempotencyKey, replacePinRef: input.replacePinRef, onCommit: () => hooks.onCommit(),
+    });
+    return { pin: pinBody(pin), replaced_pin_ref: replaced?.id ?? (created ? null : pin.id === null ? null : null), replayed: !created };
+  } catch (error) {
+    servicePinError(error);
+  }
+}
+
+export async function sendServicePinMessage(ctx: ServiceContext, pinRef: string, input: { content: string; idempotencyKey: string }, hooks: PinAuditHooks) {
+  const pin = requireServicePin(ctx, pinRef);
+  hooks.onTarget({ agentId: pin.agent_id, sessionRef: pin.session_ref, capability: pinCapability(pin.action), action: 'pins.send' });
+  try {
+    const result = await sendPinTurn({
+      requester: ctx.principal, pinRef: pin.id, content: input.content, idempotencyKey: input.idempotencyKey, onCommit: () => hooks.onCommit(),
+    });
+    return { body: { pin: pinBody(result.pin), turn: serviceRedactor().deep(result.turn), replayed: result.replayed }, settled: result.settled };
+  } catch (error) {
+    servicePinError(error);
+  }
+}
+
+export async function readServicePin(ctx: ServiceContext, pinRef: string, hooks: Pick<PinAuditHooks, 'onTarget'>) {
+  const pin = requireServicePin(ctx, pinRef);
+  hooks.onTarget({ agentId: pin.agent_id, sessionRef: pin.session_ref, capability: pinCapability(pin.action), action: 'pins.read' });
+  try {
+    const { pin: row, turns } = await readPin(ctx.principal, pin.id);
+    return { pin: pinBody(row), turns: serviceRedactor().deep(turns) };
+  } catch (error) {
+    servicePinError(error);
+  }
+}
+
+export function detachServicePin(ctx: ServiceContext, pinRef: string, hooks: PinAuditHooks) {
+  const pin = requireServicePin(ctx, pinRef);
+  hooks.onTarget({ agentId: pin.agent_id, sessionRef: pin.session_ref, capability: pinCapability(pin.action), action: 'pins.detach' });
+  try {
+    const { pin: row, replayed } = detachPin(ctx.principal, pin.id, { onCommit: () => hooks.onCommit() });
+    return { pin: pinBody(row), replayed };
+  } catch (error) {
+    servicePinError(error);
+  }
+}

@@ -722,6 +722,12 @@ export async function cancelProviderTurn(
   return { turn: await observeProviderTurn(db, agentId, turnRef, input), outcome: 'already_terminal' };
 }
 
+// NOT-507: one turn by its reference, or undefined.
+export function getProviderTurn(db: Db, agentId: string, turnRef: string): ProviderTurnView | undefined {
+  const row = db.prepare('SELECT * FROM provider_session_turns WHERE id = ? AND agent_id = ?').get(turnRef, agentId) as TurnRow | undefined;
+  return row ? turnView(db, row) : undefined;
+}
+
 export function listProviderTurns(db: Db, agentId: string, ref: string): ProviderTurnView[] {
   requireSession(db, agentId, ref);
   const rows = db.prepare('SELECT * FROM provider_session_turns WHERE session_ref = ? ORDER BY created_at ASC, id ASC').all(ref) as TurnRow[];

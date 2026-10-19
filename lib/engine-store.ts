@@ -1748,6 +1748,96 @@ const MIGRATIONS: Migration[] = [
       backfillProviderSessions(db);
     },
   },
+  {
+    // NOT-507: durable session pins (lib/session-pins, docs/core-engine.md
+    // Session pins). A pin holds one caller's multi-turn conversation on
+    // exactly one session until the caller detaches or switches it.
+    version: 18,
+    name: 'session_pins',
+    up: db => {
+      db.exec(`
+        -- One row per pin. session_ref never changes after insert: a switch
+        -- detaches this pin and creates another. action/authority record
+        -- what the caller asked for (ask = read_only, resume =
+        -- workspace_write after explicit approval); resolution how the
+        -- session was chosen (exact, or for a registered-Agent message the
+        -- home session, the newest eligible one, or a newly started one).
+        CREATE TABLE session_pins (
+          id TEXT PRIMARY KEY,
+          requester_kind TEXT NOT NULL CHECK (requester_kind IN ('person', 'bot', 'service')),
+          requester_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          request_hash TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          session_ref TEXT NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('ask', 'resume')),
+          authority TEXT NOT NULL CHECK (authority IN ('read_only', 'workspace_write')),
+          resolution TEXT NOT NULL CHECK (resolution IN ('exact', 'home', 'newest', 'started')),
+          route TEXT NOT NULL CHECK (route IN ('provider', 'engine')),
+          conversation_id TEXT NOT NULL,
+          approved_at INTEGER,
+          state TEXT NOT NULL CHECK (state IN ('attached', 'detached')),
+          detach_reason TEXT CHECK (detach_reason IS NULL OR detach_reason IN ('detached', 'switched')),
+          replaced_by TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          detached_at INTEGER,
+          CHECK (authority = CASE action WHEN 'ask' THEN 'read_only' ELSE 'workspace_write' END),
+          CHECK (action = 'ask' OR approved_at IS NOT NULL),
+          CHECK ((state = 'attached') = (detached_at IS NULL)),
+          UNIQUE (requester_kind, requester_id, idempotency_key)
+        );
+        CREATE INDEX idx_session_pins_session ON session_pins(session_ref);
+        CREATE INDEX idx_session_pins_agent ON session_pins(agent_id);
+        CREATE TRIGGER trg_session_pins_identity BEFORE UPDATE OF
+          id, requester_kind, requester_id, idempotency_key, request_hash, agent_id, session_ref, action, authority, resolution, route, created_at
+        ON session_pins
+        BEGIN
+          SELECT RAISE(ABORT, 'session_pins identity is immutable');
+        END;
+
+        -- One row per turn sent through a pin, in order. Exactly one of
+        -- exchange_id (engine route: an Ask exchange on the binding) and
+        -- provider_turn_ref (provider route) is set.
+        CREATE TABLE session_pin_turns (
+          id TEXT PRIMARY KEY,
+          pin_id TEXT NOT NULL,
+          seq INTEGER NOT NULL,
+          requester_kind TEXT NOT NULL,
+          requester_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          request_hash TEXT NOT NULL,
+          content TEXT NOT NULL,
+          exchange_id TEXT,
+          provider_turn_ref TEXT,
+          question_message_id TEXT,
+          answer_message_id TEXT,
+          created_at INTEGER NOT NULL,
+          CHECK ((exchange_id IS NULL) <> (provider_turn_ref IS NULL)),
+          UNIQUE (pin_id, seq),
+          UNIQUE (requester_kind, requester_id, idempotency_key),
+          FOREIGN KEY (pin_id) REFERENCES session_pins(id)
+        );
+
+        -- Append-only audit of every pin decision: created (with the
+        -- resolution), turn sent, turn refused (with the stable code; the
+        -- target never changes), detached, switched.
+        CREATE TABLE session_pin_events (
+          id TEXT PRIMARY KEY,
+          pin_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL,
+          type TEXT NOT NULL,
+          data TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (pin_id, sequence)
+        );
+        CREATE TRIGGER trg_session_pin_events_append_only BEFORE UPDATE ON session_pin_events
+        BEGIN
+          SELECT RAISE(ABORT, 'session_pin_events are append-only');
+        END;
+      `);
+    },
+  },
 ];
 
 // The runtime connection a Session Binding's Agent uses: its registered
@@ -3004,11 +3094,21 @@ function deleteProviderSessions(db: Db, where: string, ...args: unknown[]): void
   db.prepare('DELETE FROM provider_sessions WHERE id IN (SELECT value FROM json_each(?))').run(refs);
 }
 
+// NOT-507: pins (and their turns and events) matching `where`.
+function deleteSessionPins(db: Db, where: string, ...args: unknown[]): void {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_pins'").get()) return;
+  const ids = JSON.stringify((db.prepare(`SELECT id FROM session_pins WHERE ${where}`).all(...args) as { id: string }[]).map(row => row.id));
+  db.prepare('DELETE FROM session_pin_events WHERE pin_id IN (SELECT value FROM json_each(?))').run(ids);
+  db.prepare('DELETE FROM session_pin_turns WHERE pin_id IN (SELECT value FROM json_each(?))').run(ids);
+  db.prepare('DELETE FROM session_pins WHERE id IN (SELECT value FROM json_each(?))').run(ids);
+}
+
 export function deleteEngineRecordsForConversation(db: Db, conversationId: string): void {
   db.prepare('DELETE FROM conversation_intakes WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM delegation_chains WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM conversation_events WHERE conversation_id = ? AND request_id IS NULL').run(conversationId);
   db.prepare('DELETE FROM wakes WHERE source_conversation_id = ?').run(conversationId);
+  deleteSessionPins(db, 'conversation_id = ?', conversationId);
   deleteEngineRecords(db, {
     requests: 'SELECT id FROM work_requests WHERE source_conversation_id = ?',
     bindings: 'SELECT id FROM session_bindings WHERE conversation_id = ?',
@@ -3026,6 +3126,8 @@ export function deleteEngineRecordsForAgent(db: Db, agentId: string): void {
   db.prepare('DELETE FROM wakes WHERE target_agent_id = ? OR (requester_agent_id = ? AND work_request_id IS NULL)').run(agentId, agentId);
   // NOT-475: deleting either Agent deletes its grants.
   db.prepare('DELETE FROM wake_grants WHERE caller_agent_id = ? OR target_agent_id = ?').run(agentId, agentId);
+  // NOT-507: the Agent's session pins and their turns and events.
+  deleteSessionPins(db, 'agent_id = ?', agentId);
   // NOT-503: every registry row of the Agent, native or bound.
   deleteProviderSessions(db, 'agent_id = ?', agentId);
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_session_events'").get()) {
