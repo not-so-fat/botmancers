@@ -1,5 +1,7 @@
 # NOT-504 direct Codex smoke (redacted)
 
+**Status: pending operator verification.** The `[operator]` check ("no Agent Deck server is running or contacted") cannot pass on the agent host, because Agent Deck runs the agent sessions there. The transcript below is the expected fail-closed run: the smoke exits 1 while an Agent Deck backend is present. An operator closes this check by following "Operator re-run" at the end of this file.
+
 Command: `node scripts/codex-direct-smoke.js` at code HEAD `f7dd2d3455c22d7667f4d080148581034a3d102b` (the round-4 merge of `origin/main`, the tip before this evidence-only commit), macOS, Node v26.10.0, `codex-cli 0.157.1` (locally signed in). Exit status: **1**. Codex thread ids are replaced by `[codex-id]` and never appeared in Botmancers views; tmp paths shortened.
 
 Result:
