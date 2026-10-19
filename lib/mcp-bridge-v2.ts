@@ -156,6 +156,22 @@ const agentItem = closed({
   last_activity_at: ms,
 });
 
+// NOT-509: provider-reported usage, one metric at a time. sum is null when
+// no turn reported the metric (unknown, never 0); 0 is a provider's
+// explicit zero. Never estimated from prices or plans.
+const usageMetric = (what: string) => closed({
+  sum: { type: ['number', 'null'], description: `Sum of the reported ${what}, or null when none was reported.` },
+  known: { type: 'integer', description: 'Turns that reported this metric.' },
+  total: { type: 'integer', description: 'Turns that ran in the session.' },
+  quality: { type: 'string', enum: ['complete', 'partial', 'unavailable'], description: 'complete: every turn reported it; partial: some did (sum is a lower bound); unavailable: none did.' },
+});
+const sessionUsage = closed({
+  input_tokens: usageMetric('input tokens'),
+  output_tokens: usageMetric('output tokens'),
+  cost_usd: usageMetric('cost in USD'),
+});
+
+const SESSION_ITEM_REQUIRED = ['ref', 'agent', 'title', 'status', 'resumable', 'created_at', 'ended_at', 'last_activity_at', 'origin'];
 const sessionItem = closed({
   ref: { type: 'string', description: 'Stable Botmancers session reference: pass it as session_ref. Never a provider session id.' },
   agent: closed({ id: str, name: str, adapter: str, transport: strOrNull }),
@@ -169,7 +185,8 @@ const sessionItem = closed({
     conversation: nullable(closed({ id: str, kind: { type: 'string', enum: ['direct', 'group', 'agent_api'] }, label: str })),
     work_request: nullable(closed({ id: str, execution_kind: str, state: str })),
   }),
-});
+  usage: { ...sessionUsage, description: 'Additive (NOT-509): provider-reported input/output tokens and cost with coverage.' },
+}, SESSION_ITEM_REQUIRED);
 
 const conversationFields = {
   conversation_id: str,
