@@ -24,6 +24,36 @@ export interface SessionRow {
     work_request: { id: string; execution_kind: string; state: string } | null;
   };
   context: { workspace: string | null; deck: string | null };
+  // NOT-509: provider-reported usage (lib/usage UsageSummary). Optional so
+  // a row from an older server still renders.
+  usage?: SessionUsageRow;
+}
+
+export type UsageQuality = 'complete' | 'partial' | 'unavailable';
+
+export interface UsageMetricRow {
+  sum: number | null;
+  known: number;
+  total: number;
+  quality: UsageQuality;
+}
+
+export interface SessionUsageRow {
+  input_tokens: UsageMetricRow;
+  output_tokens: UsageMetricRow;
+  cost_usd: UsageMetricRow;
+}
+
+export interface SessionUsageSampleRow {
+  kind: 'attempt' | 'turn';
+  attempt_number: number | null;
+  turn_kind: string | null;
+  provider: string;
+  source: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  observed_at: number;
 }
 
 export interface SessionAttemptRow {
@@ -68,4 +98,128 @@ export function emptySessionsCopy(filter: SessionFilter, agentName: string): str
   if (filter === 'active') return `${agentName} has no active sessions.`;
   if (filter === 'ended') return `${agentName} has no ended sessions.`;
   return `${agentName} has no sessions yet. One appears after a coding run keeps its runtime context.`;
+}
+
+// ---- NOT-509: reported usage ----
+//
+// Every value shown is what a provider reported. Unknown is "Not reported",
+// never 0 or a guess; "$0.00" appears only when a provider reported a zero
+// cost. A partial metric is labeled Partial and says how many runs reported
+// it, so its sum reads as a lower bound.
+
+const NOT_REPORTED = 'Not reported';
+
+function trimDecimal(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, '');
+}
+
+// Compact token count for a row: 950, 12.3k, 1.2M, 3.4B.
+export function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 999_950) return `${trimDecimal(n / 1000)}k`;
+  if (n < 999_950_000) return `${trimDecimal(n / 1_000_000)}M`;
+  return `${trimDecimal(n / 1_000_000_000)}B`;
+}
+
+// Exact token count for details and accessible labels: 1,203,456.
+export function formatTokenCountFull(n: number): string {
+  return n.toLocaleString('en-US');
+}
+
+// A reported cost. Cents from a cent up; four decimals below a cent so a
+// small reported cost never rounds to a misleading $0.00.
+export function formatUsd(n: number): string {
+  if (n === 0) return '$0.00';
+  if (n >= 0.01) return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (n < 0.0001) return '<$0.0001';
+  return `$${n.toFixed(4)}`;
+}
+
+const METRIC_NAMES: Record<keyof SessionUsageRow, string> = {
+  input_tokens: 'Input tokens',
+  output_tokens: 'Output tokens',
+  cost_usd: 'Cost',
+};
+
+function metricValue(name: keyof SessionUsageRow, value: number, full: boolean): string {
+  if (name === 'cost_usd') return formatUsd(value);
+  return full ? formatTokenCountFull(value) : formatTokenCount(value);
+}
+
+function runs(n: number): string {
+  return `${n} ${n === 1 ? 'run' : 'runs'}`;
+}
+
+export interface UsageMetricView {
+  name: string;
+  // Short visible text: the value, or "Not reported".
+  text: string;
+  quality: UsageQuality;
+  // Coverage line: "2 of 3 runs reported" / "Not reported by any run".
+  coverage: string;
+  // Full accessible label.
+  label: string;
+}
+
+export function usageMetricView(name: keyof SessionUsageRow, metric: UsageMetricRow | undefined, full = false): UsageMetricView {
+  const title = METRIC_NAMES[name];
+  if (!metric || metric.quality === 'unavailable' || metric.sum === null) {
+    const coverage = metric && metric.total > 0 ? `Not reported by any of ${runs(metric.total)}` : 'No reported runs';
+    return { name: title, text: NOT_REPORTED, quality: 'unavailable', coverage, label: `${title}: not reported` };
+  }
+  const value = metricValue(name, metric.sum, full);
+  const exact = metricValue(name, metric.sum, true);
+  if (metric.quality === 'partial') {
+    const coverage = `Partial: ${metric.known} of ${runs(metric.total)} reported`;
+    return { name: title, text: value, quality: 'partial', coverage, label: `${title}: at least ${exact}, partial, reported by ${metric.known} of ${runs(metric.total)}` };
+  }
+  const coverage = `All ${runs(metric.total)} reported`;
+  return { name: title, text: value, quality: 'complete', coverage, label: `${title}: ${exact}, reported by all ${runs(metric.total)}` };
+}
+
+export interface SessionUsageLine {
+  // Compact visible text for the row.
+  text: string;
+  // Full accessible label.
+  label: string;
+  // unavailable: nothing reported; partial: some metric partial or some
+  // metric unreported while others are; complete otherwise.
+  quality: UsageQuality;
+  // Whether to show the Partial tag.
+  partial: boolean;
+}
+
+// The compact row total: "12.3k in · 2.3k out · $0.42". A metric nobody
+// reported says so in place ("cost not reported").
+export function sessionUsageLine(usage: SessionUsageRow | undefined): SessionUsageLine {
+  const input = usageMetricView('input_tokens', usage?.input_tokens);
+  const output = usageMetricView('output_tokens', usage?.output_tokens);
+  const cost = usageMetricView('cost_usd', usage?.cost_usd);
+  const views = [input, output, cost];
+  if (views.every(view => view.quality === 'unavailable')) {
+    return { text: NOT_REPORTED, label: 'Usage: not reported', quality: 'unavailable', partial: false };
+  }
+  const text = [
+    input.quality === 'unavailable' ? 'input not reported' : `${input.text} in`,
+    output.quality === 'unavailable' ? 'output not reported' : `${output.text} out`,
+    cost.quality === 'unavailable' ? 'cost not reported' : cost.text,
+  ].join(' · ');
+  const partial = views.some(view => view.quality === 'partial');
+  const quality: UsageQuality = partial || views.some(view => view.quality === 'unavailable') ? 'partial' : 'complete';
+  return { text, label: `Reported usage: ${views.map(view => view.label).join('; ')}`, quality, partial };
+}
+
+// One run or turn in the details list.
+export function usageSampleLabel(sample: SessionUsageSampleRow): string {
+  if (sample.kind === 'turn') return sample.turn_kind === 'start' ? 'Started (provider turn)' : 'Provider turn';
+  const what = sample.turn_kind === 'resume' ? 'Resumed' : 'Started';
+  return sample.attempt_number !== null ? `${what} · run ${sample.attempt_number}` : what;
+}
+
+export function usageSampleValues(sample: SessionUsageSampleRow): { input: string; output: string; cost: string } {
+  return {
+    input: sample.input_tokens === null ? NOT_REPORTED : formatTokenCountFull(sample.input_tokens),
+    output: sample.output_tokens === null ? NOT_REPORTED : formatTokenCountFull(sample.output_tokens),
+    cost: sample.cost_usd === null ? NOT_REPORTED : formatUsd(sample.cost_usd),
+  };
 }

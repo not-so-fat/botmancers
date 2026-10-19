@@ -111,6 +111,9 @@ function createFakeSessionProvider(options) {
     session.updated_at = at;
     session.transcript.push({ seq: session.transcript.length + 1, role: 'user', text: input.prompt, at });
     state.turns[id] = { id, session: sessionId, prompt: input.prompt, authority: input.authority, state: 'running', output: null, finished_at: null, correlation: input.correlation };
+    // NOT-509 usage hook: the next queued value is this turn's reported
+    // usage verbatim (normalized, Codex/Claude event shapes, or malformed).
+    if (Array.isArray(state.usageQueue) && state.usageQueue.length > 0) state.turns[id].usage = state.usageQueue.shift();
     state.keys[input.idempotency_key] = id;
     return state.turns[id];
   }
@@ -120,7 +123,7 @@ function createFakeSessionProvider(options) {
     provider_session_id: turn.session,
     output: turn.output,
     failure: turn.state === 'cancelled' ? { code: 'cancelled', message: 'cancelled' } : null,
-    usage: capabilities.usage ? { input_tokens: turn.prompt.length, output_tokens: (turn.output ?? '').length } : null,
+    usage: turn.usage !== undefined ? turn.usage : capabilities.usage ? { input_tokens: turn.prompt.length, output_tokens: (turn.output ?? '').length } : null,
     finished_at: turn.finished_at,
   });
 
