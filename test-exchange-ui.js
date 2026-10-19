@@ -422,7 +422,7 @@ async function main() {
   assert(/if \(submittingRef\.current\) return;/.test(dialogSrc) && /disabled=\{submitting\}/.test(dialogSrc), 'a pending submission blocks a second one');
   assert(/keyRef\.current\.payload !== payload/.test(dialogSrc), 'a retry of the unchanged draft reuses its idempotency key');
   assert(/aria-invalid=\{errors\.instruction/.test(dialogSrc) && /aria-describedby/.test(dialogSrc) && /role="alert">\{serverError\}/.test(dialogSrc), 'field errors are associated; server errors are alerts');
-  assert(/returnTo\.focus\(\)/.test(panelSrc) && /inert=\{!!action\}/.test(panelSrc), 'focus returns to the opening action; the drawer is inert under the dialog');
+  assert(/returnTo\.focus\(\)/.test(panelSrc) && /if \(action \|\| !returnToRef\.current\) return;/.test(panelSrc) && /inert=\{!!action\}/.test(panelSrc), 'focus returns to the opening action; the drawer is inert under the dialog');
   assert(/sessionRowActions\(row\)/.test(panelSrc) && /onAction\(sessionDialogMode\(item\.action\)/.test(panelSrc) && /className="session-unavailable"/.test(panelSrc) && !panelSrc.includes('Ask this session'), 'rows render the three actions from the server answer and every unavailable reason');
   assert(/<button key=\{item\.action\} type="button"/.test(panelSrc) && !/disabled=\{!item/.test(panelSrc), 'only available actions are buttons, so keyboard focus never lands on a dead control');
   assert(/sessions\/\$\{encodeURIComponent\(session\.ref\)\}\/pins/.test(dialogSrc) && /approvalRef\.current\?\.focus\(\)/.test(dialogSrc), 'Resume posts to the owner pin route and focuses the missing approval');

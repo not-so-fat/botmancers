@@ -58,11 +58,20 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
   const [action, setAction] = useState<{ mode: SessionDialogMode; row: SessionRow; returnTo: HTMLElement | null } | null>(null);
   const [started, setStarted] = useState<{ id: string | null; text: string } | null>(null);
 
+  const returnToRef = useRef<HTMLElement | null>(null);
   const closeAction = () => {
-    const returnTo = action?.returnTo;
+    returnToRef.current = action?.returnTo ?? null;
     setAction(null);
-    requestAnimationFrame(() => { if (returnTo?.isConnected) returnTo.focus(); });
   };
+
+  // Focus goes back to the opening action once the drawer is no longer
+  // inert (after the commit that removes the dialog), never before.
+  useEffect(() => {
+    if (action || !returnToRef.current) return;
+    const returnTo = returnToRef.current;
+    returnToRef.current = null;
+    if (returnTo.isConnected) returnTo.focus();
+  }, [action]);
 
   useEffect(() => {
     closeRef.current?.focus();
