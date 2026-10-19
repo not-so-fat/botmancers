@@ -126,6 +126,11 @@ Claude session ids stay private: they are stored only in the registry, redacted
 from transcript text, and never appear in turn views, catalog rows, events, or
 service responses.
 
+When a Claude Agent is registered, Botmancers imports every in-scope page from
+this store before returning the new Agent. This is read-only and never launches
+Claude. Registration remains successful if the store is temporarily
+unavailable; only the history import is skipped.
+
 ## Verification
 
 - `npm run test:claude-session-provider`: spawn-boundary tests against

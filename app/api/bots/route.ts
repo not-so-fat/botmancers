@@ -13,6 +13,7 @@ import {
 } from '@/lib/agent-registration';
 import { validateAvatarInput } from '@/lib/avatar';
 import { AgentNameConflictError, agentNameConflictBody } from '@/lib/agent-names';
+import { syncAgentSessionHistory } from '@/lib/provider-sessions';
 
 export async function GET() {
   try {
@@ -100,6 +101,19 @@ export async function POST(request: Request) {
       avatar_hands: avatarConfig.fields.avatar_hands ?? null,
       avatar_accessory: avatarConfig.fields.avatar_accessory ?? null,
     }, { id: botId });
+
+    // Claude Code keeps past conversations in its local session store. Load
+    // every in-scope page as part of registration so the new Agent's Sessions
+    // drawer and message routing can use that history immediately. Discovery
+    // is read-only and never starts Claude; a missing/unavailable store must
+    // not roll back an otherwise valid Agent registration.
+    if (selection.provider === 'claude') {
+      try {
+        await syncAgentSessionHistory(db, bot.id);
+      } catch (error) {
+        console.warn('Claude session history was not available during Agent registration.', error);
+      }
+    }
     const conversation = conversations.getByBotId(bot.id);
     if (conversation) {
       uiTurns.enqueue(conversation.id, bot.id, { reason: 'greeting' });

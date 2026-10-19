@@ -51,6 +51,7 @@ const catalog = jiti('./lib/session-catalog.ts');
 const claude = jiti('./lib/claude-session-provider.ts');
 const store = jiti('./lib/claude-session-store.ts');
 const stream = jiti('./lib/claude-stream.ts');
+const botsRoute = jiti('./app/api/bots/route.ts');
 const db = dbModule.default;
 
 let failures = 0;
@@ -250,6 +251,37 @@ async function main() {
   const list = catalog.listAgentSessions(db, dev.id, 'all');
   assert(list.length === 4 && !ALL_IDS.test(JSON.stringify(list)) && !ALL_IDS.test(JSON.stringify(catalog.getAgentSession(db, dev.id, ref('a1')))),
     'the catalog shows the imported sessions under Botmancers references, never a Claude id');
+
+  const bulkWorkspace = path.join(WS, 'bulk');
+  const bulkProject = path.join(CONFIG, 'projects', store.projectSlug(bulkWorkspace));
+  fs.mkdirSync(bulkProject, { recursive: true });
+  for (let i = 0; i < 30; i++) {
+    const suffix = i.toString(16).padStart(12, '0');
+    const sessionId = `10000000-0000-4000-8000-${suffix}`;
+    fs.writeFileSync(path.join(bulkProject, `${sessionId}.jsonl`), [
+      JSON.stringify({ sessionId, cwd: bulkWorkspace, version: '2.1.302', type: 'user', timestamp: `2026-09-01T00:00:${String(i).padStart(2, '0')}.000Z`, message: { role: 'user', content: `Bulk history ${i}` } }),
+      JSON.stringify({ sessionId, cwd: bulkWorkspace, version: '2.1.302', type: 'assistant', timestamp: `2026-09-01T00:01:${String(i).padStart(2, '0')}.000Z`, message: { role: 'assistant', content: 'Done' } }),
+      '',
+    ].join('\n'));
+  }
+  const callsBeforeRegistration = calls().length;
+  const registeredResponse = await botsRoute.POST(new Request('http://localhost:3333/api/bots', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Registered with history',
+      runtime_connection_id: ids.laptop,
+      launch_profile: 'direct',
+      session_scope: { kind: 'workspaces', workspaces: [bulkWorkspace] },
+      policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    }),
+  }));
+  const registered = await registeredResponse.json();
+  assert(registeredResponse.status === 200
+    && count('SELECT COUNT(*) AS n FROM provider_sessions WHERE agent_id = ?', registered.id) === 30,
+  'registering a Claude Agent imports every page of its in-scope past sessions');
+  assert(calls().length === callsBeforeRegistration && !ALL_IDS.test(JSON.stringify(registered)),
+    'registration history import is read-only and exposes no Claude session id');
 
   console.log('\nTranscript pages');
   const pages = [];
