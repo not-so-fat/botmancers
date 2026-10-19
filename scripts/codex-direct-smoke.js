@@ -38,9 +38,15 @@ const redact = text => [...secrets].reduce((out, id) => out.split(id).join('[cod
 const log = (...parts) => console.log(redact(parts.map(p => (typeof p === 'string' ? p : JSON.stringify(p))).join(' ')));
 
 function agentDeckRunning() {
-  const ps = spawnSync('pgrep', ['-fl', 'agent-deck'], { encoding: 'utf8' });
-  const lines = (ps.stdout || '').split('\n').filter(line => line.trim() && !line.includes('pgrep') && !line.includes('codex-direct-smoke'));
-  return lines.length > 0;
+  const ps = spawnSync('pgrep', ['-f', '@agent-deck/backend'], { encoding: 'utf8' });
+  return (ps.stdout || '').split('\n').filter(line => line.trim()).length > 0;
+}
+
+// Open network sockets of this Botmancers process (the Codex app-server is a
+// child over stdio, so Botmancers itself should hold none).
+function ownSockets() {
+  const out = spawnSync('lsof', ['-a', '-p', String(process.pid), '-i', '-n', '-P'], { encoding: 'utf8' });
+  return (out.stdout || '').split('\n').slice(1).filter(line => line.trim()).length;
 }
 
 async function setup() {
@@ -54,7 +60,7 @@ async function setup() {
   log(`agent-deck process running: ${agentDeckRunning()}`);
   // A thread created outside Botmancers.
   const out = execFileSync(CODEX, ['exec', '--json', '--skip-git-repo-check', '-C', WORKSPACE, '-c', 'sandbox_mode="read-only"', '-'], {
-    input: 'Read NOTES.md and reply with one short sentence naming the codename.', encoding: 'utf8', timeout: 300_000,
+    input: 'Read NOTES.md and reply with one short sentence naming the codename.', encoding: 'utf8', timeout: 300_000, stdio: ['pipe', 'pipe', 'ignore'],
   });
   const started = out.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(e => e && e.type === 'thread.started');
   if (!started) throw new Error('codex exec reported no thread');
@@ -76,7 +82,7 @@ async function setup() {
 async function phase(name) {
   secrets.add(process.env.NOT504_THREAD);
   const { createJiti } = require('jiti');
-  const jiti = createJiti(__filename, { alias: { '@': ROOT } });
+  const jiti = createJiti(path.join(ROOT, 'index.js'), { alias: { '@': ROOT } });
   const dbModule = jiti('./lib/db.ts');
   const ps = jiti('./lib/provider-sessions.ts');
   const codex = jiti('./lib/codex-session-provider.ts');
@@ -128,9 +134,9 @@ async function phase(name) {
   log(`usage: ${event ? JSON.stringify(JSON.parse(event.detail).usage ?? null) : 'none'}`);
   const views = JSON.stringify([done, sent, ps.listProviderTurns(db, agentId, ref)]);
   log(`thread id in views: ${views.includes(process.env.NOT504_THREAD)}`);
-  log(`fetch calls (Agent Deck or other HTTP): ${fetchCalls}; agent-deck process running: ${agentDeckRunning()}`);
+  log(`fetch calls (Agent Deck or other HTTP): ${fetchCalls}; Botmancers network sockets: ${ownSockets()}; agent-deck backend process on this machine: ${agentDeckRunning()}`);
   codex.shutdownDefaultCodexRuntime();
-  if (done.state !== 'completed' || fetchCalls !== 0 || views.includes(process.env.NOT504_THREAD)) process.exit(1);
+  if (done.state !== 'completed' || fetchCalls !== 0 || ownSockets() !== 0 || views.includes(process.env.NOT504_THREAD)) process.exit(1);
   process.exit(0);
 }
 
