@@ -140,7 +140,11 @@ export interface ProviderTurnResult {
   provider_session_id: string;
   output: string | null;
   failure: { code: string; message: string } | null;
-  usage?: { input_tokens: number | null; output_tokens: number | null } | null;
+  // NOT-509: provider-reported usage for this turn, normalized
+  // (lib/usage usageFromEvent also accepts a Codex turn.completed or a
+  // Claude/Cursor result event here). cost_usd only when the provider
+  // reports it; null or absent values are unknown, never zero.
+  usage?: { input_tokens: number | null; output_tokens: number | null; cost_usd?: number | null } | Record<string, unknown> | null;
   finished_at: number;
 }
 

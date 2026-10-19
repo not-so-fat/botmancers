@@ -39,6 +39,8 @@ import {
   type TranscriptEntry,
 } from './session-provider';
 import type { AttemptCorrelation } from './attempt-adapter';
+import { usageFromEvent, type NormalizedUsage } from './usage';
+import { recordTurnUsageSample } from './usage-samples';
 
 type Db = Database.Database;
 
@@ -663,6 +665,12 @@ function requireTurn(db: Db, agentId: string, turnRef: string): TurnRow {
   return row;
 }
 
+// Malformed provider usage fails soft: the turn still finishes, its usage
+// unknown.
+function safeUsage(raw: unknown): NormalizedUsage | null {
+  try { return usageFromEvent(raw); } catch { return null; }
+}
+
 // Records a terminal provider result once. Later calls find the turn
 // terminal and change nothing (no duplicate events).
 function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: number): void {
@@ -673,6 +681,13 @@ function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: numb
     `).run(state, typeof result.output === 'string' ? result.output : null, result.failure ? String(result.failure.code).slice(0, 100) : null,
       typeof result.finished_at === 'number' ? result.finished_at : now, turn.id).changes;
     if (changed === 0) return;
+    // NOT-509: the turn's one usage sample, keyed by the turn: a repeated
+    // observe after a restart never adds a second one.
+    const session = db.prepare('SELECT provider_kind FROM provider_sessions WHERE id = ?').get(turn.session_ref) as { provider_kind: string } | undefined;
+    recordTurnUsageSample(db, turn.id, turn.session_ref, {
+      agentId: turn.agent_id, provider: session?.provider_kind ?? 'unknown', usage: safeUsage(result.usage),
+      observedAt: typeof result.finished_at === 'number' ? result.finished_at : now, now,
+    });
     db.prepare(`
       UPDATE provider_sessions SET busy = CASE WHEN EXISTS (
         SELECT 1 FROM provider_session_turns WHERE session_ref = ? AND state = 'running') THEN 1 ELSE 0 END,
