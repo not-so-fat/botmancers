@@ -279,7 +279,7 @@ function execMode(argv) {
   process.stdin.on('end', () => {
     const out = line => process.stdout.write(`${line}\n`);
     const threadId = mutate(state => {
-      state.calls.push({ method: 'exec', params: { args: argv, cwd: process.cwd(), prompt } });
+      state.calls.push({ method: 'exec', params: { args: ['exec', ...argv], cwd: process.cwd(), prompt } });
       let tid = resume ? positional[0] : null;
       if (!tid) {
         tid = nextId(state, 'thr');

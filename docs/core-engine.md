@@ -166,8 +166,9 @@ A **SessionProvider** (`lib/session-provider.ts`) is the transport-neutral
 boundary to the sessions a coding-agent runtime holds natively, including ones
 that existed before Botmancers. It is selected by the registered Agent's
 runtime connection (`registerSessionProvider({ connectionId } | { provider })`),
-never by Agent Deck; nothing is registered by default, so real runtime
-adapters land separately. `AttemptAdapter` remains the per-turn seam of the
+never by Agent Deck. The direct Codex provider is installed by default for
+`codex` connections ([integrations/codex-direct.md](integrations/codex-direct.md));
+explicit registrations win. `AttemptAdapter` remains the per-turn seam of the
 Work Request engine.
 
 - **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,
