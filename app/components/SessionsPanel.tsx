@@ -372,7 +372,7 @@ function SessionUsageDetail({ totals, samples }: { totals: SessionUsageRow | und
             const values = usageSampleValues(sample);
             return (
               <li key={`${sample.observed_at}-${i}`}>
-                <span className="session-usage-run">{formatSessionDate(sample.observed_at)} · {usageSampleLabel(sample)}</span>
+                <span className="session-usage-run">{formatSessionDate(sample.observed_at)} · {usageSampleLabel(sample, i)}</span>
                 <span className="session-usage-values">
                   <span className={sample.input_tokens === null ? 'is-unavailable' : undefined}>In {values.input}</span>
                   <span className={sample.output_tokens === null ? 'is-unavailable' : undefined}>Out {values.output}</span>

@@ -191,7 +191,7 @@ async function run() {
     })`);
     check(claudeDetail.totals[0] === 'Input tokens: 1,203,456 / All 2 runs reported' && claudeDetail.totals[2] === 'Cost: $3.34 / All 2 runs reported',
       `Claude details totals: ${claudeDetail.totals.join(' | ')}`);
-    check(/Started · run 1.*In 18,240.*Out 3,512.*Cost \$0\.42/.test(claudeDetail.runs[0]) && /Resumed · run 1.*In 1,185,216.*Cost \$2\.92/.test(claudeDetail.runs[1]),
+    check(/Run 1 · started.*In 18,240.*Out 3,512.*Cost \$0\.42/.test(claudeDetail.runs[0]) && /Run 2 · resumed.*In 1,185,216.*Cost \$2\.92/.test(claudeDetail.runs[1]),
       'Claude details list per-run usage');
     await layout('Claude details');
     await shot(vp, 'usage-details-complete', `${rowOf(TITLES.claude)}.querySelector('.session-usage-detail')`);
@@ -203,7 +203,7 @@ async function run() {
       totals: [...document.querySelectorAll('.session-usage-totals > div')].map(d => d.querySelector('dt').textContent.trim() + ': ' + d.querySelector('.session-usage').textContent.trim() + ' / ' + d.querySelector('.session-usage-coverage').textContent.trim()),
       runs: [...document.querySelectorAll('.session-usage-runs li')].map(li => li.textContent.trim()),
     })`);
-    check(partialDetail.totals[0] === 'Input tokens: 9,876 / Partial: 1 of 2 runs reported' && partialDetail.totals[2] === 'Cost: Not reported / Not reported by any of 2 runs',
+    check(partialDetail.totals[0] === 'Input tokens: 9,876 / Partial: 1 of 2 runs reported' && partialDetail.totals[2] === 'Cost: Not reported / 0 of 2 runs reported',
       `partial details totals: ${partialDetail.totals.join(' | ')}`);
     check(/In Not reported.*Out Not reported.*Cost Not reported/.test(partialDetail.runs[1]) && !/\$/.test(partialDetail.runs.join(' ')),
       'the interrupted run reads Not reported; no dollar value anywhere in the partial session');

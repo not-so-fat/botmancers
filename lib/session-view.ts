@@ -164,7 +164,7 @@ export interface UsageMetricView {
 export function usageMetricView(name: keyof SessionUsageRow, metric: UsageMetricRow | undefined, full = false): UsageMetricView {
   const title = METRIC_NAMES[name];
   if (!metric || metric.quality === 'unavailable' || metric.sum === null) {
-    const coverage = metric && metric.total > 0 ? `Not reported by any of ${runs(metric.total)}` : 'No reported runs';
+    const coverage = metric && metric.total > 0 ? `0 of ${runs(metric.total)} reported` : 'No runs recorded';
     return { name: title, text: NOT_REPORTED, quality: 'unavailable', coverage, label: `${title}: not reported` };
   }
   const value = metricValue(name, metric.sum, full);
@@ -209,11 +209,13 @@ export function sessionUsageLine(usage: SessionUsageRow | undefined): SessionUsa
   return { text, label: `Reported usage: ${views.map(view => view.label).join('; ')}`, quality, partial };
 }
 
-// One run or turn in the details list.
-export function usageSampleLabel(sample: SessionUsageSampleRow): string {
-  if (sample.kind === 'turn') return sample.turn_kind === 'start' ? 'Started (provider turn)' : 'Provider turn';
-  const what = sample.turn_kind === 'resume' ? 'Resumed' : 'Started';
-  return sample.attempt_number !== null ? `${what} · run ${sample.attempt_number}` : what;
+// One run or turn in the details list, numbered within the session
+// (index is its position, oldest first).
+export function usageSampleLabel(sample: SessionUsageSampleRow, index: number): string {
+  const what = sample.kind === 'turn'
+    ? (sample.turn_kind === 'start' ? 'provider turn, started' : 'provider turn')
+    : (sample.turn_kind === 'resume' ? 'resumed' : 'started');
+  return `Run ${index + 1} · ${what}`;
 }
 
 export function usageSampleValues(sample: SessionUsageSampleRow): { input: string; output: string; cost: string } {

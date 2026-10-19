@@ -425,10 +425,12 @@ function uiFixtures(fixture) {
   assert(view.formatUsd(0) === '$0.00' && view.formatUsd(0.0042) === '$0.0042' && view.formatUsd(0.00001) === '<$0.0001'
     && view.formatUsd(0.4213) === '$0.42' && view.formatUsd(12345.678) === '$12,345.68', 'cost formatting: a small cost never rounds to $0.00');
   const unknownMetric = view.usageMetricView('cost_usd', { sum: null, known: 0, total: 2, quality: 'unavailable' }, true);
-  assert(unknownMetric.text === 'Not reported' && unknownMetric.coverage === 'Not reported by any of 2 runs', 'detail coverage for an unreported metric');
+  assert(unknownMetric.text === 'Not reported' && unknownMetric.coverage === '0 of 2 runs reported', 'detail coverage for an unreported metric');
   const partialMetric = view.usageMetricView('input_tokens', rows[fixture.sessions.partial.id].usage.input_tokens, true);
   assert(partialMetric.text === '9,876' && partialMetric.coverage === 'Partial: 1 of 2 runs reported', 'detail coverage for a partial metric');
   const values = view.usageSampleValues({ kind: 'attempt', attempt_number: 1, turn_kind: 'resume', provider: 'codex', source: 'none', input_tokens: null, output_tokens: 0, cost_usd: null, observed_at: 0 });
+  assert(view.usageSampleLabel({ kind: 'attempt', turn_kind: 'resume' }, 1) === 'Run 2 · resumed'
+    && view.usageSampleLabel({ kind: 'turn', turn_kind: 'send' }, 0) === 'Run 1 · provider turn', 'runs are numbered within the session');
   assert(values.input === 'Not reported' && values.output === '0' && values.cost === 'Not reported', 'per-run values: unknown vs reported zero');
 
   console.log('\nSessions UI source contract');
