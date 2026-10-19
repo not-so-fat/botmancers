@@ -28,7 +28,8 @@ const providerArg = process.argv.indexOf('--provider');
 const MUSE_PROVIDER = providerArg > 0 ? process.argv[providerArg + 1] : 'echo';
 const MUSE_BIN = process.env.BOTMANCERS_MUSE_BIN || 'muse';
 
-const redactIds = text => String(text).replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[muse-id]');
+// Muse session and turn ids are UUIDv7; Botmancers references (UUIDv4) stay visible.
+const redactIds = text => String(text).replace(/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[muse-id]');
 const say = line => console.log(redactIds(line));
 
 if (PHASE === 'main') main();
@@ -100,7 +101,7 @@ async function phase(name) {
   let fetchCalls = 0;
   globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled in this smoke'); };
   const { createJiti } = require('jiti');
-  const jiti = createJiti(__filename, { alias: { '@': ROOT } });
+  const jiti = createJiti(path.join(ROOT, 'package.json'), { alias: { '@': ROOT } });
   const dbModule = jiti('./lib/db.ts');
   const ps = jiti('./lib/provider-sessions.ts');
   const catalog = jiti('./lib/session-catalog.ts');
