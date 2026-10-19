@@ -1,6 +1,6 @@
 ---
 name: botmancers-collaboration
-description: Work with other Botmancers Agents and their sessions through the Botmancers MCP server (botmancers_* tools). Use when the user asks to message, ask, or hand work to a Botmancers Agent (for example Codex or Grok), continue an Agent's session, hand off a task between Agents, or check an exchange or conversation result.
+description: Work with other Botmancers Agents and their sessions through the Botmancers MCP server (botmancers_* tools). Use when the user asks to message, ask, or hand work to a Botmancers Agent (for example Codex or Grok), ask several questions in or resume one of an Agent's past sessions, hand off a task between Agents, or check an exchange, pin, or conversation result.
 license: MIT
 compatibility: Needs an MCP connection to the Botmancers bridge (contract botmancers.mcp.v2). The MCP tools work without this skill.
 ---
@@ -24,7 +24,9 @@ every flow and the recovery for every error.
    `botmancers_list_sessions` for that Agent. Match on the session `title`
    and `status`. Messages, `Ask`, and `Continue` all run in the source
    session, so it must be `active` and `resumable`. If the history matters,
-   call `botmancers_list_conversations`. If only one session title
+   call `botmancers_list_conversations`. Each session's `actions` says
+   whether Ask from this context, Resume work here, and Hand off to… are
+   available now. If only one session title
    contains the user's words, use that session. If the words fit more than
    one title (for example "pricing research" fits both "Pricing research"
    and "Pricing research follow-up"), show the user those titles and ask
@@ -39,7 +41,10 @@ Check the rows in order and use the first one that fits:
 | New work for a coordinator, with no existing session | Fresh task | `botmancers_health`, `botmancers_start_task`, `botmancers_get_request`, `botmancers_get_conversation` |
 | A new instruction or further work for the Agent that owns an `active`, `resumable` session, in that same session | Same-session message | `botmancers_send_to_session`, `botmancers_get_exchange` |
 | An answer to a question about what a session already did, decided, or knows | `Ask` | `botmancers_create_exchange` (`mode: "ask"`), `botmancers_get_exchange` |
-| Another Agent should carry the work on in a fresh session of its own | `Continue` | `botmancers_create_exchange` (`mode: "continue"`, `destination.agent_id`), `botmancers_get_exchange` |
+| Another Agent should carry the work on in a fresh session of its own (Hand off to…) | `Continue` | `botmancers_create_exchange` (`mode: "continue"`, `destination.agent_id`), `botmancers_get_exchange` |
+| Several questions, one after another, in one past session (Ask from this context) | Pinned ask | `botmancers_pin_session` (`action: "ask"`), `botmancers_send_to_pin`, `botmancers_get_pin`, `botmancers_detach_pin` |
+| Edits in that exact session, approved by the user (Resume work here) | Resume work here | `botmancers_pin_session` (`action: "resume"`, `approve_write: true`), `botmancers_send_to_pin`, `botmancers_get_pin`, `botmancers_detach_pin` |
+| A message to a named Agent, with no session named | Message an Agent | `botmancers_message_agent`, `botmancers_get_pin`, `botmancers_send_to_pin` |
 
 - A question about a session's earlier work is an `Ask`, even when the user
   names that session ("ask Grok in the uploader review whether the cap is
@@ -54,10 +59,17 @@ Check the rows in order and use the first one that fits:
   runtime, model, tool profile, and destination session. Never pass them.
 - Pick a new `idempotency_key` for each new action, and reuse it only to
   retry that same action with the same arguments.
+- A pin (from `botmancers_pin_session` or `botmancers_message_agent`) keeps
+  every `botmancers_send_to_pin` on that exact session. Keep using its
+  `pin_ref` for follow-ups; switch only with `replace_pin_ref`, and call
+  `botmancers_detach_pin` when done. Set `approve_write` only after the
+  user explicitly approved edits. See
+  [pinned sessions](references/workflows.md#pinned-session).
 
 ## 3. Observe
 
-Poll `botmancers_get_request` (fresh task) or `botmancers_get_exchange`
+Poll `botmancers_get_request` (fresh task), `botmancers_get_pin` (a pin,
+until the turn is not `running`), or `botmancers_get_exchange`
 (everything else) until `terminal` is true. Wait 2 seconds first, then
 double the wait up to 30 seconds, or use `polling` from
 `botmancers_capabilities`. Stop after about 10 minutes and report the
@@ -83,8 +95,11 @@ stop.
 - `grant_required`, `agent_not_found`, `session_not_found`: tell the user the
   Agent or session does not exist or is not granted to you. Only the
   Botmancers owner can grant access. You cannot.
-- `session_ended`, `session_not_resumable`: tell the user, list that Agent's
-  `active` sessions, and let the user choose.
+- `session_ended`, `session_not_resumable`, `session_missing`: tell the
+  user, list that Agent's sessions, and let the user choose.
+- Any error with `recovery`: follow it (`ask_owner`, `approve_write`,
+  `choose_session`, `pin_again`). `workspace_required` and
+  `no_eligible_session` need the owner; a pin never moves on its own.
 - `idempotency_conflict`, `exchange_terminal`, `conflict`: read the existing
   exchange first, then decide.
 - A terminal `failed` or `cancelled` exchange: report `failure.code` and its

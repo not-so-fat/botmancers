@@ -273,6 +273,44 @@ never 0 unless the provider said 0.
   reported" for unknown values, labels partial coverage Partial with how
   many runs reported, and lists per-run usage in Details.
 
+### Session pins
+
+NOT-507 (`lib/session-pins.ts`, `lib/session-actions.ts`, engine migration
+20). A pin is one requester's multi-turn conversation held on exactly one
+session. Two address forms create one:
+
+- **Registered Agent.** The caller names only the Agent. Botmancers uses its
+  configured home session; else the newest eligible session in its scope
+  (archived but resumable counts; a busy one is waited on, never bypassed);
+  else, only when the Agent's policy allows new sessions and a default (or
+  the single selected) workspace exists, a new read-only session (a service
+  also needs `sessions:start`). Otherwise the answer is `workspace_required`
+  or `no_eligible_session`: a missing workspace never means unrestricted.
+- **Exact session.** The caller names a session reference.
+
+Every later turn goes to the pinned `session_ref` and nowhere else, across
+restarts, until the requester detaches the pin or switches (a new pin that
+replaces it in the same commit). A refused or failed turn (busy, missing,
+provider failure) is recorded as a `turn_refused` event and leaves the pin
+where it was; the `session_ref` column is immutable.
+
+The three session actions, shared by the Sessions view, the owner routes,
+the service API, and MCP:
+
+- **Ask from this context.** Read-only turns pinned to the source session.
+- **Resume work here.** The same Agent in the same exact session with
+  workspace-write authority, only when the runtime enforces it, the Agent's
+  policy allows resuming with edits, and the requester explicitly approved
+  (`approved_at`).
+- **Hand off to….** The Continue exchange below, unchanged: a bounded
+  packet to a different Agent in a fresh destination-owned session.
+
+`session_pins` holds the pin (requester, idempotency key, Agent, session,
+action, authority, resolution, route, conversation, approval, state);
+`session_pin_turns` one row per turn (a provider turn or an Ask exchange);
+`session_pin_events` the append-only audit. Rows name Botmancers references
+only, never a provider id or workspace.
+
 ### Session exchanges
 
 The owner can target one session by its reference in two explicit ways

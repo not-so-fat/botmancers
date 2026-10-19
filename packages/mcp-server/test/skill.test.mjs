@@ -214,7 +214,11 @@ function idsIn(value, out = []) {
 
 test('the decision table in SKILL.md names a tool sequence for each action', () => {
   const table = decisionTable();
-  assert.deepEqual([...table.keys()], ['Fresh task', 'Same-session message', 'Ask', 'Continue']);
+  assert.deepEqual([...table.keys()], ['Fresh task', 'Same-session message', 'Ask', 'Continue', 'Pinned ask', 'Resume work here', 'Message an Agent']);
+  // NOT-507: the pin actions.
+  assert.deepEqual(table.get('Pinned ask'), ['botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin']);
+  assert.deepEqual(table.get('Resume work here'), ['botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin']);
+  assert.deepEqual(table.get('Message an Agent'), ['botmancers_message_agent', 'botmancers_get_pin', 'botmancers_send_to_pin']);
   assert.deepEqual(table.get('Same-session message'), ['botmancers_send_to_session', 'botmancers_get_exchange']);
   assert.deepEqual(table.get('Ask'), ['botmancers_create_exchange', 'botmancers_get_exchange']);
   assert.deepEqual(table.get('Continue'), ['botmancers_create_exchange', 'botmancers_get_exchange']);

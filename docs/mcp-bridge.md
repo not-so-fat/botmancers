@@ -109,6 +109,11 @@ and the Agent's stored configuration.
 | 4 act, exchange | `botmancers_create_exchange` | `exchanges:create` on every Agent involved | `mode` (`ask`, `continue`), `source` (`session_ref`, optional `agent_id`), `destination` (`agent_id`, optional `conversation_id`; Continue only), optional `origin_conversation_id`, `instruction`, `idempotency_key` | `exchange` (full view with `exchanges:read`, else status metadata), `replayed`, `terminal` |
 | 5 observe | `botmancers_get_exchange` | `exchanges:read` on every Agent involved | `exchange_id` | `exchange` (state, `answer`, `packet`, `failure`, `events`), `terminal`, `content_trust: "untrusted"` |
 | 5 observe | `botmancers_list_exchanges` | `exchanges:read` | `cursor`, `limit` | `items` (status metadata, session messages included), `next_cursor` |
+| 4 act, registered Agent | `botmancers_message_agent` | `sessions:message` (a new session also `sessions:start`) | `agent_id`, `content`, `idempotency_key` | `pin`, `turn`, `resolution` (`home`, `newest`, `started`), `replayed` |
+| 4 act, exact session | `botmancers_pin_session` | `sessions:message` (`ask`) or `sessions:resume` (`resume`) | `session_ref`, `action` (`ask`, `resume`), `approve_write`, optional `replace_pin_ref`, `idempotency_key` | `pin`, `replaced_pin_ref`, `replayed` |
+| 4 act, pinned | `botmancers_send_to_pin` | the pin's | `pin_ref`, `content`, `idempotency_key` | `pin`, `turn`, `replayed` |
+| 5 observe | `botmancers_get_pin` | the pin's | `pin_ref` | `pin`, `turns` (state, `answer`), `content_trust: "untrusted"` |
+| stop | `botmancers_detach_pin` | the pin's | `pin_ref` | `pin`, `replayed` |
 
 - **Discover.** `botmancers_capabilities` lists only what this principal was
   granted. Without a grants document the bridge is in `narrow` mode and only
@@ -123,6 +128,21 @@ and the Agent's stored configuration.
   (no destination); with `mode: "continue"` the source session writes a
   bounded handoff packet and the destination Agent starts a fresh session of
   its own from it.
+- **Pin (NOT-507).** `botmancers_message_agent` addresses a registered
+  Agent without a session: Botmancers resolves its home session, else its
+  newest eligible session, else (policy, default workspace, and
+  `sessions:start`) a new read-only one, or answers `workspace_required` /
+  `no_eligible_session`. `botmancers_pin_session` pins an exact session for
+  **Ask from this context** (`action: "ask"`, read-only) or **Resume work
+  here** (`action: "resume"`, workspace write, `approve_write: true` after
+  the user's explicit approval). Every `botmancers_send_to_pin` goes to the
+  pinned session, across restarts, until `botmancers_detach_pin` or a switch
+  (`replace_pin_ref`); a busy, missing, or failing session is an error on
+  the pin, never a silent retarget. **Hand off to…** is
+  `botmancers_create_exchange` `mode: "continue"`. `botmancers_list_sessions`
+  items carry additive `home` and `actions` (each action's availability,
+  reason, and `recovery`); `botmancers_list_agents` items carry additive
+  `messaging`.
 - **Observe.** Poll `botmancers_get_exchange` with the returned `exchange_id`
   until `terminal` is true; then read `exchange.answer` (Ask and session
   message) or `exchange.packet` and the destination conversation (Continue).
@@ -156,7 +176,9 @@ with `retry_after_seconds`.
 ### v2 errors
 
 A v2 failure is a tool result with `isError: true` and
-`structuredContent: { contract: "botmancers.mcp.v2", error: { code, message, retryable, fields?, retry_after_seconds? } }`.
+`structuredContent: { contract: "botmancers.mcp.v2", error: { code, message, retryable, fields?, retry_after_seconds?, recovery? } }`.
+`recovery` (NOT-507, additive) is one of `retry_later`, `choose_session`,
+`choose_action`, `ask_owner`, `approve_write`, `pin_again`.
 A rejected call writes nothing. Each tool lists the codes it can return in
 `_meta["botmancers/errors"]`.
 
@@ -213,6 +235,14 @@ A rejected call writes nothing. Each tool lists the codes it can return in
 | `payload_too_large` | The request is too large. | Shorten `content` or `instruction`. |
 | `rate_limited` | Over the service limit (retryable; `retry_after_seconds`). | Wait that long, then retry with the same key. |
 | `internal_error` | Unexpected failure (retryable). | Retry with the same key; mutations stay idempotent. |
+| `pin_not_found` | No such pin of this caller, or its grant was withdrawn. | Pin a session again. |
+| `pin_detached` | The pin was detached or switched. | Use the replacing pin, or pin again. |
+| `workspace_required` | The Agent has no session that can take a message and no default workspace for a new one. | Ask the owner to set one, or pin one of its sessions. |
+| `no_eligible_session` | No session can take a message and a new one is not allowed. | Ask the owner, or pin one of its sessions. |
+| `session_missing` | The runtime no longer has the session (the pin stays on it). | Choose another session and switch. |
+| `action_unavailable` | The runtime cannot do this action on this session. | Choose another action (see `actions`). |
+| `approval_required` | Resume work here needs `approve_write: true`. | Ask the user to approve edits first. |
+| `provider_failed` | The runtime failed the turn (retryable; the pin stays). | Retry later with the same key. |
 
 A target outside the caller's grants is answered exactly like a missing one.
 A terminal exchange carries its own stable `failure.code` (for example

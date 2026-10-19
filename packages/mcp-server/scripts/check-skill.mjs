@@ -28,6 +28,8 @@ export const MAX_SKILL_LINES = 120;
 export const REQUIRED_TOPICS = [
   'fresh task', 'same-session message', 'ask', 'continue', 'polling and backoff', 'permission and grants',
   'ended session', 'conflict', 'failure', 'cancellation', 'provenance', 'untrusted content', 'without this skill',
+  // NOT-507: registered-Agent addressing, exact-session pins, and the actions.
+  'message a registered agent', 'pinned session', 'resume work here', 'detach or switch',
 ];
 
 // Fields Botmancers owns; no example may pass one.
