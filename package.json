@@ -6,6 +6,7 @@
     "dev": "next dev -H 127.0.0.1 -p 3333",
     "build": "next build",
     "start": "next start -H 127.0.0.1 -p 3333",
+    "release:ship": "node packages/mcp-server/scripts/release-ship.mjs",
     "release:tag:push": "node packages/mcp-server/scripts/release-tag.mjs",
     "release:publish": "node packages/mcp-server/scripts/release-publish.mjs",
     "lint": "eslint",

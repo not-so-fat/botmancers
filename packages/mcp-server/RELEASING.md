@@ -100,7 +100,12 @@ runner.
    npm run release:tag:push    # tags origin/main, never the working tree
    ```
 
-   It reads the version from `origin/main`, requires the CHANGELOG entry, and
+   `npm run release:ship -- <pr-number>` does the merge, this tag step, and
+   the wait for the workflow in one command, once the PR's checks are green.
+   Agents use it, so no per-command approval of `gh pr merge` is needed;
+   `npm run release:ship -- <pr-number> --dry` previews.
+
+   `release:tag:push` reads the version from `origin/main`, requires the CHANGELOG entry, and
    refuses to reuse a tag that exists on the remote or exists locally at a
    different commit. `npm run release:tag:push -- --dry` previews. Use it
    instead of tagging by hand.
