@@ -1,51 +1,56 @@
-commit b1be3d0cf1f316be179ed3da39952dc425d47910
-botmancers@0.3.0  botmancers-0.3.0.tgz
-size 13759179 B, unpacked 39072676 B, 1544 files
-shasum 283411e02189584f801a6a697f0a7841ab39ff90
-integrity sha512-ECSjsdWC7uQWeN1z7VIMXFsUGN8JEr0FtneTfr7DKnvbcULL0eJXHHsSWHguqiQY3QEDkmlA/KguvAt6yRVJWQ==
-app build 0.3.0 commit b1be3d0cf1f316be179ed3da39952dc425d47910, next 16.3.8
+commit 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae
+botmancers@0.5.0  botmancers-0.5.0.tgz
+size 17637060 B, unpacked 51606631 B, 1782 files
+shasum bba28cb05664bbda6780e2cdb7dff82ae953a8dd
+integrity sha512-x9RhEE165u7j6f19lTBxiW/kQIKF3m0IUpMvsOLLjX4X1KQoPK8KktMeiPXg0SC13SulLm2o7r8iFdNzksOrMw==
+app build 0.5.0 commit 1d26bbcb2dbf6f6dbad8df5a4d662d2b7fa5c5ae, next 16.3.8
      143  app/BUILD_INFO.json
       94  app/package.json
     7455  app/server.js
-    4912  CHANGELOG.md
-    2686  dist/cli.d.ts
-    9940  dist/cli.js
-    1071  dist/config.d.ts
-    8203  dist/config.js
-     839  dist/contract.d.ts
-    1667  dist/contract.js
-    1778  dist/home.d.ts
-    5076  dist/home.js
-     697  dist/index.d.ts
-     732  dist/index.js
+    9735  CHANGELOG.md
+    3136  dist/cli.d.ts
+   11631  dist/cli.js
+    3248  dist/clients.d.ts
+   30465  dist/clients.js
+    1120  dist/config.d.ts
+    8249  dist/config.js
+    1201  dist/contract.d.ts
+    3515  dist/contract.js
+    1777  dist/home.d.ts
+    5075  dist/home.js
+     781  dist/index.d.ts
+     870  dist/index.js
     6308  dist/managed.d.ts
-   34176  dist/managed.js
-    4096  dist/product.d.ts
-   50000  dist/product.js
+   34597  dist/managed.js
+    4161  dist/product.d.ts
+   50477  dist/product.js
      181  dist/redact.d.ts
      762  dist/redact.js
     1003  dist/server.d.ts
-   11543  dist/server.js
+   11630  dist/server.js
      687  dist/setup.d.ts
     7246  dist/setup.js
     2092  dist/upgrade.d.ts
    13974  dist/upgrade.js
     1018  dist/upstream.d.ts
-    5815  dist/upstream.js
+    6906  dist/upstream.js
     1071  LICENSE
-    2125  package.json
-   19081  README.md
+    2271  package.json
+   28131  README.md
    14714  schemas/botmancers.mcp.v1.tools.json
-    2212  app/.next/app-path-routes-manifest.json  (1 files)
+  152373  schemas/botmancers.mcp.v2.tools.json
+   14097  skills/botmancers-collaboration/references/workflows.md
+    6869  skills/botmancers-collaboration/SKILL.md
+    3962  app/.next/app-path-routes-manifest.json  (1 files)
       21  app/.next/BUILD_ID  (1 files)
      645  app/.next/build-manifest.json  (1 files)
      120  app/.next/node_modules/  (2 files)
       20  app/.next/package.json  (1 files)
-    3250  app/.next/prerender-manifest.json  (1 files)
+    3969  app/.next/prerender-manifest.json  (1 files)
    10124  app/.next/required-server-files.json  (1 files)
-    8996  app/.next/routes-manifest.json  (1 files)
- 4259226  app/.next/server/  (399 files)
-  898351  app/.next/static/  (26 files)
+   15128  app/.next/routes-manifest.json  (1 files)
+16436538  app/.next/server/  (628 files)
+ 1018515  app/.next/static/  (30 files)
    11000  app/node_modules/@next/env@16.3.8  (2 files)
    30691  app/node_modules/@swc/helpers@0.5.23  (5 files)
 16927356  app/node_modules/better-sqlite3@13.0.3  (33 files)
