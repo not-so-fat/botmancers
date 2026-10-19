@@ -3546,7 +3546,8 @@
           "provider_failed",
           "idempotency_conflict",
           "pin_detached"
-        ]
+        ],
+        "botmancers/optional": true
       }
     },
     {
@@ -3780,7 +3781,8 @@
           "agent_unavailable",
           "provider_failed",
           "idempotency_conflict"
-        ]
+        ],
+        "botmancers/optional": true
       }
     },
     {
@@ -4082,7 +4084,8 @@
           "provider_failed",
           "idempotency_conflict",
           "payload_too_large"
-        ]
+        ],
+        "botmancers/optional": true
       }
     },
     {
@@ -4365,7 +4368,8 @@
           "rate_limited",
           "internal_error",
           "pin_not_found"
-        ]
+        ],
+        "botmancers/optional": true
       }
     },
     {
@@ -4553,7 +4557,8 @@
           "rate_limited",
           "internal_error",
           "pin_not_found"
-        ]
+        ],
+        "botmancers/optional": true
       }
     }
   ]

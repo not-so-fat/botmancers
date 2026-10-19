@@ -273,6 +273,35 @@ async function main() {
   await rejects(pins.createPin({ requester: grok, sessionRef: readerRef, action: 'resume', approveWrite: true, idempotencyKey: 'r2' }),
     'authority_not_allowed', 'a read-only Agent policy refuses resume even with approval');
 
+  console.log('\nOwner routes: the Sessions drawer');
+  const ownerPinRoute = jiti('./app/api/bots/[id]/sessions/[ref]/pins/route.ts');
+  const ownerListRoute = jiti('./app/api/bots/[id]/sessions/route.ts');
+  const ownerConv = dbModule.conversations.getByBotId(writer.id).id;
+  const ownerPost = (ref, body) => ownerPinRoute.POST(
+    new Request('http://local/x', { method: 'POST', body: JSON.stringify(body) }),
+    { params: Promise.resolve({ id: writer.id, ref }) },
+  ).then(async res => ({ status: res.status, json: await res.json() }));
+  const listRes = await ownerListRoute.GET(new Request('http://local/x?status=all'), { params: Promise.resolve({ id: writer.id }) });
+  const listJson = await listRes.json();
+  const ownerRow = listJson.sessions.find(row => row.ref === pin2);
+  assert(listRes.status === 200 && ownerRow && ownerRow.route === 'provider' && ownerRow.home === false && ownerRow.actions.resume.available === true
+    && !JSON.stringify(listJson).match(SECRET), 'owner session list: route, home, and per-action availability, no provider id');
+  const ownerPinsBefore = count('SELECT COUNT(*) AS n FROM session_pins');
+  const noApproval = await ownerPost(pin2, { action: 'resume', content: 'Apply it', conversation_id: ownerConv, idempotency_key: 'own-r0' });
+  assert(noApproval.status === 403 && noApproval.json.error.code === 'approval_required' && noApproval.json.error.recovery === 'approve_write'
+    && count('SELECT COUNT(*) AS n FROM session_pins') === ownerPinsBefore, 'owner Resume work here without approval: approval_required, nothing written');
+  const ownerSendsBefore = sendsTo('pin-2-SECRET');
+  const ownerResume = await ownerPost(pin2, { action: 'resume', content: 'Apply it', conversation_id: ownerConv, approve_write: true, idempotency_key: 'own-r1' });
+  assert(ownerResume.status === 202 && ownerResume.json.pin.session.ref === pin2 && ownerResume.json.pin.authority === 'workspace_write' && ownerResume.json.pin.approved === true
+    && !JSON.stringify(ownerResume.json).match(SECRET), 'owner Resume work here with approval: 202, pinned to the exact session, workspace write');
+  const ownerReplay = await ownerPost(pin2, { action: 'resume', content: 'Apply it', conversation_id: ownerConv, approve_write: true, idempotency_key: 'own-r1' });
+  assert(ownerReplay.status === 200 && ownerReplay.json.replayed === true && ownerReplay.json.pin.pin_ref === ownerResume.json.pin.pin_ref
+    && count('SELECT COUNT(*) AS n FROM session_pins') === ownerPinsBefore + 1, 'owner replay of the same key: 200, the same pin, one row');
+  await pins.readPin(dbModule.UI_OWNER_PRINCIPAL, ownerResume.json.pin.pin_ref);
+  assert(sendsTo('pin-2-SECRET') === ownerSendsBefore + 1, 'the owner turn reached exactly the selected session, once');
+  const badField = await ownerPost(pin2, { action: 'resume', content: 'x', conversation_id: ownerConv, approve_write: true, idempotency_key: 'own-r2', runtime: 'claude' });
+  assert(badField.status === 400 && badField.json.error.code === 'invalid_request', 'owner route refuses a caller-chosen execution control');
+
   console.log('\nDetach and switch');
   const switched = await pins.createPin({ requester: grok, sessionRef: pin2, action: 'ask', idempotencyKey: 'p2', replacePinRef: pinRef });
   const old = pins.requirePin(grok, pinRef);

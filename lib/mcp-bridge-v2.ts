@@ -346,8 +346,11 @@ const operationItem = closed({
   agent_ids: { type: 'array', items: str, description: 'Agents it may be used with (empty for a tool that takes no Agent).' },
 });
 
-function meta(errors: McpV2ErrorCode[]) {
-  return { 'botmancers/contract': MCP_CONTRACT_V2, 'botmancers/errors': errors };
+// NOT-507: the registered-Agent and pin tools are additive v2 tools. They
+// carry botmancers/optional so a bridge from this release still accepts a
+// Botmancers that serves the original v2 surface without them.
+function meta(errors: McpV2ErrorCode[], options: { optional?: boolean } = {}) {
+  return { 'botmancers/contract': MCP_CONTRACT_V2, 'botmancers/errors': errors, ...(options.optional ? { 'botmancers/optional': true } : {}) };
 }
 
 const READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -544,7 +547,7 @@ export const MCP_V2_TOOLS = [
       replayed: bool,
     }),
     annotations: WRITE,
-    _meta: meta([...ACCESS_ERRORS, 'agent_not_found', 'workspace_required', 'no_eligible_session', ...PIN_TARGET_ERRORS, 'pin_detached']),
+    _meta: meta([...ACCESS_ERRORS, 'agent_not_found', 'workspace_required', 'no_eligible_session', ...PIN_TARGET_ERRORS, 'pin_detached'], { optional: true }),
   },
   {
     name: 'botmancers_pin_session',
@@ -570,7 +573,7 @@ export const MCP_V2_TOOLS = [
       replayed: bool,
     }),
     annotations: WRITE,
-    _meta: meta([...ACCESS_ERRORS, 'session_not_found', 'pin_not_found', 'pin_detached', 'action_unavailable', 'approval_required', ...PIN_TARGET_ERRORS]),
+    _meta: meta([...ACCESS_ERRORS, 'session_not_found', 'pin_not_found', 'pin_detached', 'action_unavailable', 'approval_required', ...PIN_TARGET_ERRORS], { optional: true }),
   },
   {
     name: 'botmancers_send_to_pin',
@@ -585,7 +588,7 @@ export const MCP_V2_TOOLS = [
     }),
     outputSchema: closed({ contract: contractField, pin: pinView, turn: pinTurnView, replayed: bool }),
     annotations: WRITE,
-    _meta: meta([...ACCESS_ERRORS, 'pin_not_found', 'pin_detached', ...PIN_TARGET_ERRORS, 'payload_too_large']),
+    _meta: meta([...ACCESS_ERRORS, 'pin_not_found', 'pin_detached', ...PIN_TARGET_ERRORS, 'payload_too_large'], { optional: true }),
   },
   {
     name: 'botmancers_get_pin',
@@ -595,7 +598,7 @@ export const MCP_V2_TOOLS = [
     inputSchema: closed({ pin_ref: pinRefArg }),
     outputSchema: closed({ contract: contractField, pin: pinView, turns: { type: 'array', items: pinTurnView }, content_trust: contentTrust }),
     annotations: READ,
-    _meta: meta([...ACCESS_ERRORS, 'pin_not_found']),
+    _meta: meta([...ACCESS_ERRORS, 'pin_not_found'], { optional: true }),
   },
   {
     name: 'botmancers_detach_pin',
@@ -605,7 +608,7 @@ export const MCP_V2_TOOLS = [
     inputSchema: closed({ pin_ref: pinRefArg }),
     outputSchema: closed({ contract: contractField, pin: pinView, replayed: bool }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    _meta: meta([...ACCESS_ERRORS, 'pin_not_found']),
+    _meta: meta([...ACCESS_ERRORS, 'pin_not_found'], { optional: true }),
   },
 ];
 

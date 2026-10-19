@@ -17,6 +17,8 @@ function toolsFor(mode) {
   if (mode === 'generic') return [{ name: 'add', inputSchema: { type: 'object' } }];
   if (mode === 'partial_tools') return TOOLS.filter(tool => tool.name !== 'botmancers_start_task');
   if (mode === 'v1_only') return V1_TOOLS;
+  // NOT-507: a Botmancers from before the optional pin tools.
+  if (mode === 'v2_without_pins') return TOOLS.filter(tool => tool._meta?.['botmancers/optional'] !== true);
   if (mode === 'partial_v2') return TOOLS.filter(tool => !PARTIAL_V2_MISSING.includes(tool.name));
   if (mode === 'no_v2_path') return TOOLS.map(tool => (tool.name === 'botmancers_get_conversation' ? V1_TOOLS.find(v1 => v1.name === tool.name) : tool));
   return TOOLS;

@@ -9,6 +9,7 @@ export {
   TOOL_SCHEMA_URL,
   TOOL_SCHEMA_V1_URL,
   toolContractOf,
+  isOptionalTool,
   loadToolContract,
   negotiateProtocolVersion,
   packageVersion,

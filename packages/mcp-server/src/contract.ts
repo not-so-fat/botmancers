@@ -60,6 +60,12 @@ export function toolContractOf(tool: McpTool): string {
   return typeof meta === 'string' ? meta : MCP_CONTRACT;
 }
 
+// NOT-507: an additive v2 tool (registered-Agent messaging and session
+// pins) that an older Botmancers serving v2 may lack; never required.
+export function isOptionalTool(tool: McpTool): boolean {
+  return tool._meta?.['botmancers/optional'] === true;
+}
+
 export function negotiateProtocolVersion(requested: unknown): string {
   return typeof requested === 'string' && (MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
     ? requested
