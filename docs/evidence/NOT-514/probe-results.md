@@ -87,3 +87,12 @@ Interactive `/clear` and an interactive client restart cannot be driven headless
 4. Keep only the `present`, `shape`, and fingerprint-equality columns. Remove the MCP entry and unset the salt.
 
 The Cursor `--home` run has the same shape. It needs a logged-in Cursor and spends usage. It is the upgrade trigger recorded for Cursor in the matrix.
+
+## Local gate commands (Linux CI equivalent, run from the repository root)
+
+```sh
+npm run test:session-share-preflight
+cd packages/mcp-server && npm run build && npm run build:app && npm run release:check -- --out /tmp/not514-release.log
+```
+
+At 226df69 on macOS with Node 24, both commands exited 0. The release check ran `npm test` (108 passed, 0 failed), checked the package contents, ran `npm publish --dry-run`, and installed the exact tarball into a clean project. NOT-514 does not change `packages/mcp-server` or anything the release check packages.
