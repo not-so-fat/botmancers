@@ -95,4 +95,12 @@ npm run test:session-share-preflight
 cd packages/mcp-server && npm run build && npm run build:app && npm run release:check -- --out /tmp/not514-release.log
 ```
 
-At 226df69 on macOS with Node 24, both commands exited 0. The release check ran `npm test` (108 passed, 0 failed), checked the package contents, ran `npm publish --dry-run`, and installed the exact tarball into a clean project. NOT-514 does not change `packages/mcp-server` or anything the release check packages.
+At 226df69 on macOS, both commands exited 0. The release check ran `npm test` (108 passed, 0 failed), checked the package contents, ran `npm publish --dry-run`, and installed the exact tarball into a clean project. NOT-514 does not change `packages/mcp-server` or anything the release check packages.
+
+At 9be26ae on macOS with Node 26.10.0 (local Node is not 24), `npm run test:session-share-preflight` passed. `node --test --test-timeout=60000 "test/*.test.mjs"` in `packages/mcp-server`, run after `npm run build && npm run build:app`, passed 108 of 108 in 108 s.
+
+### CI status: the release check stalls on `main` too
+
+Both PR runs of `ci-botmancers` (40112720825 at 226df69 and 40114377058 at 9be26ae) were cancelled at the 15-minute job limit. Every focused step passed, including the NOT-514 step. The transcript stops at `RUN tests`, which is the release check's `npm test` in `packages/mcp-server`, and no test result was printed.
+
+A `workflow_dispatch` run on unmodified `main` at 8e19aa2 (40115681199, 2026-10-24) was cancelled the same way. The last green `main` run was 39700335056 on 2026-10-22, at the same commit. So the stall comes from the CI environment or time, not from this branch. The green run used runner image `ubuntu-24.04` version 20261012. Both failed PR runs used version 20261021.618, and GitHub has announced that `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19. The Linux hang has not been reproduced locally, and fixing it is outside NOT-514's scope.
