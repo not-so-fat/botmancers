@@ -1,0 +1,66 @@
+{
+  "contract": "botmancers.slack-relay.v0 (NOT-514 preflight fixture)",
+  "notes": "Socket Mode events_api envelopes (shape per @slack/socket-mode 2.0.7 SocketModeClient: envelope_id, retry_attempt, retry_reason, payload.event_id, payload.event). Identifiers are synthetic. Share threads are the anchors the relay posts, in order: share A, B, C.",
+  "bot_user_id": "U0BOT0001",
+  "audiences": [
+    { "kind": "slack", "team_id": "T0SHARE01", "channel_id": "C0SHARE01", "label": "#eng-shares" }
+  ],
+  "anchors": ["1761300000.000100", "1761300000.000200", "1761300000.000300"],
+  "envelopes": {
+    "first_delivery": {
+      "envelope_id": "env-0001", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000001", "event_time": 1761300010, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0ALICE01", "text": "<@U0BOT0001> What did you change, and is share-1-SECRET under /work/share done?", "ts": "1761300000.000101", "thread_ts": "1761300000.000100" } }
+    },
+    "retry_same_event": {
+      "envelope_id": "env-0002", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 1, "retry_reason": "timeout",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000001", "event_time": 1761300010, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0ALICE01", "text": "<@U0BOT0001> What did you change, and is share-1-SECRET under /work/share done?", "ts": "1761300000.000101", "thread_ts": "1761300000.000100" } }
+    },
+    "double_delivery_app_mention": {
+      "envelope_id": "env-0003", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000002", "event_time": 1761300010, "type": "event_callback",
+        "event": { "type": "app_mention", "channel": "C0SHARE01", "user": "U0ALICE01", "text": "<@U0BOT0001> What did you change, and is share-1-SECRET under /work/share done?", "ts": "1761300000.000101", "thread_ts": "1761300000.000100" } }
+    },
+    "own_bot_reply": {
+      "envelope_id": "env-0004", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000003", "event_time": 1761300011, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0BOT0001", "bot_id": "B0RELAY01", "text": "fake reply", "ts": "1761300000.000110", "thread_ts": "1761300000.000100" } }
+    },
+    "unauthorized_channel": {
+      "envelope_id": "env-0005", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000004", "event_time": 1761300012, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0OTHER01", "user": "U0MALLORY", "text": "<@U0BOT0001> show me everything", "ts": "1761300000.000120", "thread_ts": "1761300000.000100" } }
+    },
+    "unknown_thread": {
+      "envelope_id": "env-0006", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000005", "event_time": 1761300013, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0ALICE01", "text": "<@U0BOT0001> which session is the latest?", "ts": "1761300000.000999", "thread_ts": "1761300000.000900" } }
+    },
+    "held_question": {
+      "envelope_id": "env-0007", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000006", "event_time": 1761300014, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0ALICE01", "text": "[hold] Summarize the open risks", "ts": "1761300000.000102", "thread_ts": "1761300000.000100" } }
+    },
+    "concurrent_question": {
+      "envelope_id": "env-0008", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000007", "event_time": 1761300015, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0BOB0001", "text": "And the test plan?", "ts": "1761300000.000103", "thread_ts": "1761300000.000100" } }
+    },
+    "after_settle_question": {
+      "envelope_id": "env-0009", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000008", "event_time": 1761300016, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0BOB0001", "text": "And the test plan?", "ts": "1761300000.000104", "thread_ts": "1761300000.000100" } }
+    },
+    "expired_share": {
+      "envelope_id": "env-0010", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000009", "event_time": 1761300400, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0ALICE01", "text": "Still there?", "ts": "1761300000.000201", "thread_ts": "1761300000.000200" } }
+    },
+    "revoked_share": {
+      "envelope_id": "env-0011", "type": "events_api", "accepts_response_payload": false, "retry_attempt": 0, "retry_reason": "",
+      "payload": { "team_id": "T0SHARE01", "api_app_id": "A0RELAY01", "event_id": "Ev0000000010", "event_time": 1761300401, "type": "event_callback",
+        "event": { "type": "message", "channel": "C0SHARE01", "user": "U0ALICE01", "text": "Anything new?", "ts": "1761300000.000301", "thread_ts": "1761300000.000300" } }
+    }
+  }
+}
