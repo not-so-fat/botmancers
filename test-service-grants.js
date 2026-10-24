@@ -40,6 +40,9 @@ process.env.HOME = process.env.GRANTS_HOME;
 process.env.HERMES_API_SERVER_KEY = 'fixture-hermes-key';
 const GRANTS_PATH = path.join(process.env.GRANTS_HOME, 'config', 'service-grants.json');
 process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
+// NOT-515: the owner's session-share allowlist (lib/session-shares).
+const SHARES_PATH = path.join(process.env.GRANTS_HOME, 'config', 'session-shares.json');
+process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES_PATH;
 
 const TOKENS = { grok: 'tok-grok-bot-SECRET-aaaa', ci: 'tok-ci-bot-SECRET-bbbb', other: 'tok-other-SECRET-cccc' };
 const digest = token => `sha256:${createHash('sha256').update(token).digest('hex')}`;
@@ -308,6 +311,11 @@ async function main() {
       ['empty capabilities', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: [] }] }],
       ['unknown entry field', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['agents:read'], deck: 'x' }] }],
       ['reserved engine principal', { version: 1, grants: [{ service: 'botmancers-exchanges', agent: codex.id, capabilities: ['exchanges:create'] }] }],
+      // NOT-515: the share principals are engine-internal too.
+      ['reserved session-context principal', { version: 1, grants: [{ service: 'botmancers-session-context', agent: codex.id, capabilities: ['shares:create'] }] }],
+      ['reserved session-share principal', { version: 1, grants: [{ service: 'botmancers-session-share', agent: codex.id, capabilities: ['sessions:message'] }] }],
+      ['wildcard shares capability', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['shares:*'] }] }],
+      ['shares:ask is not grantable', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['shares:ask'] }] }],
       ['unconfigured service principal', { version: 1, grants: [
         { service: 'grok-bot', agent: codex.id, capabilities: ['agents:read'] },
         { service: 'grok-bott', agent: codex.id, capabilities: ['agents:read'] }] }],
@@ -419,6 +427,49 @@ async function main() {
     assert(bConvs.json.items.every(c => c.conversation_id !== codexA.conv.id && c.conversation_id !== groupConv), 'ci-bot sees no Codex or mixed conversation');
     const person = await call(http.handleGetCapabilities, 'GET', '/api/v0/capabilities', {});
     assert(person.status === 401, 'no principal, no access');
+  }
+
+  // -------------------------------------------------------------------
+  console.log('\n[2b] shares:create: an explicit per-Agent capability, never implied');
+  {
+    fs.writeFileSync(SHARES_PATH, JSON.stringify({ version: 1, audiences: [{ kind: 'slack', team_id: 'T0GRANTS1', channel_id: 'C0GRANTS1' }] }));
+    fs.chmodSync(SHARES_PATH, 0o600);
+    const audience = { kind: 'slack', team_id: 'T0GRANTS1', channel_id: 'C0GRANTS1' };
+    const share = (token, ref, body = {}) => call(http.handleCreateShare, 'POST', `/api/v0/sessions/${encodeURIComponent(ref)}/shares`,
+      { token, body: { audience, idempotency_key: `share-${ref.length}-${Object.keys(body).join('-') || 'x'}`, ...body } }, ref);
+    const getShare = (token, ref) => call(http.handleGetShare, 'GET', `/api/v0/shares/${ref}`, { token }, ref);
+    const caps = await api.capabilities(TOKENS.grok);
+    assert(caps.json.vocabulary.includes('shares:create') && caps.json.agents.every(a => !a.capabilities.includes('shares:create')),
+      'shares:create is in the vocabulary and granted to no one by the base document');
+    const missing = await share(TOKENS.grok, 'no-such-session');
+    const notImplied = await share(TOKENS.grok, codexA.binding.id);
+    assert(missing.status === 404 && missing.json.error.code === 'session_not_found' && notImplied.status === 404 && same(notImplied.json, missing.json),
+      'sessions:message, exchanges:create, and sessions:read on the Agent do not imply shares:create (answered like a missing session)');
+    const base = grantsDoc(agents);
+    writeGrants({ ...base, grants: base.grants.map(g => (g.service === 'grok-bot' && g.agent === codex.id ? { ...g, capabilities: [...g.capabilities, 'shares:create'] } : g)) });
+    const capsAfter = await api.capabilities(TOKENS.grok);
+    assert(same(capsAfter.json.agents.find(a => a.agent_id === codex.id).capabilities,
+      ['agents:read', 'sessions:read', 'conversations:read', 'sessions:message', 'exchanges:read', 'exchanges:create', 'shares:create'])
+      && same(capsAfter.json.agents.find(a => a.agent_id === grok.id).capabilities, ['agents:read', 'conversations:read', 'exchanges:read', 'exchanges:create']),
+      'granting shares:create on Codex adds exactly that capability there and changes no other Agent');
+    const created = await share(TOKENS.grok, codexA.binding.id);
+    assert(created.status === 201 && created.json.share.session_ref === codexA.binding.id && created.json.share.authority === 'ask',
+      'with shares:create the exact session is shareable (201, ask only)');
+    const crossAgent = await share(TOKENS.grok, claudeS.binding.id);
+    const wrongAgent = await share(TOKENS.grok, codexA.binding.id, { agent_id: grok.id });
+    const otherService = await share(TOKENS.ci, codexA.binding.id);
+    const malformed = await share(TOKENS.grok, '%00../x');
+    for (const [label, res] of [['another Agent\'s session', crossAgent], ['an agent_id expectation for another Agent', wrongAgent],
+      ['a service with no shares:create on the owner', otherService], ['a malformed reference', malformed]]) {
+      assert(res.status === 404 && same(res.json, missing.json), `${label} -> exactly the missing-session answer`);
+    }
+    const own = await getShare(TOKENS.grok, created.json.share.share_ref);
+    const foreign = await getShare(TOKENS.ci, created.json.share.share_ref);
+    const none = await getShare(TOKENS.grok, 'shr_none');
+    assert(own.status === 200 && foreign.status === 404 && same(foreign.json, none.json), 'only the creator reads its share; anyone else gets the missing-share answer');
+    const audit = raw.prepare("SELECT outcome, code FROM service_audit_events WHERE operation = 'shares.create' ORDER BY id").all();
+    assert(audit.length === 7 && audit.filter(r => r.code === 'not_granted').length === 3, 'every share create is audited; ungranted refusals are recorded as not_granted');
+    writeGrants(grantsDoc(agents));
   }
 
   // -------------------------------------------------------------------

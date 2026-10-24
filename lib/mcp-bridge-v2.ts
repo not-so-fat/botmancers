@@ -28,9 +28,16 @@
 // botmancers_send_to_pin goes to that same session until
 // botmancers_detach_pin or a switch (pin_session with replace_pin_ref).
 // Hand off to… stays botmancers_create_exchange mode "continue".
+//
+// NOT-515 (additive): explicit temporary session shares
+// (lib/session-shares). botmancers_create_share shares one exact session_ref
+// as an ask-only share with a TTL, a turn limit, and one owner-allowlisted
+// audience; get, list, and revoke act on the caller's own shares. There is
+// no share-current tool yet.
 import type { Principal } from './db';
 import { EXCHANGE_LIMITS, EXCHANGE_STATES, EXCHANGE_TERMINAL_STATES, type ExchangeState } from './engine-store';
-import { AUTHORITY_FIELDS, MESSAGE_CONTENT_LIMIT, PAGE_LIMITS, ServiceApiError, holds, type ServiceContext } from './service-api';
+import { AUTHORITY_FIELDS, MESSAGE_CONTENT_LIMIT, PAGE_LIMITS, SHARE_SELECTOR_FIELDS, ServiceApiError, holds, type ServiceContext } from './service-api';
+import { SHARE_LIMITS } from './session-shares';
 import { serviceOperations, type ListParams, type ServiceGuard, type ServiceResult } from './service-api-http';
 import { SERVICE_CAPABILITIES, type ServiceCapability } from './service-grants';
 
@@ -77,6 +84,13 @@ export const MCP_V2_ERROR_CODES = [
   'action_unavailable',
   'approval_required',
   'provider_failed',
+  // NOT-515: session shares.
+  'share_not_found',
+  'share_expired',
+  'share_revoked',
+  'share_turn_in_progress',
+  'share_turn_limit',
+  'audience_not_allowed',
 ] as const;
 
 export type McpV2ErrorCode = (typeof MCP_V2_ERROR_CODES)[number];
@@ -243,6 +257,29 @@ const pinTurnView = closed({
   finished_at: msOrNull,
 });
 
+// NOT-515: a session share (lib/session-shares).
+const shareRefArg = { type: 'string', minLength: 1, maxLength: ID_MAX, description: 'share_ref returned by botmancers_create_share or botmancers_list_shares.' };
+const shareStates = { type: 'string', enum: ['active', 'expired', 'revoked'] };
+const audienceSchema = closed({
+  kind: { type: 'string', enum: ['slack'] },
+  team_id: { type: 'string', minLength: 3, maxLength: 21, pattern: '^T[A-Z0-9]{2,20}$', description: 'Slack workspace (team) id.' },
+  channel_id: { type: 'string', minLength: 3, maxLength: 21, pattern: '^[CG][A-Z0-9]{2,20}$', description: 'Slack channel id.' },
+});
+const shareView = closed({
+  share_ref: { type: 'string', description: 'Opaque, stable reference of this share.' },
+  agent_id: { type: 'string', description: 'The Agent that owns the shared session (resolved by Botmancers, never chosen).' },
+  session_ref: { type: 'string', description: 'The exact session this share asks. It never changes.' },
+  authority: { type: 'string', enum: ['ask'], description: 'Always ask: read-only questions only.' },
+  state: { ...shareStates, description: 'active, expired (past expires_at), or revoked.' },
+  audience: { ...audienceSchema, description: 'Who may ask through the share: one channel on the owner\'s allowlist.' },
+  created_via: { type: 'string', enum: ['session_ref', 'current_session'] },
+  created_at: ms,
+  expires_at: ms,
+  revoked_at: msOrNull,
+  max_turns: { type: 'integer', description: 'How many questions the share allows.' },
+  turns_used: int,
+});
+
 const SESSION_ITEM_REQUIRED = ['ref', 'agent', 'title', 'status', 'resumable', 'created_at', 'ended_at', 'last_activity_at', 'origin'];
 const sessionItem = closed({
   ref: { type: 'string', description: 'Stable Botmancers session reference: pass it as session_ref. Never a provider session id.' },
@@ -361,6 +398,7 @@ const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: tru
 const PIN_TARGET_ERRORS: McpV2ErrorCode[] = ['session_missing', 'session_ended', 'session_not_resumable', 'source_session_busy', 'agent_unavailable', 'provider_failed', 'idempotency_conflict'];
 const ACCESS_ERRORS: McpV2ErrorCode[] = ['invalid_arguments', 'unsupported_field', 'authority_not_allowed', 'permission_denied', 'grant_required', 'grants_unavailable', 'rate_limited', 'internal_error'];
 const LIST_ERRORS: McpV2ErrorCode[] = [...ACCESS_ERRORS];
+const SHARE_ERRORS: McpV2ErrorCode[] = [...ACCESS_ERRORS, 'share_not_found'];
 
 // ---------------------------------------------------------------------
 // Tool definitions, in tools/list order after the v1 tools.
@@ -610,6 +648,62 @@ export const MCP_V2_TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: meta([...ACCESS_ERRORS, 'pin_not_found'], { optional: true }),
   },
+  // NOT-515: explicit temporary session shares.
+  {
+    name: 'botmancers_create_share',
+    title: 'Share an exact Botmancers session',
+    description: 'Share exactly one session, by its ref from botmancers_list_sessions, as a temporary ask-only share (shares:create on the Agent that owns it). '
+      + 'People in the audience (one Slack channel on the owner\'s allowlist) can then ask that session read-only questions until the share expires '
+      + `(ttl_seconds ${SHARE_LIMITS.ttl.min}-${SHARE_LIMITS.ttl.max}, default ${SHARE_LIMITS.ttl.default}), uses its max_turns `
+      + `(${SHARE_LIMITS.turns.min}-${SHARE_LIMITS.turns.max}, default ${SHARE_LIMITS.turns.default}), or is revoked with botmancers_revoke_share. `
+      + 'A share never grants write access. Name the session only by session_ref: never by its title, workspace, provider id, or "latest". '
+      + 'An audience off the allowlist is audience_not_allowed (recovery: ask the owner).',
+    inputSchema: closed({
+      session_ref: { type: 'string', minLength: 1, maxLength: ID_MAX, description: 'ref of the session to share, from botmancers_list_sessions.' },
+      audience: audienceSchema,
+      ttl_seconds: { type: 'integer', minimum: SHARE_LIMITS.ttl.min, maximum: SHARE_LIMITS.ttl.max, default: SHARE_LIMITS.ttl.default, description: 'How long the share lasts, in seconds.' },
+      max_turns: { type: 'integer', minimum: SHARE_LIMITS.turns.min, maximum: SHARE_LIMITS.turns.max, default: SHARE_LIMITS.turns.default, description: 'How many questions it allows.' },
+      agent_id: { type: 'string', minLength: 1, maxLength: ID_MAX, description: 'Optional check: the Agent you expect to own the session.' },
+      idempotency_key: idempotencyArg('share'),
+    }, ['session_ref', 'audience', 'idempotency_key']),
+    outputSchema: closed({ contract: contractField, share: shareView, replayed: bool }),
+    annotations: WRITE,
+    _meta: meta([...ACCESS_ERRORS, 'session_not_found', 'session_missing', 'session_ended', 'session_not_resumable', 'agent_unavailable', 'action_unavailable',
+      'provider_failed', 'audience_not_allowed', 'idempotency_conflict', 'payload_too_large'], { optional: true }),
+  },
+  {
+    name: 'botmancers_get_share',
+    title: 'Get a Botmancers session share',
+    description: 'Read one of your shares: its exact session, audience, state (active, expired, revoked), expiry, and questions used.',
+    inputSchema: closed({ share_ref: shareRefArg }),
+    outputSchema: closed({ contract: contractField, share: shareView }),
+    annotations: READ,
+    _meta: meta(SHARE_ERRORS, { optional: true }),
+  },
+  {
+    name: 'botmancers_list_shares',
+    title: 'List Botmancers session shares',
+    description: 'List your shares, newest first, optionally of one exact session_ref and in one state. Paginated: pass next_cursor back as cursor until it is null.',
+    inputSchema: closed({
+      session_ref: { type: 'string', minLength: 1, maxLength: ID_MAX, description: 'Optional: only shares of this exact session.' },
+      state: { ...shareStates, description: 'Optional: only shares in this state.' },
+      cursor: cursorArg,
+      limit: limitArg(PAGE_LIMITS.max, PAGE_LIMITS.default),
+    }, []),
+    outputSchema: closed({ contract: contractField, items: { type: 'array', items: shareView }, next_cursor: nextCursor }),
+    annotations: READ,
+    _meta: meta(LIST_ERRORS, { optional: true }),
+  },
+  {
+    name: 'botmancers_revoke_share',
+    title: 'Revoke a Botmancers session share',
+    description: 'Revoke one of your shares now: no further question reaches the session through it. The session and its history are kept. '
+      + 'Idempotent: revoking a revoked share returns it unchanged (replayed: true).',
+    inputSchema: closed({ share_ref: shareRefArg }),
+    outputSchema: closed({ contract: contractField, share: shareView, replayed: bool }),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: meta(SHARE_ERRORS, { optional: true }),
+  },
 ];
 
 // botmancers_get_conversation's v2 path: its v1 input plus agent_id (which
@@ -679,12 +773,17 @@ export function schemaViolation(schema: Schema, value: unknown, path: string, un
   return null;
 }
 
-function validateArguments(inputSchema: Schema, args: unknown): void {
+// NOT-515: the share tools also refuse heuristic session selectors (title,
+// latest, provider ids, workspace) as authority_not_allowed.
+const SHARE_TOOLS = new Set(['botmancers_create_share', 'botmancers_get_share', 'botmancers_list_shares', 'botmancers_revoke_share']);
+const SHARE_AUTHORITY_FIELDS = [...AUTHORITY_FIELDS, ...SHARE_SELECTOR_FIELDS];
+
+function validateArguments(inputSchema: Schema, args: unknown, authorityFields: string[] = AUTHORITY_FIELDS): void {
   const unknown: string[] = [];
   const problem = schemaViolation(inputSchema, args, '', unknown);
   if (unknown.length) {
     const sorted = unknown.sort();
-    const authority = sorted.filter(field => AUTHORITY_FIELDS.includes(field.split('.').pop() as string));
+    const authority = sorted.filter(field => authorityFields.includes(field.split('.').pop() as string));
     if (authority.length) {
       throw new ServiceApiError('authority_not_allowed',
         `${authority.join(', ')}: chosen by Botmancers from the session and the Agent's configuration; a caller cannot set it.`, { fields: authority });
@@ -702,9 +801,9 @@ function requireGrant(ctx: ServiceContext, capability: ServiceCapability): void 
 }
 
 // Validates the arguments and the caller's grant inside the audited call.
-function guardFor(inputSchema: Schema, args: unknown, capability: ServiceCapability | null): ServiceGuard {
+function guardFor(inputSchema: Schema, args: unknown, capability: ServiceCapability | null, authorityFields?: string[]): ServiceGuard {
   return ctx => {
-    validateArguments(inputSchema, args);
+    validateArguments(inputSchema, args, authorityFields);
     if (capability) requireGrant(ctx, capability);
   };
 }
@@ -753,6 +852,10 @@ const OPERATION_CAPABILITIES: [string, ServiceCapability][] = [
   ['botmancers_get_pin', 'sessions:resume'],
   ['botmancers_detach_pin', 'sessions:message'],
   ['botmancers_detach_pin', 'sessions:resume'],
+  ['botmancers_create_share', 'shares:create'],
+  ['botmancers_get_share', 'shares:create'],
+  ['botmancers_list_shares', 'shares:create'],
+  ['botmancers_revoke_share', 'shares:create'],
 ];
 
 interface CapabilitiesBody {
@@ -768,7 +871,8 @@ function capabilitiesView(raw: Record<string, unknown>, v1Operations: McpV1Opera
     const agentIds = body.agents.filter(agent => agent.capabilities.includes(capability)).map(agent => agent.agent_id);
     if (!agentIds.length) return [];
     // list_agents and the exchange reads take no Agent argument.
-    const takesAgent = !['botmancers_list_agents', 'botmancers_get_exchange', 'botmancers_list_exchanges'].includes(tool);
+    const takesAgent = !['botmancers_list_agents', 'botmancers_get_exchange', 'botmancers_list_exchanges',
+      'botmancers_get_share', 'botmancers_list_shares', 'botmancers_revoke_share'].includes(tool);
     return [{ tool, contract: MCP_CONTRACT_V2, capability, agent_ids: takesAgent ? agentIds : [] }];
   });
   return {
@@ -890,6 +994,34 @@ const HANDLERS: Record<McpV2ToolName, V2Handler> = {
     call: (principal, args, guard) => serviceOperations.detachPin(principal, text(args.pin_ref), guard),
     view: pinResult,
   },
+  botmancers_create_share: {
+    capability: 'shares:create',
+    call: (principal, args, guard) => serviceOperations.createShare(principal, text(args.session_ref), () => {
+      const body: Args = { audience: args.audience, idempotency_key: args.idempotency_key };
+      for (const key of ['ttl_seconds', 'max_turns', 'agent_id']) if (args[key] !== undefined) body[key] = args[key];
+      return body;
+    }, null, guard),
+    view: pinResult,
+  },
+  botmancers_get_share: {
+    capability: 'shares:create',
+    call: (principal, args, guard) => serviceOperations.getShare(principal, text(args.share_ref), guard),
+    view: pinResult,
+  },
+  botmancers_list_shares: {
+    capability: 'shares:create',
+    call: (principal, args, guard) => serviceOperations.listShares(principal, {
+      ...listParams(args),
+      sessionRef: typeof args.session_ref === 'string' ? args.session_ref : null,
+      state: typeof args.state === 'string' ? args.state : null,
+    }, guard),
+    view: page,
+  },
+  botmancers_revoke_share: {
+    capability: 'shares:create',
+    call: (principal, args, guard) => serviceOperations.revokeShare(principal, text(args.share_ref), () => '', guard),
+    view: pinResult,
+  },
 };
 
 const INPUT_SCHEMAS = new Map<string, Schema>(MCP_V2_TOOLS.map(tool => [tool.name, tool.inputSchema]));
@@ -919,7 +1051,7 @@ export async function callMcpV2Tool(
   const capability = typeof handler.capability === 'function'
     ? handler.capability(args && typeof args === 'object' && !Array.isArray(args) ? args : {})
     : handler.capability;
-  const guard = guardFor(INPUT_SCHEMAS.get(name) as Schema, args, capability);
+  const guard = guardFor(INPUT_SCHEMAS.get(name) as Schema, args, capability, SHARE_TOOLS.has(name) ? SHARE_AUTHORITY_FIELDS : undefined);
   // A non-object never reaches a handler: the guard refuses it first.
   const safeArgs = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   return handler.view(fromResult(await handler.call(principal, safeArgs, guard)), extra);

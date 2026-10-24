@@ -53,6 +53,10 @@ export const SERVICE_CAPABILITIES = [
   // NOT-507: never implied by another capability (lib/service-api).
   'sessions:start',
   'sessions:resume',
+  // NOT-515: create, read, list, and revoke the caller's own temporary
+  // ask-only shares of the Agent's sessions (lib/session-shares). Never
+  // implied by sessions:message, and grants no Ask itself.
+  'shares:create',
 ] as const;
 
 export type ServiceCapability = typeof SERVICE_CAPABILITIES[number];
@@ -62,8 +66,12 @@ export function isServiceCapability(value: unknown): value is ServiceCapability 
 }
 
 // Engine-internal service principals (lib/session-exchanges,
-// lib/coordinator-loop). A grant naming one is refused.
-export const RESERVED_SERVICE_IDS: readonly string[] = ['botmancers-exchanges', 'botmancers-engine'];
+// lib/coordinator-loop; NOT-515: lib/session-shares, the requester of every
+// share's ask pin, and the session-context principal reserved for
+// share-current). A grant naming one is refused.
+export const RESERVED_SERVICE_IDS: readonly string[] = [
+  'botmancers-exchanges', 'botmancers-engine', 'botmancers-session-share', 'botmancers-session-context',
+];
 
 // The idempotency namespaces of a service's exchange rows: a session
 // message and an exchange never collide on the caller's key.

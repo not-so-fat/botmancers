@@ -59,6 +59,7 @@ grants at all).
 | `exchanges:create` | `POST /api/v0/exchanges`, `POST /api/v0/exchanges/{id}/cancel` involving it |
 | `sessions:start` | NOT-507: let `POST /api/v0/agents/{agentId}/pins` (a registered-Agent message) start a new read-only session when the Agent has none that can take it, its policy allows new sessions, and it has a default workspace. Never implied by `sessions:message`. |
 | `sessions:resume` | NOT-507: `POST /api/v0/sessions/{ref}/pins` with `action: "resume"` (Resume work here: workspace-write turns in that exact session, with `approve_write: true`, only when the Agent's policy allows resuming with edits and its runtime enforces it). Never implied by `sessions:message`. |
+| `shares:create` | NOT-515: `POST /api/v0/sessions/{ref}/shares` on this Agent's sessions, and `GET /api/v0/shares`, `GET /api/v0/shares/{shareRef}`, `POST /api/v0/shares/{shareRef}/revoke` for the caller's own shares of them ([Session shares](#session-shares-not-515)). Never implied by `sessions:message`, and grants no Ask itself. |
 
 NOT-507 pins: `POST /api/v0/agents/{agentId}/pins` (message a registered
 Agent; `sessions:message`), `POST /api/v0/sessions/{ref}/pins` (`action:
@@ -89,7 +90,8 @@ chmod 600 ~/.botmancers/config/service-grants.json
   empty, or repeated capability, a wildcard or malformed Agent id, a repeated
   `(service, agent)` pair, an entry naming an Agent that is not registered,
   a reserved engine principal
-  (`botmancers-exchanges`, `botmancers-engine`), more than 512 entries or
+  (`botmancers-exchanges`, `botmancers-engine`, and, NOT-515,
+  `botmancers-session-share` and `botmancers-session-context`), more than 512 entries or
   64 KiB, or a file that is not owner-only. The narrow routes keep working.
 - An entry for an Agent that does not exist (a typo, or an Agent you deleted)
   makes the document invalid, so the other entries never stay quietly in
@@ -209,7 +211,10 @@ through one sanitizer (`lib/service-redaction.ts`): every provider session
 and run id the engine recorded becomes `[redacted runtime id]`, and every
 working directory, Deck selection, and Hermes profile an Agent is configured
 or launched with, and every credential in the environment, becomes
-`[redacted]`. Owner (UI) reads are unchanged.
+`[redacted]`. NOT-515 (finding R1 of NOT-514): so do every Agent's default
+workspace and session-scope workspaces, every native session's workspace (raw
+and `~`-expanded), and any absolute path under the home directory of the user
+running Botmancers (a runtime echoing its cwd). Owner (UI) reads are unchanged.
 
 **Limits:** request bodies over 64 KiB are 413 `payload_too_large`; content
 and instructions at most 4000 characters; idempotency keys 1 to 160
@@ -217,6 +222,92 @@ characters. Each service may make `BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE`
 (default 120) calls in any rolling minute; over that, 429 `rate_limited` with
 `Retry-After`, before anything runs. Exchanges and their idempotency survive a
 restart (the engine recovers open exchanges); the rate-limit window does not.
+
+## Session shares (NOT-515)
+
+Code: `lib/session-shares.ts` (store, configuration, `askShare`),
+`lib/service-api.ts` (create/get/list/revoke). Contract test:
+`npm run test:session-shares`. Design:
+[`design/2026-10-24-session-share-preflight.md`](design/2026-10-24-session-share-preflight.md).
+
+A **share** lets one audience ask exactly one session read-only questions
+for a while. It is one NOT-507 Ask pin on that `session_ref` (read-only,
+never workspace-write), requested by the reserved engine principal
+`service:botmancers-session-share`. That principal holds no grant (it is
+refused in this document), so the share is the only authority its questions
+have: a share never broadens anyone's grants, and the share principal cannot
+use `POST /api/v0/sessions/{ref}/pins`, `/messages`, or any pin route.
+
+| Route | MCP tool | Notes |
+| --- | --- | --- |
+| `POST /api/v0/sessions/{ref}/shares` | `botmancers_create_share` | body `{ audience, ttl_seconds?, max_turns?, agent_id?, idempotency_key }` (or `Idempotency-Key`); 201 `{ share, replayed: false }`, exact replay 200 `{ share, replayed: true }`, the same key with another body 409 `idempotency_conflict` |
+| `GET /api/v0/shares?session_ref&state&cursor&limit` | `botmancers_list_shares` | the caller's own shares, newest first, `state` `active`, `expired`, or `revoked` |
+| `GET /api/v0/shares/{shareRef}` | `botmancers_get_share` | one own share |
+| `POST /api/v0/shares/{shareRef}/revoke` | `botmancers_revoke_share` | 200 `{ share, replayed }`; revoking a revoked share returns it unchanged |
+
+There is no `POST /api/v0/shares/current` (share-current) yet.
+
+- **Session.** Only an explicit `session_ref` (from `.../sessions`). The
+  owning Agent is resolved, never chosen (`agent_id` is only an expectation
+  check). Any field that would select or describe a session otherwise —
+  `provider_session_id`, `external_session_id`, `claude_session_id`,
+  `codex_thread_id`, `cursor_chat_id`, `cwd`, `workspace`, `latest`,
+  `most_recent`, `title`, `title_match`, `active_since` — and every authority
+  field (`runtime`, `deck`, `model`, `tool_profile`, …) is 403
+  `authority_not_allowed`, in the body, the audience, the revoke body, and
+  the list query, before anything is written.
+- **Bounds.** `ttl_seconds` 300-86400 (default 3600); `max_turns` 1-100
+  (default 20); otherwise 400 `invalid_request`. Authority is always `ask`.
+- **Eligibility** is NOT-507's: an ended, missing, or unresumable session is
+  `session_ended`, `session_missing`, or `session_not_resumable`, and no share
+  is created.
+- **Visibility.** A share is visible to its creator only while it still holds
+  `shares:create` on the session's Agent; anything else is 404
+  `share_not_found`, exactly like a missing share. An unknown, ungranted, or
+  other-Agent session is 404 `session_not_found`, exactly like a missing one.
+- **View.** `share_ref` (opaque `shr_…`), `agent_id`, `session_ref`,
+  `authority`, `state`, `audience`, `created_via`, `created_at`, `expires_at`,
+  `revoked_at`, `max_turns`, `turns_used`. Never a provider id, working
+  directory, Deck, runtime, model, prompt, or transcript.
+- **Audit:** `shares.create`, `shares.read`, `shares.list`, `shares.revoke`
+  (capability `shares:create`, target kind `session`: the session for create
+  and list, the `share_ref` for read and revoke). A create or revoke commits
+  with its `allowed` row.
+
+**The owner's share configuration** is a second owner-only document,
+`<BOTMANCERS_HOME>/config/session-shares.json`
+(`BOTMANCERS_SESSION_SHARES_PATH` overrides it):
+
+```json
+{
+  "version": 1,
+  "audiences": [{ "kind": "slack", "team_id": "T0123ABCD", "channel_id": "C0123ABCD" }],
+  "agents": [{ "agent": "<agent id>", "share_from_turn": true }]
+}
+```
+
+A share's `audience` must be on `audiences` (else 403
+`audience_not_allowed`). `share_from_turn` is the per-Agent opt-in a later
+share-current will use (default off). The same fail-closed rules apply as for
+this document (owner-only `chmod 600`, at most 64 KiB and 512 entries, strict
+JSON, no unknown field, no wildcard or malformed id, no duplicate, only
+registered Agents): while it is missing or invalid, no audience is allowed
+and `share_from_turn` is off. It is re-read when it changes.
+
+**Asking through a share** (`askShare` in `lib/session-shares.ts`) is internal:
+the Slack relay's entry, not a route or MCP tool. Each question is one
+read-only turn on exactly the share's session (NOT-507 `sendPinTurn`), with
+the caller's question key as the pin-turn idempotency key, so a replayed
+question returns the same turn and dispatches nothing. It is refused with
+`share_revoked`, `share_expired`, `share_turn_limit` (after `max_turns`
+questions), or `share_turn_in_progress` (one question at a time per share: a
+durable claim is taken before dispatch, and a claim left by a crashed process
+is recovered after a restart). Answers are redacted and cut at 3000
+characters. Every ask is audited as `shares.ask` (capability `shares:ask`,
+audit-only and not grantable) on the share's session, by
+`service:botmancers-session-share`, whatever its outcome; an accepted turn,
+its count, and its audit row commit together. Share rows and their
+append-only `session_share_events` survive restarts.
 
 ## Audit trail
 

@@ -27,6 +27,13 @@
 //     body: { content, idempotency_key }
 //   POST /api/v0/pins/{pinRef}/detach                         the pin's capability
 //     body: { idempotency_key? }
+//   NOT-515: temporary ask-only session shares (lib/session-shares).
+//   POST /api/v0/sessions/{ref}/shares                        shares:create
+//     body: { audience, ttl_seconds?, max_turns?, agent_id?, idempotency_key }
+//   GET  /api/v0/shares?session_ref&state&cursor&limit        shares:create (own shares)
+//   GET  /api/v0/shares/{shareRef}                            shares:create (own share)
+//   POST /api/v0/shares/{shareRef}/revoke                     shares:create (own share; idempotent)
+//   (no /api/v0/shares/current: share-current is not served yet)
 //
 // Each call is authenticated, rate limited per service principal
 // (BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE, default 120, rolling 60 s;
@@ -39,9 +46,18 @@ import db, { serviceAudit, type Principal } from './db';
 import { authenticate } from './agent-api';
 import { AgentApiError } from './agent-conversations';
 import type { AuditOutcome, AuditTargetKind } from './service-audit';
+import { sessionOwner as sessionOwnerOf } from './session-pins';
 import {
   PAGE_LIMITS,
   ServiceApiError,
+  checkShareListParams,
+  createServiceShare,
+  getServiceShare,
+  listServiceShares,
+  parseShareCreateBody,
+  parseShareRevokeBody,
+  revokeServiceShare,
+  type ShareAuditHooks,
   detachServicePin,
   messageServiceAgent,
   parseAgentMessageBody,
@@ -282,6 +298,18 @@ function pinHooks(target: AuditTarget, commitAudit: () => void): PinAuditHooks {
   };
 }
 
+// NOT-515: the audit hooks of a share call. create targets the session (and
+// its Agent); read and revoke keep the share_ref as target and add its Agent.
+function shareHooks(target: AuditTarget, commitAudit: () => void, refineRef: boolean): ShareAuditHooks {
+  return {
+    onTarget: resolved => {
+      if (refineRef) target.targetRef = resolved.sessionRef;
+      target.agentId = resolved.agentId;
+    },
+    onCommit: commitAudit,
+  };
+}
+
 function exchangeSource(id: string): string | null {
   if (id.length > 200) return null;
   const row = db.prepare('SELECT source_agent_id FROM session_exchanges WHERE id = ?').get(id) as { source_agent_id: string } | undefined;
@@ -418,11 +446,37 @@ export const serviceOperations = {
   detachPin: (principal: Principal, pinRef: string, guard?: ServiceGuard) =>
     serveAs(principal, { operation: 'pins.detach', capability: 'sessions:message', targetKind: 'session' }, (ctx, target, commitAudit) =>
       ok(detachServicePin(ctx, pinRef, pinHooks(target, commitAudit))), guard),
+
+  // NOT-515: session shares.
+  createShare: (principal: Principal, ref: string, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'shares.create', capability: 'shares:create', targetKind: 'session', targetRef: ref }, async (ctx, target, commitAudit) => {
+      if (ref.length <= 200) target.agentId = sessionOwnerOf(ref);
+      const input = parseShareCreateBody(await body(), idempotencyHeader);
+      const result = await createServiceShare(ctx, ref, input, shareHooks(target, commitAudit, false));
+      return ok(result, result.replayed ? 200 : 201);
+    }, guard),
+
+  getShare: (principal: Principal, shareRef: string, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'shares.read', capability: 'shares:create', targetKind: 'session', targetRef: shareRef }, (ctx, target) =>
+      ok(getServiceShare(ctx, shareRef, shareHooks(target, () => {}, false))), guard),
+
+  listShares: (principal: Principal, q: ListParams & { sessionRef: string | null; state: string | null; names?: string[] }, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'shares.list', capability: 'shares:create', targetKind: 'session', targetRef: q.sessionRef }, (ctx, target) => {
+      checkShareListParams(q.names ?? []);
+      if (q.sessionRef && q.sessionRef.length <= 200) target.agentId = sessionOwnerOf(q.sessionRef);
+      return ok(listServiceShares(ctx, { cursor: q.cursor, limit: parseLimit(q.limit), sessionRef: q.sessionRef, state: q.state }));
+    }, guard),
+
+  revokeShare: (principal: Principal, shareRef: string, readBody: () => Promise<string> | string, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: 'shares.revoke', capability: 'shares:create', targetKind: 'session', targetRef: shareRef }, async (ctx, target, commitAudit) => {
+      parseShareRevokeBody(await readBody());
+      return ok(revokeServiceShare(ctx, shareRef, shareHooks(target, commitAudit, false)));
+    }, guard),
 };
 
-function query(request: Request): ListParams & { get: (name: string) => string | null } {
+function query(request: Request): ListParams & { get: (name: string) => string | null; names: string[] } {
   const params = new URL(request.url).searchParams;
-  return { cursor: params.get('cursor'), limit: params.get('limit'), get: (name: string) => params.get(name) };
+  return { cursor: params.get('cursor'), limit: params.get('limit'), get: (name: string) => params.get(name), names: [...new Set(params.keys())] };
 }
 
 // ---------------------------------------------------------------------
@@ -495,4 +549,24 @@ export function handleDetachPin(request: Request, pinRef: string): Promise<Respo
 
 export function handleCancelExchange(request: Request, id: string): Promise<Response> {
   return serve(request, principal => serviceOperations.cancelExchange(principal, id, async () => parseCancelBody(await readText(request))));
+}
+
+// NOT-515: session shares.
+export function handleCreateShare(request: Request, ref: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.createShare(principal, ref, () => readJsonBody(request), request.headers.get('idempotency-key')));
+}
+
+export function handleListShares(request: Request): Promise<Response> {
+  const q = query(request);
+  return serve(request, principal => serviceOperations.listShares(principal, {
+    cursor: q.cursor, limit: q.limit, sessionRef: q.get('session_ref'), state: q.get('state'), names: q.names,
+  }));
+}
+
+export function handleGetShare(request: Request, shareRef: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.getShare(principal, shareRef));
+}
+
+export function handleRevokeShare(request: Request, shareRef: string): Promise<Response> {
+  return serve(request, principal => serviceOperations.revokeShare(principal, shareRef, () => readText(request)));
 }

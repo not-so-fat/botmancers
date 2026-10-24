@@ -14,6 +14,9 @@
 //                        read-only session when the Agent has none to take it
 //   sessions:resume      NOT-507: pin a session to resume work in it with
 //                        workspace-write authority (explicitly approved)
+//   shares:create        NOT-515: create, read, list, and revoke the caller's
+//                        own temporary ask-only shares of the Agent's
+//                        sessions (lib/session-shares)
 //
 // Every service here reads the canonical stores and writes only through
 // them; nothing is copied. A target outside the caller's grants is refused
@@ -32,6 +35,19 @@ import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, loadServ
 import { serviceRedactor } from './service-redaction';
 import { recoveryFor, type Recovery, type SessionActions } from './session-actions';
 import { warmAgentProvider } from './provider-sessions';
+import {
+  ShareError,
+  createShare,
+  isSlackAudience,
+  revokeShare,
+  shareRow,
+  shareView,
+  sharesCreatedBy,
+  type ShareRow,
+  type ShareState,
+  type ShareView,
+  type SlackAudience,
+} from './session-shares';
 import {
   PinError,
   createPin,
@@ -80,7 +96,14 @@ export type ServiceApiErrorCode =
   | 'session_missing'
   | 'action_unavailable'
   | 'approval_required'
-  | 'provider_failed';
+  | 'provider_failed'
+  // NOT-515: session shares.
+  | 'share_not_found'
+  | 'share_expired'
+  | 'share_revoked'
+  | 'share_turn_in_progress'
+  | 'share_turn_limit'
+  | 'audience_not_allowed';
 
 export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   invalid_request: 400,
@@ -113,13 +136,19 @@ export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   action_unavailable: 409,
   approval_required: 403,
   provider_failed: 502,
+  share_not_found: 404,
+  share_expired: 410,
+  share_revoked: 410,
+  share_turn_in_progress: 409,
+  share_turn_limit: 409,
+  audience_not_allowed: 403,
 };
 
 // denied: the caller may not see or do it (a refusal indistinguishable
 // from a missing target). rejected: the input or the target state.
 const DENIED_CODES: ServiceApiErrorCode[] = [
   'principal_not_allowed', 'grant_required', 'grants_unavailable', 'agent_not_found', 'session_not_found', 'conversation_not_found', 'exchange_not_found', 'rate_limited',
-  'pin_not_found',
+  'pin_not_found', 'share_not_found', 'audience_not_allowed',
 ];
 
 export class ServiceApiError extends Error {
@@ -151,6 +180,7 @@ export class ServiceApiError extends Error {
 // The one message per missing-or-not-granted target.
 const NOT_FOUND = {
   pin: () => new ServiceApiError('pin_not_found', 'No pin with that reference is visible to this principal.'),
+  share: () => new ServiceApiError('share_not_found', 'No share with that reference is visible to this principal.'),
   agent: () => new ServiceApiError('agent_not_found', 'No Agent with that id is visible to this principal.'),
   session: () => new ServiceApiError('session_not_found', 'No session with that reference is visible to this principal.'),
   conversation: () => new ServiceApiError('conversation_not_found', 'No conversation with that id is visible to this principal.'),
@@ -1076,5 +1106,174 @@ export function detachServicePin(ctx: ServiceContext, pinRef: string, hooks: Pin
     return { pin: pinBody(row), replayed };
   } catch (error) {
     servicePinError(error);
+  }
+}
+
+// ---------------------------------------------------------------------
+// NOT-515: session shares (lib/session-shares). A share is created for one
+// exact session_ref the caller holds shares:create on (the owning Agent is
+// resolved, never chosen); the caller then sees, lists, and revokes only its
+// own shares, and only while it still holds shares:create on that Agent.
+// Anything else answers share_not_found, like a missing share. A share's
+// Ask turns are not a service call: the share is their only authority
+// (askShare, internal).
+
+// Fields that would select or describe a session by heuristic or provider
+// identity instead of its session_ref: authority_not_allowed, like the
+// NOT-499 authority fields.
+export const SHARE_SELECTOR_FIELDS = [
+  'provider_session_id', 'external_session_id', 'claude_session_id', 'codex_thread_id', 'cursor_chat_id', 'thread_id', 'chat_id',
+  'cwd', 'workspace', 'latest', 'most_recent', 'title', 'title_match', 'active_since',
+];
+const SHARE_REFUSED_FIELDS = [...new Set([...AUTHORITY_FIELDS, ...SHARE_SELECTOR_FIELDS])];
+
+function checkShareFields(body: Record<string, unknown>, allowed: string[], where: string): void {
+  for (const key of Object.keys(body)) {
+    if (allowed.includes(key)) continue;
+    if (SHARE_REFUSED_FIELDS.includes(key)) {
+      throw new ServiceApiError('authority_not_allowed', `${where}${key} cannot select or describe a session; name it by session_ref only.`);
+    }
+    throw new ServiceApiError('invalid_request', `${where}${key} is not a field of this request.`);
+  }
+}
+
+export interface ShareCreateInput {
+  audience: SlackAudience;
+  ttlSeconds: number | null;
+  maxTurns: number | null;
+  agentId: string | null;
+  idempotencyKey: string;
+}
+
+function optionalInteger(value: unknown, field: string): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value)) throw new ServiceApiError('invalid_request', `${field} must be an integer.`);
+  return value;
+}
+
+export function parseShareCreateBody(body: unknown, header: string | null): ShareCreateInput {
+  if (!isObject(body)) throw new ServiceApiError('invalid_request', 'The body must be a JSON object.');
+  checkShareFields(body, ['audience', 'ttl_seconds', 'max_turns', 'agent_id', 'idempotency_key'], '');
+  if (!isObject(body.audience)) throw new ServiceApiError('invalid_request', 'audience must be one object { kind: "slack", team_id, channel_id }.');
+  checkShareFields(body.audience, ['kind', 'team_id', 'channel_id'], 'audience.');
+  if (!isSlackAudience(body.audience)) {
+    throw new ServiceApiError('invalid_request', 'audience must be { kind: "slack", team_id: "T…", channel_id: "C…" } with exact Slack ids.');
+  }
+  return {
+    audience: { kind: 'slack', team_id: body.audience.team_id, channel_id: body.audience.channel_id },
+    ttlSeconds: optionalInteger(body.ttl_seconds, 'ttl_seconds'),
+    maxTurns: optionalInteger(body.max_turns, 'max_turns'),
+    agentId: body.agent_id === undefined || body.agent_id === null ? null : requireText(body.agent_id, 'agent_id', 200),
+    idempotencyKey: idempotencyKeyOf(body, header),
+  };
+}
+
+// An empty body, or { idempotency_key? } (revoke is idempotent by itself).
+export function parseShareRevokeBody(text: string): void {
+  if (text.trim() === '') return;
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new ServiceApiError('invalid_request', 'The body must be empty or a JSON object.');
+  }
+  if (!isObject(body)) throw new ServiceApiError('invalid_request', 'The body must be empty or a JSON object.');
+  checkShareFields(body, ['idempotency_key'], '');
+  if (body.idempotency_key !== undefined) requireText(body.idempotency_key, 'idempotency_key', 160);
+}
+
+const SHARE_LIST_PARAMS = ['session_ref', 'state', 'cursor', 'limit'];
+const SHARE_STATES: ShareState[] = ['active', 'expired', 'revoked'];
+
+// Query parameter names of a share list: only the documented ones.
+export function checkShareListParams(names: string[]): void {
+  for (const name of names) {
+    if (SHARE_LIST_PARAMS.includes(name)) continue;
+    if (SHARE_REFUSED_FIELDS.includes(name)) {
+      throw new ServiceApiError('authority_not_allowed', `${name} cannot select a session; filter by session_ref only.`);
+    }
+    throw new ServiceApiError('invalid_request', `${name} is not a parameter of this list.`);
+  }
+}
+
+function serviceShareError(error: unknown): never {
+  if (error instanceof ShareError) {
+    if (error.code === 'session_not_found') throw NOT_FOUND.session();
+    if (error.code === 'share_not_found') throw NOT_FOUND.share();
+    throw new ServiceApiError(error.code, error.message);
+  }
+  servicePinError(error);
+}
+
+function shareVisible(ctx: ServiceContext, row: ShareRow): boolean {
+  return row.creator_kind === ctx.principal.kind && row.creator_id === ctx.principal.id && holds(ctx, row.agent_id, 'shares:create');
+}
+
+function requireServiceShare(ctx: ServiceContext, shareRef: string): ShareRow {
+  const row = shareRow(shareRef);
+  if (!row) throw NOT_FOUND.share();
+  if (!shareVisible(ctx, row)) throw notGranted('share');
+  return row;
+}
+
+// The share view is Botmancers references and owner-chosen ids only; it is
+// redacted anyway, like every service view.
+function serviceShareBody(row: ShareRow, redactor = serviceRedactor()): ShareView {
+  return redactor.deep(shareView(row));
+}
+
+export interface ShareAuditHooks {
+  onTarget: (target: { agentId: string | null; sessionRef: string | null }) => void;
+  onCommit: () => void;
+}
+
+export async function createServiceShare(ctx: ServiceContext, sessionRef: string, input: ShareCreateInput, hooks: ShareAuditHooks) {
+  const agentId = sessionOwner(sessionRef);
+  hooks.onTarget({ agentId, sessionRef });
+  // Unknown, not granted, and another Agent's session answer alike (NOT-499).
+  if (!agentId) throw NOT_FOUND.session();
+  if (!holds(ctx, agentId, 'shares:create')) throw notGranted('session');
+  if (input.agentId !== null && input.agentId !== agentId) throw NOT_FOUND.session();
+  try {
+    const { share, created } = await createShare({
+      creator: ctx.principal, sessionRef, agentId: input.agentId, audience: input.audience, ttlSeconds: input.ttlSeconds,
+      maxTurns: input.maxTurns, idempotencyKey: input.idempotencyKey, createdVia: 'session_ref', onCommit: () => hooks.onCommit(),
+    });
+    return { share: serviceShareBody(share), replayed: !created };
+  } catch (error) {
+    serviceShareError(error);
+  }
+}
+
+export function getServiceShare(ctx: ServiceContext, shareRef: string, hooks: Pick<ShareAuditHooks, 'onTarget'>) {
+  const row = requireServiceShare(ctx, shareRef);
+  hooks.onTarget({ agentId: row.agent_id, sessionRef: row.session_ref });
+  return { share: serviceShareBody(row) };
+}
+
+export function listServiceShares(ctx: ServiceContext, query: ListQuery & { sessionRef: string | null; state: string | null }): Page<ShareView> {
+  if (query.sessionRef !== null && (query.sessionRef.trim() === '' || query.sessionRef.length > 200)) {
+    throw new ServiceApiError('invalid_request', 'session_ref must be one session reference.');
+  }
+  if (query.state !== null && !(SHARE_STATES as string[]).includes(query.state)) {
+    throw new ServiceApiError('invalid_request', 'state must be active, expired, or revoked.');
+  }
+  const redactor = serviceRedactor();
+  const rows = sharesCreatedBy(ctx.principal, { sessionRef: query.sessionRef })
+    .filter(row => holds(ctx, row.agent_id, 'shares:create'))
+    .map(row => serviceShareBody(row, redactor))
+    .filter(view => query.state === null || view.state === query.state);
+  return paginate(`shares:${ctx.principal.id}:${query.sessionRef ?? ''}:${query.state ?? ''}`, rows,
+    row => ({ at: row.created_at, tie: row.created_at, id: row.share_ref }), query.cursor, query.limit);
+}
+
+export function revokeServiceShare(ctx: ServiceContext, shareRef: string, hooks: ShareAuditHooks) {
+  const row = requireServiceShare(ctx, shareRef);
+  hooks.onTarget({ agentId: row.agent_id, sessionRef: row.session_ref });
+  try {
+    const { share, replayed } = revokeShare(row.id, { onCommit: () => hooks.onCommit() });
+    return { share: serviceShareBody(share), replayed };
+  } catch (error) {
+    serviceShareError(error);
   }
 }

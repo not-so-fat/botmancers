@@ -91,6 +91,13 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-share-preflight
+      - name: Focused SessionShare core, service-grant, session-pin, and MCP suites (NOT-515)
+        working-directory: .
+        run: |
+          npm run test:session-shares
+          npm run test:service-grants
+          npm run test:session-pins
+          npm run test:mcp-bridge
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

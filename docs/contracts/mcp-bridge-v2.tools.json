@@ -803,7 +803,8 @@
                       "exchanges:read",
                       "exchanges:create",
                       "sessions:start",
-                      "sessions:resume"
+                      "sessions:resume",
+                      "shares:create"
                     ]
                   }
                 }
@@ -999,7 +1000,8 @@
                       "exchanges:read",
                       "exchanges:create",
                       "sessions:start",
-                      "sessions:resume"
+                      "sessions:resume",
+                      "shares:create"
                     ]
                   },
                   "description": "What the owner granted this caller on this Agent."
@@ -4557,6 +4559,769 @@
           "rate_limited",
           "internal_error",
           "pin_not_found"
+        ],
+        "botmancers/optional": true
+      }
+    },
+    {
+      "name": "botmancers_create_share",
+      "title": "Share an exact Botmancers session",
+      "description": "Share exactly one session, by its ref from botmancers_list_sessions, as a temporary ask-only share (shares:create on the Agent that owns it). People in the audience (one Slack channel on the owner's allowlist) can then ask that session read-only questions until the share expires (ttl_seconds 300-86400, default 3600), uses its max_turns (1-100, default 20), or is revoked with botmancers_revoke_share. A share never grants write access. Name the session only by session_ref: never by its title, workspace, provider id, or \"latest\". An audience off the allowlist is audience_not_allowed (recovery: ask the owner).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "ref of the session to share, from botmancers_list_sessions."
+          },
+          "audience": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "slack"
+                ]
+              },
+              "team_id": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 21,
+                "pattern": "^T[A-Z0-9]{2,20}$",
+                "description": "Slack workspace (team) id."
+              },
+              "channel_id": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 21,
+                "pattern": "^[CG][A-Z0-9]{2,20}$",
+                "description": "Slack channel id."
+              }
+            },
+            "required": [
+              "kind",
+              "team_id",
+              "channel_id"
+            ],
+            "additionalProperties": false
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 300,
+            "maximum": 86400,
+            "default": 3600,
+            "description": "How long the share lasts, in seconds."
+          },
+          "max_turns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20,
+            "description": "How many questions it allows."
+          },
+          "agent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Optional check: the Agent you expect to own the session."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "description": "Required caller-chosen key for this share (letters, digits, . _ : -). Retrying with the same key and the same arguments returns the original result (replayed: true) and writes nothing; the same key with different arguments is idempotency_conflict."
+          }
+        },
+        "required": [
+          "session_ref",
+          "audience",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v2"
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "share_ref": {
+                "type": "string",
+                "description": "Opaque, stable reference of this share."
+              },
+              "agent_id": {
+                "type": "string",
+                "description": "The Agent that owns the shared session (resolved by Botmancers, never chosen)."
+              },
+              "session_ref": {
+                "type": "string",
+                "description": "The exact session this share asks. It never changes."
+              },
+              "authority": {
+                "type": "string",
+                "enum": [
+                  "ask"
+                ],
+                "description": "Always ask: read-only questions only."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked"
+                ],
+                "description": "active, expired (past expires_at), or revoked."
+              },
+              "audience": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "slack"
+                    ]
+                  },
+                  "team_id": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 21,
+                    "pattern": "^T[A-Z0-9]{2,20}$",
+                    "description": "Slack workspace (team) id."
+                  },
+                  "channel_id": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 21,
+                    "pattern": "^[CG][A-Z0-9]{2,20}$",
+                    "description": "Slack channel id."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "team_id",
+                  "channel_id"
+                ],
+                "additionalProperties": false,
+                "description": "Who may ask through the share: one channel on the owner's allowlist."
+              },
+              "created_via": {
+                "type": "string",
+                "enum": [
+                  "session_ref",
+                  "current_session"
+                ]
+              },
+              "created_at": {
+                "type": "integer",
+                "description": "Epoch milliseconds."
+              },
+              "expires_at": {
+                "type": "integer",
+                "description": "Epoch milliseconds."
+              },
+              "revoked_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Epoch milliseconds, or null."
+              },
+              "max_turns": {
+                "type": "integer",
+                "description": "How many questions the share allows."
+              },
+              "turns_used": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "share_ref",
+              "agent_id",
+              "session_ref",
+              "authority",
+              "state",
+              "audience",
+              "created_via",
+              "created_at",
+              "expires_at",
+              "revoked_at",
+              "max_turns",
+              "turns_used"
+            ],
+            "additionalProperties": false
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contract",
+          "share",
+          "replayed"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v2",
+        "botmancers/errors": [
+          "invalid_arguments",
+          "unsupported_field",
+          "authority_not_allowed",
+          "permission_denied",
+          "grant_required",
+          "grants_unavailable",
+          "rate_limited",
+          "internal_error",
+          "session_not_found",
+          "session_missing",
+          "session_ended",
+          "session_not_resumable",
+          "agent_unavailable",
+          "action_unavailable",
+          "provider_failed",
+          "audience_not_allowed",
+          "idempotency_conflict",
+          "payload_too_large"
+        ],
+        "botmancers/optional": true
+      }
+    },
+    {
+      "name": "botmancers_get_share",
+      "title": "Get a Botmancers session share",
+      "description": "Read one of your shares: its exact session, audience, state (active, expired, revoked), expiry, and questions used.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "share_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "share_ref returned by botmancers_create_share or botmancers_list_shares."
+          }
+        },
+        "required": [
+          "share_ref"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v2"
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "share_ref": {
+                "type": "string",
+                "description": "Opaque, stable reference of this share."
+              },
+              "agent_id": {
+                "type": "string",
+                "description": "The Agent that owns the shared session (resolved by Botmancers, never chosen)."
+              },
+              "session_ref": {
+                "type": "string",
+                "description": "The exact session this share asks. It never changes."
+              },
+              "authority": {
+                "type": "string",
+                "enum": [
+                  "ask"
+                ],
+                "description": "Always ask: read-only questions only."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked"
+                ],
+                "description": "active, expired (past expires_at), or revoked."
+              },
+              "audience": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "slack"
+                    ]
+                  },
+                  "team_id": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 21,
+                    "pattern": "^T[A-Z0-9]{2,20}$",
+                    "description": "Slack workspace (team) id."
+                  },
+                  "channel_id": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 21,
+                    "pattern": "^[CG][A-Z0-9]{2,20}$",
+                    "description": "Slack channel id."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "team_id",
+                  "channel_id"
+                ],
+                "additionalProperties": false,
+                "description": "Who may ask through the share: one channel on the owner's allowlist."
+              },
+              "created_via": {
+                "type": "string",
+                "enum": [
+                  "session_ref",
+                  "current_session"
+                ]
+              },
+              "created_at": {
+                "type": "integer",
+                "description": "Epoch milliseconds."
+              },
+              "expires_at": {
+                "type": "integer",
+                "description": "Epoch milliseconds."
+              },
+              "revoked_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Epoch milliseconds, or null."
+              },
+              "max_turns": {
+                "type": "integer",
+                "description": "How many questions the share allows."
+              },
+              "turns_used": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "share_ref",
+              "agent_id",
+              "session_ref",
+              "authority",
+              "state",
+              "audience",
+              "created_via",
+              "created_at",
+              "expires_at",
+              "revoked_at",
+              "max_turns",
+              "turns_used"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "contract",
+          "share"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v2",
+        "botmancers/errors": [
+          "invalid_arguments",
+          "unsupported_field",
+          "authority_not_allowed",
+          "permission_denied",
+          "grant_required",
+          "grants_unavailable",
+          "rate_limited",
+          "internal_error",
+          "share_not_found"
+        ],
+        "botmancers/optional": true
+      }
+    },
+    {
+      "name": "botmancers_list_shares",
+      "title": "List Botmancers session shares",
+      "description": "List your shares, newest first, optionally of one exact session_ref and in one state. Paginated: pass next_cursor back as cursor until it is null.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Optional: only shares of this exact session."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "expired",
+              "revoked"
+            ],
+            "description": "Optional: only shares in this state."
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "next_cursor from the previous page of this same list; omit for the first page. Opaque: never build or edit one."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20,
+            "description": "Page size, 1 to 100 (default 20)."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v2"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "share_ref": {
+                  "type": "string",
+                  "description": "Opaque, stable reference of this share."
+                },
+                "agent_id": {
+                  "type": "string",
+                  "description": "The Agent that owns the shared session (resolved by Botmancers, never chosen)."
+                },
+                "session_ref": {
+                  "type": "string",
+                  "description": "The exact session this share asks. It never changes."
+                },
+                "authority": {
+                  "type": "string",
+                  "enum": [
+                    "ask"
+                  ],
+                  "description": "Always ask: read-only questions only."
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "expired",
+                    "revoked"
+                  ],
+                  "description": "active, expired (past expires_at), or revoked."
+                },
+                "audience": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "slack"
+                      ]
+                    },
+                    "team_id": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 21,
+                      "pattern": "^T[A-Z0-9]{2,20}$",
+                      "description": "Slack workspace (team) id."
+                    },
+                    "channel_id": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 21,
+                      "pattern": "^[CG][A-Z0-9]{2,20}$",
+                      "description": "Slack channel id."
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "team_id",
+                    "channel_id"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Who may ask through the share: one channel on the owner's allowlist."
+                },
+                "created_via": {
+                  "type": "string",
+                  "enum": [
+                    "session_ref",
+                    "current_session"
+                  ]
+                },
+                "created_at": {
+                  "type": "integer",
+                  "description": "Epoch milliseconds."
+                },
+                "expires_at": {
+                  "type": "integer",
+                  "description": "Epoch milliseconds."
+                },
+                "revoked_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Epoch milliseconds, or null."
+                },
+                "max_turns": {
+                  "type": "integer",
+                  "description": "How many questions the share allows."
+                },
+                "turns_used": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "share_ref",
+                "agent_id",
+                "session_ref",
+                "authority",
+                "state",
+                "audience",
+                "created_via",
+                "created_at",
+                "expires_at",
+                "revoked_at",
+                "max_turns",
+                "turns_used"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor for the next page (pass it back as cursor), or null on the last page."
+          }
+        },
+        "required": [
+          "contract",
+          "items",
+          "next_cursor"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v2",
+        "botmancers/errors": [
+          "invalid_arguments",
+          "unsupported_field",
+          "authority_not_allowed",
+          "permission_denied",
+          "grant_required",
+          "grants_unavailable",
+          "rate_limited",
+          "internal_error"
+        ],
+        "botmancers/optional": true
+      }
+    },
+    {
+      "name": "botmancers_revoke_share",
+      "title": "Revoke a Botmancers session share",
+      "description": "Revoke one of your shares now: no further question reaches the session through it. The session and its history are kept. Idempotent: revoking a revoked share returns it unchanged (replayed: true).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "share_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "share_ref returned by botmancers_create_share or botmancers_list_shares."
+          }
+        },
+        "required": [
+          "share_ref"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "contract": {
+            "type": "string",
+            "const": "botmancers.mcp.v2"
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "share_ref": {
+                "type": "string",
+                "description": "Opaque, stable reference of this share."
+              },
+              "agent_id": {
+                "type": "string",
+                "description": "The Agent that owns the shared session (resolved by Botmancers, never chosen)."
+              },
+              "session_ref": {
+                "type": "string",
+                "description": "The exact session this share asks. It never changes."
+              },
+              "authority": {
+                "type": "string",
+                "enum": [
+                  "ask"
+                ],
+                "description": "Always ask: read-only questions only."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked"
+                ],
+                "description": "active, expired (past expires_at), or revoked."
+              },
+              "audience": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "slack"
+                    ]
+                  },
+                  "team_id": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 21,
+                    "pattern": "^T[A-Z0-9]{2,20}$",
+                    "description": "Slack workspace (team) id."
+                  },
+                  "channel_id": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 21,
+                    "pattern": "^[CG][A-Z0-9]{2,20}$",
+                    "description": "Slack channel id."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "team_id",
+                  "channel_id"
+                ],
+                "additionalProperties": false,
+                "description": "Who may ask through the share: one channel on the owner's allowlist."
+              },
+              "created_via": {
+                "type": "string",
+                "enum": [
+                  "session_ref",
+                  "current_session"
+                ]
+              },
+              "created_at": {
+                "type": "integer",
+                "description": "Epoch milliseconds."
+              },
+              "expires_at": {
+                "type": "integer",
+                "description": "Epoch milliseconds."
+              },
+              "revoked_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Epoch milliseconds, or null."
+              },
+              "max_turns": {
+                "type": "integer",
+                "description": "How many questions the share allows."
+              },
+              "turns_used": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "share_ref",
+              "agent_id",
+              "session_ref",
+              "authority",
+              "state",
+              "audience",
+              "created_via",
+              "created_at",
+              "expires_at",
+              "revoked_at",
+              "max_turns",
+              "turns_used"
+            ],
+            "additionalProperties": false
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contract",
+          "share",
+          "replayed"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "botmancers/contract": "botmancers.mcp.v2",
+        "botmancers/errors": [
+          "invalid_arguments",
+          "unsupported_field",
+          "authority_not_allowed",
+          "permission_denied",
+          "grant_required",
+          "grants_unavailable",
+          "rate_limited",
+          "internal_error",
+          "share_not_found"
         ],
         "botmancers/optional": true
       }

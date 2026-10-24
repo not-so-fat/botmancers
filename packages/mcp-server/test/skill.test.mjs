@@ -214,7 +214,9 @@ function idsIn(value, out = []) {
 
 test('the decision table in SKILL.md names a tool sequence for each action', () => {
   const table = decisionTable();
-  assert.deepEqual([...table.keys()], ['Fresh task', 'Same-session message', 'Ask', 'Continue', 'Pinned ask', 'Resume work here', 'Message an Agent']);
+  assert.deepEqual([...table.keys()], ['Fresh task', 'Same-session message', 'Ask', 'Continue', 'Pinned ask', 'Resume work here', 'Message an Agent', 'Share a session']);
+  // NOT-515: the explicit share lifecycle.
+  assert.deepEqual(table.get('Share a session'), ['botmancers_create_share', 'botmancers_get_share', 'botmancers_list_shares', 'botmancers_revoke_share']);
   // NOT-507: the pin actions.
   assert.deepEqual(table.get('Pinned ask'), ['botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin']);
   assert.deepEqual(table.get('Resume work here'), ['botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin']);

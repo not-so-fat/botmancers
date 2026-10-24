@@ -18,6 +18,7 @@ up. Codex and Grok are example Agent names.
 - [Pinned session](#pinned-session)
 - [Resume work here](#resume-work-here)
 - [Detach or switch](#detach-or-switch)
+- [Share a session](#share-a-session)
 - [Polling and backoff](#polling-and-backoff)
 - [Permission and grants](#permission-and-grants)
 - [Ended session](#ended-session)
@@ -169,6 +170,26 @@ To give the work to a different Agent instead, use
   detaches the old pin and creates the new one in one step.
 - Detach: `botmancers_detach_pin { "pin_ref": "<pin_ref>" }`. A detached pin
   answers `pin_detached` (`recovery: pin_again`).
+
+## Share a session
+
+"Share the uploader-retry session with the #release channel for an hour."
+One exact session, read-only, for one channel the owner allowed.
+
+1. Find the session with `botmancers_list_sessions` and match its `title`
+   as in step 1 of SKILL.md. Never pick it by workspace, provider id, or
+   "latest": a share takes only `session_ref`.
+2. `botmancers_create_share { "session_ref": "<ref>", "audience": { "kind": "slack", "team_id": "<team id the user gave>", "channel_id": "<channel id the user gave>" }, "ttl_seconds": 3600, "idempotency_key": "<new key>" }`
+   returns `share.share_ref`, `share.expires_at`, and `share.max_turns`
+   (default 20 questions). `audience_not_allowed` means the owner has not
+   allowed that channel: tell the user, do not try another one.
+3. `botmancers_get_share { "share_ref": "<share_ref>" }` shows its `state`
+   (`active`, `expired`, `revoked`) and `turns_used`;
+   `botmancers_list_shares { "session_ref": "<ref>" }` lists your shares of
+   that session.
+4. To stop it early: `botmancers_revoke_share { "share_ref": "<share_ref>" }`.
+
+A share never lets anyone edit, and it never broadens your own grants.
 
 ## Polling and backoff
 
