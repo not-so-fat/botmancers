@@ -8,6 +8,7 @@
 //     --permission-mode <mode> --permission-prompts none
 //     --tools <list> --allowedTools <list> --strict-mcp-config
 //     (--session-id <new uuid> | --resume <session id>)
+//     [--mcp-config <turn>.mcp.json]           NOT-517, see below
 //
 // with the prompt on stdin, cwd = the explicit workspace (start) or the
 // workspace the session recorded (resume; Claude Code resolves a session
@@ -26,11 +27,22 @@
 // started before a Botmancers restart is observed and cancelled the same
 // way after it. Claude session ids are only ever handed back to
 // ./provider-sessions, which keeps them private.
+//
+// NOT-517: when Botmancers hands the turn a session-context minter
+// (./session-context) and it mints a context for this turn process, the turn
+// gets a per-turn 0600 --mcp-config with one http entry, botmancers, at
+// Botmancers' /api/v0/mcp, whose Botmancers-Session-Context header is the
+// ${BOTMANCERS_SESSION_CONTEXT} reference; the value is set only in the turn
+// process's environment (never argv, the file, or the turn record), and
+// --allowedTools adds exactly mcp__botmancers__botmancers_share_current_session.
+// --strict-mcp-config keeps every other MCP configuration out. Without a
+// context the turn has no MCP server at all, as before.
 import { execFileSync, spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { dbPath } from './home';
+import { SESSION_CONTEXT_ENV, SHARE_CURRENT_CLAUDE_TOOL, claudeMcpConfig, withoutSessionContextEnv } from './session-context-launch';
 import {
   claudeConfigDir,
   cleanupPeriodDays,
@@ -51,6 +63,7 @@ import {
   type ProviderSessionRecord,
   type ProviderTurnResult,
   type SessionAuthority,
+  type SessionContextMinter,
   type SessionProvider,
   type SessionProviderCapabilities,
 } from './session-provider';
@@ -125,22 +138,44 @@ export function compareVersions(a: string, b: string): number {
 }
 
 // The environment a turn runs with: the base environment without any Agent
-// Deck variable (the direct provider never routes through a deck).
-export function claudeTurnEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+// Deck variable (the direct provider never routes through a deck), and
+// without any inherited session context (NOT-517): only a context minted
+// for this turn is set, by the launch.
+export function claudeTurnEnv(base: NodeJS.ProcessEnv, sessionContext: string | null = null): NodeJS.ProcessEnv {
   const env = {} as NodeJS.ProcessEnv;
-  for (const [key, value] of Object.entries(base)) if (!/^AGENT_DECK/.test(key) && value !== undefined) env[key] = value;
+  for (const [key, value] of Object.entries(withoutSessionContextEnv(base))) if (!/^AGENT_DECK/.test(key) && value !== undefined) env[key] = value;
+  if (sessionContext !== null) env[SESSION_CONTEXT_ENV] = sessionContext;
   return env;
 }
 
-export function claudeTurnArgs(authority: SessionAuthority, target: { resume: string } | { sessionId: string }): string[] {
+// mcpConfig: the turn's own --mcp-config file (NOT-517), which adds exactly
+// the share-current tool to the allowed tools.
+export function claudeTurnArgs(authority: SessionAuthority, target: { resume: string } | { sessionId: string }, mcpConfig: string | null = null): string[] {
   const mode = CLAUDE_AUTHORITY_MODES[authority];
+  const allowed = mcpConfig ? [...mode.tools, SHARE_CURRENT_CLAUDE_TOOL] : mode.tools;
   return [
     '-p', '--output-format', 'stream-json', '--verbose', '--input-format', 'text',
     '--permission-mode', mode.permission_mode, '--permission-prompts', 'none',
-    '--tools', mode.tools.join(','), '--allowedTools', mode.tools.join(','), '--strict-mcp-config',
+    '--tools', mode.tools.join(','), '--allowedTools', allowed.join(','), '--strict-mcp-config',
+    ...(mcpConfig ? ['--mcp-config', mcpConfig] : []),
     ...('resume' in target ? ['--resume', target.resume] : ['--session-id', target.sessionId]),
   ];
 }
+
+// Writes the turn's MCP configuration, owner-only (0600) from creation.
+// It holds the URL and an ${ENV} reference, never the context itself.
+export function writeClaudeMcpConfig(file: string, url: string): void {
+  fs.rmSync(file, { force: true });
+  const fd = fs.openSync(file, 'wx', 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(claudeMcpConfig(url)));
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.chmodSync(file, 0o600);
+}
+
+type TurnLaunchInput = { prompt: string; authority: SessionAuthority; idempotency_key: string; session_context?: SessionContextMinter | null };
 
 interface TurnRecord {
   id: string;
@@ -295,17 +330,22 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
   }
   const keyFile = (key: string) => path.join(keysDir, key.replace(/[^a-zA-Z0-9_-]/g, '_'));
 
-  async function launch(kind: 'start' | 'send', input: { prompt: string; authority: SessionAuthority; idempotency_key: string }, sessionId: string, workspace: string) {
+  async function launch(kind: 'start' | 'send', input: TurnLaunchInput, sessionId: string, workspace: string) {
     const id = `ct-${randomUUID()}`;
     fs.mkdirSync(turnsDir, { recursive: true });
+    // NOT-517: this turn process is one launch; a context, if minted, is
+    // bound to it alone.
+    const context = input.session_context?.mint({ kind: 'claude_turn', ref: id }) ?? null;
+    const mcpConfig = context ? turnFile(id, 'mcp.json') : null;
+    if (context && mcpConfig) writeClaudeMcpConfig(mcpConfig, context.url);
     const turn: TurnRecord = { id, session_id: sessionId, kind, authority: input.authority, workspace, pid: null, state: 'running', exit_code: null, created_at: Date.now(), finished_at: null };
     const out = fs.openSync(turnFile(id, 'out.jsonl'), 'a');
     const err = fs.openSync(turnFile(id, 'err.log'), 'a');
     let child: ChildProcess;
     let spawnError: Error | null = null;
     try {
-      child = spawn(bin, claudeTurnArgs(input.authority, kind === 'send' ? { resume: sessionId } : { sessionId }), {
-        cwd: workspace, env: claudeTurnEnv(baseEnv), stdio: ['pipe', out, err], detached: true,
+      child = spawn(bin, claudeTurnArgs(input.authority, kind === 'send' ? { resume: sessionId } : { sessionId }, mcpConfig), {
+        cwd: workspace, env: claudeTurnEnv(baseEnv, context?.token ?? null), stdio: ['pipe', out, err], detached: true,
       });
     } finally {
       fs.closeSync(out);
@@ -365,7 +405,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
     }
   }
 
-  async function beginTurn(kind: 'start' | 'send', input: { prompt: string; authority: SessionAuthority; idempotency_key: string }, sessionId: string, workspace: string) {
+  async function beginTurn(kind: 'start' | 'send', input: TurnLaunchInput, sessionId: string, workspace: string) {
     if (!CLAUDE_AUTHORITY_MODES[input.authority]) return providerError('unsupported_authority', `No Claude Code mode for ${String(input.authority)}.`);
     const key = claimKey(input.idempotency_key);
     if (!key.claimed) {
@@ -473,6 +513,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
         }
         if (terminal) {
           if (turn.state === 'running') writeTurn({ ...turn, state: 'exited', finished_at: terminal.finished_at });
+          fs.rmSync(turnFile(turn.id, 'mcp.json'), { force: true });
           return providerOk(terminal);
         }
         if (input.signal?.aborted) return providerError('cancelled', 'observe aborted');
@@ -487,6 +528,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
       if (terminalOf(turn)) return providerOk('already_terminal');
       stopProcess(turn);
       writeTurn({ ...turn, state: 'cancelled', finished_at: Date.now() });
+      fs.rmSync(turnFile(turn.id, 'mcp.json'), { force: true });
       return providerOk('cancelled');
     },
   };

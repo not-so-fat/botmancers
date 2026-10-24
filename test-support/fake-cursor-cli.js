@@ -27,7 +27,11 @@ const variant = process.env.FAKE_CURSOR_VARIANT || 'listless';
 const chatsPath = path.join(dir, 'chats.json');
 const loadChats = () => (fs.existsSync(chatsPath) ? JSON.parse(fs.readFileSync(chatsPath, 'utf8')) : { counter: 0, chats: {} });
 const saveChats = state => fs.writeFileSync(chatsPath, JSON.stringify(state, null, 2));
-const logCall = entry => fs.appendFileSync(path.join(dir, 'calls.jsonl'), `${JSON.stringify({ ...entry, cwd: process.cwd(), correlation: process.env.BOTMANCERS_CORRELATION || null })}\n`);
+const logCall = entry => fs.appendFileSync(path.join(dir, 'calls.jsonl'), `${JSON.stringify({
+  ...entry, cwd: process.cwd(), correlation: process.env.BOTMANCERS_CORRELATION || null,
+  // NOT-517: whether any session context reached this process (never the value).
+  session_context_env: ['BOTMANCERS_SESSION_CONTEXT', 'BOTMANCERS_SESSION_CONTEXT_TOKEN'].some(key => key in process.env),
+})}\n`);
 const emit = event => process.stdout.write(`${JSON.stringify(event)}\n`);
 const argv = process.argv.slice(2);
 

@@ -535,12 +535,18 @@ async function main() {
     assert(unauth.status === 401, 'no bearer token -> 401 before anything is read');
     const revoked = await json(await routes.revoke.POST(new Request(`http://local/api/v0/shares/${ref}/revoke`, { method: 'POST', headers: auth }), { params: Promise.resolve({ shareRef: ref }) }));
     assert(revoked.status === 200 && revoked.body.share.state === 'revoked', 'POST /api/v0/shares/{ref}/revoke -> 200 revoked');
-    assert(!fs.existsSync(path.join(ROOT, 'app/api/v0/shares/current')) && !Object.keys(routes.get).includes('POST'),
-      'no /api/v0/shares/current route exists (share-current is not served)');
+    // NOT-517 serves /api/v0/shares/current (test-session-context.js); a
+    // service token there is refused, never a share.
+    const currentRoute = jiti('./app/api/v0/shares/current/route.ts');
+    const viaToken = await json(await currentRoute.POST(new Request('http://local/api/v0/shares/current', {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ audience, idempotency_key: 'tok-current' }),
+    })));
+    assert(viaToken.status === 400 && viaToken.body.error.code === 'invalid_request' && !Object.keys(routes.get).includes('POST'),
+      'POST /api/v0/shares/current with a service token -> 400 invalid_request (the session context is its only credential)');
 
     const names = mcp.MCP_V2_TOOLS.map(tool => tool.name);
     const shareTools = ['botmancers_create_share', 'botmancers_get_share', 'botmancers_list_shares', 'botmancers_revoke_share'];
-    assert(same(names.slice(-4), shareTools) && !names.includes('botmancers_share_current_session'), 'MCP v2 adds the four share tools; botmancers_share_current_session is absent');
+    assert(same(names.slice(-4), shareTools) && !names.includes('botmancers_share_current_session'), 'MCP v2 adds the four share tools; botmancers_share_current_session is not a service tool (NOT-517: session contexts only)');
     const toolOf = name => mcp.MCP_V2_TOOLS.find(tool => tool.name === name);
     assert(shareTools.every(name => toolOf(name).inputSchema.additionalProperties === false && toolOf(name).outputSchema.additionalProperties === false && toolOf(name)._meta['botmancers/optional'] === true),
       'strict input and output schemas, marked optional (additive)');

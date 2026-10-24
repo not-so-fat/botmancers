@@ -119,8 +119,17 @@ export interface SessionContextLaunchRequest {
   processBound?: boolean;
 }
 
+// A minted context as the provider sees it: the secret for its launch
+// arguments only, and end() for when the launch ends (thread unload,
+// app-server exit, a launch that never happened).
+export interface MintedLaunchContext {
+  token: string;
+  url: string;
+  end(reason: 'thread_unload' | 'app_server_exit' | 'launch_failed'): void;
+}
+
 export interface SessionContextMinter {
-  mint(launch: SessionContextLaunchRequest): { token: string; url: string } | null;
+  mint(launch: SessionContextLaunchRequest): MintedLaunchContext | null;
 }
 
 interface TurnInputBase extends ProviderCallContext {

@@ -24,6 +24,20 @@
 // Codex thread and turn ids stay inside the provider handle strings
 // (opaque to Botmancers, stored privately in the registry). Terminal UI text
 // is never parsed.
+//
+// NOT-517: launch-bound session contexts (./session-context). On the
+// app-server, a launch is one thread *load* into this process: thread/start,
+// or the first thread/resume of a thread this app-server has not loaded.
+// That request alone carries config.mcp_servers.botmancers (url plus the
+// Botmancers-Session-Context http header); Codex spawns the thread's MCP
+// client once per load, so a later thread/resume of a loaded thread sends
+// no config and mints nothing (its context stays the load's, kept live by
+// the turns on it; never presented as turn-scoped). The load ends, and with
+// it the context, on a thread/closed notification or when the app-server
+// exits (idle close, crash, shutdown). An exec fallback run is its own
+// launch: -c mcp_servers.botmancers.url / env_http_headers, with the value
+// in the run's environment only. Without a minter (or with share-from-turn
+// off) nothing is added.
 import { execFile, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -32,6 +46,7 @@ import { CodexAppServerClient, isUnknownMethod, spawnStdioTransport, type RpcRes
 import { addUsage, execRunFacts, parseCodexJsonl, usageFromBreakdown } from './codex-usage';
 import { workspaceContains } from './agent-registration';
 import { dbPath } from './home';
+import { SESSION_CONTEXT_EXEC_ENV, codexExecMcpArgs, codexThreadMcpConfig, withoutSessionContextEnv } from './session-context-launch';
 import {
   providerError,
   providerOk,
@@ -42,7 +57,9 @@ import {
   type ProviderTurnHandle,
   type ProviderTurnResult,
   type ProviderTurnUsage,
+  type MintedLaunchContext,
   type SessionAuthority,
+  type SessionContextMinter,
   type SessionProvider,
   type SessionProviderCapabilities,
   type TranscriptEntry,
@@ -222,6 +239,9 @@ export class CodexRuntime {
   private readonly trackers = new Map<string, Tracker>();
   private readonly keys = new Map<string, ProviderTurnHandle>();
   private idleTimer: NodeJS.Timeout | null = null;
+  // NOT-517: the threads the current app-server has loaded, each with the
+  // context its load carried (null: loaded without one).
+  private loads = new Map<string, MintedLaunchContext | null>();
   readonly command: string[];
   readonly env: NodeJS.ProcessEnv;
 
@@ -294,7 +314,7 @@ export class CodexRuntime {
     };
     this.client?.close();
     this.client = null;
-    const open = this.options.transport ?? ((command, env) => spawnStdioTransport([...command, 'app-server'], { env }));
+    const open = this.options.transport ?? ((command, env) => spawnStdioTransport([...command, 'app-server'], { env: withoutSessionContextEnv(env) }));
     const client = new CodexAppServerClient(open(this.command, this.env), this.options.requestTimeoutMs ?? 30_000);
     const init = await client.request<{ userAgent?: string }>('initialize', {
       clientInfo: { name: 'botmancers', title: 'Botmancers', version: '1' }, capabilities: null,
@@ -331,6 +351,13 @@ export class CodexRuntime {
 
   private attach(client: CodexAppServerClient): void {
     this.client = client;
+    const loads = new Map<string, MintedLaunchContext | null>();
+    this.loads = loads;
+    client.onClose(() => {
+      // The app-server exited: every thread it loaded is unloaded.
+      for (const context of loads.values()) context?.end('app_server_exit');
+      loads.clear();
+    });
     client.handleServerRequests(method => {
       // Authority is fixed per turn (approvalPolicy 'never'); anything that
       // would widen it is declined, never approved.
@@ -339,6 +366,11 @@ export class CodexRuntime {
       return { error: { code: -32601, message: 'not supported by Botmancers' } };
     });
     client.onNotification(({ method, params }) => {
+      if (method === 'thread/closed' && typeof params.threadId === 'string') {
+        loads.get(params.threadId)?.end('thread_unload');
+        loads.delete(params.threadId);
+        return;
+      }
       const turnId = typeof params.turnId === 'string' ? params.turnId
         : params.turn && typeof (params.turn as Turn).id === 'string' ? (params.turn as Turn).id : null;
       if (!turnId || typeof params.threadId !== 'string') return;
@@ -401,6 +433,24 @@ export class CodexRuntime {
     if (probe.status !== 'ready' || !this.client) return { ok: false, kind: 'closed', error: { code: -1, message: probe.detail } };
     this.scheduleIdle();
     return this.client.request<T>(method, params, { signal: ctx.signal ?? null });
+  }
+
+  // Whether this app-server has loaded the thread (NOT-517).
+  isLoaded(threadId: string): boolean {
+    return !!this.client && !this.client.closed && this.loads.has(threadId);
+  }
+
+  private markLoaded(threadId: string, context: MintedLaunchContext | null): void {
+    if (this.loads.has(threadId)) {
+      // Already loaded: Codex keeps the first load's MCP client.
+      context?.end('launch_failed');
+      return;
+    }
+    this.loads.set(threadId, context);
+  }
+
+  private mintLoad(minter: SessionContextMinter | null | undefined): MintedLaunchContext | null {
+    return minter?.mint({ kind: 'codex_thread_load', ref: `load-${randomUUID()}`, processBound: true }) ?? null;
   }
 
   has(method: AppServerMethod): boolean {
@@ -531,12 +581,16 @@ export class CodexRuntime {
     const route = this.selection().start;
     if (route === null) return providerError('unsupported', 'this Codex cannot start sessions');
     if (route === 'exec') return this.execStart(null, input.workspace, input);
+    const context = this.mintLoad(input.session_context);
     const thread = await this.rpc<{ thread?: Thread }>('thread/start', {
       cwd: input.workspace, approvalPolicy: 'never', sandbox: sandboxMode(input.authority), ephemeral: false,
+      ...(context ? { config: codexThreadMcpConfig(context) } : {}),
     }, input);
+    const threadId = thread.ok ? thread.result?.thread?.id : undefined;
+    if (typeof threadId !== 'string') context?.end('launch_failed');
     if (!thread.ok) return rpcFailure(thread, 'thread/start');
-    const threadId = thread.result?.thread?.id;
     if (typeof threadId !== 'string') return providerError('unavailable', 'thread/start returned no thread');
+    this.markLoaded(threadId, context);
     return this.beginTurn(threadId, input.workspace, input);
   }
 
@@ -566,10 +620,19 @@ export class CodexRuntime {
       if (!record.value.resumable || !record.value.workspace) return providerError('not_resumable', 'the thread cannot be resumed');
       return this.execStart(threadId, record.value.workspace, input);
     }
+    // Only the first resume in this app-server loads the thread; that one
+    // alone carries a context (a resume of a loaded thread starts no MCP).
+    await this.connect();
+    const context = this.isLoaded(threadId) ? null : this.mintLoad(input.session_context);
     const resumed = await this.rpc<{ thread?: Thread; cwd?: string }>('thread/resume', {
       threadId, approvalPolicy: 'never', sandbox: sandboxMode(input.authority), excludeTurns: true,
+      ...(context ? { config: codexThreadMcpConfig(context) } : {}),
     }, input);
-    if (!resumed.ok) return isMissing(resumed) ? providerError('not_found', 'no such thread') : rpcFailure(resumed, 'thread/resume');
+    if (!resumed.ok) {
+      context?.end('launch_failed');
+      return isMissing(resumed) ? providerError('not_found', 'no such thread') : rpcFailure(resumed, 'thread/resume');
+    }
+    if (!this.isLoaded(threadId)) this.markLoaded(threadId, context);
     const cwd = typeof resumed.result?.cwd === 'string' ? resumed.result.cwd : (resumed.result?.thread?.cwd as string | undefined);
     if (!cwd || !fs.existsSync(cwd)) return providerError('not_resumable', 'the thread workspace no longer exists');
     const prior = await this.findKeyedTurn(threadId, input.idempotency_key, input);
@@ -616,7 +679,9 @@ export class CodexRuntime {
         const read = await this.rpc<{ thread?: Thread }>('thread/read', { threadId }, ctx);
         const live = read.ok && (read.result?.thread?.status as { type?: string } | undefined)?.type === 'active';
         if (live) {
-          await this.rpc('thread/resume', { threadId, excludeTurns: true }, ctx);
+          const resumed = await this.rpc('thread/resume', { threadId, excludeTurns: true }, ctx);
+          // Loaded here without a context: a later resume must not claim one.
+          if (resumed.ok && !this.isLoaded(threadId)) this.markLoaded(threadId, null);
           return providerOk(tracker);
         }
         tracker.status = 'lost';
@@ -723,19 +788,30 @@ export class CodexRuntime {
     return null;
   }
 
-  private async execStart(threadId: string | null, cwd: string, input: { prompt: string; authority: SessionAuthority; idempotency_key: string } & ProviderCallContext): Promise<ProviderResult<ProviderTurnHandle>> {
+  private async execStart(
+    threadId: string | null, cwd: string,
+    input: { prompt: string; authority: SessionAuthority; idempotency_key: string; session_context?: SessionContextMinter | null } & ProviderCallContext,
+  ): Promise<ProviderResult<ProviderTurnHandle>> {
     fs.mkdirSync(this.runsDir, { recursive: true });
     const runId = randomUUID();
-    const config = ['-c', `sandbox_mode="${sandboxMode(input.authority)}"`, '-c', 'approval_policy="never"'];
+    // NOT-517: one exec process is one launch.
+    const context = input.session_context?.mint({ kind: 'codex_exec', ref: runId }) ?? null;
+    const config = [
+      '-c', `sandbox_mode="${sandboxMode(input.authority)}"`, '-c', 'approval_policy="never"',
+      ...(context ? codexExecMcpArgs(context) : []),
+    ];
+    const env = withoutSessionContextEnv(this.env);
+    if (context) env[SESSION_CONTEXT_EXEC_ENV] = context.token;
     const args = threadId
       ? [...this.command.slice(1), 'exec', 'resume', '--json', ...config, threadId, '-']
       : [...this.command.slice(1), 'exec', '--json', '-C', cwd, ...config, '-'];
     const out = fs.openSync(this.runPath(runId, 'jsonl'), 'a');
     let child;
     try {
-      child = spawn(this.command[0], args, { cwd, env: this.env, detached: true, stdio: ['pipe', out, 'ignore'] });
+      child = spawn(this.command[0], args, { cwd, env, detached: true, stdio: ['pipe', out, 'ignore'] });
     } catch (error) {
       fs.closeSync(out);
+      context?.end('launch_failed');
       return providerError('unavailable', `codex exec did not start: ${(error as Error).message}`);
     }
     fs.closeSync(out);

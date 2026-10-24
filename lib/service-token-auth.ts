@@ -17,6 +17,14 @@ import type { Principal } from './db';
 
 export const SERVICE_TOKENS_ENV = 'BOTMANCERS_SERVICE_TOKENS';
 
+// Engine-internal service principals (lib/service-grants refuses a grant
+// naming one). NOT-517: no bearer token may authenticate as one either;
+// service:botmancers-session-context is authenticated only by a minted
+// session context (lib/session-context).
+export const RESERVED_SERVICE_IDS: readonly string[] = [
+  'botmancers-exchanges', 'botmancers-engine', 'botmancers-session-share', 'botmancers-session-context',
+];
+
 const SERVICE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DIGEST = /^sha256:([0-9a-f]{64})$/;
 
@@ -50,6 +58,7 @@ export function parseServiceTokens(value: string | undefined): ServiceTokenEntry
       throw new ServiceTokenConfigError(`${SERVICE_TOKENS_ENV} entries must be <service-id>=sha256:<64 hex digits>.`);
     }
     if (ids.has(serviceId)) throw new ServiceTokenConfigError(`${SERVICE_TOKENS_ENV} lists service ${serviceId} twice.`);
+    if (RESERVED_SERVICE_IDS.includes(serviceId)) throw new ServiceTokenConfigError(`${SERVICE_TOKENS_ENV} names the reserved engine principal ${serviceId}.`);
     ids.add(serviceId);
     entries.push({ serviceId, digest: Buffer.from(digest[1], 'hex') });
   }

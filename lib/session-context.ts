@@ -26,24 +26,26 @@
 // replayed token fails closed and never points at another session.
 //
 // Rows hold Botmancers references only: the provider launch id (a Claude
-// turn id, a Codex thread id) is kept only as a salted digest.
+// turn id, a Codex load or exec run id) is kept only as a SHA-256 digest.
 import { createHash, randomBytes } from 'crypto';
 import db, { bots, type Principal } from './db';
 import { shareFromTurnEnabled } from './session-shares';
+import { SESSION_CONTEXT_HEADER } from './session-context-launch';
 
-export const SESSION_CONTEXT_HEADER = 'Botmancers-Session-Context';
-// The environment variable a Claude turn's --mcp-config header references.
-export const SESSION_CONTEXT_ENV = 'BOTMANCERS_SESSION_CONTEXT';
-// The environment variable a codex exec run's env_http_headers names. Its
-// name matches Codex's default *TOKEN* shell-environment exclusion, so the
-// model's shell commands never inherit it.
-export const SESSION_CONTEXT_EXEC_ENV = 'BOTMANCERS_SESSION_CONTEXT_TOKEN';
+export {
+  SESSION_CONTEXT_ENV,
+  SESSION_CONTEXT_EXEC_ENV,
+  SESSION_CONTEXT_HEADER,
+  SESSION_CONTEXT_MCP_SERVER,
+  SHARE_CURRENT_CLAUDE_TOOL,
+  SHARE_CURRENT_TOOL,
+  claudeMcpConfig,
+  codexExecMcpArgs,
+  codexThreadMcpConfig,
+  withoutSessionContextEnv,
+} from './session-context-launch';
 export const SESSION_CONTEXT_SERVICE_ID = 'botmancers-session-context';
 export const SESSION_CONTEXT_PRINCIPAL: Principal = Object.freeze({ kind: 'service', id: SESSION_CONTEXT_SERVICE_ID }) as Principal;
-// The MCP server name in every launch config, and the one tool it allows.
-export const SESSION_CONTEXT_MCP_SERVER = 'botmancers';
-export const SHARE_CURRENT_TOOL = 'botmancers_share_current_session';
-export const SHARE_CURRENT_CLAUDE_TOOL = `mcp__${SESSION_CONTEXT_MCP_SERVER}__${SHARE_CURRENT_TOOL}`;
 export const SESSION_CONTEXT_IDLE_MS = 15 * 60 * 1000;
 // Where launches reach Botmancers' MCP endpoint (default: this server's
 // loopback port).
@@ -75,6 +77,9 @@ db.exec(`
     -- Set for a launch that cannot outlive the Botmancers process (a thread
     -- load in its app-server child).
     process_ref TEXT,
+    -- The Botmancers turn whose launch this is (a Claude turn process, a
+    -- codex exec run); null for a Codex thread load, which outlives a turn.
+    turn_ref TEXT,
     state TEXT NOT NULL CHECK (state IN ('live', 'ended', 'revoked')),
     end_reason TEXT,
     created_at INTEGER NOT NULL,
@@ -83,6 +88,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_session_contexts_launch ON session_contexts(launch_digest, state);
   CREATE INDEX IF NOT EXISTS idx_session_contexts_agent ON session_contexts(agent_id, state);
+  CREATE INDEX IF NOT EXISTS idx_session_contexts_turn ON session_contexts(turn_ref, state);
 `);
 
 export interface SessionContextRow {
@@ -94,6 +100,7 @@ export interface SessionContextRow {
   launch_kind: SessionLaunchKind;
   launch_digest: string;
   process_ref: string | null;
+  turn_ref: string | null;
   state: 'live' | 'ended' | 'revoked';
   end_reason: SessionContextEndReason | null;
   created_at: number;
@@ -175,6 +182,7 @@ export function mintSessionContext(input: {
   processBound?: boolean;
   env?: NodeJS.ProcessEnv;
 }): MintedSessionContext | null {
+  sweepSessionContexts();
   if (!bots.getById(input.agentId) || !shareFromTurnEnabled(input.agentId)) return null;
   if (input.sessionRef !== null && ownerOf(input.sessionRef) !== input.agentId) return null;
   const token = `bmsc_${randomBytes(32).toString('base64url')}`;
@@ -207,6 +215,14 @@ export function bindSessionContext(id: string, sessionRef: string): boolean {
   }).immediate();
 }
 
+// Links the contexts a turn's launch minted to the Botmancers turn, so the
+// turn's end ends a per-turn launch (lib/provider-sessions finishTurn).
+export function attachSessionContextsToTurn(ids: readonly string[], turnRef: string): void {
+  const update = db.prepare("UPDATE session_contexts SET turn_ref = ?, updated_at = ? WHERE id = ? AND state = 'live' AND turn_ref IS NULL");
+  const now = clock();
+  for (const id of ids) update.run(turnRef, now, id);
+}
+
 export function contextRow(id: string): SessionContextRow | undefined {
   return db.prepare('SELECT * FROM session_contexts WHERE id = ?').get(id) as SessionContextRow | undefined;
 }
@@ -228,6 +244,16 @@ export function endSessionLaunch(launch: SessionLaunch, reason: SessionContextEn
     .run(reason, now, now, launchDigest(launch.kind, launch.ref)).changes;
 }
 
+// The Botmancers turn ended: a launch that is that turn (a Claude turn
+// process, a codex exec run) ends with it. A Codex thread load does not.
+export function endTurnSessionContexts(turnRef: string, reason: SessionContextEndReason = 'turn_end'): number {
+  const now = clock();
+  return db.prepare(`
+    UPDATE session_contexts SET state = 'ended', end_reason = ?, ended_at = ?, updated_at = ?
+    WHERE turn_ref = ? AND state = 'live' AND launch_kind IN ('claude_turn', 'codex_exec')
+  `).run(reason, now, now, turnRef).changes;
+}
+
 export function endSessionContext(id: string, reason: SessionContextEndReason): boolean {
   return endRow(id, 'ended', reason) === 1;
 }
@@ -242,6 +268,18 @@ export function revokeAgentSessionContexts(agentId: string): number {
   const now = clock();
   return db.prepare("UPDATE session_contexts SET state = 'revoked', end_reason = 'owner_off', ended_at = ?, updated_at = ? WHERE agent_id = ? AND state = 'live'")
     .run(now, now, agentId).changes;
+}
+
+// Revokes every live context of an Agent whose owner has share_from_turn
+// off now (or that no longer exists). Run on every mint and resolve, so a
+// toggle-off is durable on the next context use anywhere.
+export function sweepSessionContexts(): number {
+  const agents = db.prepare("SELECT DISTINCT agent_id FROM session_contexts WHERE state = 'live'").all() as { agent_id: string }[];
+  let revoked = 0;
+  for (const { agent_id } of agents) {
+    if (!bots.getById(agent_id) || !shareFromTurnEnabled(agent_id)) revoked += revokeAgentSessionContexts(agent_id);
+  }
+  return revoked;
 }
 
 // ---------------------------------------------------------------------
@@ -270,6 +308,7 @@ function lastTurnActivity(registryRef: string): { running: boolean; at: number |
 // found stale or withdrawn here is ended durably as well.
 export function resolveSessionContext(value: string | null | undefined): SessionContextResolution {
   const fail = (reason: SessionContextReason): SessionContextResolution => ({ ok: false, reason });
+  sweepSessionContexts();
   if (value === null || value === undefined) return fail('missing');
   if (value.length > HEADER_LIMIT) return fail('unsupported');
   const values = value.split(/[\s,]+/).filter(Boolean);
@@ -303,35 +342,4 @@ export function resolveSessionContext(value: string | null | undefined): Session
     return fail('stale');
   }
   return { ok: true, contextId: row.id, agentId: row.agent_id, sessionRef: row.session_ref };
-}
-
-// ---------------------------------------------------------------------
-// Launch configuration (the providers' launch arguments). None of these
-// holds the secret where it would be argv, a file, or model-visible.
-
-// Claude Code: the per-turn --mcp-config document. The header value is an
-// ${ENV} reference that Claude Code expands from the turn's environment, so
-// the 0600 file itself holds no secret.
-export function claudeMcpConfig(url: string): Record<string, unknown> {
-  return {
-    mcpServers: {
-      [SESSION_CONTEXT_MCP_SERVER]: { type: 'http', url, headers: { [SESSION_CONTEXT_HEADER]: `\${${SESSION_CONTEXT_ENV}}` } },
-    },
-  };
-}
-
-// Codex app-server: the thread/start or first thread/resume config, sent
-// over the app-server's stdio protocol.
-export function codexThreadMcpConfig(minted: MintedSessionContext): Record<string, unknown> {
-  return { mcp_servers: { [SESSION_CONTEXT_MCP_SERVER]: { url: minted.url, http_headers: { [SESSION_CONTEXT_HEADER]: minted.token } } } };
-}
-
-// codex exec: -c overrides naming the URL and the environment variable that
-// holds the header value (the value itself is in the run's environment).
-export function codexExecMcpArgs(minted: Pick<MintedSessionContext, 'url'>): string[] {
-  const key = `mcp_servers.${SESSION_CONTEXT_MCP_SERVER}`;
-  return [
-    '-c', `${key}.url=${JSON.stringify(minted.url)}`,
-    '-c', `${key}.env_http_headers={ ${JSON.stringify(SESSION_CONTEXT_HEADER)} = ${JSON.stringify(SESSION_CONTEXT_EXEC_ENV)} }`,
-  ];
 }
