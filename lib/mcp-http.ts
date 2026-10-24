@@ -19,10 +19,19 @@
 // BOTMANCERS_MCP_TOOL_CALLS_PER_MINUTE (default 60) tools/call requests in
 // any rolling 60 s window. Calls over the limit are answered 429
 // rate_limited with Retry-After before the tool runs, so they write nothing.
+//
+// NOT-517: a request with a Botmancers-Session-Context header and no
+// Authorization header is the session-context principal
+// (lib/session-context): the MCP entry Botmancers wrote for one Claude Code
+// or Codex launch. It is served botmancers_share_current_session only; the
+// header itself is resolved inside that tool's audited call, so an
+// ambiguous, unsupported, unknown, stale, or revoked value is a
+// session_context_required result that writes no share.
 import type { Principal } from './db';
 import { AgentApiError } from './agent-conversations';
 import { authenticate } from './agent-api';
 import { isLoopbackHost } from './owner-boundary';
+import { SESSION_CONTEXT_PRINCIPAL, sessionContextHeader } from './session-context';
 import { JSON_RPC, MCP_PROTOCOL_VERSIONS, handleMcpMessage, jsonRpcError } from './mcp-bridge';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -113,9 +122,12 @@ function acceptsJson(request: Request): boolean {
 export async function handleMcpPost(request: Request): Promise<Response> {
   const refusal = rebindingRefusal(request);
   if (refusal) return refusal;
+  const sessionContext = sessionContextHeader(request.headers);
   let principal: Principal;
   try {
-    principal = await authenticate(request);
+    principal = sessionContext !== null && request.headers.get('authorization') === null
+      ? SESSION_CONTEXT_PRINCIPAL
+      : await authenticate(request);
   } catch (error) {
     if (error instanceof AgentApiError) {
       const headers: Record<string, string> = error.status === 401 ? { 'WWW-Authenticate': 'Bearer realm="botmancers"' } : {};
@@ -156,7 +168,7 @@ export async function handleMcpPost(request: Request): Promise<Response> {
   }
   let response;
   try {
-    response = await handleMcpMessage(principal, message);
+    response = await handleMcpMessage(principal, message, { sessionContext });
   } catch (error) {
     console.error('MCP bridge error:', error);
     const id = (message as { id?: unknown })?.id;

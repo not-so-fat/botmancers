@@ -23,7 +23,7 @@
 // with exactly the error (code and message) of a target that does not
 // exist. A view never carries a provider session or run id, a Deck
 // credential or selection, a working directory, or a tool profile choice.
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import db, { bots, type Bot, type Principal, type PrincipalKind } from './db';
 import { resolveAgent } from './bot-definition';
 import { readStoredPolicy } from './agent-registration';
@@ -35,6 +35,7 @@ import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, loadServ
 import { serviceRedactor } from './service-redaction';
 import { recoveryFor, type Recovery, type SessionActions } from './session-actions';
 import { warmAgentProvider } from './provider-sessions';
+import { SESSION_CONTEXT_PRINCIPAL, SESSION_CONTEXT_SERVICE_ID, type SessionContextResolution } from './session-context';
 import {
   ShareError,
   createShare,
@@ -103,7 +104,9 @@ export type ServiceApiErrorCode =
   | 'share_revoked'
   | 'share_turn_in_progress'
   | 'share_turn_limit'
-  | 'audience_not_allowed';
+  | 'audience_not_allowed'
+  // NOT-517: share-current without a live session context.
+  | 'session_context_required';
 
 export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   invalid_request: 400,
@@ -142,6 +145,7 @@ export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   share_turn_in_progress: 409,
   share_turn_limit: 409,
   audience_not_allowed: 403,
+  session_context_required: 409,
 };
 
 // denied: the caller may not see or do it (a refusal indistinguishable
@@ -161,13 +165,16 @@ export class ServiceApiError extends Error {
   readonly fields: string[] | undefined;
   // NOT-507: what the caller can do next (lib/session-actions recoveryFor).
   readonly recovery: Recovery | null;
-  constructor(code: ServiceApiErrorCode, message: string, options: { notGranted?: boolean; fields?: string[] } = {}) {
+  // NOT-517: why session_context_required (lib/session-context reasons).
+  readonly reason: string | null;
+  constructor(code: ServiceApiErrorCode, message: string, options: { notGranted?: boolean; fields?: string[]; reason?: string } = {}) {
     super(message);
     this.name = 'ServiceApiError';
     this.code = code;
     this.notGranted = options.notGranted === true;
     this.fields = options.fields;
     this.recovery = recoveryFor(code);
+    this.reason = options.reason ?? null;
   }
   get status(): number {
     return SERVICE_API_ERROR_STATUS[this.code];
@@ -226,6 +233,9 @@ export function serviceContext(principal: Principal): ServiceContext {
   if (principal.kind !== 'service') {
     throw new ServiceApiError('principal_not_allowed', 'The granted service API accepts only service principals.');
   }
+  // NOT-517: the session-context principal holds no grant and needs none
+  // (its only operation, share-current, is authorized by its context).
+  if (principal.id === SESSION_CONTEXT_SERVICE_ID) return { principal, mode: 'narrow', agents: EMPTY };
   const loaded = loadServiceGrants();
   if (loaded.state === 'invalid') {
     throw new ServiceApiError('grants_unavailable', 'The service grants are not available; the owner must fix the grants document.');
@@ -1273,6 +1283,63 @@ export function revokeServiceShare(ctx: ServiceContext, shareRef: string, hooks:
   try {
     const { share, replayed } = revokeShare(row.id, { onCommit: () => hooks.onCommit() });
     return { share: serviceShareBody(share), replayed };
+  } catch (error) {
+    serviceShareError(error);
+  }
+}
+
+// ---------------------------------------------------------------------
+// NOT-517: share-current (lib/session-context). The caller is the reserved
+// principal service:botmancers-session-context, authenticated only by a
+// launch-bound context Botmancers minted (the Botmancers-Session-Context
+// header); the context names exactly one Agent and session_ref, so the body
+// names none. A service token is never this credential (invalid_request),
+// and no other operation accepts the context. The share is the NOT-515 one,
+// created_via current_session.
+
+const SHARE_CURRENT_FIELDS = ['audience', 'ttl_seconds', 'max_turns', 'agent_id', 'idempotency_key'];
+
+export function parseShareCurrentBody(body: unknown, header: string | null): ShareCreateInput {
+  if (isObject(body) && Object.prototype.hasOwnProperty.call(body, 'session_ref')) {
+    throw new ServiceApiError('invalid_request', 'Share-current takes no session_ref: its session is the one this launch is bound to. To share another session, use its session_ref with create-share.');
+  }
+  if (isObject(body)) checkShareFields(body, SHARE_CURRENT_FIELDS, '');
+  return parseShareCreateBody(body, header);
+}
+
+const CONTEXT_REQUIRED_MESSAGE = 'This caller has no exact session context; share a session explicitly by its session_ref (botmancers_list_sessions).';
+
+export function requireShareCurrentCaller(principal: Principal): void {
+  if (principal.kind !== SESSION_CONTEXT_PRINCIPAL.kind || principal.id !== SESSION_CONTEXT_PRINCIPAL.id) {
+    throw new ServiceApiError('invalid_request',
+      'Share-current is only available inside a Botmancers-launched session, authenticated by its session context, not a service token. Pass session_ref to create-share instead.');
+  }
+}
+
+export function sessionContextError(resolution: Extract<SessionContextResolution, { ok: false }>): ServiceApiError {
+  return new ServiceApiError('session_context_required', CONTEXT_REQUIRED_MESSAGE, { reason: resolution.reason });
+}
+
+// The idempotency key a context's share is stored under: scoped to its
+// session, so one launch's key never replays or conflicts with another
+// session's share.
+function currentShareKey(sessionRef: string, key: string): string {
+  return `current:${createHash('sha256').update(sessionRef).digest('hex').slice(0, 24)}:${key}`;
+}
+
+export async function createCurrentSessionShare(
+  ctx: ServiceContext, resolved: { agentId: string; sessionRef: string }, input: ShareCreateInput, hooks: ShareAuditHooks,
+) {
+  hooks.onTarget({ agentId: resolved.agentId, sessionRef: resolved.sessionRef });
+  // NOT-499: another Agent than the caller expects answers like a missing session.
+  if (input.agentId !== null && input.agentId !== resolved.agentId) throw NOT_FOUND.session();
+  try {
+    const { share, created } = await createShare({
+      creator: ctx.principal, sessionRef: resolved.sessionRef, agentId: resolved.agentId, audience: input.audience, ttlSeconds: input.ttlSeconds,
+      maxTurns: input.maxTurns, idempotencyKey: currentShareKey(resolved.sessionRef, input.idempotencyKey), createdVia: 'current_session',
+      onCommit: () => hooks.onCommit(),
+    });
+    return { share: serviceShareBody(share), replayed: !created };
   } catch (error) {
     serviceShareError(error);
   }

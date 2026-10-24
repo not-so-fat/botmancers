@@ -108,12 +108,37 @@ export interface ReadTranscriptInput extends ProviderCallContext {
   limit: number;
 }
 
+// NOT-517: lets a provider mint the launch-bound session context
+// (lib/session-context) for a launch it is about to make. mint answers null
+// when the owner has share_from_turn off. A provider with no per-launch MCP
+// seam (Cursor) never calls it.
+export interface SessionContextLaunchRequest {
+  kind: 'claude_turn' | 'codex_thread_load' | 'codex_exec';
+  ref: string;
+  // The launch cannot outlive this Botmancers process (an app-server load).
+  processBound?: boolean;
+}
+
+// A minted context as the provider sees it: the secret for its launch
+// arguments only, and end() for when the launch ends (thread unload,
+// app-server exit, a launch that never happened).
+export interface MintedLaunchContext {
+  token: string;
+  url: string;
+  end(reason: 'thread_unload' | 'app_server_exit' | 'launch_failed'): void;
+}
+
+export interface SessionContextMinter {
+  mint(launch: SessionContextLaunchRequest): MintedLaunchContext | null;
+}
+
 interface TurnInputBase extends ProviderCallContext {
   prompt: string;
   authority: SessionAuthority;
   // Botmancers' idempotency key for this turn. A provider that sees the same
   // key twice returns the original turn instead of starting another.
   idempotency_key: string;
+  session_context?: SessionContextMinter | null;
 }
 
 export interface StartSessionInput extends TurnInputBase {

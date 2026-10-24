@@ -26,6 +26,12 @@
 // FAKE_CLAUDE_FORGET (a session id the CLI claims not to know).
 // Prompt directive [linger] keeps the process (and its sessions/<pid>.json)
 // alive briefly after the result, as the real CLI does.
+// NOT-517: with --mcp-config and FAKE_CLAUDE_MCP_OUT, it behaves like Claude
+// Code's MCP client at startup: each http server's headers are expanded
+// from this process's environment (${VAR} references) and the request it
+// would send is appended to FAKE_CLAUDE_MCP_OUT, with the config file's mode,
+// so a test can replay it against Botmancers' /api/v0/mcp. The call log
+// records only whether BOTMANCERS_SESSION_CONTEXT is set, never its value.
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- standalone CommonJS executable. */
@@ -90,6 +96,7 @@ function run() {
       agent_deck_keys: Object.keys(process.env).filter(key => /^AGENT_DECK/.test(key)),
       CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
       FAKE_CLAUDE_MARK: process.env.FAKE_CLAUDE_MARK ?? null,
+      session_context_present: typeof process.env.BOTMANCERS_SESSION_CONTEXT === 'string',
     };
     fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, `${JSON.stringify({ argv, cwd: process.cwd(), stdin, env, pid: process.pid })}\n`);
   }
@@ -105,6 +112,15 @@ function run() {
     process.stderr.write(`${message}\n`);
     emit(result(resume, { subtype: 'error_during_execution', is_error: true, num_turns: 0, errors: [message] }));
     process.exit(1);
+  }
+  const mcpConfig = flagValue('--mcp-config');
+  if (mcpConfig && process.env.FAKE_CLAUDE_MCP_OUT) {
+    const doc = JSON.parse(fs.readFileSync(mcpConfig, 'utf8'));
+    const expand = value => String(value).replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? '');
+    for (const [server, entry] of Object.entries(doc.mcpServers || {})) {
+      const headers = Object.fromEntries(Object.entries(entry.headers || {}).map(([name, value]) => [name, expand(value)]));
+      fs.appendFileSync(process.env.FAKE_CLAUDE_MCP_OUT, `${JSON.stringify({ server, type: entry.type, url: entry.url, headers, mode: fs.statSync(mcpConfig).mode & 0o777 })}\n`);
+    }
   }
   const directive = /^\[([a-z-]+)(?::([^\]]*))?\]/.exec(stdin);
   const scenario = directive ? directive[1] : null;

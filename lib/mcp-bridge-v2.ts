@@ -32,12 +32,21 @@
 // NOT-515 (additive): explicit temporary session shares
 // (lib/session-shares). botmancers_create_share shares one exact session_ref
 // as an ask-only share with a TTL, a turn limit, and one owner-allowlisted
-// audience; get, list, and revoke act on the caller's own shares. There is
-// no share-current tool yet.
+// audience; get, list, and revoke act on the caller's own shares.
+//
+// NOT-517 (additive): botmancers_share_current_session, served only to the
+// reserved principal service:botmancers-session-context (lib/session-context):
+// a Claude Code or Codex launch Botmancers made, authenticated by the
+// launch-bound Botmancers-Session-Context header, shares exactly the session
+// that launch is bound to. That principal sees and can call this one tool;
+// a service principal never sees it, and calling it answers
+// invalid_arguments (the context, not a service token, is its credential).
 import type { Principal } from './db';
 import { EXCHANGE_LIMITS, EXCHANGE_STATES, EXCHANGE_TERMINAL_STATES, type ExchangeState } from './engine-store';
 import { AUTHORITY_FIELDS, MESSAGE_CONTENT_LIMIT, PAGE_LIMITS, SHARE_SELECTOR_FIELDS, ServiceApiError, holds, type ServiceContext } from './service-api';
 import { SHARE_LIMITS } from './session-shares';
+import { SESSION_CONTEXT_REASONS } from './session-context';
+import { SHARE_CURRENT_TOOL } from './session-context-launch';
 import { serviceOperations, type ListParams, type ServiceGuard, type ServiceResult } from './service-api-http';
 import { SERVICE_CAPABILITIES, type ServiceCapability } from './service-grants';
 
@@ -91,6 +100,8 @@ export const MCP_V2_ERROR_CODES = [
   'share_turn_in_progress',
   'share_turn_limit',
   'audience_not_allowed',
+  // NOT-517: share-current.
+  'session_context_required',
 ] as const;
 
 export type McpV2ErrorCode = (typeof MCP_V2_ERROR_CODES)[number];
@@ -109,13 +120,16 @@ export class McpV2Error extends Error {
   readonly fields: string[] | undefined;
   readonly retryAfterSeconds: number | null;
   readonly recovery: string | null;
-  constructor(code: McpV2ErrorCode, message: string, options: { fields?: string[]; retryAfterSeconds?: number | null; recovery?: string | null } = {}) {
+  // NOT-517: why session_context_required.
+  readonly reason: string | null;
+  constructor(code: McpV2ErrorCode, message: string, options: { fields?: string[]; retryAfterSeconds?: number | null; recovery?: string | null; reason?: string | null } = {}) {
     super(message);
     this.name = 'McpV2Error';
     this.code = code;
     this.fields = options.fields;
     this.retryAfterSeconds = options.retryAfterSeconds ?? null;
     this.recovery = options.recovery && (RECOVERY_VALUES as readonly string[]).includes(options.recovery) ? options.recovery : null;
+    this.reason = options.reason && (SESSION_CONTEXT_REASONS as readonly string[]).includes(options.reason) ? options.reason : null;
   }
 }
 
@@ -137,6 +151,7 @@ export function mcpV2ErrorBody(error: McpV2Error): Record<string, unknown> {
       retryable: RETRYABLE.includes(error.code),
       ...(error.fields ? { fields: error.fields } : {}),
       ...(error.retryAfterSeconds !== null ? { retry_after_seconds: error.retryAfterSeconds } : {}),
+      ...(error.reason !== null ? { reason: error.reason } : {}),
       ...(error.recovery !== null ? { recovery: error.recovery } : {}),
     },
   };
@@ -1033,12 +1048,13 @@ export function isMcpV2Tool(name: string): name is McpV2ToolName {
 function fromResult(result: ServiceResult): Record<string, unknown> {
   const body = (result.body ?? {}) as Record<string, unknown>;
   if (result.status < 400) return body;
-  const error = (body.error ?? {}) as { code?: unknown; message?: unknown; fields?: unknown; recovery?: unknown };
+  const error = (body.error ?? {}) as { code?: unknown; message?: unknown; fields?: unknown; recovery?: unknown; reason?: unknown };
   const retryAfter = Number(result.headers?.['Retry-After']);
   throw new McpV2Error(v2CodeOf(String(error.code)), typeof error.message === 'string' ? error.message : 'The request could not be processed.', {
     fields: Array.isArray(error.fields) ? error.fields as string[] : undefined,
     retryAfterSeconds: Number.isInteger(retryAfter) && retryAfter > 0 ? retryAfter : null,
     recovery: typeof error.recovery === 'string' ? error.recovery : null,
+    reason: typeof error.reason === 'string' ? error.reason : null,
   });
 }
 
@@ -1062,4 +1078,55 @@ export async function getConversationV2(principal: Principal, args: Args, inputS
   const guard = guardFor(inputSchema, args, 'conversations:read');
   const body = fromResult(await serviceOperations.getConversation(principal, text(args.agent_id), text(args.conversation_id), listParams(args), guard));
   return { contract: MCP_CONTRACT_V2, ...body, content_trust: 'untrusted' };
+}
+
+// ---------------------------------------------------------------------
+// NOT-517: botmancers_share_current_session, the session-context
+// principal's one tool. Not in MCP_V2_TOOLS: a service principal's
+// tools/list (and the v2 capture) never shows it.
+
+export const SHARE_CURRENT_TOOL_NAME = SHARE_CURRENT_TOOL;
+
+export const MCP_SHARE_CURRENT_TOOL = {
+  name: SHARE_CURRENT_TOOL,
+  title: 'Share this Botmancers session',
+  description: 'Share the session you are running in right now, as a temporary ask-only share: people in the audience (one Slack channel on the '
+    + 'owner\'s allowlist) can ask this session read-only questions until the share expires '
+    + `(ttl_seconds ${SHARE_LIMITS.ttl.min}-${SHARE_LIMITS.ttl.max}, default ${SHARE_LIMITS.ttl.default}), uses its max_turns `
+    + `(${SHARE_LIMITS.turns.min}-${SHARE_LIMITS.turns.max}, default ${SHARE_LIMITS.turns.default}), or the owner revokes it. `
+    + 'Botmancers knows which session this is from the launch it made; you never name it, and there is no session_ref, title, workspace, provider id, '
+    + 'or "latest" to pass. It works only in a turn Botmancers launched while the owner allows share-from-turn for this Agent; otherwise it answers '
+    + 'session_context_required (recovery: share a session explicitly by its session_ref). A share never grants write access.',
+  inputSchema: closed({
+    audience: audienceSchema,
+    ttl_seconds: { type: 'integer', minimum: SHARE_LIMITS.ttl.min, maximum: SHARE_LIMITS.ttl.max, default: SHARE_LIMITS.ttl.default, description: 'How long the share lasts, in seconds.' },
+    max_turns: { type: 'integer', minimum: SHARE_LIMITS.turns.min, maximum: SHARE_LIMITS.turns.max, default: SHARE_LIMITS.turns.default, description: 'How many questions it allows.' },
+    agent_id: { type: 'string', minLength: 1, maxLength: ID_MAX, description: 'Optional check: the Agent you expect to be.' },
+    idempotency_key: idempotencyArg('share'),
+  }, ['audience', 'idempotency_key']),
+  outputSchema: closed({ contract: contractField, share: shareView, replayed: bool }),
+  annotations: WRITE,
+  _meta: meta([...ACCESS_ERRORS, 'session_context_required', 'session_not_found', 'session_missing', 'session_ended', 'session_not_resumable',
+    'agent_unavailable', 'action_unavailable', 'provider_failed', 'audience_not_allowed', 'idempotency_conflict', 'payload_too_large'], { optional: true }),
+};
+
+// One share-current call. contextValue is the request's
+// Botmancers-Session-Context header (null when absent), resolved by the
+// service operation inside its audited call.
+export async function callShareCurrentTool(principal: Principal, contextValue: string | null, rawArgs: unknown): Promise<Record<string, unknown>> {
+  const args = (rawArgs === undefined || rawArgs === null ? {} : rawArgs) as Args;
+  const guard: ServiceGuard = ctx => {
+    if (args && typeof args === 'object' && !Array.isArray(args) && Object.prototype.hasOwnProperty.call(args, 'session_ref')) {
+      throw new ServiceApiError('invalid_request', 'Share-current takes no session_ref: its session is the one this launch is bound to.');
+    }
+    validateArguments(MCP_SHARE_CURRENT_TOOL.inputSchema, args, SHARE_AUTHORITY_FIELDS);
+    void ctx;
+  };
+  const safeArgs = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+  const result = await serviceOperations.shareCurrent(principal, contextValue, () => {
+    const body: Args = { audience: safeArgs.audience, idempotency_key: safeArgs.idempotency_key };
+    for (const key of ['ttl_seconds', 'max_turns', 'agent_id']) if (safeArgs[key] !== undefined) body[key] = safeArgs[key];
+    return body;
+  }, null, guard);
+  return { contract: MCP_CONTRACT_V2, ...fromResult(result) };
 }

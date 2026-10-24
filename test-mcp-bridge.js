@@ -292,7 +292,7 @@ async function child() {
     console.log(`  tools: ${names.join(', ')}`);
     check(JSON.stringify(names) === JSON.stringify([...V1_NAMES, ...V2_NAMES]),
       'the four v1 tools in their v1 order, then the eight v2 tools, the five NOT-507 pin tools, and the four NOT-515 share tools');
-    check(!names.includes('botmancers_share_current_session'), 'botmancers_share_current_session is not served (NOT-515: no share-current yet)');
+    check(!names.includes('botmancers_share_current_session'), 'botmancers_share_current_session is not listed to a service principal (NOT-517: served to session contexts only)');
     const v1Capture = fs.readFileSync(CONTRACT_FILE);
     check(createHash('sha256').update(v1Capture).digest('hex') === CONTRACT_V1_SHA256, `the v1 capture ${path.relative(ROOT, CONTRACT_FILE)} is unchanged (frozen)`);
     const captured = JSON.parse(v1Capture.toString('utf8'));

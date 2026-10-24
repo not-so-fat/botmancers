@@ -37,7 +37,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import db from './db';
 import { botmancersHome } from './home';
-import { SERVICE_TOKENS_ENV, ServiceTokenConfigError, parseServiceTokens } from './service-token-auth';
+import { RESERVED_SERVICE_IDS, SERVICE_TOKENS_ENV, ServiceTokenConfigError, parseServiceTokens } from './service-token-auth';
 
 export const SERVICE_GRANTS_PATH_ENV = 'BOTMANCERS_SERVICE_GRANTS_PATH';
 export const SERVICE_GRANTS_FILE = 'config/service-grants.json';
@@ -69,9 +69,8 @@ export function isServiceCapability(value: unknown): value is ServiceCapability 
 // lib/coordinator-loop; NOT-515: lib/session-shares, the requester of every
 // share's ask pin, and the session-context principal reserved for
 // share-current). A grant naming one is refused.
-export const RESERVED_SERVICE_IDS: readonly string[] = [
-  'botmancers-exchanges', 'botmancers-engine', 'botmancers-session-share', 'botmancers-session-context',
-];
+// NOT-517: defined beside the token parser, which refuses them too.
+export { RESERVED_SERVICE_IDS };
 
 // The idempotency namespaces of a service's exchange rows: a session
 // message and an exchange never collide on the caller's key.

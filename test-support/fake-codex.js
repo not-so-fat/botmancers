@@ -13,6 +13,9 @@
 // Prompt markers: `[hold]` stays in progress until interrupted (or SIGINT
 // for exec); `[nousage]` reports no token usage; `[fail]` fails the turn;
 // `[approval]` makes the server ask for a command approval first.
+// NOT-517: `[unload]` unloads the thread after its turn (a thread/closed
+// notification); an exec run records the BOTMANCERS_SESSION_CONTEXT_TOKEN
+// it was given (as its MCP client would send it) in the exec call.
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS fixture consumed by standalone Node tests. */
@@ -136,6 +139,10 @@ function appServer() {
       return target;
     });
     if (turn) notify('turn/completed', { threadId, turn });
+    if (prompt.includes('[unload]')) {
+      loaded.delete(threadId);
+      notify('thread/closed', { threadId });
+    }
   }
 
   function handle(message) {
@@ -279,7 +286,7 @@ function execMode(argv) {
   process.stdin.on('end', () => {
     const out = line => process.stdout.write(`${line}\n`);
     const threadId = mutate(state => {
-      state.calls.push({ method: 'exec', params: { args: ['exec', ...argv], cwd: process.cwd(), prompt } });
+      state.calls.push({ method: 'exec', params: { args: ['exec', ...argv], cwd: process.cwd(), prompt, contextEnv: process.env.BOTMANCERS_SESSION_CONTEXT_TOKEN ?? null } });
       let tid = resume ? positional[0] : null;
       if (!tid) {
         tid = nextId(state, 'thr');

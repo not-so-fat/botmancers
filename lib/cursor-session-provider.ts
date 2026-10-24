@@ -43,6 +43,7 @@ import path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { dbPath } from './home';
+import { SESSION_CONTEXT_ENV, SESSION_CONTEXT_EXEC_ENV, withoutSessionContextEnv } from './session-context-launch';
 import {
   normalizeUsage,
   providerError,
@@ -316,7 +317,9 @@ function resolve(options: CursorProviderOptions, connectionId: string): Resolved
     sdkModule: options.sdkModule ?? (env.BOTMANCERS_CURSOR_SDK_MODULE?.trim() || DEFAULT_SDK_MODULE),
     stateDir: path.join(base, connectionId.replace(/[^A-Za-z0-9._-]/g, '_')),
     pollMs: options.pollMs ?? 100,
-    env,
+    // NOT-517: Cursor has no per-launch MCP seam, so it never gets a session
+    // context, not even one inherited from Botmancers' own environment.
+    env: env[SESSION_CONTEXT_ENV] !== undefined || env[SESSION_CONTEXT_EXEC_ENV] !== undefined ? withoutSessionContextEnv(env) : env,
   };
 }
 

@@ -98,6 +98,13 @@ jobs:
           npm run test:service-grants
           npm run test:session-pins
           npm run test:mcp-bridge
+      - name: SessionContext share-current and Claude/Codex/Cursor launch injection (NOT-517)
+        working-directory: .
+        run: |
+          npm run test:session-context
+          npm run test:claude-session-provider
+          npm run test:codex-session-provider
+          npm run test:cursor-session-provider
       - name: Slack relay core with the real SessionShare store (NOT-516)
         working-directory: .
         run: |

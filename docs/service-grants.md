@@ -245,7 +245,8 @@ use `POST /api/v0/sessions/{ref}/pins`, `/messages`, or any pin route.
 | `GET /api/v0/shares/{shareRef}` | `botmancers_get_share` | one own share |
 | `POST /api/v0/shares/{shareRef}/revoke` | `botmancers_revoke_share` | 200 `{ share, replayed }`; revoking a revoked share returns it unchanged |
 
-There is no `POST /api/v0/shares/current` (share-current) yet.
+Share-current (`POST /api/v0/shares/current`) is not a granted-service route:
+see [Share the current session](#share-the-current-session-not-517).
 
 - **Session.** Only an explicit `session_ref` (from `.../sessions`). The
   owning Agent is resolved, never chosen (`agent_id` is only an expectation
@@ -287,8 +288,8 @@ There is no `POST /api/v0/shares/current` (share-current) yet.
 ```
 
 A share's `audience` must be on `audiences` (else 403
-`audience_not_allowed`). `share_from_turn` is the per-Agent opt-in a later
-share-current will use (default off). The same fail-closed rules apply as for
+`audience_not_allowed`). `share_from_turn` is the per-Agent opt-in for
+[share-current](#share-the-current-session-not-517) (default off). The same fail-closed rules apply as for
 this document (owner-only `chmod 600`, at most 64 KiB and 512 entries, strict
 JSON, no unknown field, no wildcard or malformed id, no duplicate, only
 registered Agents): while it is missing or invalid, no audience is allowed
@@ -309,6 +310,101 @@ audit-only and not grantable) on the share's session, by
 its count, and its audit row commit together. Share rows and their
 append-only `session_share_events` survive restarts. The Slack relay core
 (NOT-516, [`slack-relay.md`](slack-relay.md)) is its only caller.
+
+## Share the current session (NOT-517)
+
+Code: `lib/session-context.ts` (mint, resolve, end, revoke),
+`lib/session-context-launch.ts` (launch arguments), the Claude Code and Codex
+providers, `lib/service-api.ts` (`createCurrentSessionShare`). Contract test:
+`npm run test:session-context`. Design:
+[§1–§3 of the preflight](design/2026-10-24-session-share-preflight.md).
+
+A Claude Code or Codex turn that **Botmancers launched** can share the session
+it is running in without naming it: "share this session". It works only from
+a credential Botmancers minted for that launch; nothing the client says about
+itself is trusted (`CLAUDE_CODE_SESSION_ID`, Codex or Cursor ids, MCP
+`clientInfo`, the cwd, a title, activity, "latest", or an implicit continue).
+Cursor has no per-launch MCP seam and is not supported: its turns get no
+context, and Botmancers never writes `~/.cursor/mcp.json` or a repository
+`.cursor/mcp.json`.
+
+| Route | MCP tool | Credential |
+| --- | --- | --- |
+| `POST /api/v0/shares/current` | `botmancers_share_current_session` | header `Botmancers-Session-Context: bmsc_…`, no `Authorization` |
+
+Body (tool arguments): `{ audience, ttl_seconds?, max_turns?, agent_id?,
+idempotency_key }`, the same bounds as create-share. 201 `{ share, replayed:
+false }` with `created_via: "current_session"`, exact replay 200. The share
+is the NOT-515 one (one ask pin, the same rows, events, and visibility),
+created by `service:botmancers-session-context`.
+
+**The session context.** While the owner has `share_from_turn` on for the
+Agent, Botmancers mints one context per launch: `bmsc_` and 256 random bits,
+stored only as its SHA-256, bound to one Agent, one `session_ref`, and one
+launch. It reaches the launch only as an HTTP header on the MCP entry
+`botmancers` that Botmancers writes for it, pointed at its own `/api/v0/mcp`
+(`BOTMANCERS_SESSION_CONTEXT_URL` overrides the default
+`http://127.0.0.1:<PORT>/api/v0/mcp`):
+
+| Runtime | Launch (= context lifetime) | Delivery |
+| --- | --- | --- |
+| Claude Code | one `claude -p` turn process | a per-turn 0600 `--mcp-config` with `headers: { "Botmancers-Session-Context": "${BOTMANCERS_SESSION_CONTEXT}" }`, the value only in the turn's environment; `--allowedTools` adds exactly `mcp__botmancers__botmancers_share_current_session`; `--strict-mcp-config` |
+| Codex app-server | one thread **load**: `thread/start`, or the first `thread/resume` in that app-server | `config.mcp_servers.botmancers = { url, http_headers, enabled_tools: ["botmancers_share_current_session"], tools: { botmancers_share_current_session: { approval_mode: "approve" } } }` (exactly that tool, pre-approved because turns run with `approvalPolicy: "never"`). A resume of an already loaded thread sends no config and mints nothing: Codex keeps the load's MCP client, so the context is load-scoped, not turn-scoped |
+| `codex exec` fallback | one process | `-c mcp_servers.botmancers.url=…`, `-c mcp_servers.botmancers.env_http_headers={ "Botmancers-Session-Context" = "BOTMANCERS_SESSION_CONTEXT_TOKEN" }`, and the same `enabled_tools` / `approval_mode` overrides; the value only in the run's environment |
+| Cursor | — | none |
+
+The value is never in argv, a file, a log, a provider record, the database,
+a tool argument, or model-visible text. An inherited
+`BOTMANCERS_SESSION_CONTEXT`/`_TOKEN` in Botmancers' own environment is
+removed from every launch.
+
+**Lifetime.** A context is valid while its launch is live and a Botmancers
+turn on its session runs, and for at most 15 minutes after the last such
+turn. It ends (`stale`) when its launch ends: the Claude turn process or exec
+run finishing, the Codex thread unloading (`thread/closed`), the app-server
+exiting, or a Botmancers restart (for an app-server load). It is revoked when
+the owner turns `share_from_turn` off for the Agent (every live context of
+the Agent, durably; turning it back on revives none). Because it names
+exactly one `session_ref`, a stale or replayed context fails closed and never
+points at another session.
+
+**The reserved principal** `service:botmancers-session-context` is
+authenticated only by a live context. It can call share-current and nothing
+else: every other operation is 403 `principal_not_allowed`, its MCP
+`tools/list` holds only `botmancers_share_current_session`, and any other tool
+is unknown. It is refused in this document and in
+`BOTMANCERS_SERVICE_TOKENS`, like `botmancers-exchanges`. A granted service
+never sees the tool, and calling share-current with a service token is 400
+`invalid_request` (`invalid_arguments` over MCP).
+
+**Errors** (REST status; the MCP tool returns the same code, `invalid_request`
+as `invalid_arguments`):
+
+| Caller | Result |
+| --- | --- |
+| no header (MCP: an empty one) | 409 `session_context_required`, `reason: "missing"`, `recovery: "choose_session"` |
+| two values (repeated or comma-joined) | … `reason: "ambiguous"` |
+| a provider id, chat id, path, or other value instead of a minted context | … `reason: "unsupported"` (never echoed) |
+| well-formed, never minted | … `reason: "unknown"` |
+| launch ended, idle past 15 minutes, restarted | … `reason: "stale"` |
+| revoked, or `share_from_turn` off | … `reason: "revoked"` |
+| `agent_id` not the context's Agent | 404 `session_not_found` |
+| the session can no longer take an Ask | NOT-507's `session_ended` / `session_missing` / `session_not_resumable` |
+| a service token | 400 `invalid_request` |
+| `session_ref` in the body | 400 `invalid_request` |
+| a selector (`provider_session_id`, `external_session_id`, `claude_session_id`, `codex_thread_id`, `cursor_chat_id`, `cwd`, `workspace`, `latest`, `most_recent`, `title`, `title_match`, `active_since`) | 403 `authority_not_allowed` |
+
+Operator smoke (real CLI, spends a little usage): `npm run
+smoke:not-517-share-current -- claude` or `-- codex`; evidence in
+[`evidence/NOT-517/probe-results.md`](evidence/NOT-517/probe-results.md).
+
+Recovery for `session_context_required`: share explicitly with
+`botmancers_list_sessions` → `botmancers_create_share { session_ref }`.
+
+**Audit:** `shares.create` with capability `shares:current`, target kind
+`session` (the context's session once resolved), by
+`service:botmancers-session-context`, whatever the outcome; a refusal writes
+no share, event, or pin.
 
 ## Audit trail
 

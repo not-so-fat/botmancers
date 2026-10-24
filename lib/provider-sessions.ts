@@ -51,6 +51,8 @@ import './codex-session-provider';
 import { usageFromEvent, type NormalizedUsage } from './usage';
 import { recordTurnUsageSample } from './usage-samples';
 import { CURSOR_PROVIDER_KIND, cursorSessionProviderFactory } from './cursor-session-provider';
+import { attachSessionContextsToTurn, bindSessionContext, endSessionContext, endTurnSessionContexts, mintSessionContext } from './session-context';
+import type { SessionContextMinter } from './session-provider';
 
 // NOT-506: a registered Claude Code Agent talks to the local `claude` CLI
 // directly (lib/claude-session-provider), with no Agent Deck.
@@ -257,6 +259,40 @@ function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'pr
 
 function callContext(input: { correlation?: AttemptCorrelation | null; signal?: AbortSignal | null; deadlineAt?: number | null }): ProviderCallContext {
   return { correlation: { ...(input.correlation ?? {}) }, signal: input.signal ?? null, deadline_at: input.deadlineAt ?? null };
+}
+
+// NOT-517: the session-context minter one turn hands its provider
+// (lib/session-context). The provider decides whether its launch is a new
+// one (a Codex resume of an already loaded thread is not); Botmancers binds
+// the contexts of a start launch to the session once it is recorded, links
+// them to the turn (a per-turn launch ends with it), and ends them if the
+// launch never happened.
+function contextMinter(agentId: string, sessionRef: string | null): {
+  minter: SessionContextMinter;
+  minted: string[];
+  record: (sessionRef: string, turnRef: string) => void;
+  abandon: () => void;
+} {
+  const minted: string[] = [];
+  return {
+    minted,
+    minter: {
+      mint: launch => {
+        const context = mintSessionContext({ agentId, sessionRef, launch: { kind: launch.kind, ref: launch.ref }, processBound: launch.processBound === true });
+        if (!context) return null;
+        minted.push(context.id);
+        const id = context.id;
+        return { token: context.token, url: context.url, end: reason => { endSessionContext(id, reason); } };
+      },
+    },
+    record: (ref, turnRef) => {
+      for (const id of minted) bindSessionContext(id, ref);
+      attachSessionContextsToTurn(minted, turnRef);
+    },
+    abandon: () => {
+      for (const id of minted) endSessionContext(id, 'launch_failed');
+    },
+  };
 }
 
 // ---- registry ----
@@ -743,11 +779,15 @@ export async function startProviderSession(db: Db, agentId: string, input: Start
   }
   if (!ctx.policy?.allow_new_sessions) throw new ProviderSessionError('new_sessions_not_allowed', 'The Agent\'s policy does not allow new sessions.');
   checkAuthority(ctx, input.authority, 'start');
+  const contexts = contextMinter(agentId, null);
   const started = await ctx.provider.startSession({
     ...callContext(input), workspace, prompt: input.prompt, authority: input.authority,
-    idempotency_key: providerKey(agentId, input.requester, input.idempotencyKey),
+    idempotency_key: providerKey(agentId, input.requester, input.idempotencyKey), session_context: contexts.minter,
   });
-  if (!started.ok) failWith(started.error);
+  if (!started.ok) {
+    contexts.abandon();
+    failWith(started.error);
+  }
   const handle = started.value;
   const record = await ctx.provider.getSession({ ...callContext(input), provider_session_id: handle.provider_session_id });
   const now = input.now ?? Date.now();
@@ -764,8 +804,10 @@ export async function startProviderSession(db: Db, agentId: string, input: Start
         request_hash: hash, provider_turn_id: handle.provider_turn_id, correlation: JSON.stringify(input.correlation ?? {}), created_at: now,
       });
     }).immediate();
+    contexts.record(row.session_ref, row.id);
     return { turn: turnView(db, row), replayed: false };
   } catch (error) {
+    contexts.abandon();
     // A concurrent caller with the same key won the insert.
     if (isUniqueViolation(error)) return { turn: turnView(db, replayOrConflict(existingTurn(db, agentId, input), hash) as TurnRow), replayed: true };
     throw error;
@@ -804,11 +846,15 @@ export async function sendProviderTurn(db: Db, agentId: string, ref: string, inp
   if (fresh.resumable !== 1) throw new ProviderSessionError('not_resumable', 'The provider cannot resume this session.');
   const running = db.prepare("SELECT 1 FROM provider_session_turns WHERE session_ref = ? AND state = 'running'").get(ref);
   if (fresh.busy === 1 || running) throw new ProviderSessionError('busy', 'The session has a turn in flight.');
+  const contexts = contextMinter(agentId, ref);
   const sent = await ctx.provider.sendTurn({
     ...callContext(input), provider_session_id: row.provider_session_id, prompt: input.prompt, authority: input.authority,
-    idempotency_key: providerKey(agentId, input.requester, input.idempotencyKey),
+    idempotency_key: providerKey(agentId, input.requester, input.idempotencyKey), session_context: contexts.minter,
   });
-  if (!sent.ok) failWith(sent.error);
+  if (!sent.ok) {
+    contexts.abandon();
+    failWith(sent.error);
+  }
   const now = input.now ?? Date.now();
   try {
     const turn = db.transaction(() => insertTurn(db, {
@@ -816,8 +862,10 @@ export async function sendProviderTurn(db: Db, agentId: string, ref: string, inp
       requester_kind: input.requester.kind, requester_id: input.requester.id, idempotency_key: input.idempotencyKey,
       request_hash: hash, provider_turn_id: sent.value.provider_turn_id, correlation: JSON.stringify(input.correlation ?? {}), created_at: now,
     })).immediate();
+    contexts.record(ref, turn.id);
     return { turn: turnView(db, turn), replayed: false };
   } catch (error) {
+    contexts.abandon();
     if (isUniqueViolation(error)) return { turn: turnView(db, replayOrConflict(existingTurn(db, agentId, input), hash) as TurnRow), replayed: true };
     throw error;
   }
@@ -857,6 +905,9 @@ function finishTurn(db: Db, turn: TurnRow, result: ProviderTurnResult, now: numb
       typeof result.finished_at === 'number' ? result.finished_at : now,
       reportedCount(reported?.input_tokens), reportedCount(reported?.output_tokens), reportedDollars(reported?.total_cost_usd), turn.id).changes;
     if (changed === 0) return;
+    // NOT-517: a launch that was this turn (a Claude turn process, a codex
+    // exec run) has ended with it, and its session context with it.
+    endTurnSessionContexts(turn.id);
     // The runtime said the session is gone: a fact, never a reason to start
     // another one.
     if (result.failure?.code === 'session_missing') {

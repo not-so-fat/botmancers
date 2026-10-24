@@ -33,7 +33,12 @@
 //   GET  /api/v0/shares?session_ref&state&cursor&limit        shares:create (own shares)
 //   GET  /api/v0/shares/{shareRef}                            shares:create (own share)
 //   POST /api/v0/shares/{shareRef}/revoke                     shares:create (own share; idempotent)
-//   (no /api/v0/shares/current: share-current is not served yet)
+//   NOT-517: share-current (lib/session-context).
+//   POST /api/v0/shares/current                               a live session context
+//     header: Botmancers-Session-Context: bmsc_… (no Authorization)
+//     body: { audience, ttl_seconds?, max_turns?, agent_id?, idempotency_key }
+//   The context authenticates only service:botmancers-session-context, which
+//   can call only this operation; a service token here is invalid_request.
 //
 // Each call is authenticated, rate limited per service principal
 // (BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE, default 120, rolling 60 s;
@@ -47,11 +52,16 @@ import { authenticate } from './agent-api';
 import { AgentApiError } from './agent-conversations';
 import type { AuditOutcome, AuditTargetKind } from './service-audit';
 import { sessionOwner as sessionOwnerOf } from './session-pins';
+import { SESSION_CONTEXT_PRINCIPAL, SESSION_CONTEXT_SERVICE_ID, resolveSessionContext, sessionContextHeader } from './session-context';
 import {
   PAGE_LIMITS,
   ServiceApiError,
   checkShareListParams,
+  createCurrentSessionShare,
   createServiceShare,
+  parseShareCurrentBody,
+  requireShareCurrentCaller,
+  sessionContextError,
   getServiceShare,
   listServiceShares,
   parseShareCreateBody,
@@ -167,8 +177,8 @@ export interface ServiceResult {
 
 const ok = (body: unknown, status = 200): ServiceResult => ({ status, body });
 
-function failure(status: number, code: string, message: string, headers: Record<string, string> = {}, fields?: string[], recovery?: string | null): ServiceResult {
-  return { status, body: { error: { code, message, ...(fields ? { fields } : {}), ...(recovery ? { recovery } : {}) } }, headers };
+function failure(status: number, code: string, message: string, headers: Record<string, string> = {}, fields?: string[], recovery?: string | null, reason?: string | null): ServiceResult {
+  return { status, body: { error: { code, message, ...(fields ? { fields } : {}), ...(reason ? { reason } : {}), ...(recovery ? { recovery } : {}) } }, headers };
 }
 
 interface Operation {
@@ -219,6 +229,10 @@ async function serveAs(principal: Principal, op: Operation, run: Run, guard?: Se
   let code: string | null = null;
   try {
     if (principal.kind !== 'service') throw new ServiceApiError('principal_not_allowed', 'The granted service API accepts only service principals.');
+    // NOT-517: the session-context principal can call share-current only.
+    if (principal.id === SESSION_CONTEXT_SERVICE_ID && op.capability !== SHARE_CURRENT_CAPABILITY) {
+      throw new ServiceApiError('principal_not_allowed', 'A session context can only share its own session (share-current).');
+    }
     const retryAfter = rateLimitRetryAfter(principal);
     if (retryAfter !== null) {
       code = 'rate_limited';
@@ -234,7 +248,7 @@ async function serveAs(principal: Principal, op: Operation, run: Run, guard?: Se
     if (error instanceof ServiceApiError) {
       outcome = error.denied ? 'denied' : 'rejected';
       code = error.notGranted ? 'not_granted' : error.code;
-      result = failure(error.status, error.code, error.message, {}, error.fields, error.recovery);
+      result = failure(error.status, error.code, error.message, {}, error.fields, error.recovery, error.reason);
     } else {
       console.error('Service API error:', error instanceof Error ? error.message : 'unknown error');
       outcome = 'error';
@@ -254,6 +268,11 @@ async function serveAs(principal: Principal, op: Operation, run: Run, guard?: Se
   }
   return result;
 }
+
+// The audited operation word of share-current: shares.create, with its own
+// capability word in the audit row.
+const SHARE_CURRENT_OPERATION = 'shares.create';
+const SHARE_CURRENT_CAPABILITY = 'shares:current';
 
 async function serve(request: Request, call: (principal: Principal) => Promise<ServiceResult>): Promise<Response> {
   let principal: Principal;
@@ -472,6 +491,20 @@ export const serviceOperations = {
       parseShareRevokeBody(await readBody());
       return ok(revokeServiceShare(ctx, shareRef, shareHooks(target, commitAudit, false)));
     }, guard),
+
+  // NOT-517: share-current. The principal is the session-context one when
+  // the transport authenticated a context header; contextValue is that
+  // header, resolved here inside the audited call (any failure is audited
+  // and writes nothing else).
+  shareCurrent: (principal: Principal, contextValue: string | null, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
+    serveAs(principal, { operation: SHARE_CURRENT_OPERATION, capability: SHARE_CURRENT_CAPABILITY, targetKind: 'session' }, async (ctx, target, commitAudit) => {
+      const input = parseShareCurrentBody(await body(), idempotencyHeader);
+      requireShareCurrentCaller(ctx.principal);
+      const resolution = resolveSessionContext(contextValue);
+      if (!resolution.ok) throw sessionContextError(resolution);
+      const result = await createCurrentSessionShare(ctx, resolution, input, shareHooks(target, commitAudit, true));
+      return ok(result, result.replayed ? 200 : 201);
+    }, guard),
 };
 
 function query(request: Request): ListParams & { get: (name: string) => string | null; names: string[] } {
@@ -569,4 +602,19 @@ export function handleGetShare(request: Request, shareRef: string): Promise<Resp
 
 export function handleRevokeShare(request: Request, shareRef: string): Promise<Response> {
   return serve(request, principal => serviceOperations.revokeShare(principal, shareRef, () => readText(request)));
+}
+
+// NOT-517: POST /api/v0/shares/current. A request with no Authorization
+// header is the session-context principal (its header, even when missing,
+// is resolved in the audited call: session_context_required); a request
+// with one is authenticated as usual and refused (invalid_request).
+export async function handleShareCurrent(request: Request): Promise<Response> {
+  const contextValue = sessionContextHeader(request.headers);
+  const idempotency = request.headers.get('idempotency-key');
+  const run = (principal: Principal) => serviceOperations.shareCurrent(principal, contextValue, () => readJsonBody(request), idempotency);
+  if (request.headers.get('authorization') === null) {
+    const result = await run(SESSION_CONTEXT_PRINCIPAL);
+    return Response.json(result.body, { status: result.status, headers: result.headers ?? {} });
+  }
+  return serve(request, run);
 }

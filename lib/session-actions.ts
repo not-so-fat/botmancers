@@ -84,6 +84,8 @@ const ERROR_RECOVERY: Record<string, Recovery> = {
   pin_detached: 'pin_again',
   provider_failed: 'retry_later',
   rate_limited: 'retry_later',
+  // NOT-517: no exact session context; name the session explicitly.
+  session_context_required: 'choose_session',
 };
 
 export function recoveryFor(code: string): Recovery | null {
