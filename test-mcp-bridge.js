@@ -47,7 +47,9 @@ const V1_NAMES = ['botmancers_start_task', 'botmancers_get_request', 'botmancers
 const V2_NAMES = ['botmancers_capabilities', 'botmancers_list_agents', 'botmancers_list_sessions', 'botmancers_list_conversations',
   'botmancers_send_to_session', 'botmancers_create_exchange', 'botmancers_get_exchange', 'botmancers_list_exchanges',
   // NOT-507: registered-Agent addressing and exact-session pins (additive).
-  'botmancers_message_agent', 'botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin'];
+  'botmancers_message_agent', 'botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin',
+  // NOT-515: explicit session shares (additive).
+  'botmancers_create_share', 'botmancers_get_share', 'botmancers_list_shares', 'botmancers_revoke_share'];
 const WRITE_CONTRACT = process.argv.includes('--write-contract');
 
 if (process.env.BOTMANCERS_MCP_BRIDGE_TEST_CHILD) {
@@ -289,7 +291,8 @@ async function child() {
     const names = tools.map(tool => tool.name);
     console.log(`  tools: ${names.join(', ')}`);
     check(JSON.stringify(names) === JSON.stringify([...V1_NAMES, ...V2_NAMES]),
-      'the four v1 tools in their v1 order, then the eight v2 tools and the five NOT-507 pin tools');
+      'the four v1 tools in their v1 order, then the eight v2 tools, the five NOT-507 pin tools, and the four NOT-515 share tools');
+    check(!names.includes('botmancers_share_current_session'), 'botmancers_share_current_session is not served (NOT-515: no share-current yet)');
     const v1Capture = fs.readFileSync(CONTRACT_FILE);
     check(createHash('sha256').update(v1Capture).digest('hex') === CONTRACT_V1_SHA256, `the v1 capture ${path.relative(ROOT, CONTRACT_FILE)} is unchanged (frozen)`);
     const captured = JSON.parse(v1Capture.toString('utf8'));

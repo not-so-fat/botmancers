@@ -78,7 +78,7 @@ test('the bundled schemas are exactly the contracts the Botmancers app captures'
   assert.equal(read('../schemas/botmancers.mcp.v1.tools.json'), readFileSync(appV1, 'utf8'), 'frozen v1 schema byte-identical to the app capture');
 });
 
-test('the bundled v2 schema keeps every v1 tool, adds the eight v2 tools, and the five optional NOT-507 tools', async () => {
+test('the bundled v2 schema keeps every v1 tool, adds the eight v2 tools, the five optional NOT-507 tools, and the four optional NOT-515 share tools', async () => {
   const lib = await import('../dist/index.js');
   const v2 = lib.loadToolContract();
   const v1 = JSON.parse(read('../schemas/botmancers.mcp.v1.tools.json'));
@@ -86,10 +86,12 @@ test('the bundled v2 schema keeps every v1 tool, adds the eight v2 tools, and th
   assert.deepEqual(names.slice(0, 4), v1.tools.map(tool => tool.name));
   assert.deepEqual(names.slice(4), ['botmancers_capabilities', 'botmancers_list_agents', 'botmancers_list_sessions', 'botmancers_list_conversations',
     'botmancers_send_to_session', 'botmancers_create_exchange', 'botmancers_get_exchange', 'botmancers_list_exchanges',
-    'botmancers_message_agent', 'botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin']);
-  assert.deepEqual(v2.tools.filter(lib.isOptionalTool).map(tool => tool.name), names.slice(12), 'only the NOT-507 tools are optional');
+    'botmancers_message_agent', 'botmancers_pin_session', 'botmancers_send_to_pin', 'botmancers_get_pin', 'botmancers_detach_pin',
+    'botmancers_create_share', 'botmancers_get_share', 'botmancers_list_shares', 'botmancers_revoke_share']);
+  assert.ok(!names.includes('botmancers_share_current_session'), 'no share-current tool yet');
+  assert.deepEqual(v2.tools.filter(lib.isOptionalTool).map(tool => tool.name), names.slice(12), 'only the NOT-507 and NOT-515 tools are optional');
   for (const tool of v1.tools.filter(tool => tool.name !== 'botmancers_get_conversation')) assert.deepEqual(v2.tools.find(t => t.name === tool.name), tool);
-  assert.deepEqual(v2.tools.map(lib.toolContractOf), [...Array(4).fill('botmancers.mcp.v1'), ...Array(13).fill('botmancers.mcp.v2')]);
+  assert.deepEqual(v2.tools.map(lib.toolContractOf), [...Array(4).fill('botmancers.mcp.v1'), ...Array(17).fill('botmancers.mcp.v2')]);
 });
 
 test('the manifest is a public package distinct from the private app', () => {

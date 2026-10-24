@@ -114,6 +114,10 @@ and the Agent's stored configuration.
 | 4 act, pinned | `botmancers_send_to_pin` | the pin's | `pin_ref`, `content`, `idempotency_key` | `pin`, `turn`, `replayed` |
 | 5 observe | `botmancers_get_pin` | the pin's | `pin_ref` | `pin`, `turns` (state, `answer`), `content_trust: "untrusted"` |
 | stop | `botmancers_detach_pin` | the pin's | `pin_ref` | `pin`, `replayed` |
+| share | `botmancers_create_share` | `shares:create` | `session_ref`, `audience` (`kind: "slack"`, `team_id`, `channel_id`), optional `ttl_seconds` (300-86400, default 3600), `max_turns` (1-100, default 20), `agent_id`, `idempotency_key` | `share`, `replayed` |
+| share | `botmancers_get_share` | `shares:create` (own share) | `share_ref` | `share` |
+| share | `botmancers_list_shares` | `shares:create` (own shares) | optional `session_ref`, `state` (`active`, `expired`, `revoked`), `cursor`, `limit` | `items`, `next_cursor` |
+| share | `botmancers_revoke_share` | `shares:create` (own share) | `share_ref` | `share`, `replayed` |
 
 - **Discover.** `botmancers_capabilities` lists only what this principal was
   granted. Without a grants document the bridge is in `narrow` mode and only
@@ -143,6 +147,14 @@ and the Agent's stored configuration.
   items carry additive `home` and `actions` (each action's availability,
   reason, and `recovery`); `botmancers_list_agents` items carry additive
   `messaging`.
+- **Share (NOT-515).** `botmancers_create_share` shares exactly one session,
+  named by `session_ref`, as a temporary **ask-only** share for one audience
+  on the owner's allowlist (`session-shares.json`): its audience can ask the
+  session read-only questions until it expires, uses its `max_turns`, or is
+  revoked with `botmancers_revoke_share`. A share never grants write access,
+  and a session is never chosen by title, workspace, provider id, or
+  "latest" (those fields are `authority_not_allowed`). There is no
+  share-current tool yet. See [`service-grants.md`](service-grants.md#session-shares-not-515).
 - **Observe.** Poll `botmancers_get_exchange` with the returned `exchange_id`
   until `terminal` is true; then read `exchange.answer` (Ask and session
   message) or `exchange.packet` and the destination conversation (Continue).
@@ -243,6 +255,12 @@ A rejected call writes nothing. Each tool lists the codes it can return in
 | `action_unavailable` | The runtime cannot do this action on this session. | Choose another action (see `actions`). |
 | `approval_required` | Resume work here needs `approve_write: true`. | Ask the user to approve edits first. |
 | `provider_failed` | The runtime failed the turn (retryable; the pin stays). | Retry later with the same key. |
+| `share_not_found` | No such share of this caller, or its `shares:create` grant was withdrawn. | Re-run `botmancers_list_shares`. |
+| `share_expired` | The share is past its `expires_at`. | Create a new share. |
+| `share_revoked` | The share was revoked. | Create a new share. |
+| `share_turn_in_progress` | The share's previous question is still being answered. | Wait for it, then ask again. |
+| `share_turn_limit` | The share has used all of its `max_turns`. | Create a new share. |
+| `audience_not_allowed` | The audience is not on the owner's share allowlist (or it is missing or invalid). | Ask the owner to allow that channel in `session-shares.json`. |
 
 A target outside the caller's grants is answered exactly like a missing one.
 A terminal exchange carries its own stable `failure.code` (for example

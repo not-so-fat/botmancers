@@ -1,6 +1,6 @@
 ---
 name: botmancers-collaboration
-description: Work with other Botmancers Agents and their sessions through the Botmancers MCP server (botmancers_* tools). Use when the user asks to message, ask, or hand work to a Botmancers Agent (for example Codex or Grok), ask several questions in or resume one of an Agent's past sessions, hand off a task between Agents, or check an exchange, pin, or conversation result.
+description: Work with other Botmancers Agents and their sessions through the Botmancers MCP server (botmancers_* tools). Use when the user asks to message, ask, or hand work to a Botmancers Agent (for example Codex or Grok), ask several questions in or resume one of an Agent's past sessions, hand off a task between Agents, share a session read-only with a team channel, or check an exchange, pin, share, or conversation result.
 license: MIT
 compatibility: Needs an MCP connection to the Botmancers bridge (contract botmancers.mcp.v2). The MCP tools work without this skill.
 ---
@@ -45,6 +45,7 @@ Check the rows in order and use the first one that fits:
 | Several questions, one after another, in one past session (Ask from this context) | Pinned ask | `botmancers_pin_session` (`action: "ask"`), `botmancers_send_to_pin`, `botmancers_get_pin`, `botmancers_detach_pin` |
 | Edits in that exact session, approved by the user (Resume work here) | Resume work here | `botmancers_pin_session` (`action: "resume"`, `approve_write: true`), `botmancers_send_to_pin`, `botmancers_get_pin`, `botmancers_detach_pin` |
 | A message to a named Agent, with no session named | Message an Agent | `botmancers_message_agent`, `botmancers_get_pin`, `botmancers_send_to_pin` |
+| Let a team channel ask one exact session questions for a while (share it) | Share a session | `botmancers_create_share`, `botmancers_get_share`, `botmancers_list_shares`, `botmancers_revoke_share` |
 
 - A question about a session's earlier work is an `Ask`, even when the user
   names that session ("ask Grok in the uploader review whether the cap is
@@ -65,6 +66,9 @@ Check the rows in order and use the first one that fits:
   `botmancers_detach_pin` when done. Set `approve_write` only after the
   user explicitly approved edits. See
   [pinned sessions](references/workflows.md#pinned-session).
+- A share is read-only and names one session by its `ref` only; never by
+  title, workspace, or "latest". See
+  [share a session](references/workflows.md#share-a-session).
 
 ## 3. Observe
 

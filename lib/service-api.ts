@@ -1218,8 +1218,8 @@ function requireServiceShare(ctx: ServiceContext, shareRef: string): ShareRow {
 
 // The share view is Botmancers references and owner-chosen ids only; it is
 // redacted anyway, like every service view.
-function serviceShareBody(row: ShareRow): ShareView {
-  return serviceRedactor().deep(shareView(row));
+function serviceShareBody(row: ShareRow, redactor = serviceRedactor()): ShareView {
+  return redactor.deep(shareView(row));
 }
 
 export interface ShareAuditHooks {
@@ -1258,9 +1258,10 @@ export function listServiceShares(ctx: ServiceContext, query: ListQuery & { sess
   if (query.state !== null && !(SHARE_STATES as string[]).includes(query.state)) {
     throw new ServiceApiError('invalid_request', 'state must be active, expired, or revoked.');
   }
+  const redactor = serviceRedactor();
   const rows = sharesCreatedBy(ctx.principal, { sessionRef: query.sessionRef })
     .filter(row => holds(ctx, row.agent_id, 'shares:create'))
-    .map(serviceShareBody)
+    .map(row => serviceShareBody(row, redactor))
     .filter(view => query.state === null || view.state === query.state);
   return paginate(`shares:${ctx.principal.id}:${query.sessionRef ?? ''}:${query.state ?? ''}`, rows,
     row => ({ at: row.created_at, tie: row.created_at, id: row.share_ref }), query.cursor, query.limit);

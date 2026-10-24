@@ -154,12 +154,12 @@ async function main() {
   const contextPrincipal = model.CONTEXT_PRINCIPAL;
   let clock = Date.UTC(2026, 9, 24, 9, 0, 0);
   const audiences = fixtures.audiences;
-  // Finding R1: the NOT-499 redactor does not treat an Agent's
-  // default_workspace or a native session's workspace as private. A share
-  // reply must, so the SessionShare core ticket extends lib/service-redaction;
-  // until then the fixture adds those values itself.
+  // Finding R1: the NOT-499 redactor did not treat an Agent's
+  // default_workspace or a native session's workspace as private. NOT-515
+  // fixed it in lib/service-redaction; the fixture's own extra pass below is
+  // now redundant and kept only as the reference model's seam.
   const echo = 'cwd is /work/share';
-  assert(serviceRedactor().text(echo) === echo, 'R1 recorded: serviceRedactor alone leaves a native session workspace in text');
+  assert(serviceRedactor().text(echo) === 'cwd is [redacted]', 'R1 closed (NOT-515): serviceRedactor redacts a native session workspace in text');
   const workspaces = () => [...new Set([
     ...db.prepare('SELECT default_workspace AS w FROM bots WHERE default_workspace IS NOT NULL').all().map(r => r.w),
     ...db.prepare('SELECT workspace AS w FROM provider_sessions WHERE workspace IS NOT NULL').all().map(r => r.w),
