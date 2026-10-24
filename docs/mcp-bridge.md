@@ -153,8 +153,17 @@ and the Agent's stored configuration.
   session read-only questions until it expires, uses its `max_turns`, or is
   revoked with `botmancers_revoke_share`. A share never grants write access,
   and a session is never chosen by title, workspace, provider id, or
-  "latest" (those fields are `authority_not_allowed`). There is no
-  share-current tool yet. See [`service-grants.md`](service-grants.md#session-shares-not-515).
+  "latest" (those fields are `authority_not_allowed`). See
+  [`service-grants.md`](service-grants.md#session-shares-not-515).
+- **Share this session (NOT-517).** `botmancers_share_current_session` is not
+  a service tool: it is served only to a Claude Code or Codex turn Botmancers
+  launched, on the MCP entry Botmancers wrote for that launch with its
+  `Botmancers-Session-Context` header. That connection's `tools/list` holds
+  only this tool; it shares exactly the launch's session, taking `audience`,
+  optional `ttl_seconds`, `max_turns`, `agent_id`, and `idempotency_key`, and
+  never a session selector. Anything else answers `session_context_required`
+  with a `reason`. See
+  [`service-grants.md`](service-grants.md#share-the-current-session-not-517).
 - **Observe.** Poll `botmancers_get_exchange` with the returned `exchange_id`
   until `terminal` is true; then read `exchange.answer` (Ask and session
   message) or `exchange.packet` and the destination conversation (Continue).
@@ -261,6 +270,7 @@ A rejected call writes nothing. Each tool lists the codes it can return in
 | `share_turn_in_progress` | The share's previous question is still being answered. | Wait for it, then ask again. |
 | `share_turn_limit` | The share has used all of its `max_turns`. | Create a new share. |
 | `audience_not_allowed` | The audience is not on the owner's share allowlist (or it is missing or invalid). | Ask the owner to allow that channel in `session-shares.json`. |
+| `session_context_required` | Share-current without a live session context (`reason`: `missing`, `ambiguous`, `unsupported`, `unknown`, `stale`, `revoked`). | Share explicitly: `botmancers_list_sessions`, then `botmancers_create_share` with its `session_ref`. |
 
 A target outside the caller's grants is answered exactly like a missing one.
 A terminal exchange carries its own stable `failure.code` (for example
