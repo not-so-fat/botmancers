@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   // Unoptimized images in the package: the brand PNGs are served as-is, so
   // no platform-specific sharp binary has to ship.
   ...(standalone ? { output: "standalone" as const, outputFileTracingRoot: __dirname, images: { unoptimized: true } } : {}),
+  // NOT-518: the Slack SDK (and its ws socket) is loaded from node_modules,
+  // not bundled; standalone tracing copies it into the package.
+  serverExternalPackages: ["@slack/socket-mode", "@slack/web-api"],
   // The release the core engine reports from /api/health; "dev" in a checkout.
   env: {
     BOTMANCERS_BUILD_VERSION: process.env.BOTMANCERS_BUILD_VERSION || "dev",

@@ -82,7 +82,11 @@ export function productContext(env: NodeJS.ProcessEnv, io: ProductIo): Ctx {
     throw new UsageError((error as Error).message);
   }
   const bridge = readEnvFile(paths.bridgeEnv) ?? {};
-  const redact = createRedactor([bridge[ENV.serviceToken], bridge[ENV.mcpToken], env[ENV.serviceToken], env[ENV.mcpToken]]);
+  const core = readEnvFile(paths.coreEnv) ?? {};
+  const redact = createRedactor([
+    bridge[ENV.serviceToken], bridge[ENV.mcpToken], env[ENV.serviceToken], env[ENV.mcpToken],
+    ...SLACK_TOKEN_ENVS.flatMap(key => [env[key], core[key]]),
+  ]);
   const out = (write: (text: string) => void) => (text: string) => write(redact(text));
   return { env, io: { stdout: out(io.stdout), stderr: out(io.stderr) }, paths, appDir: appDir(env), uiPort, mcpPort, version: packageVersion(), redact };
 }
@@ -464,12 +468,18 @@ export function mergeServiceTokens(generated: string | undefined, ...explicit: (
   return [...entries.values()].join(',');
 }
 
-function childEnvs(ctx: Ctx): { core: NodeJS.ProcessEnv; bridge: NodeJS.ProcessEnv } {
+export const SLACK_TOKEN_ENVS = ['BOTMANCERS_SLACK_APP_TOKEN', 'BOTMANCERS_SLACK_BOT_TOKEN'] as const;
+
+export function childEnvs(ctx: Ctx): { core: NodeJS.ProcessEnv; bridge: NodeJS.ProcessEnv } {
   const coreFile = readEnvFile(ctx.paths.coreEnv) ?? {};
   const bridgeFile = readEnvFile(ctx.paths.bridgeEnv) ?? {};
   const shell: NodeJS.ProcessEnv = { ...ctx.env };
   // The core never holds the raw bridge tokens.
   for (const key of [ENV.serviceToken, ENV.mcpToken, ENV.url, ENV.host, ENV.port, UI_PORT_ENV]) delete shell[key];
+  // NOT-518: the Slack tokens are the core's alone (its Socket Mode
+  // transport); the MCP bridge never receives them.
+  const bridgeShell: NodeJS.ProcessEnv = { ...shell };
+  for (const key of SLACK_TOKEN_ENVS) delete bridgeShell[key];
   const home = ctx.paths.home;
   return {
     core: {
@@ -483,7 +493,7 @@ function childEnvs(ctx: Ctx): { core: NodeJS.ProcessEnv; bridge: NodeJS.ProcessE
       NEXT_TELEMETRY_DISABLED: '1',
     },
     bridge: {
-      ...shell,
+      ...bridgeShell,
       [ENV.serviceToken]: bridgeFile[ENV.serviceToken],
       [ENV.mcpToken]: bridgeFile[ENV.mcpToken],
       [ENV.url]: uiUrl(ctx),

@@ -4,7 +4,8 @@
 // askShare, an isolated SQLite file, the deterministic fake session provider,
 // and a deterministic fake SlackTransport:
 //   - the four-method SlackTransport boundary; no Slack SDK, Bolt, or Pantalk
-//     in the source or the dependency tree;
+//     in the relay source, and (NOT-518) no Slack package in the dependency
+//     tree but @slack/socket-mode and @slack/web-api;
 //   - one anchor thread per share (idempotent binding), routing only by the
 //     exact (team, channel, thread), several shares in one channel, unknown
 //     threads, channels off the owner allowlist, and adversarial selector
@@ -161,7 +162,11 @@ async function main() {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
     const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies });
     const lock = fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8');
-    assert(!deps.some(d => /^@slack\//.test(d) || /bolt|pantalk/i.test(d)) && !/"node_modules\/@slack\//.test(lock), 'no @slack/*, Bolt, or Pantalk dependency in package.json or package-lock.json');
+    // NOT-518 adds the native transport's two packages (lib/slack-transport.ts,
+    // test-slack-transport.js); the relay itself still imports neither.
+    const slack = deps.filter(d => /^@slack\//.test(d) || /bolt|pantalk/i.test(d)).sort();
+    assert(same(slack, ['@slack/socket-mode', '@slack/web-api']) && !/"node_modules\/@slack\/(bolt|oauth)"|pantalk/i.test(lock),
+      'the only Slack dependencies are @slack/socket-mode and @slack/web-api (no Bolt, OAuth, or Pantalk in package.json or package-lock.json)');
     const routing = [...source.matchAll(/FROM slack_share_threads WHERE ([^'`]+)/g)].map(m => m[1].trim());
     assert(same(routing.sort(), ['share_ref = ?', 'team_id = ? AND channel_id = ? AND thread_ts = ?']),
       'threads are looked up only by share_ref (binding) or the exact (team, channel, thread) (routing)');
