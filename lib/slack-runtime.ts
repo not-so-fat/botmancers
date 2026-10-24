@@ -156,6 +156,7 @@ async function start(rt: Runtime, options: SlackRuntimeOptions): Promise<SlackRu
     setStatus(config.state, config.reason);
     return slackRuntimeStatus();
   }
+  setStatus('connecting');
   const clients = (options.clients ?? (tokens => createSlackClients(tokens, { log, ...options.clientOptions })))(config.tokens);
   let identity: { user_id: string; team_id: string };
   try {
@@ -266,7 +267,6 @@ async function start(rt: Runtime, options: SlackRuntimeOptions): Promise<SlackRu
     setStatus('stopped');
   };
 
-  setStatus('connecting');
   // Recovery first (Web API only), then the socket.
   await recover();
   try {
@@ -290,4 +290,15 @@ async function start(rt: Runtime, options: SlackRuntimeOptions): Promise<SlackRu
   timer = setInterval(() => { sweep().catch(onError); }, options.sweepMs ?? 5000);
   timer.unref?.();
   return slackRuntimeStatus();
+}
+
+// The core server's entry (instrumentation.ts): start once, stop on
+// SIGTERM/SIGINT. BOTMANCERS_NO_AUTOPROCESS=1 (tests and scripts that import
+// the engine) keeps Slack off.
+export function runSlackInServer(): void {
+  if (process.env.BOTMANCERS_NO_AUTOPROCESS === '1') return;
+  const shutdown = () => { stopSlackRuntime().catch(() => {}); };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  startSlackRuntime().catch(error => console.error('Slack relay:', error instanceof Error ? error.message : 'start failed'));
 }

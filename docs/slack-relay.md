@@ -17,7 +17,8 @@ endpoints and never selects a session itself.
 
 This module holds no Slack SDK, credential, or server lifecycle. The native
 Socket Mode adapter (`@slack/socket-mode`, `@slack/web-api`), its tokens, its
-start/stop wiring, and the operator smoke are the transport ticket's work.
+start/stop wiring, and the operator smoke are NOT-518's:
+[`slack-transport.md`](slack-transport.md).
 
 ## The transport boundary
 

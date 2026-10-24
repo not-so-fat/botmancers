@@ -129,8 +129,8 @@ export interface SlackClientOptions {
   log?: (line: string) => void;
 }
 
-// The real SDK clients: auto-reconnect on, the safe logger, no retries of
-// chat.postMessage beyond the SDK default.
+// The real SDK clients: auto-reconnect on (connections.open keeps the
+// SDK's long retry), the safe logger, bounded Web API retries.
 export function createSlackClients(tokens: SlackTokens, options: SlackClientOptions = {}): SlackClients {
   const logger = safeSlackLogger(tokenRedactor(tokens), options.log);
   const api = options.slackApiUrl ? { slackApiUrl: options.slackApiUrl } : {};
@@ -142,7 +142,10 @@ export function createSlackClients(tokens: SlackTokens, options: SlackClientOpti
     ...(options.serverPingTimeoutMs ? { serverPingTimeout: options.serverPingTimeoutMs } : {}),
     clientOptions: { ...api },
   });
-  const web = new WebClient(tokens.botToken, { logger, ...api });
+  // A failed post is retried by the relay (recovery, the sweep), so the SDK
+  // gives up quickly instead of its default half hour of retries, which
+  // would hold the relay's one-at-a-time queue.
+  const web = new WebClient(tokens.botToken, { logger, timeout: 15_000, retryConfig: { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 4000 }, ...api });
   return { socket: socket as unknown as SocketModeClientLike, web: web as unknown as WebClientLike };
 }
 

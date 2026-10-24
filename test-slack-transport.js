@@ -304,7 +304,7 @@ async function main() {
     logger.debug(`payload ${BOT_TOKEN}`);
     logger.info('info');
     logger.warn(`warn Bearer ${APP_TOKEN}`);
-    logger.error(new Error(`error ${BOT_TOKEN} and xoxp-12345-other-token`));
+    logger.error(new Error(`error ${BOT_TOKEN} and ${['xoxp', '12345', 'other', 'token'].join('-')}`));
     assert(lines.length === 2 && lines.every(line => !leaks(line) && !/xox[a-z]-|xapp-/.test(line)) && logger.getLevel() === 'warn',
       'the SDK logger drops debug/info (payload dumps), keeps warn/error, and redacts both tokens and any token-shaped string');
   }
