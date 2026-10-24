@@ -98,6 +98,10 @@ jobs:
           npm run test:service-grants
           npm run test:session-pins
           npm run test:mcp-bridge
+      - name: Slack relay core with the real SessionShare store (NOT-516)
+        working-directory: .
+        run: |
+          npm run test:slack-relay
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app
