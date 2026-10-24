@@ -51,6 +51,8 @@ import './codex-session-provider';
 import { usageFromEvent, type NormalizedUsage } from './usage';
 import { recordTurnUsageSample } from './usage-samples';
 import { CURSOR_PROVIDER_KIND, cursorSessionProviderFactory } from './cursor-session-provider';
+import { bindSessionContext, endSessionContext, mintSessionContext } from './session-context';
+import type { SessionContextMinter } from './session-provider';
 
 // NOT-506: a registered Claude Code Agent talks to the local `claude` CLI
 // directly (lib/claude-session-provider), with no Agent Deck.
@@ -257,6 +259,26 @@ function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'pr
 
 function callContext(input: { correlation?: AttemptCorrelation | null; signal?: AbortSignal | null; deadlineAt?: number | null }): ProviderCallContext {
   return { correlation: { ...(input.correlation ?? {}) }, signal: input.signal ?? null, deadline_at: input.deadlineAt ?? null };
+}
+
+// NOT-517: the session-context minter one turn hands its provider
+// (lib/session-context). The provider decides whether its launch is a new
+// one (a Codex resume of an already loaded thread is not); Botmancers binds
+// the contexts of a start launch to the session once it is recorded, and
+// ends them if the launch never happened.
+function contextMinter(agentId: string, sessionRef: string | null): { minter: SessionContextMinter; minted: string[] } {
+  const minted: string[] = [];
+  return {
+    minted,
+    minter: {
+      mint: launch => {
+        const context = mintSessionContext({ agentId, sessionRef, launch: { kind: launch.kind, ref: launch.ref }, processBound: launch.processBound === true });
+        if (!context) return null;
+        minted.push(context.id);
+        return { token: context.token, url: context.url };
+      },
+    },
+  };
 }
 
 // ---- registry ----
