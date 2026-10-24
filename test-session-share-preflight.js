@@ -146,9 +146,12 @@ async function main() {
   const grok = { kind: 'service', id: 'grok-bot' };
   const relayPrincipal = { kind: 'service', id: 'slack-relay' };
   const owner = dbModule.UI_OWNER_PRINCIPAL;
-  // shares:create / shares:create_current are the new SessionShare
-  // capabilities (sketch); the model holds them in memory.
-  const shareGrants = new Set([`service:grok-bot|${dev.id}|shares:create`, `service:grok-bot|${dev.id}|shares:create_current`]);
+  // shares:create is the new SessionShare grant capability and
+  // share_from_turn the owner's per-Agent opt-in (sketch); the model holds
+  // both in memory.
+  const shareGrants = new Set([`service:grok-bot|${dev.id}|shares:create`]);
+  const shareFromTurn = new Set([dev.id]);
+  const contextPrincipal = model.CONTEXT_PRINCIPAL;
   let clock = Date.UTC(2026, 9, 24, 9, 0, 0);
   const audiences = fixtures.audiences;
   // Finding R1: the NOT-499 redactor does not treat an Agent's
@@ -164,11 +167,11 @@ async function main() {
   const redact = value => workspaces().reduce((acc, w) => acc.split(w).join('[redacted]'), serviceRedactor().text(value));
   const shares = model.createSessionShareModel({
     pins, audit: dbModule.serviceAudit, redact, now: () => clock, relayPrincipal, audiences,
-    grants: { has: (p, agentId, cap) => shareGrants.has(`${p.kind}:${p.id}|${agentId}|${cap}`) },
+    grants: { has: (p, agentId, cap) => shareGrants.has(`${p.kind}:${p.id}|${agentId}|${cap}`) }, shareFromTurn: agentId => shareFromTurn.has(agentId),
   });
   const relaySends = () => fake.loadFakeState(STATE).calls.filter(call => call.op === 'sendTurn').length;
   const sendsTo = id => Object.values(fake.loadFakeState(STATE).turns).filter(turn => turn.session === id).length;
-  const audits = () => count("SELECT COUNT(*) AS n FROM service_audit_events WHERE principal IN ('service:slack-relay', 'service:grok-bot')");
+  const audits = () => count("SELECT COUNT(*) AS n FROM service_audit_events WHERE principal IN ('service:slack-relay', 'service:grok-bot', 'service:botmancers-session-context')");
   const lastAudit = () => db.prepare('SELECT * FROM service_audit_events ORDER BY id DESC LIMIT 1').get();
   const denyRelay = await serviceOperations.pinSession(relayPrincipal, s1, () => ({ action: 'ask', idempotency_key: 'relay-direct-1' }), null);
   assert(denyRelay.status === 404 && denyRelay.body.error.code === 'session_not_found',
@@ -177,10 +180,10 @@ async function main() {
 
   console.log('\nCurrent-session context: exactly one session, or session_context_required');
   const ctx = shares.mintContext({ agentId: dev.id, sessionRef: s1, launchRef: 'launch-1' });
-  const current = await shares.createShare({ principal: grok, headers: { 'botmancers-session-context': ctx }, body: { audience, ttl_seconds: 3600, idempotency_key: 'cur-0001' } });
+  const current = await shares.createShare({ principal: contextPrincipal, headers: { 'botmancers-session-context': ctx }, body: { audience, ttl_seconds: 3600, idempotency_key: 'cur-0001' } });
   assert(current.status === 201 && current.body.share.session_ref === s1 && current.body.share.created_via === 'current_session' && current.body.share.authority === 'ask',
     'a minted, live context shares exactly its bound session_ref with ask-only authority');
-  const reasonOf = async (headers, key, body = {}) => (await shares.createShare({ principal: grok, headers, body: { audience, idempotency_key: key, ...body } })).body.error;
+  const reasonOf = async (headers, key, body = {}) => (await shares.createShare({ principal: contextPrincipal, headers, body: { audience, idempotency_key: key, ...body } })).body.error;
   const missing = await reasonOf({}, 'neg-0001');
   assert(missing.code === 'session_context_required' && missing.reason === 'missing' && missing.recovery === 'choose_session', 'missing context: session_context_required/missing, recovery choose_session');
   const ctx2 = shares.mintContext({ agentId: dev.id, sessionRef: s2, launchRef: 'launch-2' });
@@ -201,7 +204,10 @@ async function main() {
   const mismatch = await reasonOf({ 'botmancers-session-context': ctx5 }, 'neg-0009', { agent_id: otherAgent.id });
   assert(mismatch.code === 'session_not_found', 'a context whose session belongs to another Agent than the caller expects: session_not_found');
   const ctxOther = shares.mintContext({ agentId: otherAgent.id, sessionRef: otherRef, launchRef: 'launch-6' });
-  assert((await reasonOf({ 'botmancers-session-context': ctxOther }, 'neg-0010')).code === 'session_not_found', 'a context for an Agent the caller holds no share grant on: session_not_found');
+  assert((await reasonOf({ 'botmancers-session-context': ctxOther }, 'neg-0010')).reason === 'revoked',
+    'a context of an Agent whose owner has not enabled share-from-turn (or turned it off): revoked');
+  const viaService = await shares.createShare({ principal: grok, headers: { 'botmancers-session-context': ctx }, body: { audience, idempotency_key: 'neg-0013' } });
+  assert(viaService.body.error.code === 'invalid_request', 'a granted service cannot use share-current: the context, not a service token, is its credential');
   fake.mutateFakeProvider(STATE, state => { state.sessions['gone-1-SECRET'].deleted = true; });
   await ps.refreshProviderSession(db, dev.id, gone);
   const ctxGone = shares.mintContext({ agentId: dev.id, sessionRef: gone, launchRef: 'launch-7' });
@@ -212,7 +218,7 @@ async function main() {
     if (!(refused.status === 403 && refused.body.error.code === 'authority_not_allowed')) assert(false, `heuristic field ${field} refused`);
   }
   assert(true, `every heuristic selector (${model.HEURISTIC_FIELDS.length}: provider ids, cwd, latest, title, activity) is authority_not_allowed`);
-  const both = await shares.createShare({ principal: grok, sessionRef: s1, headers: { 'botmancers-session-context': ctx }, body: { audience, idempotency_key: 'neg-0012' } });
+  const both = await shares.createShare({ principal: contextPrincipal, sessionRef: s1, headers: { 'botmancers-session-context': ctx }, body: { audience, idempotency_key: 'neg-0012' } });
   assert(both.body.error.code === 'invalid_request', 'share-current never also takes a session_ref');
 
   console.log('\nExplicit share lifecycle: create, idempotency, TTL, list, get, revoke');
@@ -227,7 +233,9 @@ async function main() {
   const expiring = await shares.createShare({ principal: grok, sessionRef: s2, body: { audience, ttl_seconds: 300, idempotency_key: 'share-b-01' } });
   const revoking = await shares.createShare({ principal: grok, sessionRef: s2, body: { audience, ttl_seconds: 3600, idempotency_key: 'share-c-01' } });
   const listed = shares.listShares(grok, { sessionRef: s1 });
-  assert(listed.body.items.length === 2 && listed.body.items.every(s => s.session_ref === s1), 'list filters by session_ref');
+  const ownerListed = shares.listShares(owner, { sessionRef: s1 });
+  assert(listed.body.items.length === 1 && ownerListed.body.items.length === 2 && ownerListed.body.items.every(s => s.session_ref === s1),
+    'list filters by session_ref; a service sees its own shares, the owner sees every share (here also the current-session one)');
   assert(shares.getShare(relayPrincipal, created.body.share.share_ref).status === 404, 'another principal cannot read the share (share_not_found)');
 
   console.log('\nSlack relay: normalization, dedup, exact routing, reply correlation');

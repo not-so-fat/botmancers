@@ -22,14 +22,15 @@
   "limits": { "ttl_seconds": { "min": 300, "default": 3600, "max": 86400 }, "max_turns": { "default": 20, "max": 100 }, "question_chars": 4000, "reply_chars": 3000 },
   "capabilities": {
     "shares:create": "New grant capability (service-grants.json), per Agent. Create, get, list, revoke the caller's own shares of that Agent's sessions. Never implied by sessions:message; grants no Ask itself.",
-    "shares:create_current": "New grant capability, per Agent. The share_current_session convenience; requires a minted session context in addition.",
+    "share_from_turn": "Not a grant: the owner's per-Agent opt-in in <BOTMANCERS_HOME>/config/session-shares.json (default off). Botmancers mints a session context for a launch of that Agent only while it is on; it is re-read on every call, so turning it off revokes every live context.",
     "shares:ask": "Audit-only capability name for a share-authorized Ask. Not grantable: the share is the authority."
   },
   "operations": [
     { "rest": "POST /api/v0/sessions/{session_ref}/shares", "mcp": "botmancers_create_share", "capability": "shares:create", "audit_operation": "shares.create",
       "body": { "audience": "required", "ttl_seconds": "optional", "max_turns": "optional", "agent_id": "optional expectation check", "idempotency_key": "required (or Idempotency-Key header)" },
       "responses": { "201": "{ share, replayed: false }", "200": "{ share, replayed: true } exact replay" } },
-    { "rest": "POST /api/v0/shares/current", "mcp": "botmancers_share_current_session", "capability": "shares:create_current", "audit_operation": "shares.create",
+    { "rest": "POST /api/v0/shares/current", "mcp": "botmancers_share_current_session", "capability": "share_from_turn (owner opt-in) + live minted context", "audit_operation": "shares.create",
+      "principal": "reserved service:botmancers-session-context, authenticated only by the context (never a BOTMANCERS_SERVICE_TOKENS id or grants entry; refused in the grants document like botmancers-exchanges). A granted service calling it gets invalid_request.",
       "context": "header Botmancers-Session-Context: <bmsc_ token> set by the client's MCP entry Botmancers wrote for this turn; never a tool argument, never shown to the model",
       "body": { "audience": "required", "ttl_seconds": "optional", "max_turns": "optional", "agent_id": "optional expectation check", "idempotency_key": "required" },
       "responses": { "201": "{ share, replayed: false }", "200": "replay", "409": "session_context_required { reason }" } },
@@ -44,14 +45,14 @@
     "askShare": "SessionShare.ask(share_ref, question, message_key): the Slack relay's only entry. Checks state/expiry/turn limit/in-flight, then NOT-507 sendPinTurn on the share's ask pin with idempotency key = message_key. Audited as operation shares.ask, capability shares:ask, target the session_ref. Not a public route or MCP tool."
   },
   "context": {
-    "token": "bmsc_ + 43 base64url chars (256 random bits); stored only as sha256; bound to (agent_id, session_ref, provider turn ref); valid while that turn is running and for at most 15 minutes",
+    "token": "bmsc_ + 43 base64url chars (256 random bits); stored only as sha256; bound to (agent_id, session_ref, launch): a Claude turn process, or a Codex thread load in Botmancers' app-server (a loaded thread keeps its first MCP config: probe resume_same_process). Valid while that launch is live and a Botmancers turn on session_ref is running, at most 15 minutes after the last such turn; revoked when the launch ends",
     "reasons": ["missing", "ambiguous", "unknown", "stale", "revoked", "unsupported"],
     "reason_meaning": {
       "missing": "no Botmancers-Session-Context header",
       "ambiguous": "more than one context presented (repeated or comma-joined header)",
       "unknown": "well-formed token Botmancers never minted (or already purged)",
       "stale": "the bound turn is terminal, or the token expired",
-      "revoked": "the owner withdrew it (share-from-turn disabled for the Agent, or the context revoked)",
+      "revoked": "the owner withdrew it: share_from_turn is off for the Agent, or the context itself was revoked",
       "unsupported": "a value that is not a minted context (a provider id such as CLAUDE_CODE_SESSION_ID, a Cursor chat id, a path); never echoed"
     }
   },
@@ -79,7 +80,8 @@
     { "item": "service principal auth, rate limit, audited call wrapper", "owner": "existing: lib/service-api-http serveAs (NOT-499)" },
     { "item": "audit rows", "owner": "existing: lib/service-audit (NOT-499); target_kind 'session', new operation words shares.*" },
     { "item": "redaction of answers and views", "owner": "existing: lib/service-redaction serviceRedactor (NOT-499)" },
-    { "item": "capabilities shares:create, shares:create_current", "owner": "existing document lib/service-grants (one vocabulary extension)" },
+    { "item": "capability shares:create; reserved principal botmancers-session-context", "owner": "existing document lib/service-grants (one vocabulary word, one reserved id)" },
+    { "item": "audience allowlist and share_from_turn opt-in", "owner": "NEW: SessionShare config document <BOTMANCERS_HOME>/config/session-shares.json (owner-only, 0600, same fail-closed rules as service-grants.json)" },
     { "item": "MCP tool schemas", "owner": "existing: lib/mcp-bridge-v2 + docs/contracts/mcp-bridge-v2.tools.json (five added tools)" },
     { "item": "share rows, events, expiry, revoke, turn limit, in-flight check, audience allowlist", "owner": "NEW: SessionShare (lib/session-shares.ts)" },
     { "item": "minted session context (mint/resolve/stale/revoke)", "owner": "NEW: SessionShare (lib/session-shares.ts) + launch injection in lib/claude-session-provider.ts and lib/codex-session-provider.ts" },

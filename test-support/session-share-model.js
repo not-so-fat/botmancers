@@ -38,6 +38,9 @@ const SHARE_ERROR_STATUS = {
 };
 const CONTEXT_REASONS = ['missing', 'ambiguous', 'unknown', 'stale', 'revoked', 'unsupported'];
 const CONTEXT_HEADER = 'botmancers-session-context';
+// Reserved, like botmancers-exchanges: never a BOTMANCERS_SERVICE_TOKENS id
+// or a grants entry; authenticated only by a live minted context.
+const CONTEXT_PRINCIPAL = { kind: 'service', id: 'botmancers-session-context' };
 const CONTEXT_TOKEN = /^bmsc_[A-Za-z0-9_-]{43}$/;
 // Body fields that would select a session by provider id or heuristic:
 // refused before anything else (NOT-499 authority rule).
@@ -62,7 +65,9 @@ class ShareError extends Error {
 const sha256 = value => crypto.createHash('sha256').update(value).digest('hex');
 const ref = prefix => `${prefix}_${crypto.randomBytes(12).toString('hex')}`;
 
-// deps: { pins, audit, redact, now(), grants: { has(principal, agentId, capability) } }
+// deps: { pins, audit, redact, now(), relayPrincipal, audiences,
+//   grants: { has(principal, agentId, capability) },
+//   shareFromTurn(agentId) -> the owner's per-Agent share-from-turn opt-in }
 function createSessionShareModel(deps) {
   const contexts = new Map(); // sha256(token) -> { agent_id, session_ref, launch_ref, state, expires_at }
   const shares = new Map(); // share_ref -> share
@@ -100,7 +105,9 @@ function createSessionShareModel(deps) {
     if (!CONTEXT_TOKEN.test(values[0])) fail('unsupported');
     const ctx = contexts.get(sha256(values[0]));
     if (!ctx) fail('unknown');
-    if (ctx.state === 'revoked') fail('revoked');
+    // The owner's per-Agent opt-in is read on every call, so turning it off
+    // withdraws every live context of that Agent.
+    if (ctx.state === 'revoked' || !deps.shareFromTurn(ctx.agent_id)) fail('revoked');
     if (ctx.state !== 'live' || deps.now() >= ctx.expires_at) fail('stale');
     return { agentId: ctx.agent_id, sessionRef: ctx.session_ref };
   }
@@ -128,6 +135,9 @@ function createSessionShareModel(deps) {
     try {
       checkBody(body, ['agent_id', 'audience', 'ttl_seconds', 'max_turns', 'idempotency_key']);
       if (headers) {
+        // The context is the credential: only the reserved context principal
+        // (authenticated by it) calls share-current; a granted service names a session_ref.
+        if (principalOf(principal) !== principalOf(CONTEXT_PRINCIPAL)) throw new ShareError('invalid_request', 'share_current_session is only available inside a Botmancers-launched session; pass session_ref.');
         if (sessionRef) throw new ShareError('invalid_request', 'share_current_session takes no session_ref.');
         Object.assign(target, resolveCurrent(headers));
       }
@@ -148,7 +158,8 @@ function createSessionShareModel(deps) {
       const owner = deps.pins.sessionOwner(target.sessionRef);
       target.agentId = owner;
       // Not granted, unknown, and another Agent's session answer the same.
-      if (!owner || (body.agent_id && body.agent_id !== owner) || !deps.grants.has(principal, owner, headers ? 'shares:create_current' : 'shares:create')) {
+      // A context was already authorized by the owner's opt-in.
+      if (!owner || (body.agent_id && body.agent_id !== owner) || (!headers && !deps.grants.has(principal, owner, 'shares:create'))) {
         throw new ShareError('session_not_found', 'No session with that reference.');
       }
       const hash = sha256(JSON.stringify([target.sessionRef, audience.team_id, audience.channel_id, ttl, maxTurns]));
@@ -384,6 +395,6 @@ function createSlackRelay({ model, audiences, botUserId, transport }) {
 }
 
 module.exports = {
-  CONTEXT_HEADER, CONTEXT_REASONS, HEURISTIC_FIELDS, QUESTION_MAX, REPLY_MAX, SHARE_ERROR_STATUS, TTL, TURNS,
+  CONTEXT_HEADER, CONTEXT_PRINCIPAL, CONTEXT_REASONS, HEURISTIC_FIELDS, QUESTION_MAX, REPLY_MAX, SHARE_ERROR_STATUS, TTL, TURNS,
   ShareError, createSessionShareModel, createSlackRelay, normalizeSlackEnvelope,
 };
