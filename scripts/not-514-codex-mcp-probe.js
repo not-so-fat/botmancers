@@ -11,6 +11,9 @@
 //   exec        codex exec --json -c mcp_servers.probe.*=...    (per-process override)
 //   app_thread  codex app-server; thread/start { config: { mcp_servers: { probe } } }
 //               (per-thread override on a shared app-server process)
+//   exec_http_env_header  NOT-517's exec delivery: -c mcp_servers.botmancers.url
+//               plus env_http_headers naming BOTMANCERS_SESSION_CONTEXT_TOKEN,
+//               the value only in the run's environment
 // For app_thread the probe compares the MCP subprocess's fingerprint
 // marker (a per-thread value Botmancers put in the probe server's env via
 // the thread config) with the thread it was started for.
@@ -217,6 +220,33 @@ async function appServerHttpCase(env, workspace, tmp, salt) {
   };
 }
 
+// NOT-517's exec form: an HTTP entry whose header value comes from the run's
+// environment (env_http_headers), never argv.
+async function execHttpEnvHeaderCase(env, workspace, tmp, salt) {
+  const { serveMcpHttp } = require('./not-514-identity-probe');
+  const out = path.join(tmp, 'exec-http.jsonl');
+  const server = await serveMcpHttp({ out, salt });
+  const marker = `bmsc_${crypto.randomBytes(32).toString('base64url')}`;
+  const config = [
+    '-c', `mcp_servers.botmancers.url=${tomlString(server.url)}`,
+    '-c', 'mcp_servers.botmancers.env_http_headers={ "Botmancers-Session-Context" = "BOTMANCERS_SESSION_CONTEXT_TOKEN" }',
+    '-c', 'mcp_servers.botmancers.enabled_tools=["botmancers_share_current_session"]',
+    '-c', 'mcp_servers.botmancers.tools.botmancers_share_current_session.approval_mode="approve"',
+    '-c', 'approval_policy="never"', '-c', 'sandbox_mode="read-only"',
+  ];
+  const args = ['exec', '--json', '--skip-git-repo-check', '-C', workspace, ...config, '-'];
+  const r = await run('codex', args, { cwd: workspace, env: { ...env, BOTMANCERS_SESSION_CONTEXT_TOKEN: marker } });
+  await server.close();
+  const reports = readReports(out);
+  return {
+    case: 'exec_http_env_header',
+    exit: r.signal ? `signal:${r.signal}` : r.code,
+    mcp_requests: reports.length,
+    context_delivered_on_every_request: reports.length > 0 && reports.every(rep => rep.context_header.present && rep.context_header.fingerprint === fingerprint(salt, marker)),
+    value_in_argv: args.some(arg => arg.includes(marker)),
+  };
+}
+
 // One JSON-RPC session against a fresh `codex app-server`.
 function appServer(env, workspace, body) {
   return new Promise(resolve => {
@@ -340,7 +370,8 @@ async function main() {
     version = execFileSync('codex', ['--version'], { encoding: 'utf8', env }).trim();
   } catch { /* reported below */ }
   const results = [
-    await execCase(env, workspace, tmp, salt), await appServerCase(env, workspace, tmp, salt), await appServerHttpCase(env, workspace, tmp, salt),
+    await execCase(env, workspace, tmp, salt), await execHttpEnvHeaderCase(env, workspace, tmp, salt),
+    await appServerCase(env, workspace, tmp, salt), await appServerHttpCase(env, workspace, tmp, salt),
     await resumeCase(env, workspace, tmp, salt),
   ];
   if (resumeCase.extra) results.push(resumeCase.extra);

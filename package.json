@@ -86,7 +86,8 @@
     "test:session-context": "node test-session-context.js",
     "probe:not-514-claude": "node scripts/not-514-claude-mcp-probe.js",
     "probe:not-514-codex": "node scripts/not-514-codex-mcp-probe.js",
-    "probe:not-514-cursor": "node scripts/not-514-cursor-mcp-probe.js"
+    "probe:not-514-cursor": "node scripts/not-514-cursor-mcp-probe.js",
+    "smoke:not-517-share-current": "node scripts/not-517-share-current-smoke.js"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

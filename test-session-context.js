@@ -515,6 +515,10 @@ async function main() {
     const tokenB = track(configToken(starts[1]));
     assert(TOKEN_SHAPE.test(tokenA) && TOKEN_SHAPE.test(tokenB) && tokenA !== tokenB && starts[0].params.config.mcp_servers.botmancers.url === 'http://127.0.0.1:3999/api/v0/mcp',
       'two thread/start loads on one app-server each carry their own config.mcp_servers.botmancers context');
+    const entry = starts[0].params.config.mcp_servers.botmancers;
+    assert(same(Object.keys(starts[0].params.config.mcp_servers), ['botmancers']) && same(entry.enabled_tools, [launch.SHARE_CURRENT_TOOL])
+      && same(entry.tools, { [launch.SHARE_CURRENT_TOOL]: { approval_mode: 'approve' } }) && same(Object.keys(entry.http_headers), [launch.SESSION_CONTEXT_HEADER]),
+    'the entry enables exactly the share-current tool and pre-approves only it (turns run with approvalPolicy never)');
     const rA = sc.resolveSessionContext(tokenA);
     const rB = sc.resolveSessionContext(tokenB);
     assert(rA.ok && rB.ok && rA.sessionRef === startA.turn.session_ref && rB.sessionRef === startB.turn.session_ref && rA.sessionRef !== rB.sessionRef,
@@ -566,6 +570,8 @@ async function main() {
     assert(args.includes('mcp_servers.botmancers.url="http://127.0.0.1:3999/api/v0/mcp"')
       && args.includes('mcp_servers.botmancers.env_http_headers={ "Botmancers-Session-Context" = "BOTMANCERS_SESSION_CONTEXT_TOKEN" }'),
     'exec runs with -c mcp_servers.botmancers.url and env_http_headers naming the environment variable');
+    assert(args.includes('mcp_servers.botmancers.enabled_tools=["botmancers_share_current_session"]')
+      && args.includes('mcp_servers.botmancers.tools.botmancers_share_current_session.approval_mode="approve"'), 'and enables and pre-approves exactly the share-current tool');
     assert(TOKEN_SHAPE.test(token) && !JSON.stringify(args).includes('bmsc_'), 'the context is in the run environment, never argv');
     const shared = await mcpShare(contextHeader(token), { audience, idempotency_key: 'exec-share-1' });
     assert(!shared.isError && shared.structured.share.session_ref === started.turn.session_ref, 'share-current from the exec run shares exactly its session');

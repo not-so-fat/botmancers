@@ -45,9 +45,22 @@ export function claudeMcpConfig(url: string): Record<string, unknown> {
   };
 }
 
+// Codex: the entry exposes exactly the share-current tool (enabled_tools)
+// and pre-approves it (Botmancers turns run with approvalPolicy "never", so
+// an MCP call that needed approval would be declined). Nothing else on the
+// entry is enabled or approved.
+const CODEX_TOOL_POLICY = {
+  enabled_tools: [SHARE_CURRENT_TOOL],
+  tools: { [SHARE_CURRENT_TOOL]: { approval_mode: 'approve' } },
+};
+
 // Codex app-server: the thread/start or first thread/resume config.
 export function codexThreadMcpConfig(minted: { token: string; url: string }): Record<string, unknown> {
-  return { mcp_servers: { [SESSION_CONTEXT_MCP_SERVER]: { url: minted.url, http_headers: { [SESSION_CONTEXT_HEADER]: minted.token } } } };
+  return {
+    mcp_servers: {
+      [SESSION_CONTEXT_MCP_SERVER]: { url: minted.url, http_headers: { [SESSION_CONTEXT_HEADER]: minted.token }, ...CODEX_TOOL_POLICY },
+    },
+  };
 }
 
 // codex exec: the -c overrides (the URL and an environment variable name;
@@ -57,5 +70,7 @@ export function codexExecMcpArgs(minted: { url: string }): string[] {
   return [
     '-c', `${key}.url=${JSON.stringify(minted.url)}`,
     '-c', `${key}.env_http_headers={ ${JSON.stringify(SESSION_CONTEXT_HEADER)} = ${JSON.stringify(SESSION_CONTEXT_EXEC_ENV)} }`,
+    '-c', `${key}.enabled_tools=[${JSON.stringify(SHARE_CURRENT_TOOL)}]`,
+    '-c', `${key}.tools.${SHARE_CURRENT_TOOL}.approval_mode="approve"`,
   ];
 }

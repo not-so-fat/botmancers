@@ -348,8 +348,8 @@ launch. It reaches the launch only as an HTTP header on the MCP entry
 | Runtime | Launch (= context lifetime) | Delivery |
 | --- | --- | --- |
 | Claude Code | one `claude -p` turn process | a per-turn 0600 `--mcp-config` with `headers: { "Botmancers-Session-Context": "${BOTMANCERS_SESSION_CONTEXT}" }`, the value only in the turn's environment; `--allowedTools` adds exactly `mcp__botmancers__botmancers_share_current_session`; `--strict-mcp-config` |
-| Codex app-server | one thread **load**: `thread/start`, or the first `thread/resume` in that app-server | `config.mcp_servers.botmancers = { url, http_headers }`. A resume of an already loaded thread sends no config and mints nothing: Codex keeps the load's MCP client, so the context is load-scoped, not turn-scoped |
-| `codex exec` fallback | one process | `-c mcp_servers.botmancers.url=…` and `-c mcp_servers.botmancers.env_http_headers={ "Botmancers-Session-Context" = "BOTMANCERS_SESSION_CONTEXT_TOKEN" }`, the value only in the run's environment |
+| Codex app-server | one thread **load**: `thread/start`, or the first `thread/resume` in that app-server | `config.mcp_servers.botmancers = { url, http_headers, enabled_tools: ["botmancers_share_current_session"], tools: { botmancers_share_current_session: { approval_mode: "approve" } } }` (exactly that tool, pre-approved because turns run with `approvalPolicy: "never"`). A resume of an already loaded thread sends no config and mints nothing: Codex keeps the load's MCP client, so the context is load-scoped, not turn-scoped |
+| `codex exec` fallback | one process | `-c mcp_servers.botmancers.url=…`, `-c mcp_servers.botmancers.env_http_headers={ "Botmancers-Session-Context" = "BOTMANCERS_SESSION_CONTEXT_TOKEN" }`, and the same `enabled_tools` / `approval_mode` overrides; the value only in the run's environment |
 | Cursor | — | none |
 
 The value is never in argv, a file, a log, a provider record, the database,
@@ -392,6 +392,10 @@ as `invalid_arguments`):
 | a service token | 400 `invalid_request` |
 | `session_ref` in the body | 400 `invalid_request` |
 | a selector (`provider_session_id`, `external_session_id`, `claude_session_id`, `codex_thread_id`, `cursor_chat_id`, `cwd`, `workspace`, `latest`, `most_recent`, `title`, `title_match`, `active_since`) | 403 `authority_not_allowed` |
+
+Operator smoke (real CLI, spends a little usage): `npm run
+smoke:not-517-share-current -- claude` or `-- codex`; evidence in
+[`evidence/NOT-517/probe-results.md`](evidence/NOT-517/probe-results.md).
 
 Recovery for `session_context_required`: share explicitly with
 `botmancers_list_sessions` → `botmancers_create_share { session_ref }`.
