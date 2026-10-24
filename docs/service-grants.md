@@ -307,7 +307,8 @@ characters. Every ask is audited as `shares.ask` (capability `shares:ask`,
 audit-only and not grantable) on the share's session, by
 `service:botmancers-session-share`, whatever its outcome; an accepted turn,
 its count, and its audit row commit together. Share rows and their
-append-only `session_share_events` survive restarts.
+append-only `session_share_events` survive restarts. The Slack relay core
+(NOT-516, [`slack-relay.md`](slack-relay.md)) is its only caller.
 
 ## Audit trail
 
