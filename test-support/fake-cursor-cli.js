@@ -26,7 +26,12 @@ const dir = process.env.FAKE_CURSOR_STATE;
 const variant = process.env.FAKE_CURSOR_VARIANT || 'listless';
 const chatsPath = path.join(dir, 'chats.json');
 const loadChats = () => (fs.existsSync(chatsPath) ? JSON.parse(fs.readFileSync(chatsPath, 'utf8')) : { counter: 0, chats: {} });
-const saveChats = state => fs.writeFileSync(chatsPath, JSON.stringify(state, null, 2));
+// Atomic: a reader (the test) never sees a half-written file.
+const saveChats = state => {
+  const tmp = `${chatsPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, chatsPath);
+};
 const logCall = entry => fs.appendFileSync(path.join(dir, 'calls.jsonl'), `${JSON.stringify({
   ...entry, cwd: process.cwd(), correlation: process.env.BOTMANCERS_CORRELATION || null,
   // NOT-517: whether any session context reached this process (never the value).
@@ -101,6 +106,12 @@ if (argv.includes('--print')) {
       process.exit(3);
     }
     const reply = `fake cursor reply: ${prompt}`;
+    // Persist before the result: once the provider sees it the turn is
+    // done, and the test may read or rewrite chats.json right away.
+    const after = loadChats();
+    after.chats[id].history.push(['assistant', reply]);
+    after.chats[id].updated_at = Date.now();
+    saveChats(after);
     emit({ type: 'thinking', subtype: 'delta', text: 'Thinking', session_id: sid, timestamp_ms: Date.now() });
     emit({ type: 'tool_call', subtype: 'started', call_id: 'c1', tool_call: { readToolCall: { args: { path: 'note.txt' } } }, session_id: sid, timestamp_ms: Date.now() });
     emit({ type: 'tool_call', subtype: 'completed', call_id: 'c1', tool_call: { readToolCall: { args: { path: 'note.txt' }, result: { success: {} } } }, session_id: sid, timestamp_ms: Date.now() });
@@ -117,10 +128,6 @@ if (argv.includes('--print')) {
     if (!prompt.includes('[usage:missing]')) result.usage = usage;
     emit(result);
     if (prompt.includes('[usage:repeated]')) emit({ ...result, usage: { inputTokens: 999999, outputTokens: 999999 } });
-    const after = loadChats();
-    after.chats[id].history.push(['assistant', reply]);
-    after.chats[id].updated_at = Date.now();
-    saveChats(after);
     process.exit(prompt.includes('[fail]') ? 1 : 0);
   };
   if (prompt.includes('[hold]')) {
