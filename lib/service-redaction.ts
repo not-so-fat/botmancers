@@ -11,15 +11,20 @@
 //     "[redacted runtime id]";
 //   - every working directory, Deck selection, and Hermes profile any Agent
 //     is configured with or was ever launched with, and every credential in
-//     the environment, as "[redacted]".
+//     the environment, as "[redacted]";
+//   - NOT-515 (finding R1 of NOT-514): every Agent's default workspace and
+//     session-scope workspaces, every native session's workspace (in raw and
+//     home-expanded form), and any absolute path under the user's home
+//     directory (cwd-shaped output a runtime echoes), as "[redacted]".
 //
 // Fields holding a Botmancers id or reference are left as they are.
+import os from 'os';
 import db, { bots } from './db';
 import { privateProviderIds } from './provider-sessions';
 
 // Launch-context and Agent configuration fields whose values are
 // engine-private (working directory, Deck selection, Hermes profile).
-const PRIVATE_CONFIG_KEY = /^(cwd|working_directory|workspace|deck|deck_id|deck_name|hermes_profile|hermes_profile_path)$/;
+const PRIVATE_CONFIG_KEY = /^(cwd|working_directory|workspace|default_workspace|workspaces|deck|deck_id|deck_name|hermes_profile|hermes_profile_path)$/;
 // Environment variables holding a credential.
 const CREDENTIAL_ENV = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
 // Keys whose value is a Botmancers id or reference, never redacted: an
@@ -72,7 +77,21 @@ function privateIds(): string[] {
 // environment.
 function privateValues(): string[] {
   const values = new Set<string>();
-  for (const bot of bots.getAll()) collectPrivate(bot, values);
+  for (const bot of bots.getAll()) {
+    collectPrivate(bot, values);
+    // The session scope's workspaces are stored as a JSON list.
+    if (typeof bot.session_scope_items === 'string') collectPrivate(parseJson(bot.session_scope_items), values, true);
+  }
+  // NOT-503: a native session's workspace (the runtime's cwd).
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_sessions'").get()) {
+    for (const row of db.prepare('SELECT workspace FROM provider_sessions WHERE workspace IS NOT NULL').all() as { workspace: string }[]) values.add(row.workspace);
+  }
+  for (const value of [...values]) {
+    const expanded = expandHome(value);
+    if (expanded) values.add(expanded);
+    // A trailing slash never keeps the path itself visible.
+    if (value.length > 1 && value.endsWith('/')) values.add(value.replace(/\/+$/, ''));
+  }
   const snapshots = db.prepare(`
     SELECT launch_snapshot AS snapshot FROM work_attempts WHERE launch_snapshot IS NOT NULL
     UNION ALL SELECT snapshot FROM launch_snapshots
@@ -84,6 +103,19 @@ function privateValues(): string[] {
     .flatMap(([, value]) => [value as string, ...(value as string).split(/[\s,=]+/)])
     .filter(value => value.length >= 8);
   return [...new Set([...configured, ...credentials])].sort((a, b) => b.length - a.length);
+}
+
+function expandHome(value: string): string | null {
+  if (value === '~') return os.homedir();
+  return value.startsWith('~/') ? `${os.homedir()}/${value.slice(2)}` : null;
+}
+
+// Any absolute path under the user's home directory, up to the next
+// whitespace, quote, or bracket: what a runtime prints for its cwd.
+function homePathPattern(): RegExp | null {
+  const home = os.homedir().replace(/\/+$/, '');
+  if (home.length < 4) return null;
+  return new RegExp(`${escapeRegExp(home)}(?=$|[/\\s"'\`)\\]}>,;:])[^\\s"'\`)\\]}>,;]*`, 'g');
 }
 
 // A short id (under SHORT_ID) would rewrite unrelated text as a substring, so
@@ -107,7 +139,11 @@ export interface Redactor {
 export function serviceRedactor(): Redactor {
   const ids = privateIds();
   const values = privateValues();
-  const text = (value: string) => redactAll(redactAll(value, ids, '[redacted runtime id]'), values, '[redacted]');
+  const home = homePathPattern();
+  const text = (value: string) => {
+    const redacted = redactAll(redactAll(value, ids, '[redacted runtime id]'), values, '[redacted]');
+    return home ? redacted.replace(home, '[redacted]') : redacted;
+  };
   const deep = (value: unknown, key: string | null): unknown => {
     if (typeof value === 'string') return key !== null && REFERENCE_KEY.test(key) ? value : text(value);
     if (Array.isArray(value)) return value.map(item => deep(item, null));
