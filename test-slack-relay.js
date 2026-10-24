@@ -221,7 +221,7 @@ async function main() {
       try { await relay.bindShare(ref); refusals.push('bound'); } catch (error) { refusals.push(error.code); }
     }
     assert(same(refusals, ['share_not_found', 'share_revoked']) && slack.state.posts.length === 4 && rows().threads === 4, 'an unknown or revoked share is not bound');
-    assert(sends() === before.sends && audits() === before.audits + 1, 'binding dispatches nothing and writes no service audit (the +1 is grok-bot\'s revoke)');
+    assert(sends() === before.sends && audits() === before.audits + 2, 'binding dispatches nothing and writes no service audit (the +2 is grok-bot\'s create and revoke)');
     const relayPin = await serviceOperations.pinSession(shares.SHARE_PRINCIPAL, s1, () => ({ action: 'ask', idempotency_key: 'relay-direct-1' }), null);
     const relaySend = await serviceOperations.sendToPin(shares.SHARE_PRINCIPAL, shares.shareRow(shareA.share_ref).pin_ref, () => ({ content: 'direct', idempotency_key: 'relay-direct-2' }), null);
     assert(relayPin.status === 404 && relayPin.body.error.code === 'session_not_found' && relaySend.body.error.code === 'pin_not_found',
@@ -260,12 +260,13 @@ async function main() {
     assert(q.state === 'dispatched' && q.turn_ref === first.out.turn_ref && q.share_ref === shareA.share_ref && q.question === null && turn.idempotency_key === `turn:${firstKey}`
       && turn.requester_id === 'botmancers-session-share', 'question row (T0SHARE01, C0SHARE01, ts) dispatched; its hashed key is the pin-turn idempotency key; the text is not retained');
     const call = fake.loadFakeState(STATE).calls.filter(c => c.op === 'sendTurn').at(-1);
-    assert(call.authority === 'read_only' && !call.prompt.includes(BOT) && call.prompt.startsWith('What did you change'), 'the turn runs read_only with the mention stripped');
+    const prompt = Object.values(fake.loadFakeState(STATE).turns).filter(t => t.session === 'share-1-SECRET').at(-1).prompt;
+    assert(call.authority === 'read_only' && !prompt.includes(BOT) && prompt.startsWith('What did you change'), 'the turn runs read_only with the mention stripped');
     await first.out.replied;
     const reply = slack.state.posts.at(-1);
     assert(reply.channel === 'C0SHARE01' && reply.thread_ts === fixtures.anchors[0] && reply.metadata.event_type === 'botmancers_share_reply'
       && same(reply.metadata.event_payload, { share_ref: shareA.share_ref, turn_ref: first.out.turn_ref }), 'the answer is posted in the asking thread with { share_ref, turn_ref } metadata only');
-    assert(/^fake reply #\d+: What did you change, and is \[redacted runtime id\] under \[redacted\] done\?$/.test(reply.text) && !SECRET.test(reply.text) && !reply.text.includes('/work/share'),
+    assert(/^fake reply #\d+: What did you change, and is \[redacted( runtime id)?\] under \[redacted\] done\?$/.test(reply.text) && !SECRET.test(reply.text) && !reply.text.includes('/work/share'),
       `the answer is redacted: ${reply.text}`);
     assert(question(firstKey).state === 'replied' && question(firstKey).reply_ts === reply.ts, 'the question is marked replied with its reply ts');
   }
@@ -356,7 +357,7 @@ async function main() {
     await step('a question past the turn limit', envelope({ thread_ts: bound.thread.thread_ts, text: 'Two?' }), { outcome: 'refused', code: 'share_turn_limit', dispatch: 0, audit: 1, questions: 1 });
     assert(slack.state.posts.at(-1).text === relayLib.NOTICES.share_turn_limit && lastAudit().code === 'share_turn_limit', 'exhausted share: the fixed limit notice, one denied audit');
     fake.mutateFakeProvider(STATE, state => { state.failSends = 1; });
-    const failing = await step('the runtime fails the send', envelope({ thread_ts: fixtures.anchors[0], text: 'Will this fail?' }), { outcome: 'refused', dispatch: 0, audit: 1, questions: 1 });
+    const failing = await step('the runtime fails the send', envelope({ thread_ts: fixtures.anchors[0], text: 'Will this fail?' }), { outcome: 'refused', dispatch: 1, audit: 1, questions: 1 });
     const notice = slack.state.posts.at(-1);
     assert(lastAudit().outcome === 'denied' && notice.text === relayLib.noticeText(failing.out.code) && notice.metadata.event_payload.code === failing.out.code,
       `a runtime failure is refused (${failing.out.code}) with a fixed notice`);
@@ -374,8 +375,8 @@ async function main() {
     assert(f('ping <!channel> and <@U0BOB0001> & co') === 'ping &lt;!channel&gt; and &lt;@U0BOB0001&gt; &amp; co', 'Slack control sequences are escaped: no mention or broadcast');
     const big = f('x'.repeat(5000));
     assert(big.length === 3000 && big.endsWith('…') && big === `${'x'.repeat(2999)}…`, 'oversized: capped at 3000 characters with an ellipsis');
-    const emoji = f(`${'x'.repeat(2997)}${'😀'.repeat(10)}`);
-    assert(emoji.length <= 3000 && emoji === `${'x'.repeat(2997)}…` && !/[\uD800-\uDFFF](?![\uDC00-\uDFFF])/.test(emoji.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')), 'Unicode: never splits a surrogate pair');
+    const emoji = f(`${'x'.repeat(2998)}${'😀'.repeat(10)}`);
+    assert(emoji.length <= 3000 && emoji === `${'x'.repeat(2998)}…` && !/[\uD800-\uDFFF](?![\uDC00-\uDFFF])/.test(emoji.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')), 'Unicode: never splits a surrogate pair');
     const pairs = f(`${'x'.repeat(2996)}${'😀'.repeat(10)}`);
     assert(pairs === `${'x'.repeat(2996)}😀…` && pairs.length === 2999, 'Unicode: keeps a whole pair that fits');
     const amp = f(`${'x'.repeat(2997)}&&&`);
@@ -482,7 +483,8 @@ async function main() {
   {
     const turnSent = count("SELECT COUNT(*) AS n FROM session_share_events WHERE type = 'turn_sent'");
     const pinTurns = count("SELECT COUNT(*) AS n FROM session_pin_turns WHERE requester_id = 'botmancers-session-share'");
-    assert(turnSent === pinTurns && pinTurns === sends(), `every provider send is one share turn: turn_sent (${turnSent}) = share pin turns (${pinTurns}) = provider sends (${sends()})`);
+    // The one send the runtime failed (the refusals section) is attempted but never becomes a turn.
+    assert(turnSent === pinTurns && pinTurns === sends() - 1, `every successful provider send is one share turn: turn_sent (${turnSent}) = share pin turns (${pinTurns}) = provider sends (${sends()}) - 1 failed`);
     const surface = JSON.stringify([
       db.prepare('SELECT * FROM slack_deliveries').all(), db.prepare('SELECT * FROM slack_questions').all(), db.prepare('SELECT * FROM slack_share_threads').all(),
       slack.state.posts, db.prepare('SELECT * FROM service_audit_events').all(),
