@@ -1,0 +1,90 @@
+{
+  "contract": "botmancers.session-share.v0 (frozen sketch, NOT-514)",
+  "status": "Frozen for the implementation tickets in docs/design/2026-10-24-session-share-preflight.md. The schema is not implemented by NOT-514.",
+  "universal_input": "session_ref (the opaque Botmancers ref from botmancers_list_sessions / GET /api/v0/agents/{agentId}/sessions). Never a provider id, cwd, title, activity time, or 'latest'.",
+  "share": {
+    "fields": {
+      "share_ref": "string, opaque 'shr_' ref minted by Botmancers",
+      "agent_id": "string, the Agent owning session_ref (resolved, never chosen)",
+      "session_ref": "string, exactly one session; immutable",
+      "authority": "'ask' (read-only Ask turns only; fixed)",
+      "state": "'active' | 'expired' | 'revoked' (expired is computed from expires_at)",
+      "audience": "{ kind: 'slack', team_id, channel_id } on the owner's allowlist",
+      "created_via": "'session_ref' | 'current_session'",
+      "created_at": "epoch ms",
+      "expires_at": "epoch ms = created_at + ttl_seconds * 1000",
+      "revoked_at": "epoch ms | null",
+      "max_turns": "integer 1-100 (default 20)",
+      "turns_used": "integer"
+    },
+    "never_present": ["provider_session_id", "external_session_id", "thread_id", "chat_id", "cwd", "workspace", "deck", "runtime", "model", "credential", "prompt", "transcript", "slack token"]
+  },
+  "limits": { "ttl_seconds": { "min": 300, "default": 3600, "max": 86400 }, "max_turns": { "default": 20, "max": 100 }, "question_chars": 4000, "reply_chars": 3000 },
+  "capabilities": {
+    "shares:create": "New grant capability (service-grants.json), per Agent. Create, get, list, revoke the caller's own shares of that Agent's sessions. Never implied by sessions:message; grants no Ask itself.",
+    "share_from_turn": "Not a grant: the owner's per-Agent opt-in in <BOTMANCERS_HOME>/config/session-shares.json (default off). Botmancers mints a session context for a launch of that Agent only while it is on; it is re-read on every call, so turning it off revokes every live context.",
+    "shares:ask": "Audit-only capability name for a share-authorized Ask. Not grantable: the share is the authority."
+  },
+  "operations": [
+    { "rest": "POST /api/v0/sessions/{session_ref}/shares", "mcp": "botmancers_create_share", "capability": "shares:create", "audit_operation": "shares.create",
+      "body": { "audience": "required", "ttl_seconds": "optional", "max_turns": "optional", "agent_id": "optional expectation check", "idempotency_key": "required (or Idempotency-Key header)" },
+      "responses": { "201": "{ share, replayed: false }", "200": "{ share, replayed: true } exact replay" } },
+    { "rest": "POST /api/v0/shares/current", "mcp": "botmancers_share_current_session", "capability": "share_from_turn (owner opt-in) + live minted context", "audit_operation": "shares.create",
+      "principal": "reserved service:botmancers-session-context, authenticated only by the context (never a BOTMANCERS_SERVICE_TOKENS id or grants entry; refused in the grants document like botmancers-exchanges). A granted service calling it gets invalid_request.",
+      "context": "header Botmancers-Session-Context: <bmsc_ token> set by the client's MCP entry Botmancers wrote for this turn; never a tool argument, never shown to the model",
+      "body": { "audience": "required", "ttl_seconds": "optional", "max_turns": "optional", "agent_id": "optional expectation check", "idempotency_key": "required" },
+      "responses": { "201": "{ share, replayed: false }", "200": "replay", "409": "session_context_required { reason }" } },
+    { "rest": "GET /api/v0/shares/{share_ref}", "mcp": "botmancers_get_share", "capability": "shares:create", "audit_operation": "shares.read" },
+    { "rest": "GET /api/v0/shares?session_ref&state&cursor&limit", "mcp": "botmancers_list_shares", "capability": "shares:create", "audit_operation": "shares.list",
+      "list": "NOT-499 list rules: { items, next_cursor }, default 20, max 100, newest first" },
+    { "rest": "POST /api/v0/shares/{share_ref}/revoke", "mcp": "botmancers_revoke_share", "capability": "shares:create", "audit_operation": "shares.revoke",
+      "responses": { "200": "{ share } (idempotent; revoking a revoked share returns it unchanged)" } },
+    { "rest": "GET /api/shares, POST /api/shares/{share_ref}/revoke (owner UI boundary, loopback)", "mcp": null, "capability": "owner", "audit_operation": "owner surface; not a service call" }
+  ],
+  "internal_operation": {
+    "askShare": "SessionShare.ask(share_ref, question, message_key): the Slack relay's only entry. Checks state/expiry/turn limit/in-flight, then NOT-507 sendPinTurn on the share's ask pin with idempotency key = message_key. Audited as operation shares.ask, capability shares:ask, target the session_ref. Not a public route or MCP tool."
+  },
+  "context": {
+    "token": "bmsc_ + 43 base64url chars (256 random bits); stored only as sha256; bound to (agent_id, session_ref, launch): a Claude turn process, or a Codex thread load in Botmancers' app-server (a loaded thread keeps its first MCP config: probe resume_same_process). Valid while that launch is live and a Botmancers turn on session_ref is running, at most 15 minutes after the last such turn; revoked when the launch ends",
+    "reasons": ["missing", "ambiguous", "unknown", "stale", "revoked", "unsupported"],
+    "reason_meaning": {
+      "missing": "no Botmancers-Session-Context header",
+      "ambiguous": "more than one context presented (repeated or comma-joined header)",
+      "unknown": "well-formed token Botmancers never minted (or already purged)",
+      "stale": "the bound turn is terminal, or the token expired",
+      "revoked": "the owner withdrew it: share_from_turn is off for the Agent, or the context itself was revoked",
+      "unsupported": "a value that is not a minted context (a provider id such as CLAUDE_CODE_SESSION_ID, a Cursor chat id, a path); never echoed"
+    }
+  },
+  "errors": [
+    { "code": "invalid_request", "status": 400 },
+    { "code": "authority_not_allowed", "status": 403, "when": "any heuristic or provider selector in the body: provider_session_id, external_session_id, claude_session_id, codex_thread_id, cursor_chat_id, cwd, workspace, latest, most_recent, title, title_match, active_since" },
+    { "code": "session_context_required", "status": 409, "recovery": "choose_session", "when": "share_current_session without exactly one live minted context; body adds reason" },
+    { "code": "session_not_found", "status": 404, "when": "unknown, not granted, or another Agent than agent_id (NOT-499 rule: identical answers)" },
+    { "code": "session_ended", "status": 409, "when": "NOT-507 sessionActions: the session cannot take an Ask" },
+    { "code": "session_missing", "status": 410, "when": "NOT-507" },
+    { "code": "session_not_resumable", "status": 409, "when": "NOT-507" },
+    { "code": "source_session_busy", "status": 409, "when": "NOT-507: another requester's turn is running in the session" },
+    { "code": "share_not_found", "status": 404, "when": "unknown or not visible to the caller" },
+    { "code": "share_expired", "status": 410 },
+    { "code": "share_revoked", "status": 410 },
+    { "code": "share_turn_in_progress", "status": 409, "when": "this share's previous question is still running" },
+    { "code": "share_turn_limit", "status": 409 },
+    { "code": "audience_not_allowed", "status": 403, "when": "audience not on the owner's allowlist" },
+    { "code": "idempotency_conflict", "status": 409 }
+  ],
+  "traceability": [
+    { "item": "session_ref, Agent resolution", "owner": "existing: lib/session-pins sessionOwner, lib/provider-sessions (NOT-503)" },
+    { "item": "share eligibility (ended/missing/not resumable/busy)", "owner": "existing: lib/session-actions via lib/session-pins createPin (NOT-507)" },
+    { "item": "Ask dispatch on exactly one session, turn idempotency, reply text", "owner": "existing: lib/session-pins createPin/sendPinTurn/readPin (NOT-507)" },
+    { "item": "service principal auth, rate limit, audited call wrapper", "owner": "existing: lib/service-api-http serveAs (NOT-499)" },
+    { "item": "audit rows", "owner": "existing: lib/service-audit (NOT-499); target_kind 'session', new operation words shares.*" },
+    { "item": "redaction of answers and views", "owner": "existing: lib/service-redaction serviceRedactor (NOT-499)" },
+    { "item": "capability shares:create; reserved principal botmancers-session-context", "owner": "existing document lib/service-grants (one vocabulary word, one reserved id)" },
+    { "item": "audience allowlist and share_from_turn opt-in", "owner": "NEW: SessionShare config document <BOTMANCERS_HOME>/config/session-shares.json (owner-only, 0600, same fail-closed rules as service-grants.json)" },
+    { "item": "MCP tool schemas", "owner": "existing: lib/mcp-bridge-v2 + docs/contracts/mcp-bridge-v2.tools.json (five added tools)" },
+    { "item": "share rows, events, expiry, revoke, turn limit, in-flight check, audience allowlist", "owner": "NEW: SessionShare (lib/session-shares.ts)" },
+    { "item": "minted session context (mint/resolve/stale/revoke)", "owner": "NEW: SessionShare (lib/session-shares.ts) + launch injection in lib/claude-session-provider.ts and lib/codex-session-provider.ts" },
+    { "item": "Slack normalization, delivery/event/question ledger, thread routing, reply posting", "owner": "NEW: Slack relay (lib/slack-relay*.ts)" }
+  ]
+}

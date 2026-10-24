@@ -13,6 +13,9 @@ on:
       - 'package-lock.json'
       - 'test-*.js'
       - 'test-support/**'
+      - 'docs/contracts/**'
+      - 'docs/evidence/NOT-514/**'
+      - 'scripts/not-514-*'
       - '.github/workflows/*botmancers.yml'
   workflow_dispatch:
 
@@ -84,6 +87,10 @@ jobs:
           npm run test:exchange-ui
           npm run test:session-catalog
           npm --prefix packages/mcp-server run check:skill
+      - name: Session share preflight fixtures (NOT-514)
+        working-directory: .
+        run: |
+          npm run test:session-share-preflight
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

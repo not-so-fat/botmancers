@@ -1,0 +1,83 @@
+{
+  "ticket": "NOT-514",
+  "head": "8e19aa24e51aeb4a26bf4d9a057ae2012daadc3b",
+  "head_note": "The ticket names release/0.5.1 at 2bcf469; that commit is not in this clone. Evidence is rebased to the Builder worktree HEAD (Release botmancers 0.5.1 #112 + workflow controls #113).",
+  "probed_at": "2026-10-24",
+  "host": "macOS (Darwin 27.0.0), Node from PATH",
+  "legend": {
+    "classification": "supported | supported_when_botmancers_launches | unsupported (for the share_current_session convenience; the explicit session_ref path is supported for every client)",
+    "share_current": "exact = resolves to exactly one session_ref; fail_closed = session_context_required",
+    "evidence": "probe:<script>#<case> (docs/evidence/NOT-514/probe-results.md) | doc:<source> | code:<path> | inference"
+  },
+  "clients": {
+    "claude_code": {
+      "version": "2.1.309 (Claude Code)",
+      "classification": "supported_when_botmancers_launches",
+      "ambient_identity_adopted": false,
+      "ambient_signal": "CLAUDE_CODE_SESSION_ID in stdio MCP subprocesses (documented); also present in this Claude Code session's Bash tool subprocess",
+      "why_not_adopted": [
+        "implicit resume (--continue) hands the MCP subprocess an id that is not the conversation that was continued (probe)",
+        "the value is fixed at MCP spawn; documented lifecycle caveats around /clear and implicit resume",
+        "it reaches stdio subprocesses only; the Botmancers bridge is Streamable HTTP",
+        "translating it would send a raw provider session id across the MCP/service boundary"
+      ],
+      "binding": {
+        "mechanism": "botmancers_minted_context",
+        "delivery": "per-turn --mcp-config file (0600, provider state dir) with an http entry to Botmancers' /api/v0/mcp whose header Botmancers-Session-Context is '${BOTMANCERS_SESSION_CONTEXT}'; the turn's process env holds the token, never argv",
+        "bound_to": "(agent_id, session_ref, provider turn ref); valid while that turn process runs, at most 15 minutes",
+        "evidence": "probe:not-514-claude-mcp-probe#new_http_header_context (header reached every MCP request); code:lib/claude-session-provider.ts claudeTurnArgs (--strict-mcp-config with --session-id/--resume, no MCP entry today)"
+      },
+      "cases": {
+        "new_session": { "ambient": "present, equals the --session-id Botmancers chose", "share_current": "exact", "evidence": "probe:not-514-claude-mcp-probe#new" },
+        "exact_resume": { "ambient": "present, equals the --resume id", "share_current": "exact", "evidence": "probe:not-514-claude-mcp-probe#resume" },
+        "implicit_resume": { "ambient": "present but a different id than the continued conversation (env_matches_S=false, result_matches_S=true)", "share_current": "fail_closed", "evidence": "probe:not-514-claude-mcp-probe#continue; code:lib/claude-session-provider.ts never launches --continue" },
+        "clear_reset": { "ambient": "not observable headlessly; documented caveat: the spawn-time value can outlive /clear", "share_current": "fail_closed", "evidence": "doc:Claude Code CLAUDE_CODE_SESSION_ID lifecycle caveat; inference: a Botmancers -p turn has no /clear, so only non-Botmancers sessions can hit it" },
+        "client_restart": { "ambient": "each Botmancers turn is a new claude process with a new MCP spawn", "share_current": "exact", "evidence": "code:lib/claude-session-provider.ts one detached process per turn; the previous turn's context is stale" },
+        "not_botmancers_launched": { "ambient": "present (UUID-shaped) but never accepted; no minted context exists", "share_current": "fail_closed", "evidence": "probe:not-514-identity-probe env (this session); model test: an ambient UUID in the header is reason=unsupported" },
+        "fork": { "ambient": "present, equals the new forked id (consistent)", "share_current": "exact", "evidence": "probe:not-514-claude-mcp-probe#fork; Botmancers does not fork today" }
+      }
+    },
+    "codex": {
+      "version": "codex-cli 0.157.1",
+      "classification": "supported_when_botmancers_launches",
+      "ambient_identity_adopted": false,
+      "ambient_signal": "none: no CODEX_THREAD_ID / CODEX_SESSION_ID in MCP subprocesses (probe); the thread id appears only in structured output (thread.started, thread/start result)",
+      "why_not_adopted": ["there is no ambient caller identity to adopt"],
+      "binding": {
+        "mechanism": "botmancers_minted_context",
+        "delivery": "app-server: ThreadStartParams.config / ThreadResumeParams.config = { mcp_servers: { botmancers: { url: <Botmancers /api/v0/mcp>, http_headers: { Botmancers-Session-Context: <token> } } } } on the call that loads the thread into Botmancers' app-server; exec fallback: -c mcp_servers.botmancers.* per process",
+        "bound_to": "(agent_id, session_ref, thread load in this app-server process); valid while a Botmancers turn on that session_ref is running; revoked when the thread is unloaded or the app-server exits",
+        "evidence": "probe:not-514-codex-mcp-probe#app_thread_http_header_context (two threads, one process, each saw only its own header); #resume_new_process (new context seen, old not); #resume_same_process (a second resume of a loaded thread does NOT respawn MCP, so the context must be per thread load, not per turn); #exec (per-run override delivered); schema: codex app-server generate-json-schema v2 ThreadStartParams/ThreadResumeParams.config"
+      },
+      "cases": {
+        "new_session": { "ambient": "none", "share_current": "exact", "evidence": "probe:not-514-codex-mcp-probe#app_thread" },
+        "exact_resume": { "ambient": "none", "share_current": "exact", "evidence": "probe:not-514-codex-mcp-probe#resume_new_process" },
+        "implicit_resume": { "ambient": "none; `codex resume --last` / `exec resume --last` pick the most recent thread", "share_current": "fail_closed", "evidence": "codex --help (resume --last); code:lib/codex-session-provider.ts never resumes --last" },
+        "clear_reset": { "ambient": "none; a new thread in the TUI is a new thread without a minted context", "share_current": "fail_closed", "evidence": "inference: only Botmancers-loaded threads carry a context" },
+        "client_restart": { "ambient": "none; the app-server restart reloads the thread with a newly minted context", "share_current": "exact", "evidence": "probe:not-514-codex-mcp-probe#resume_new_process" },
+        "not_botmancers_launched": { "ambient": "none", "share_current": "fail_closed", "evidence": "probe:not-514-codex-mcp-probe#exec ambient_thread_env all false" }
+      }
+    },
+    "cursor": {
+      "version": "2026.10.16-e3cb207",
+      "classification": "unsupported",
+      "ambient_identity_adopted": false,
+      "ambient_signal": "session_id only in stream-json output (system/init); not documented as MCP caller identity",
+      "why_not_adopted": [
+        "no per-invocation MCP configuration (cursor-agent --help lists --approve-mcps only)",
+        "the only seams are files: <workspace>/.cursor/mcp.json (inside the user's repository) or ~/.cursor/mcp.json (shared by every chat), neither per session",
+        "isolated probe exits at the login check before loading MCP, so env expansion in mcp.json was not observed offline"
+      ],
+      "binding": { "mechanism": "none", "delivery": null, "bound_to": null, "evidence": "probe:not-514-cursor-mcp-probe#print_project_mcp_json (not_logged_in, mcp_spawned=false); cursor-agent --help" },
+      "upgrade_trigger": "Cursor ships a per-invocation MCP config flag or a documented per-call caller identity, and scripts/not-514-cursor-mcp-probe.js --home shows a per-process context reaching the MCP server",
+      "cases": {
+        "new_session": { "ambient": "chat id in stream-json output only", "share_current": "fail_closed", "evidence": "code:lib/cursor-session-provider.ts create-chat; probe:not-514-cursor-mcp-probe" },
+        "exact_resume": { "ambient": "chat id in output only", "share_current": "fail_closed", "evidence": "code:lib/cursor-session-provider.ts --resume <chat>" },
+        "implicit_resume": { "ambient": "`--continue` / `resume` pick the latest chat", "share_current": "fail_closed", "evidence": "cursor-agent --help" },
+        "clear_reset": { "ambient": "not observable", "share_current": "fail_closed", "evidence": "inference" },
+        "client_restart": { "ambient": "not observable", "share_current": "fail_closed", "evidence": "inference" },
+        "not_botmancers_launched": { "ambient": "IDE chat tabs are not addressable (non-goal)", "share_current": "fail_closed", "evidence": "docs/providers/cursor.md" }
+      }
+    }
+  }
+}
