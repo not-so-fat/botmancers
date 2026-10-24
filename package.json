@@ -84,6 +84,7 @@
     "test:session-share-preflight": "node test-session-share-preflight.js",
     "test:session-shares": "node test-session-shares.js",
     "test:session-context": "node test-session-context.js",
+    "test:slack-relay": "node test-slack-relay.js",
     "probe:not-514-claude": "node scripts/not-514-claude-mcp-probe.js",
     "probe:not-514-codex": "node scripts/not-514-codex-mcp-probe.js",
     "probe:not-514-cursor": "node scripts/not-514-cursor-mcp-probe.js",
