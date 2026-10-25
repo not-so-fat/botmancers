@@ -3059,3 +3059,228 @@ button.avatar-pic {
     scroll-behavior: auto;
   }
 }
+
+/* NOT-519: the Slack share section of a Sessions row and Session sharing on
+   Agent Config. Reuses the session-row type scale, tags, hairlines, and the
+   accent; revoked/ended states read muted, revoke uses the danger role. */
+.session-shares {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--hairline);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.session-shares-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.session-shares-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--ink);
+}
+
+.session-share-note,
+.session-share-unavailable {
+  margin: 6px 0 0;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+.session-share-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.session-share {
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--field);
+  overflow-wrap: anywhere;
+}
+
+.session-share.is-expired,
+.session-share.is-revoked {
+  border-left-color: var(--hairline);
+  color: var(--ink-muted);
+}
+
+.session-share.is-exhausted,
+.session-share.is-recovering {
+  border-left-color: #e0a83e;
+}
+
+.session-share-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.session-share-head .manage-tag {
+  margin-left: 0;
+}
+
+.session-share-status.is-active,
+.session-share-status.is-answering {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.session-share-status.is-exhausted,
+.session-share-status.is-recovering {
+  color: #e0a83e;
+  border-color: #e0a83e;
+}
+
+.session-share-audience {
+  color: var(--ink);
+}
+
+.session-share-meta {
+  margin-top: 4px;
+}
+
+.session-share-meta dt {
+  flex: none;
+  overflow-wrap: normal;
+}
+
+.session-share .session-actions .pin-word {
+  text-align: left;
+}
+
+.session-share-ref {
+  font-family: var(--mono);
+  font-size: 11px;
+  user-select: all;
+}
+
+.session-share-revoke {
+  border-color: var(--danger);
+}
+
+.session-share-confirm {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+}
+
+.session-share-confirm p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.session-share-form {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.session-share-form label {
+  margin-top: 4px;
+  color: var(--ink-muted);
+}
+
+.session-share-form select,
+.session-share-form input {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--composer);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 6px 8px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.session-share-form [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.session-share-form select:focus-visible,
+.session-share-form input:focus-visible,
+.sessions-drawer a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.session-action:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.share-policy-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-policy-hint {
+  margin: 4px 0 0 24px;
+}
+
+.share-policy-sub {
+  margin: 20px 0 4px;
+  font-size: 14px;
+}
+
+.share-policy-empty {
+  margin: 8px 0;
+}
+
+.share-policy-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.share-policy-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: 13px;
+}
+
+.share-policy-remove {
+  margin-left: auto;
+}
+
+.share-policy-add {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.share-policy-add label {
+  display: block;
+  margin-bottom: 4px;
+}
+
+@media (max-width: 640px) {
+  .share-policy-add {
+    grid-template-columns: 1fr;
+  }
+}

@@ -80,7 +80,9 @@ export async function waitFor(predicate, timeoutMs = 10_000) {
 // The fake core. FAKE_APP_MODE (passed through the supervisor's environment):
 // ok | exit (dies at startup) | reject-mcp (refuses the bridge's service
 // token). FAKE_APP_VERSION overrides the reported version. It dumps the
-// environment it received to <home>/logs/fake-core-env.json.
+// environment it received to <home>/logs/fake-core-env.json, appends every
+// request line to <home>/logs/fake-core-requests.log, and reports the Slack
+// state in <home>/run/fake-slack.json (re-read per request) under "slack".
 const FAKE_SERVER = String.raw`'use strict';
 const http = require('http');
 const crypto = require('crypto');
@@ -102,8 +104,12 @@ const server = http.createServer((req, res) => {
   const chunks = [];
   req.on('data', chunk => chunks.push(chunk));
   req.on('end', () => {
+    const home = process.env.BOTMANCERS_HOME;
+    if (home) { try { fs.appendFileSync(path.join(home, 'logs', 'fake-core-requests.log'), req.method + ' ' + req.url + '\n'); } catch {} }
     if (req.url === '/api/health') {
-      return json(res, 200, { status: 'ok', service: 'botmancers-core', version: process.env.FAKE_APP_VERSION || info.version, commit: info.commit, engine: 'ok', home: process.env.BOTMANCERS_HOME || null });
+      let slack;
+      try { slack = JSON.parse(fs.readFileSync(path.join(home, 'run', 'fake-slack.json'), 'utf8')); } catch {}
+      return json(res, 200, { status: 'ok', service: 'botmancers-core', version: process.env.FAKE_APP_VERSION || info.version, commit: info.commit, engine: 'ok', home: home || null, ...(slack ? { slack } : {}) });
     }
     if (req.url !== '/api/v0/mcp' || req.method !== 'POST') return json(res, 404, { error: { code: 'not_found', message: 'Not found' } });
     const bearer = (/^Bearer (\S+)$/.exec(req.headers.authorization || '') || [])[1] || '';

@@ -561,6 +561,50 @@ export function revokeShare(shareRef: string, options: { onCommit?: (row: ShareR
 }
 
 // ---------------------------------------------------------------------
+// NOT-519: expiry. An expired share already refuses every question
+// (shareState); the sweeper also detaches its Ask pin, so nothing can be
+// sent on it by any path, and records that once in the service audit. It
+// never changes the share row or its events (the share stays "expired", not
+// "revoked"), never touches an active or revoked share, and is idempotent:
+// a share whose pin is detached is not selected again. A turn already
+// running when its share expires still finishes and is answered (a detached
+// pin keeps its turns readable). Run at server start and periodically, so
+// shares that expired while Botmancers was stopped are swept on restart.
+
+export function sweepExpiredShares(): { swept: string[] } {
+  const now = clock();
+  const due = db.prepare(`
+    SELECT s.id FROM session_shares s JOIN session_pins p ON p.id = s.pin_ref
+    WHERE s.state = 'active' AND s.expires_at <= ? AND p.state = 'attached'
+    ORDER BY s.expires_at, s.id LIMIT 500
+  `).all(now) as { id: string }[];
+  const swept: string[] = [];
+  for (const { id } of due) {
+    db.transaction(() => {
+      const row = shareRow(id);
+      if (!row || shareState(row, now) !== 'expired') return;
+      const { replayed } = detachPin(SHARE_PRINCIPAL, row.pin_ref, { now });
+      if (replayed) return;
+      serviceAudit.append({
+        principal: SHARE_PRINCIPAL, operation: 'shares.expire', capability: 'shares:ask', targetKind: 'session',
+        targetRef: row.session_ref, agentId: row.agent_id, outcome: 'allowed', code: 'expired',
+      });
+      swept.push(id);
+    }).immediate();
+  }
+  return { swept };
+}
+
+// NOT-519: what a share's in-flight markers mean for the owner: a question
+// being answered now, or a claim an earlier Botmancers process made and
+// never sent (freed by the next question, see settleInflight).
+export function shareInflight(row: ShareRow): 'none' | 'answering' | 'recovering' {
+  if (row.inflight_turn_ref) return 'answering';
+  if (row.inflight_key) return row.inflight_owner === processId && liveClaims.has(row.id) ? 'answering' : 'recovering';
+  return 'none';
+}
+
+// ---------------------------------------------------------------------
 // Asking through a share (internal; the Slack relay's only entry).
 
 export interface ShareTurn {

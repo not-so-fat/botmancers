@@ -7,7 +7,8 @@ Status: NOT-518. Code: `lib/slack-transport.ts` (the four-method
 (with `test-support/fake-slack-server.js`). Operator smoke:
 `npm run smoke:slack-relay`. Design:
 [`design/2026-10-24-session-share-preflight.md`](design/2026-10-24-session-share-preflight.md)
-§5. Relay: [`slack-relay.md`](slack-relay.md).
+§5. Relay: [`slack-relay.md`](slack-relay.md). Owner lifecycle and the
+`botmancers doctor` Slack line: [`session-shares.md`](session-shares.md).
 
 The relay (NOT-516) depends only on `SlackTransport`. This module supplies the
 production implementation and runs it inside the core server: no Bolt, no

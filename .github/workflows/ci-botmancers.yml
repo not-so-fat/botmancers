@@ -118,6 +118,11 @@ jobs:
           npm run test:slack-transport
           npm run test:slack-relay
           npm run test:session-shares
+      - name: Owner share lifecycle, policy, expiry sweeper, and Slack revoke/expiry end to end (NOT-519)
+        working-directory: .
+        run: |
+          npm run test:session-share-owner
+          npm run test:session-share-ui
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

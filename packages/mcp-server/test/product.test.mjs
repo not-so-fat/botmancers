@@ -511,6 +511,64 @@ test('doctor distinguishes missing Hermes configuration and unavailable Agent De
   assertNoTokens(s.home, bare.stdout, unreachable.stdout, reachable.stdout);
 });
 
+// NOT-519: the Slack line reads the running core's GET /api/health only and
+// never prints a Slack credential.
+test('doctor reports Slack disabled, misconfigured, connecting, connected, and reconnecting without a mutating probe or a token', async t => {
+  // Assembled at run time so no committed file holds a token-shaped string.
+  const SENTINEL_APP = ['xapp', '1', 'A0NOT519', 'SENTINELAPP', '0123456789abcdef'].join('-');
+  const SENTINEL_BOT = ['xoxb', '519', 'SENTINELBOT', '0123456789abcdef'].join('-');
+  const s = await sandbox(t);
+  assert.equal((await s.run(['setup'])).code, 0);
+  const slackLine = out => (/^ {2}(\w+) +slack +(.*)$/m.exec(out) ?? []).slice(1).join(' ');
+  const outputs = [];
+  const doctor = async (extra = {}) => {
+    const result = await s.run(['doctor'], { PATH: '/usr/bin:/bin', ...extra });
+    outputs.push(result.stdout, result.stderr);
+    return result;
+  };
+
+  // Stopped: only presence of the credentials is reported.
+  assert.match(slackLine((await doctor()).stdout), /^info Slack relay disabled \(no Slack tokens configured\)/);
+  assert.match(slackLine((await doctor({ BOTMANCERS_SLACK_APP_TOKEN: SENTINEL_APP })).stdout), /^warn Slack relay misconfigured \(bot_token_missing\); set BOTMANCERS_SLACK_BOT_TOKEN/);
+  const coreEnv = join(s.home, 'config/core.env');
+  writeFileSync(coreEnv, `${readFileSync(coreEnv, 'utf8')}BOTMANCERS_SLACK_APP_TOKEN=${SENTINEL_APP}\nBOTMANCERS_SLACK_BOT_TOKEN=${SENTINEL_BOT}\n`);
+  const configured = await doctor();
+  assert.match(slackLine(configured.stdout), /^info Slack tokens are configured; the relay connects when botmancers starts\.$/);
+  assert.match(configured.stdout, /^result: ok/m, 'Slack never fails doctor');
+
+  // Running: the core's own state, one line per state.
+  assert.equal((await s.run(['start', '--daemon'])).code, 0);
+  const slackFile = join(s.home, 'run/fake-slack.json');
+  const requests = join(s.home, 'logs/fake-core-requests.log');
+  const cases = [
+    [{ state: 'disabled', reason: 'slack_tokens_absent', since: 1, connections: 0 }, /^info Slack relay disabled/],
+    [{ state: 'misconfigured', reason: 'share_config_no_audience', since: 1, connections: 0 }, /^warn Slack relay misconfigured \(share_config_no_audience\); add a Slack channel to the share allowlist/],
+    [{ state: 'misconfigured', reason: 'workspace_not_allowlisted', since: 1, connections: 0 }, /^warn Slack relay misconfigured \(workspace_not_allowlisted\)/],
+    [{ state: 'failed', reason: 'slack_auth_failed', since: 1, connections: 0 }, /^warn Slack relay failed \(slack_auth_failed\); Slack refused the bot token/],
+    [{ state: 'connecting', reason: null, since: 1, connections: 0 }, /^info Slack relay connecting to Socket Mode$/],
+    [{ state: 'connected', reason: null, since: 1, connections: 1 }, /^ok Slack relay connected over Socket Mode$/],
+    [{ state: 'reconnecting', reason: null, since: 1, connections: 3 }, /^warn Slack relay reconnecting to Socket Mode \(2 reconnects since start\)/],
+    [{ state: 'connected', reason: null, since: 1, connections: 2 }, /^ok Slack relay connected over Socket Mode \(1 reconnect since start\)$/],
+    // A reason the CLI does not know is never echoed as free text.
+    [{ state: 'misconfigured', reason: `leak ${SENTINEL_BOT}`, since: 1, connections: 0 }, /^warn Slack relay misconfigured$/],
+  ];
+  for (const [state, expected] of cases) {
+    writeFileSync(slackFile, JSON.stringify(state));
+    writeFileSync(requests, '');
+    const result = await doctor();
+    assert.match(slackLine(result.stdout), expected, JSON.stringify(state));
+    // Doctor reads the Slack state from GET /api/health; the only other
+    // request the core sees is the existing read-only bridge link probe
+    // (botmancers_health over /api/v0/mcp). Nothing reaches a share or Slack.
+    const lines = readFileSync(requests, 'utf8').split('\n').filter(Boolean);
+    assert.ok(lines.includes('GET /api/health'), 'doctor read the core health');
+    assert.ok(lines.every(line => line === 'GET /api/health' || line === 'POST /api/v0/mcp'), `doctor sent ${lines.join(', ')}`);
+  }
+  for (const output of outputs) {
+    assert.ok(!output.includes(SENTINEL_APP) && !output.includes(SENTINEL_BOT) && !output.includes('SENTINEL'), 'doctor printed a Slack token');
+  }
+});
+
 test('product commands reject unknown arguments with exit 2 and never echo values', async t => {
   const s = await sandbox(t);
   const unknown = await s.run(['start', '--bogus']);
