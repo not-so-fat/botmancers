@@ -7,7 +7,22 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-25
+
+### Fixed
+
+- The bridge now handles `SIGINT` and `SIGTERM` before it announces that it is
+  listening, so a signal sent as soon as that line appears exits cleanly
+  instead of killing the process. This race failed the 0.6.0 tag check on the
+  Linux release runner.
+
+### Changed
+
+- Includes the 0.6.0 and 0.5.1 changes (below), which were not published.
+
 ## [0.6.0] - 2026-10-25
+
+Not published; see 0.6.1.
 
 ### Added
 
@@ -38,7 +53,7 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [0.5.1] - 2026-10-19
 
-Not published; see 0.6.0.
+Not published; see 0.6.1.
 
 ### Changed
 
