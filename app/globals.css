@@ -3153,6 +3153,15 @@ button.avatar-pic {
   margin-top: 4px;
 }
 
+.session-share-meta dt {
+  flex: none;
+  overflow-wrap: normal;
+}
+
+.session-share .session-actions .pin-word {
+  text-align: left;
+}
+
 .session-share-ref {
   font-family: var(--mono);
   font-size: 11px;
