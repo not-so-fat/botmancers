@@ -229,6 +229,9 @@ Code: `lib/session-shares.ts` (store, configuration, `askShare`),
 `lib/service-api.ts` (create/get/list/revoke). Contract test:
 `npm run test:session-shares`. Design:
 [`design/2026-10-24-session-share-preflight.md`](design/2026-10-24-session-share-preflight.md).
+The owner's side (Sessions and Agent Config UI, owner routes, the policy
+editor, the expiry sweeper, `botmancers doctor`) is
+[`session-shares.md`](session-shares.md) (NOT-519).
 
 A **share** lets one audience ask exactly one session read-only questions
 for a while. It is one NOT-507 Ask pin on that `session_ref` (read-only,

@@ -107,6 +107,9 @@ console.log('\nShare to Slack: offered only when the session can take an Ask and
   assert(allowlist.includes('href="/bots/agent-dev/config#session-sharing"'), 'the allowlist reason links to Session sharing on Agent Config');
   const loading = render(SessionShares, { row: row(), shares: null, policy: policy(), onChanged: () => {} });
   assert(loading.includes('Loading shares…'), 'while the shares load: a loading state');
+  const checking = render(SessionShares, { row: row(), shares: [], policy: 'loading', onChanged: () => {} });
+  assert(checking.includes('Checking the share policy…') && !checking.includes('data-share-action="create"') && !checking.includes('could not be loaded'),
+    'while the policy loads: a loading state, never the load-failure reason');
 }
 
 console.log('\nHelpers: ordering, labels, request body, allowlist validation');

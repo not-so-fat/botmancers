@@ -37,7 +37,8 @@ function newKey(): string {
 export default function SessionShares({ row, shares, policy, onChanged }: {
   row: SessionRow;
   shares: OwnerShare[] | null;
-  policy: SharePolicy | null;
+  // 'loading' until the first answer; null when it could not be loaded.
+  policy: SharePolicy | 'loading' | null;
   onChanged: () => void;
 }) {
   const headingId = useId();
@@ -46,26 +47,29 @@ export default function SessionShares({ row, shares, policy, onChanged }: {
   const mine = shares ? sessionShares(shares, row.ref) : [];
   const live = mine.filter(shareIsLive);
   const ended = mine.filter(share => !shareIsLive(share));
-  const availability = shareCreateAvailability(row, policy);
+  const loadingPolicy = policy === 'loading';
+  const loaded = policy === 'loading' ? null : policy;
+  const availability = loadingPolicy ? null : shareCreateAvailability(row, loaded);
   const visibleEnded = showEnded ? ended : ended.slice(0, live.length ? 0 : ENDED_SHOWN);
   return (
     <section className="session-shares" aria-labelledby={headingId} data-session-shares={row.ref}>
       <div className="session-shares-head">
         <h3 id={headingId} className="session-shares-title">Slack share</h3>
-        {availability.available && !creating ? (
+        {availability?.available && !creating ? (
           <button type="button" className="session-action" data-share-action="create" onClick={() => setCreating(true)}>
             Share to Slack
           </button>
         ) : null}
       </div>
-      {!availability.available ? (
+      {loadingPolicy ? <p className="session-share-note session-share-loading" role="status">Checking the share policy…</p> : null}
+      {availability && !availability.available ? (
         <p className="session-share-unavailable">
           {availability.reason}{' '}
           {availability.configHref ? <Link className="session-link" href={availability.configHref}>Open Config</Link> : null}
         </p>
       ) : null}
-      {creating && policy ? (
-        <ShareCreateForm row={row} policy={policy} onCancel={() => setCreating(false)} onCreated={() => { setCreating(false); onChanged(); }} />
+      {creating && loaded ? (
+        <ShareCreateForm row={row} policy={loaded} onCancel={() => setCreating(false)} onCreated={() => { setCreating(false); onChanged(); }} />
       ) : null}
       {shares === null ? <p className="session-share-note" role="status">Loading shares…</p> : null}
       {shares !== null && mine.length === 0 && !creating ? <p className="session-share-note">Not shared.</p> : null}

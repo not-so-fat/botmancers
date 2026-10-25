@@ -182,7 +182,7 @@ async function run() {
     await sleep(500);
     await click(byText('.thread-bar button', 'Sessions'));
     await waitFor("document.querySelectorAll('.sessions-drawer .session-row').length === 3", 'three Forge sessions');
-    await waitFor(`${sharesOf(TITLES.archived)}?.querySelectorAll('[data-share-status]').length >= 2`, 'seeded shares');
+    await waitFor(`${sharesOf(TITLES.archived)}?.querySelectorAll('[data-share-status]').length >= 2 && !document.querySelector('.session-share-loading')`, 'seeded shares and the share policy');
 
     const open = await shareInfo(TITLES.open);
     const ended = open.statuses.filter(s => s === 'expired' || s === 'revoked');

@@ -67,7 +67,7 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
   const [action, setAction] = useState<{ mode: SessionDialogMode; row: SessionRow; returnTo: HTMLElement | null } | null>(null);
   const [started, setStarted] = useState<{ id: string | null; text: string } | null>(null);
   const [shares, setShares] = useState<OwnerShare[] | null>(null);
-  const [sharePolicy, setSharePolicy] = useState<SharePolicy | null>(null);
+  const [sharePolicy, setSharePolicy] = useState<SharePolicy | 'loading' | null>('loading');
   const [shareTick, setShareTick] = useState(0);
 
   const returnToRef = useRef<HTMLElement | null>(null);
@@ -250,7 +250,7 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction, sha
   onOpenThread: (agentId: string) => void;
   onAction: (mode: SessionDialogMode, returnTo: HTMLElement) => void;
   shares: OwnerShare[] | null;
-  sharePolicy: SharePolicy | null;
+  sharePolicy: SharePolicy | 'loading' | null;
   onSharesChanged: () => void;
 }) {
   const detailId = useId();
