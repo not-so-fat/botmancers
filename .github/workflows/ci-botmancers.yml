@@ -16,6 +16,9 @@ on:
       - 'docs/contracts/**'
       - 'docs/evidence/NOT-514/**'
       - 'scripts/not-514-*'
+      - 'scripts/slack-relay-smoke.js'
+      - 'instrumentation.ts'
+      - 'next.config.ts'
       - '.github/workflows/*botmancers.yml'
   workflow_dispatch:
 
@@ -29,7 +32,7 @@ permissions:
 jobs:
   release-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: packages/mcp-server
@@ -109,6 +112,12 @@ jobs:
         working-directory: .
         run: |
           npm run test:slack-relay
+      - name: Slack Socket Mode transport, managed start, and secret redaction (NOT-518)
+        working-directory: .
+        run: |
+          npm run test:slack-transport
+          npm run test:slack-relay
+          npm run test:session-shares
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

@@ -85,12 +85,16 @@
     "test:session-shares": "node test-session-shares.js",
     "test:session-context": "node test-session-context.js",
     "test:slack-relay": "node test-slack-relay.js",
+    "test:slack-transport": "node test-slack-transport.js",
+    "smoke:slack-relay": "node scripts/slack-relay-smoke.js",
     "probe:not-514-claude": "node scripts/not-514-claude-mcp-probe.js",
     "probe:not-514-codex": "node scripts/not-514-codex-mcp-probe.js",
     "probe:not-514-cursor": "node scripts/not-514-cursor-mcp-probe.js",
     "smoke:not-517-share-current": "node scripts/not-517-share-current-smoke.js"
   },
   "dependencies": {
+    "@slack/socket-mode": "^2.0.7",
+    "@slack/web-api": "^7",
     "@types/better-sqlite3": "^9.6.0",
     "better-sqlite3": "^13.0.3",
     "next": "16.3.8",

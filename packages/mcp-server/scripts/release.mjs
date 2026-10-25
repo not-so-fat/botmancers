@@ -17,7 +17,7 @@
 // Run `npm run build && npm run build:app` first.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -65,6 +65,28 @@ function step(name, fn) {
 
 function run(command, commandArgs, options = {}) {
   return execFileSync(command, commandArgs, { cwd: PACKAGE_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options });
+}
+
+// For commands that start daemons (tests, install smokes): output goes to a
+// file, not a pipe, so a process left behind cannot hold the pipe open and
+// stall execFileSync forever; the limit bounds the command itself. Returns
+// stdout+stderr; a failure carries .log and .why.
+function runLogged(command, commandArgs, timeoutMs) {
+  const dir = mkdtempSync(join(tmpdir(), 'botmancers-release-log-'));
+  const logPath = join(dir, 'output.log');
+  const fd = openSync(logPath, 'w');
+  try {
+    run(command, commandArgs, { stdio: ['ignore', fd, fd], timeout: timeoutMs, killSignal: 'SIGKILL' });
+    return readFileSync(logPath, 'utf8');
+  } catch (error) {
+    error.log = readFileSync(logPath, 'utf8');
+    error.why = error.signal ? `killed by ${error.signal} after ${Math.round(timeoutMs / 60_000)} minute(s)` : `exit ${error.status}`;
+    error.message = `${command} ${commandArgs.join(' ')} failed (${error.why})\n${error.log.split('\n').slice(-30).join('\n')}`;
+    throw error;
+  } finally {
+    closeSync(fd);
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function assert(condition, message) {
@@ -158,13 +180,12 @@ step('packaged app build', () => {
 step('tests', () => {
   let out;
   try {
-    out = run('npm', ['test']);
+    out = runLogged('npm', ['test'], 8 * 60_000);
   } catch (error) {
-    // execFileSync's message carries only stderr (build warnings); the failing
-    // test names and assertions are on stdout.
-    const stdout = String(error.stdout ?? '');
+    // The failing test names and assertions are in the log.
+    const stdout = error.log ?? '';
     const failing = stdout.split('\n').filter(line => /^\s*(✖|not ok)|Error|expected|actual/.test(line)).slice(0, 30);
-    throw new Error(`npm test failed (exit ${error.status})\n${(failing.length ? failing : stdout.split('\n').slice(-30)).join('\n')}`);
+    throw new Error(`npm test failed (${error.why})\n${(failing.length ? failing : stdout.split('\n').slice(-30)).join('\n')}`);
   }
   const pass = /ℹ pass (\d+)/.exec(out)?.[1];
   const fail = /ℹ fail (\d+)/.exec(out)?.[1];
@@ -221,11 +242,11 @@ step('canary install of the exact tarball', () => {
     const [entry] = JSON.parse(run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', dir], { maxBuffer: 64 * 1024 * 1024 }));
     const tarball = join(dir, entry.filename);
     const integrity = `sha512-${createHash('sha512').update(readFileSync(tarball)).digest('base64')}`;
-    const out = run(process.execPath, ['scripts/smoke-install.mjs', '--tarball', tarball]);
+    const out = runLogged(process.execPath, ['scripts/smoke-install.mjs', '--tarball', tarball], 5 * 60_000);
     assert(/^PASS clean-install smoke/m.test(out), out);
-    const product = run(process.execPath, ['scripts/smoke-product-install.mjs', '--tarball', tarball], { maxBuffer: 16 * 1024 * 1024 });
+    const product = runLogged(process.execPath, ['scripts/smoke-product-install.mjs', '--tarball', tarball], 5 * 60_000);
     assert(/^PASS product install smoke/m.test(product), product);
-    const managed = run(process.execPath, ['scripts/smoke-managed-install.mjs', '--tarball', tarball], { maxBuffer: 16 * 1024 * 1024 });
+    const managed = runLogged(process.execPath, ['scripts/smoke-managed-install.mjs', '--tarball', tarball], 5 * 60_000);
     assert(/^PASS managed install smoke/m.test(managed), managed);
     return `${entry.filename} ${integrity} installed into clean projects; npx botmancers served health, tools/list, tools/call; botmancers setup/start --daemon served the UI, /api/v0, and the bridge against the same engine, kept state across stop/start, and stopped cleanly; scripts/install.sh installed it as a managed release whose launcher ran the product, staged N+1 beside it, activated N+1 at one restart, rolled back, and kept user state`;
   } finally {

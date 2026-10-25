@@ -4,6 +4,7 @@
 // Loopback-only like every UI route (proxy.ts); no secrets, no writes.
 import db from '@/lib/db';
 import { botmancersHome } from '@/lib/home';
+import { slackRuntimeStatus } from '@/lib/slack-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,8 @@ export async function GET() {
       commit: process.env.BOTMANCERS_BUILD_COMMIT,
       engine,
       home: botmancersHome(),
+      // NOT-518: the Slack relay's state and reason, never a token.
+      slack: slackRuntimeStatus(),
     },
     { status: engine === 'ok' ? 200 : 503, headers: { 'cache-control': 'no-store' } },
   );
