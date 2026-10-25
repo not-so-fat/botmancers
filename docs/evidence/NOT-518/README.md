@@ -17,3 +17,11 @@ the intentionally unacknowledged event after reconnect, the relay classified
 it as `duplicate_event`, and the share retained exactly one provider turn and
 one reply. The evidence-only commit that adds this transcript does not change
 the tested runtime.
+
+The `Slack relay error: The Slack transport is not running.` line after
+`Slack relay: stopped` is the transport's after-`stop()` guard
+(`lib/slack-transport.ts` `ack`/`post`) refusing a relay call that arrived
+after stop. The most likely source is a periodic sweep that was already
+running when stop began, since `stopSlackRuntime()` does not wait for it.
+Nothing was sent after stop, the client did not reconnect (connections stayed
+at 2), and the call left its relay rows unchanged for the next start.
