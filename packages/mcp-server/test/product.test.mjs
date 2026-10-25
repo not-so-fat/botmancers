@@ -514,8 +514,9 @@ test('doctor distinguishes missing Hermes configuration and unavailable Agent De
 // NOT-519: the Slack line reads the running core's GET /api/health only and
 // never prints a Slack credential.
 test('doctor reports Slack disabled, misconfigured, connecting, connected, and reconnecting without a mutating probe or a token', async t => {
-  const SENTINEL_APP = 'xapp-1-SENTINELAPP-0123456789abcdef';
-  const SENTINEL_BOT = 'xoxb-SENTINELBOT-0123456789abcdef';
+  // Assembled at run time so no committed file holds a token-shaped string.
+  const SENTINEL_APP = ['xapp', '1', 'A0NOT519', 'SENTINELAPP', '0123456789abcdef'].join('-');
+  const SENTINEL_BOT = ['xoxb', '519', 'SENTINELBOT', '0123456789abcdef'].join('-');
   const s = await sandbox(t);
   assert.equal((await s.run(['setup'])).code, 0);
   const slackLine = out => (/^ {2}(\w+) +slack +(.*)$/m.exec(out) ?? []).slice(1).join(' ');

@@ -86,6 +86,8 @@
     "test:session-context": "node test-session-context.js",
     "test:slack-relay": "node test-slack-relay.js",
     "test:slack-transport": "node test-slack-transport.js",
+    "test:session-share-owner": "node test-session-share-owner.js",
+    "test:session-share-ui": "node test-session-share-ui.js",
     "smoke:slack-relay": "node scripts/slack-relay-smoke.js",
     "probe:not-514-claude": "node scripts/not-514-claude-mcp-probe.js",
     "probe:not-514-codex": "node scripts/not-514-codex-mcp-probe.js",
