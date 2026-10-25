@@ -7,7 +7,38 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-25
+
+### Added
+
+- Session sharing to Slack. The owner can share a session into a Slack
+  thread; replies in that exact thread are Asked of the session and answered
+  there. Shares have an owner lifecycle (create, revoke, expiry), a share
+  policy (a Slack channel allowlist and an explicit `share_from_turn`
+  switch), and a Sessions share section and Agent Config card in the UI.
+  Expired shares are swept automatically.
+- `botmancers.mcp.v2` (additive): `botmancers_create_share`,
+  `botmancers_get_share`, `botmancers_list_shares`, and
+  `botmancers_revoke_share`. Every existing tool is unchanged. The four new
+  tools are marked `botmancers/optional`: the bridge still starts against a
+  Botmancers that serves the earlier v2 surface without them.
+- A Claude Code or Codex turn launched by Botmancers can share its own exact
+  session through a launch-bound `botmancers_share_current_session` tool.
+  Its context is minted per launch and ends with the launch, turn, or thread.
+- Native Slack Socket Mode transport. Slack is enabled only when both Slack
+  tokens and a valid share configuration are present, and the tokens never
+  reach the bridge. Deliveries are deduplicated across retries and restarts.
+- `botmancers doctor` reports the Slack relay state, without tokens.
+
+### Changed
+
+- The release check bounds its test and smoke runs with hard time limits, so
+  a hung test fails by name instead of cancelling CI.
+- Includes the 0.5.1 change (below), which was not published.
+
 ## [0.5.1] - 2026-10-19
+
+Not published; see 0.6.0.
 
 ### Changed
 

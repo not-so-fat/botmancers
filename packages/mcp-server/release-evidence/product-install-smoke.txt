@@ -1,54 +1,54 @@
-source: tarball botmancers-0.5.1.tgz (17723226 B, integrity sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==)
-checkout commit: ca905df19f64e4dcb9dce06e02cc3874168e8641
+source: tarball botmancers-0.6.0.tgz (19777633 B, integrity sha512-0cC+nXnHnROQ4BOML6P2lZeygbV1eWIwrMs5IDvrkF17uYiCklo4pEPxY0pF8spiiZQHztKBXBy8tKTSvBFHbQ==)
+checkout commit: de11989c33a7d5668a72886216f19ab44c8e69fa
 node: v26.10.0, npm: 11.19.1, platform: darwin-arm64
-ports: ui/core 56319 (3333 busy; substitute), mcp 56320 (3332 busy; substitute)
-BOTMANCERS_HOME: unset (default /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-qdT4Al/home/.botmancers); commands run from /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-qdT4Al/elsewhere
+ports: ui/core 3333 (default), mcp 3332 (default)
+BOTMANCERS_HOME: unset (default /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-hZ7Bci/home/.botmancers); commands run from /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-hZ7Bci/elsewhere
 ok  temporary project is empty apart from package.json
-installed: botmancers@0.5.1; packaged app 0.5.1 built from commit ca905df19f64e4dcb9dce06e02cc3874168e8641, next 16.3.8
+installed: botmancers@0.6.0; packaged app 0.6.0 built from commit de11989c33a7d5668a72886216f19ab44c8e69fa, next 16.3.8
 ok  installed package is the public botmancers package
 ok  packaged app version matches the package version
 ok  no install-time dependencies: the runtime is bundled
 ok  the installed package contains no symlinks (nothing can point back into a checkout)
 ok  no installed file mentions the build checkout path
-ok  `botmancers --version` prints 0.5.1
+ok  `botmancers --version` prints 0.6.0
 ok  `botmancers setup` exits 0 and initializes the default home
 ok  home 0700, core.env 0600, bridge.env 0600
 ok  core.env holds the service-token digest, not the token
 ok  `botmancers doctor` before start: result: ok (2 warnings)
 ok  `botmancers start --daemon` exits 0:
-botmancers 0.5.1: running
-  UI   http://127.0.0.1:56319
-  MCP  http://127.0.0.1:56320/mcp
-  home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-qdT4Al/home/.botmancers
+botmancers 0.6.0: running
+  UI   http://127.0.0.1:3333
+  MCP  http://127.0.0.1:3332/mcp
+  home /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-hZ7Bci/home/.botmancers
 ok  `botmancers status` is healthy:
-botmancers 0.5.1: healthy
-  home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-qdT4Al/home/.botmancers
-  install     project-local (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-qdT4Al/project/node_modules/botmancers/dist/cli.js)
-  versions    cli 0.5.1
-  running     core 0.5.1, bridge 0.5.1 (started by 0.5.1)
-  ui/core     http://127.0.0.1:56319  ok version 0.5.1 (pid 1037)
-  mcp bridge  http://127.0.0.1:56320/mcp  ok version 0.5.1 (pid 1043)
+botmancers 0.6.0: healthy
+  home        /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-hZ7Bci/home/.botmancers
+  install     project-local (/private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-hZ7Bci/project/node_modules/botmancers/dist/cli.js)
+  versions    cli 0.6.0
+  running     core 0.6.0, bridge 0.6.0 (started by 0.6.0)
+  ui/core     http://127.0.0.1:3333  ok version 0.6.0 (pid 57107)
+  mcp bridge  http://127.0.0.1:3332/mcp  ok version 0.6.0 (pid 57114)
   bridge→core ok (service:botmancers-bridge)
-  supervisor  pid 1031, started 2026-10-19T23:40:45.267Z
-ok  run metadata lists both endpoints: http://127.0.0.1:56319 and http://127.0.0.1:56320/mcp
-processes: supervisor 1031 "/opt/homebrew/Cellar/node/26.10.0_1/bin/node /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-qdT4Al/project/node_modules/botmancers/dist/cli.js start --supervise", core 1037 "next-server (v16.3.8)", bridge 1043 "/opt/homebrew/Cellar/node/26.10.0_1/bin/node /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-qdT4Al/project/node_modules/botmancers/dist/cli.js mcp"
+  supervisor  pid 57097, started 2026-10-25T16:02:54.140Z
+ok  run metadata lists both endpoints: http://127.0.0.1:3333 and http://127.0.0.1:3332/mcp
+processes: supervisor 57097 "/opt/homebrew/Cellar/node/26.10.0_1/bin/node /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-hZ7Bci/project/node_modules/botmancers/dist/cli.js start --supervise", core 57107 "next-server (v16.3.8)", bridge 57114 "/opt/homebrew/Cellar/node/26.10.0_1/bin/node /private/var/folders/48/ppkq9gqj7fqfr7w68xkn51z80000gn/T/botmancers-product-smoke-hZ7Bci/project/node_modules/botmancers/dist/cli.js mcp"
 ok  supervisor and bridge run dist/cli.js from the temporary install
 ok  no process command line references the repository
 ok  core loaded its native SQLite driver from the install: <tmp>/project/node_modules/botmancers/app/node_modules/better-sqlite3/prebuilds/darwin-arm64.node
 ok  core holds no file open under the repository (or its node_modules)
-ok  core database is under BOTMANCERS_HOME: <tmp>/home/.botmancers/data/botmancers.db-shm, <tmp>/home/.botmancers/data/botmancers.db, <tmp>/home/.botmancers/data/botmancers.db-wal, <tmp>/home/.botmancers/data/botmancers.db-shm
+ok  core database is under BOTMANCERS_HOME: <tmp>/home/.botmancers/data/botmancers.db-shm, <tmp>/home/.botmancers/data/botmancers.db, <tmp>/home/.botmancers/data/botmancers.db-wal, <tmp>/home/.botmancers/data/botmancers.db-shm, <tmp>/home/.botmancers/data/botmancers.db, <tmp>/home/.botmancers/data/botmancers.db-wal
 ok  GET / -> 200, the built Botmancers UI (8785 B)
-ok  static asset /_next/static/chunks/2a8bomryx66oj.css -> 200
-ok  GET /api/health -> version 0.5.1, commit ca905df19f64e4dcb9dce06e02cc3874168e8641, engine ok
+ok  static asset /_next/static/chunks/0jon21u-9j2aw.css -> 200
+ok  GET /api/health -> version 0.6.0, commit de11989c33a7d5668a72886216f19ab44c8e69fa, engine ok
 ok  GET /api/v0/requests/<unknown> with the service token -> 404 request_not_found (authenticated engine read)
 ok  the same read with a wrong token -> 401
-ok  created Agent Smokey (673137d4-4b3f-4556-a535-fd834e458856) through the UI API
-ok  posted a message to conversation 5bc7651c-ce7d-4848-a41a-a1fbf862df0c
-ok  bridge GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v2","contracts":["botmancers.mcp.v1","botmancers.mcp.v2"],"version":"0.5.1"}
-ok  MCP tools/list -> botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health, botmancers_capabilities, botmancers_list_agents, botmancers_list_sessions, botmancers_list_conversations, botmancers_send_to_session, botmancers_create_exchange, botmancers_get_exchange, botmancers_list_exchanges, botmancers_message_agent, botmancers_pin_session, botmancers_send_to_pin, botmancers_get_pin, botmancers_detach_pin
+ok  created Agent Smokey (31ccf22f-36f6-4941-9799-f3d1e07f503e) through the UI API
+ok  posted a message to conversation 54c37959-8101-4438-b68f-f11ed96360f9
+ok  bridge GET /healthz -> {"status":"ok","contract":"botmancers.mcp.v2","contracts":["botmancers.mcp.v1","botmancers.mcp.v2"],"version":"0.6.0"}
+ok  MCP tools/list -> botmancers_start_task, botmancers_get_request, botmancers_get_conversation, botmancers_health, botmancers_capabilities, botmancers_list_agents, botmancers_list_sessions, botmancers_list_conversations, botmancers_send_to_session, botmancers_create_exchange, botmancers_get_exchange, botmancers_list_exchanges, botmancers_message_agent, botmancers_pin_session, botmancers_send_to_pin, botmancers_get_pin, botmancers_detach_pin, botmancers_create_share, botmancers_get_share, botmancers_list_shares, botmancers_revoke_share
 ok  MCP tools/call botmancers_health reaches the same engine -> {"contract":"botmancers.mcp.v1","status":"ok","principal":{"kind":"service","id":"botmancers-bridge"},"coordinators":[{"name":"Smokey","available":true}]}
 ok  a wrong MCP token -> 401
-ok  `botmancers stop` -> botmancers: stopped (supervisor pid 1031, core pid 1037, bridge pid 1043).
+ok  `botmancers stop` -> botmancers: stopped (supervisor pid 57097, core pid 57107, bridge pid 57114).
 ok  `botmancers status` after stop exits 3 (stopped)
 ok  `botmancers start --daemon` again exits 0
 ok  the Agent, its conversation message, and the file survived stop/start
@@ -58,4 +58,4 @@ ok  `botmancers stop` twice exits 0
 ok  BOTMANCERS_HOME holds config,data,files,logs,run,skills
 ok  nothing was written to the launch directory
 ok  no token in command output or logs
-PASS product install smoke for botmancers@0.5.1 (app commit ca905df19f64e4dcb9dce06e02cc3874168e8641) at checkout ca905df19f64e4dcb9dce06e02cc3874168e8641; ui 56319, mcp 56320
+PASS product install smoke for botmancers@0.6.0 (app commit de11989c33a7d5668a72886216f19ab44c8e69fa) at checkout de11989c33a7d5668a72886216f19ab44c8e69fa; ui 3333, mcp 3332
