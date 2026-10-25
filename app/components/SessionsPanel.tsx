@@ -23,6 +23,8 @@ import {
 import Link from 'next/link';
 import ExchangeDialog, { type ExchangeAgentOption } from '@/app/components/ExchangeDialog';
 import { detailsHref, sessionDialogMode, sessionRowActions, type SessionDialogMode } from '@/lib/exchange-view';
+import SessionShares from '@/app/components/SessionShares';
+import type { OwnerShare, SharePolicy } from '@/lib/share-view';
 
 // NOT-496: the selected Agent's Sessions drawer. Rows come from the
 // session catalog (GET /api/bots/:id/sessions) and are recognized by title,
@@ -38,6 +40,13 @@ import { detailsHref, sessionDialogMode, sessionRowActions, type SessionDialogMo
 // NOT-509: each row shows the session's provider-reported usage totals and
 // Details lists it per run. Unknown values read "Not reported" (never $0.00
 // or an estimate) and partial coverage is labeled Partial.
+// NOT-519: each row has a Slack share section (app/components/SessionShares):
+// the session's temporary shares with Copy reference and Revoke, and Share
+// to Slack when the session can take an Ask and a channel is allowlisted.
+// The Agent's shares and share policy load once per drawer and refresh
+// every 15 seconds while it is open.
+const SHARE_REFRESH_MS = 15_000;
+
 export default function SessionsPanel({ agentId, agentName, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
   agentId: string;
   agentName: string;
@@ -57,6 +66,9 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
   const closeRef = useRef<HTMLButtonElement>(null);
   const [action, setAction] = useState<{ mode: SessionDialogMode; row: SessionRow; returnTo: HTMLElement | null } | null>(null);
   const [started, setStarted] = useState<{ id: string | null; text: string } | null>(null);
+  const [shares, setShares] = useState<OwnerShare[] | null>(null);
+  const [sharePolicy, setSharePolicy] = useState<SharePolicy | null>(null);
+  const [shareTick, setShareTick] = useState(0);
 
   const returnToRef = useRef<HTMLElement | null>(null);
   const closeAction = () => {
@@ -97,6 +109,25 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
     };
   }, [agentId, filter, attempt]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const id = encodeURIComponent(agentId);
+    fetch(`/api/bots/${id}/share-policy`, { cache: 'no-store' })
+      .then(res => (res.ok ? res.json() : null))
+      .then(body => { if (!cancelled) setSharePolicy(body?.policy ?? null); })
+      .catch(() => { if (!cancelled) setSharePolicy(null); });
+    fetch(`/api/shares?agent_id=${id}&limit=100`, { cache: 'no-store' })
+      .then(res => (res.ok ? res.json() : null))
+      .then(body => { if (!cancelled) setShares(Array.isArray(body?.shares) ? body.shares as OwnerShare[] : []); })
+      .catch(() => { if (!cancelled) setShares([]); });
+    return () => { cancelled = true; };
+  }, [agentId, shareTick]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setShareTick(n => n + 1), SHARE_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, []);
+
   const reload = (next: SessionFilter = filter) => {
     setRows(null);
     setLoadError('');
@@ -114,7 +145,7 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
 
   const onCardKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'Tab' || !cardRef.current) return;
-    const focusable = Array.from(cardRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), summary'));
+    const focusable = Array.from(cardRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), summary, select:not(:disabled), input:not(:disabled), a[href]'));
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
@@ -180,6 +211,9 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
                 onToggle={() => setOpenRef(current => current === row.ref ? null : row.ref)}
                 onOpenThread={onOpenThread}
                 onAction={(mode, returnTo) => { setStarted(null); setAction({ mode, row, returnTo }); }}
+                shares={shares}
+                sharePolicy={sharePolicy}
+                onSharesChanged={() => setShareTick(n => n + 1)}
               />
             ))}
           </ul>
@@ -208,13 +242,16 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
   );
 }
 
-function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
+function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction, shares, sharePolicy, onSharesChanged }: {
   agentId: string;
   row: SessionRow;
   open: boolean;
   onToggle: () => void;
   onOpenThread: (agentId: string) => void;
   onAction: (mode: SessionDialogMode, returnTo: HTMLElement) => void;
+  shares: OwnerShare[] | null;
+  sharePolicy: SharePolicy | null;
+  onSharesChanged: () => void;
 }) {
   const detailId = useId();
   const actions = sessionRowActions(row);
@@ -272,6 +309,7 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction }: {
             {reasons.map(reason => <li key={reason}>{reason}</li>)}
           </ul>
         ) : null}
+        <SessionShares row={row} shares={shares} policy={sharePolicy} onChanged={onSharesChanged} />
         <button type="button" className="pin-word session-toggle" aria-expanded={open} aria-controls={detailId} onClick={onToggle}>
           {open ? 'Hide details' : 'Details'}
         </button>

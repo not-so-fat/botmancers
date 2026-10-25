@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
+import SharePolicyCard from '@/app/components/SharePolicyCard';
 import { DELETE_KEEPS_COPY, DELETE_REMOVES_COPY } from '@/lib/bot-deletion';
 import {
   configWorkdirHint,
@@ -1013,6 +1014,9 @@ export default function BotConfigPage() {
                 </ul>
               )}
             </section>
+
+            {/* NOT-519: share_from_turn and the Slack channel allowlist. */}
+            <SharePolicyCard agentId={bot.id} agentName={bot.name} />
 
             <section className="cfg-card">
               <div className="flex items-center justify-between mb-3">
