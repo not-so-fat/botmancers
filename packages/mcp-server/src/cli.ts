@@ -207,15 +207,18 @@ export async function bridgeMain(argv: string[], env: NodeJS.ProcessEnv, io: Cli
     return EXIT.listen;
   }
 
-  const shown = address.family === 'IPv6' ? `[${address.address}]` : address.address;
-  err(`botmancers ${packageVersion()}: MCP bridge listening on http://${shown}:${address.port}${MCP_PATH} (health: ${HEALTH_PATH}) -> ${config.botmancersUrl}`);
-
+  // The handlers go in before the listening line: a supervisor or test that
+  // signals the bridge as soon as it reads that line must never beat them, or
+  // the default action kills the process instead of a clean exit 0.
   const stop = (signal: string) => {
     err(`botmancers: ${signal} received, shutting down.`);
     bridge.close().then(() => process.exit(EXIT.ok));
   };
   process.once('SIGINT', () => stop('SIGINT'));
   process.once('SIGTERM', () => stop('SIGTERM'));
+
+  const shown = address.family === 'IPv6' ? `[${address.address}]` : address.address;
+  err(`botmancers ${packageVersion()}: MCP bridge listening on http://${shown}:${address.port}${MCP_PATH} (health: ${HEALTH_PATH}) -> ${config.botmancersUrl}`);
   return 'serving';
 }
 
