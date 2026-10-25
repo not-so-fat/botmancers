@@ -955,6 +955,56 @@ async function reachable(url: string): Promise<boolean> {
   }
 }
 
+// NOT-519: the Slack relay line. A running core reports its state on the
+// read-only GET /api/health (lib/slack-runtime slackRuntimeStatus: state,
+// reason, connections, never a token); doctor never sends Slack anything and
+// never posts to the core. Stopped, only whether the credentials are present
+// is told (from core.env and the environment), never their values.
+const SLACK_APP_TOKEN = 'BOTMANCERS_SLACK_APP_TOKEN';
+const SLACK_BOT_TOKEN = 'BOTMANCERS_SLACK_BOT_TOKEN';
+const SLACK_STATES = ['disabled', 'misconfigured', 'failed', 'connecting', 'connected', 'reconnecting', 'stopped'];
+const SLACK_REASON = /^[a-z_]{1,64}$/;
+const SLACK_FIX: Record<string, string> = {
+  app_token_missing: `set ${SLACK_APP_TOKEN} (xapp-…) in core.env`,
+  bot_token_missing: `set ${SLACK_BOT_TOKEN} (xoxb-…) in core.env`,
+  app_token_invalid: `${SLACK_APP_TOKEN} must be an app-level xapp- token`,
+  bot_token_invalid: `${SLACK_BOT_TOKEN} must be a bot xoxb- token`,
+  share_config_absent: 'add a Slack channel to the share allowlist (Agent Config → Session sharing)',
+  share_config_invalid: 'fix config/session-shares.json (Agent Config → Session sharing names the problem)',
+  share_config_no_audience: 'add a Slack channel to the share allowlist (Agent Config → Session sharing)',
+  workspace_not_allowlisted: 'the bot token\'s workspace has no channel on the share allowlist',
+  slack_auth_failed: 'Slack refused the bot token (auth.test); check it and restart',
+  slack_connect_failed: 'Socket Mode did not connect; check the app token and Socket Mode, then restart',
+};
+
+export function slackDoctorLine(health: unknown, coreEnv: Record<string, string | undefined>, running: boolean): [Level, string, string] {
+  const restart = `then ${RESTART_ACTION}`;
+  const slack = health && typeof health === 'object' ? (health as { slack?: unknown }).slack : undefined;
+  if (running && slack && typeof slack === 'object') {
+    const { state, reason, connections } = slack as { state?: unknown; reason?: unknown; connections?: unknown };
+    if (typeof state === 'string' && SLACK_STATES.includes(state)) {
+      const why = typeof reason === 'string' && SLACK_REASON.test(reason) ? reason : null;
+      const fix = why && SLACK_FIX[why] ? `; ${SLACK_FIX[why]}, ${restart}` : '';
+      const count = typeof connections === 'number' && Number.isInteger(connections) && connections > 1 ? ` (${connections - 1} reconnect${connections === 2 ? '' : 's'} since start)` : '';
+      if (state === 'disabled') return ['info', 'slack', 'Slack relay disabled (no Slack tokens configured); session shares cannot reach Slack.'];
+      if (state === 'connected') return ['ok', 'slack', `Slack relay connected over Socket Mode${count}`];
+      if (state === 'connecting') return ['info', 'slack', 'Slack relay connecting to Socket Mode'];
+      if (state === 'reconnecting') return ['warn', 'slack', `Slack relay reconnecting to Socket Mode${count}; questions wait and are answered once it reconnects`];
+      if (state === 'stopped') return ['warn', 'slack', `Slack relay stopped in a running core; ${RESTART_ACTION}`];
+      return ['warn', 'slack', `Slack relay ${state}${why ? ` (${why})` : ''}${fix}`];
+    }
+  }
+  const app = (coreEnv[SLACK_APP_TOKEN] ?? '').trim() !== '';
+  const bot = (coreEnv[SLACK_BOT_TOKEN] ?? '').trim() !== '';
+  if (!app && !bot) return ['info', 'slack', 'Slack relay disabled (no Slack tokens configured); session shares cannot reach Slack.'];
+  if (!app || !bot) {
+    const reason = app ? 'bot_token_missing' : 'app_token_missing';
+    return ['warn', 'slack', `Slack relay misconfigured (${reason}); ${SLACK_FIX[reason]}`];
+  }
+  if (running) return ['warn', 'slack', 'Slack tokens are configured, but the running core reports no Slack state; restart with this version.'];
+  return ['info', 'slack', 'Slack tokens are configured; the relay connects when botmancers starts.'];
+}
+
 export async function doctor(ctx: Ctx): Promise<number> {
   const checks: Array<[Level, string, string]> = [];
   const add = (level: Level, name: string, detail: string) => checks.push([level, name, detail]);
@@ -1029,6 +1079,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
   const core = { ...(readEnvFile(ctx.paths.coreEnv) ?? {}), ...ctx.env };
   if ((core.HERMES_API_SERVER_KEY ?? '').trim()) add('ok', 'hermes', `HERMES_API_SERVER_KEY is configured (gateway ${core.HERMES_BASE_URL?.trim() || 'http://127.0.0.1:8642'})`);
   else add('warn', 'hermes', `Hermes is not configured: conversational turns post a Hermes error until HERMES_API_SERVER_KEY is set in ${ctx.paths.coreEnv}.`);
+
+  add(...slackDoctorLine(view.core?.ok ? view.core.body : undefined, core, !!view.record && !!view.core?.ok));
 
   const deckUrl = (ctx.env[AGENT_DECK_URL_ENV] ?? '').trim() || DEFAULT_AGENT_DECK_URL;
   const deckBin = onPath('agent-deck', ctx.env);
