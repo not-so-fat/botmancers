@@ -1,13 +1,13 @@
-commit ca905df19f64e4dcb9dce06e02cc3874168e8641
-botmancers@0.5.1  botmancers-0.5.1.tgz
-size 17723226 B, unpacked 51846539 B, 1782 files
-shasum e1568cce61e5a567eb51b077c2cd66326a062982
-integrity sha512-3Lhy8XfmwjflquuiDvRwunhtOnUjNWhBLFwFTkIYh8Bhwr80/byoKQHUJw8mWX9Hbq2yWkDRaXJmSfJlKRuHCA==
-app build 0.5.1 commit ca905df19f64e4dcb9dce06e02cc3874168e8641, next 16.3.8
+commit de11989c33a7d5668a72886216f19ab44c8e69fa
+botmancers@0.6.0  botmancers-0.6.0.tgz
+size 19777633 B, unpacked 59022762 B, 2442 files
+shasum 9a6df7070fc8f6dfb5b8c24893544f638664284f
+integrity sha512-0cC+nXnHnROQ4BOML6P2lZeygbV1eWIwrMs5IDvrkF17uYiCklo4pEPxY0pF8spiiZQHztKBXBy8tKTSvBFHbQ==
+app build 0.6.0 commit de11989c33a7d5668a72886216f19ab44c8e69fa, next 16.3.8
      143  app/BUILD_INFO.json
       94  app/package.json
-    7455  app/server.js
-   10063  CHANGELOG.md
+    7520  app/server.js
+   11598  CHANGELOG.md
     3136  dist/cli.d.ts
    11631  dist/cli.js
     3248  dist/clients.d.ts
@@ -22,8 +22,8 @@ app build 0.5.1 commit ca905df19f64e4dcb9dce06e02cc3874168e8641, next 16.3.8
      870  dist/index.js
     6308  dist/managed.d.ts
    34597  dist/managed.js
-    4161  dist/product.d.ts
-   50477  dist/product.js
+    4584  dist/product.d.ts
+   54987  dist/product.js
      181  dist/redact.d.ts
      762  dist/redact.js
     1003  dist/server.d.ts
@@ -35,30 +35,71 @@ app build 0.5.1 commit ca905df19f64e4dcb9dce06e02cc3874168e8641, next 16.3.8
     1018  dist/upstream.d.ts
     6906  dist/upstream.js
     1071  LICENSE
-    2271  package.json
-   28131  README.md
+    2311  package.json
+   28561  README.md
    14714  schemas/botmancers.mcp.v1.tools.json
-  152373  schemas/botmancers.mcp.v2.tools.json
-   14097  skills/botmancers-collaboration/references/workflows.md
-    6869  skills/botmancers-collaboration/SKILL.md
-    3962  app/.next/app-path-routes-manifest.json  (1 files)
+  177252  schemas/botmancers.mcp.v2.tools.json
+   15297  skills/botmancers-collaboration/references/workflows.md
+    7296  skills/botmancers-collaboration/SKILL.md
+    4556  app/.next/app-path-routes-manifest.json  (1 files)
       21  app/.next/BUILD_ID  (1 files)
      645  app/.next/build-manifest.json  (1 files)
-     120  app/.next/node_modules/  (2 files)
+     354  app/.next/node_modules/  (6 files)
       20  app/.next/package.json  (1 files)
     3969  app/.next/prerender-manifest.json  (1 files)
-   10124  app/.next/required-server-files.json  (1 files)
-   15128  app/.next/routes-manifest.json  (1 files)
-16676118  app/.next/server/  (628 files)
- 1018515  app/.next/static/  (30 files)
+   10253  app/.next/required-server-files.json  (1 files)
+   17186  app/.next/routes-manifest.json  (1 files)
+22434914  app/.next/server/  (711 files)
+ 1072377  app/.next/static/  (30 files)
    11000  app/node_modules/@next/env@16.3.8  (2 files)
+    4253  app/node_modules/@slack/logger@4.0.1  (2 files)
+   38324  app/node_modules/@slack/socket-mode@2.0.7  (8 files)
+   10258  app/node_modules/@slack/types@2.22.0  (39 files)
+  489532  app/node_modules/@slack/web-api@7.19.0  (390 files)
    30691  app/node_modules/@swc/helpers@0.5.23  (5 files)
+   10040  app/node_modules/agent-base@6.0.2  (3 files)
+    9841  app/node_modules/asynckit@0.4.0  (11 files)
+  238556  app/node_modules/axios@1.20.0  (2 files)
 16927356  app/node_modules/better-sqlite3@13.0.3  (33 files)
+    3599  app/node_modules/call-bind-apply-helpers@1.0.2  (6 files)
      467  app/node_modules/client-only@0.0.1  (2 files)
+    5327  app/node_modules/combined-stream@1.0.8  (2 files)
+   19539  app/node_modules/debug@4.4.3  (5 files)
+    3003  app/node_modules/delayed-stream@1.0.0  (2 files)
+    3088  app/node_modules/dunder-proto@1.0.1  (2 files)
+    2417  app/node_modules/es-define-property@1.0.1  (2 files)
+    2698  app/node_modules/es-errors@1.3.0  (8 files)
+    2316  app/node_modules/es-object-atoms@1.1.2  (2 files)
+    3406  app/node_modules/es-set-tostringtag@2.1.0  (2 files)
+   10595  app/node_modules/eventemitter3@5.0.4  (2 files)
+   22798  app/node_modules/follow-redirects@1.16.0  (3 files)
+   18444  app/node_modules/form-data@4.0.6  (4 files)
+    4431  app/node_modules/function-bind@1.1.2  (3 files)
+   17015  app/node_modules/get-intrinsic@1.3.0  (2 files)
+    3303  app/node_modules/get-proto@1.0.1  (4 files)
+    2373  app/node_modules/gopd@1.2.0  (3 files)
+    1026  app/node_modules/has-flag@4.0.0  (2 files)
+    5343  app/node_modules/has-symbols@1.1.0  (3 files)
+    3027  app/node_modules/has-tostringtag@1.0.2  (2 files)
+    2464  app/node_modules/hasown@2.0.4  (2 files)
+   12285  app/node_modules/https-proxy-agent@5.0.1  (4 files)
+    1441  app/node_modules/is-electron@2.2.2  (2 files)
+    1411  app/node_modules/is-stream@2.0.1  (2 files)
+    3451  app/node_modules/math-intrinsics@1.1.0  (9 files)
+  187695  app/node_modules/mime-db@1.52.0  (3 files)
+    4812  app/node_modules/mime-types@2.1.35  (2 files)
+    3756  app/node_modules/ms@2.1.3  (2 files)
 14571161  app/node_modules/next@16.3.8  (988 files)
+    1043  app/node_modules/p-finally@1.0.0  (2 files)
+   24239  app/node_modules/p-queue@6.6.2  (6 files)
+    2900  app/node_modules/p-retry@4.6.2  (2 files)
+    2067  app/node_modules/p-timeout@3.2.0  (2 files)
    68530  app/node_modules/react@19.2.8  (10 files)
  1312757  app/node_modules/react-dom@19.2.8  (12 files)
+    7169  app/node_modules/retry@0.13.1  (4 files)
      981  app/node_modules/semver@6.3.1  (1 files)
    22255  app/node_modules/styled-jsx@5.1.6  (4 files)
+    3565  app/node_modules/supports-color@7.2.0  (2 files)
+  134191  app/node_modules/ws@8.22.0  (15 files)
   723328  app/public/  (21 files)
 package contents check passed: allowlist only, required runtime present, no source, state, secrets, or checkout paths.
