@@ -146,12 +146,12 @@ function packetJson(extra = {}) {
 }
 
 // ---------------------------------------------------------------------
-// Fixture: three hermes Agents on a deck plus one without a deck. Each
+// Fixture: four hermes Agents plus one without a runtime connection. Each
 // source session is an implementation the Agent ran and bound in its own
 // thread (the shape the dispatcher leaves).
 function agent(name, fields = {}) {
   return bots.getAll().find(bot => bot.name === name)
-    || bots.create({ name, title: 'Agent', description: `${name} fixture`, agent: 'hermes', deck_id: 'deck-builder', ...fields });
+    || bots.create({ name, title: 'Agent', description: `${name} fixture`, agent: 'hermes', ...fields });
 }
 function seedSession(bot, secret, { adapter = 'hermes', key } = {}) {
   const conv = conversations.getByBotId(bot.id);
@@ -172,8 +172,8 @@ function fixture() {
   const dev = agent('Dev');
   const scout = agent('Scout');
   const rose = agent('Rose');
-  const noDeck = agent('NoDeck', { deck_id: null });
-  return { tank, dev, scout, rose, noDeck };
+  const noConnection = agent('NoConnection');
+  return { tank, dev, scout, rose, noConnection };
 }
 
 // ---------------------------------------------------------------------
@@ -195,7 +195,7 @@ async function restartChild() {
 async function main() {
   installAdapter();
   service.configureDispatcher({ owner: `exchange-test:${process.pid}`, config: { maxGlobal: 10, maxPerTarget: 1, heartbeatMs: 600_000 } });
-  const { tank, dev, scout, rose, noDeck } = fixture();
+  const { tank, dev, scout, rose, noConnection } = fixture();
   const tankConv = conversations.getByBotId(tank.id);
   const devSession = seedSession(dev, SECRETS.dev, { key: 'dev' });
   const scoutSession = seedSession(scout, SECRETS.scout, { key: 'scout' });
@@ -203,10 +203,10 @@ async function main() {
   const ended = seedSession(dev, SECRETS.devEnded, { key: 'dev-ended' });
   engine.bindSession({ agentId: dev.id, adapter: 'hermes', externalSessionId: 'prov-dev-REPLACEMENT-0000', conversationId: ended.conv.id, requestId: ended.request.id });
   const codex = seedSession(dev, SECRETS.devOld, { key: 'dev-codex', adapter: 'codex' });
-  // NoDeck ran while it still had a deck.
-  raw.prepare("UPDATE bots SET deck_id = 'deck-builder', needs_deck_selection = 0 WHERE id = ?").run(noDeck.id);
-  const noDeckSession = seedSession(noDeck, SECRETS.noDeck, { key: 'nodeck' });
-  raw.prepare('UPDATE bots SET deck_id = NULL, needs_deck_selection = 1 WHERE id = ?').run(noDeck.id);
+  // NoConnection ran while it was still configured; then its runtime
+  // connection was removed, so it is readable but unlaunchable.
+  const noConnectionSession = seedSession(noConnection, SECRETS.noDeck, { key: 'nodeck' });
+  raw.prepare('UPDATE bots SET runtime_connection_id = NULL WHERE id = ?').run(noConnection.id);
   const ask = (fields = {}) => ({
     requester: OWNER, idempotencyKey: `ask-${Math.random()}`, mode: 'ask', originConversationId: tankConv.id,
     sourceAgentId: dev.id, sessionRef: devSession.binding.id, instruction: 'Why did you choose canonical Work Requests for hops?', ...fields,
@@ -388,7 +388,7 @@ async function main() {
       ['Ask with a destination', ask({ destinationAgentId: scout.id }), 'destination_invalid'],
       ['unknown origin', ask({ originConversationId: 'no-such-conversation' }), 'conversation_not_found'],
       ['unknown source Agent', ask({ sourceAgentId: 'no-such-agent' }), 'agent_not_found'],
-      ['source Agent without a deck', ask({ sourceAgentId: noDeck.id, sessionRef: noDeckSession.binding.id }), 'agent_unavailable'],
+      ['source Agent without a runtime connection', ask({ sourceAgentId: noConnection.id, sessionRef: noConnectionSession.binding.id }), 'agent_unavailable'],
       ['instruction over the limit', ask({ instruction: 'x'.repeat(lib.EXCHANGE_LIMITS.instructionChars + 1) }), 'invalid_request'],
       ['Continue to its own source Agent', cont({ destinationAgentId: dev.id }), 'destination_invalid'],
     ];

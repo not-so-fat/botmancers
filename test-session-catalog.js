@@ -74,13 +74,13 @@ async function main() {
     && impl.origin.conversation.kind === 'direct', 'origin conversation is the coordinator thread it came from');
   assert(impl.origin.work_request.id === fixture.requests.implementation.id && impl.origin.work_request.execution_kind === 'implementation'
     && impl.origin.work_request.state === 'completed', 'origin Work Request reference, kind, and state');
-  assert(impl.context.workspace === '/Users/owner/work/botmancers' && impl.context.deck === 'builder', 'workspace and deck come from the stored launch snapshot');
+  assert(impl.context.workspace === '/Users/owner/work/botmancers' && !('deck' in impl.context), 'workspace comes from the stored launch snapshot; no deck in the read shape');
   const ended = byRef[replaced.id];
   assert(ended.status === 'ended' && ended.ended_at === BASE + 20 * MIN && ended.resumable === false, 'a released binding is ended, with its release time, and not resumable');
   assert(byRef[group.id].title === 'Group Design review' && byRef[group.id].origin.conversation.kind === 'group'
     && byRef[group.id].origin.conversation.thread_agent_id === null && byRef[group.id].resumable === false, 'a group binding is titled from its group and has no thread link');
   assert(byRef[direct.id].title === 'Dev · 2026-10-15 09:05 UTC', 'no Work Request or group: <Agent name> · <created date/time>');
-  assert(byRef[directNext.id].context.workspace === null && byRef[directNext.id].context.deck === null, 'no launch snapshot: no invented workspace or deck');
+  assert(byRef[directNext.id].context.workspace === null && !('deck' in byRef[directNext.id].context), 'no launch snapshot: no invented workspace, no deck key');
   const reqOnly = byRef[requestOnly.id];
   assert(reqOnly.title === 'Explain the session binding lifecycle' && reqOnly.origin.work_request.id === fixture.requests.ask.id
     && reqOnly.origin.conversation.id === fixture.conversations.devConv.id && reqOnly.origin.conversation.label === 'Dev thread'
@@ -91,8 +91,8 @@ async function main() {
   assert(convOnly.title === 'Summarize the open review threads' && convOnly.origin.work_request.id === fixture.requests.summary.id
     && convOnly.origin.work_request.execution_kind === 'review' && convOnly.origin.conversation.label === 'Tank thread',
     'a conversation-only binding derives its Work Request and title from its source Attempt');
-  assert(convOnly.context.workspace === '/Users/owner/work/botmancers' && convOnly.context.deck === 'builder' && convOnly.agent.transport === 'agent-deck'
-    && convOnly.last_activity_at === BASE + 36 * MIN && convOnly.resumable === false, 'a conversation-only binding carries its source Attempt\'s launch context and activity');
+  assert(convOnly.context.workspace === '/Users/owner/work/botmancers' && !('deck' in convOnly.context) && convOnly.agent.transport === 'agent-deck'
+    && convOnly.last_activity_at === BASE + 36 * MIN && convOnly.resumable === false, 'a conversation-only binding carries its source Attempt\'s launch context and activity (no deck)');
   assert(JSON.stringify(catalog.listAgentSessions(db, dev.id, 'active').map(s => s.ref)) === JSON.stringify([implementation.id, requestOnly.id, group.id, conversationOnly.id, directNext.id]), 'active filter');
   assert(JSON.stringify(catalog.listAgentSessions(db, dev.id, 'ended').map(s => s.ref)) === JSON.stringify([direct.id, replaced.id]), 'ended filter');
   assert(leaks(JSON.stringify(all)).length === 0, 'summaries carry no external provider session id');
@@ -229,7 +229,7 @@ async function main() {
   assert(natRows[stuckRef].state.resumable === false && natRows[stuckRef].state.availability === 'available', 'available but not resumable');
   assert(natRows[busyRef].state.busy === true && Object.values(natRows).filter(s => s.state.busy).length === 1, 'busy only where a turn is in flight');
   assert(Object.keys(natRows).length === 6 && natRows[archivedRef].title === 'Archived but resumable' && natRows[archivedRef].context.workspace === '/work/n'
-    && natRows[archivedRef].context.deck === null && natRows[archivedRef].origin.work_request === null, 'native rows carry provider title and workspace, no Deck or origin');
+    && !('deck' in natRows[archivedRef].context) && natRows[archivedRef].origin.work_request === null, 'native rows carry provider title and workspace, no Deck or origin');
   assert(JSON.stringify(catalog.listAgentSessions(db, nat.id, 'ended').map(s => s.ref).sort()) === JSON.stringify([releasedBinding.id, archivedRef].sort()),
     'the ended filter takes released bindings and archived native sessions');
   const natLeaks = text => /SECRET/.test(text);

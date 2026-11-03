@@ -77,8 +77,9 @@ const ALL_IDS = new RegExp(Object.values(ID).join('|'));
 const calls = () => (fs.existsSync(CALLS) ? fs.readFileSync(CALLS, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : []);
 const argOf = (call, flag) => { const i = call.argv.indexOf(flag); return i >= 0 ? call.argv[i + 1] : null; };
 
-// The provider's base environment: an Agent Deck variable is present so the
-// test can prove it never crosses the boundary.
+// The provider's base environment: a stale Agent Deck variable is present
+// so the test can prove the deck-agnostic provider applies no
+// deck-specific filtering — the turn inherits the base environment.
 const providerEnv = { ...process.env, CLAUDE_CONFIG_DIR: CONFIG, FAKE_CLAUDE_LOG: CALLS, FAKE_CLAUDE_MARK: 'not506', AGENT_DECK_URL: 'http://127.0.0.1:1/deck' };
 function providerOptions(extra = {}) {
   return { bin: FAKE_BIN, configDir: CONFIG, stateDir: STATE, env: providerEnv, now: () => NOW, pollMs: 20, startupTimeoutMs: 20_000, ...extra };
@@ -190,7 +191,7 @@ async function main() {
     '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--tools', 'Read,Glob,Grep', '--allowedTools', 'Read,Glob,Grep', '--strict-mcp-config', '--session-id', startSid]),
   'read_only argv: print mode, stream-json, dontAsk, no prompts, read tools only, no MCP, an explicit new session id');
   assert(startCall.cwd === startWs && startCall.stdin === 'Scaffold the module' && !startCall.argv.includes('Scaffold the module'), 'cwd is the explicit workspace; the prompt goes on stdin, never argv');
-  assert(startCall.env.agent_deck_keys.length === 0 && startCall.env.FAKE_CLAUDE_MARK === 'not506' && startCall.env.CLAUDE_CONFIG_DIR === CONFIG, 'environment: inherited, minus every Agent Deck variable');
+  assert(startCall.env.agent_deck_keys.includes('AGENT_DECK_URL') && startCall.env.FAKE_CLAUDE_MARK === 'not506' && startCall.env.CLAUDE_CONFIG_DIR === CONFIG, 'environment: inherited as-is, with no deck-specific filtering');
   const replay = await direct.startSession({ workspace: startWs, prompt: 'Scaffold the module', authority: 'read_only', idempotency_key: 'k-start', correlation });
   assert(replay.value.provider_turn_id === started.value.provider_turn_id && calls().length === 1, 'the same idempotency key replays without another process');
   const done = await direct.observeTurn({ provider_turn_id: started.value.provider_turn_id, correlation });
@@ -271,7 +272,6 @@ async function main() {
     body: JSON.stringify({
       name: 'Registered with history',
       runtime_connection_id: ids.laptop,
-      launch_profile: 'direct',
       session_scope: { kind: 'workspaces', workspaces: [bulkWorkspace] },
       policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
     }),

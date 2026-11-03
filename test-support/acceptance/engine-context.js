@@ -17,7 +17,9 @@
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
 
+const fs = require('fs');
 const net = require('net');
+const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
 

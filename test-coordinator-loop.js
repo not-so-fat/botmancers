@@ -176,7 +176,10 @@ async function runMain() {
   const dev = bots.create({ deck_id: 'deck-dev', name: 'Dev', title: 'Developer', description: 'Implements.', agent: 'claude' });
   const reviewer = bots.create({ deck_id: 'deck-review', name: 'Reviewer', title: 'Reviewer', description: 'Reviews.', agent: 'codex' });
   const auditor = bots.create({ deck_id: 'deck-audit', name: 'Auditor', title: 'Second reviewer', description: 'Audits.', agent: 'cursor' });
-  const idle = bots.create({ name: 'Idle', title: 'Unconfigured', description: 'No deck yet.', agent: 'codex' });
+  const idle = bots.create({ name: 'Idle', title: 'Unconfigured', description: 'No session scope yet.', agent: 'codex' });
+  // Unconfigured (and restart-stable: the load migration only heals rows
+  // without a connection, never a cleared scope).
+  raw.prepare('UPDATE bots SET session_scope_kind = NULL, session_scope_items = NULL WHERE id = ?').run(idle.id);
   // NOT-475: the owner already allowed Tank's edit Wakes to Dev
   // (test-wake-safety.js covers the first-use approval).
   const safety = jiti('./lib/wake-safety.ts');

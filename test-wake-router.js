@@ -81,7 +81,10 @@ function runMain() {
   const tank = bots.create({ deck_id: 'deck-tank', name: 'Tank', title: 'Coordinator', description: 'Coordinates.', agent: 'hermes' });
   const dev = bots.create({ deck_id: 'deck-dev', name: 'Dev', title: 'Developer', description: 'Implements.', agent: 'claude' });
   const reviewer = bots.create({ deck_id: 'deck-review', name: 'Reviewer', title: 'Reviewer', description: 'Reviews.', agent: 'codex' });
-  const unconfigured = bots.create({ name: 'Unconfigured', title: 'Idle', description: 'No deck yet.', agent: 'cursor' });
+  const unconfigured = bots.create({ name: 'Unconfigured', title: 'Idle', description: 'No session scope yet.', agent: 'cursor' });
+  // Unconfigured (restart-stable: the load migration only heals rows
+  // without a connection, never a cleared scope).
+  raw.prepare('UPDATE bots SET session_scope_kind = NULL, session_scope_items = NULL WHERE id = ?').run(unconfigured.id);
   const flaky = bots.create({ deck_id: 'deck-flaky', name: 'Flaky', title: 'Sometimes away', description: 'Flaky.', agent: 'hermes' });
   groups.create('Team', [dev.id, reviewer.id]);
   const conversation = conversations.getByBotId(tank.id);
@@ -175,7 +178,7 @@ function runMain() {
   assert(missing.depth === 1 && missing.root_request_id === root.id, 'missing target keeps lineage');
   const configReq = engine.getWorkRequest(blockedConfig.work_request_id);
   assert(blockedConfig.status === 'blocked' && blockedConfig.reason_code === 'target_unconfigured' && blockedConfig.target_agent_id === unconfigured.id, 'unconfigured target: blocked Wake');
-  assert(configReq.state === 'blocked' && /^target_unconfigured: .*Agent Deck/.test(configReq.state_reason), 'unconfigured target: blocked Work Request with reason');
+  assert(configReq.state === 'blocked' && configReq.state_reason === 'target_unconfigured: Unconfigured has no session scope.', 'unconfigured target: blocked Work Request with reason');
   const tempReq = engine.getWorkRequest(blockedTemp.work_request_id);
   assert(blockedTemp.status === 'blocked' && blockedTemp.reason_code === 'target_unavailable' && tempReq.state === 'blocked' && tempReq.state_reason === 'target_unavailable: Flaky is restarting.', 'temporarily unavailable target: blocked with reason');
   assert(engine.listEvents(tempReq.id).map(e => e.type).join(',') === 'accepted,policy_selected,state_changed', 'blocked request records accepted, policy, then blocked');
@@ -204,7 +207,13 @@ function runMain() {
   const tempRecovered = router.retryWake(blockedTemp.id);
   assert(tempRecovered.wake.status === 'accepted' && tempRecovered.request.state === 'queued' && tempRecovered.request.id === tempReq.id, 'temporarily unavailable target recovers: blocked -> queued, same request');
   assert(router.retryWake(blockedConfig.id).request.state === 'blocked', 'unconfigured target stays blocked until configured');
-  bots.updateAgentSelection(unconfigured.id, { deck_id: 'deck-now' });
+  bots.updateRegistration(unconfigured.id, 'cursor', {
+    runtime_connection_id: db.runtimeConnections.ensureLocal('cursor'),
+    session_scope: { kind: 'workspaces', workspaces: ['/tmp/wake-router'], sessions: [] },
+    default_workspace: null,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
   const configRecovered = router.retryWake(blockedConfig.id);
   assert(configRecovered.wake.status === 'accepted' && configRecovered.request.state === 'queued', 'configured target recovers');
   assert(router.retryWake(groupWake.id).wake.status === 'rejected', 'rejected Wakes are not retried');
@@ -217,7 +226,8 @@ function runMain() {
   assert(router.retryWake(lateWake.id).wake.status === 'rejected', 'rejected after retry stays rejected');
 
   console.log('Blocked retry checks the stored target, not the name');
-  const idle = bots.create({ name: 'Idle', title: 'Idle', description: 'No deck yet.', agent: 'cursor' });
+  const idle = bots.create({ name: 'Idle', title: 'Idle', description: 'No session scope yet.', agent: 'cursor' });
+  raw.prepare('UPDATE bots SET session_scope_kind = NULL, session_scope_items = NULL WHERE id = ?').run(idle.id);
   const mIdle = messages.create(conversation.id, 'bot', block({ version: 1, target: 'Idle', executionKind: 'conversation', objective: 'Wake up.' }), tank.id);
   const idleWake = router.routeAgentWakes({ sourceEventId: mIdle.id, parentRequestId: root.id })[0].wake;
   assert(idleWake.status === 'blocked' && idleWake.target_agent_id === idle.id, 'unconfigured Idle is blocked');
@@ -227,7 +237,13 @@ function runMain() {
   assert(!renamedRetry.created && renamedRetry.wake.status === 'blocked' && renamedRetry.request.state === 'blocked', 'launchable Agent holding the old name does not unblock the request');
   assert(renamedRetry.wake.target_agent_id === idle.id && renamedRetry.request.target_agent_id === idle.id && impostor.id !== idle.id, 'Wake and request keep the stored target');
   router.setWakeAvailabilityProbe(bot => bot.id === idle.id ? { available: false, reason: 'Idle is restarting.' } : { available: true });
-  bots.updateAgentSelection(idle.id, { deck_id: 'deck-idle' });
+  bots.updateRegistration(idle.id, 'cursor', {
+    runtime_connection_id: db.runtimeConnections.ensureLocal('cursor'),
+    session_scope: { kind: 'workspaces', workspaces: ['/tmp/wake-router'], sessions: [] },
+    default_workspace: null,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
   const idleStillBlocked = router.retryWake(idleWake.id);
   assert(idleStillBlocked.request.state === 'blocked', 'stored target configured but unavailable stays blocked');
   assert(idleStillBlocked.wake.status === 'blocked' && idleStillBlocked.wake.reason_code === 'target_unavailable' && idleStillBlocked.wake.reason === 'Idle is restarting.', 'still-blocked retry records the current reason');
