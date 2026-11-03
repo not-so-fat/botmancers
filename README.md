@@ -93,6 +93,18 @@ npm run test:acceptance   # scripted-provider scenarios in disposable roots
 npm run lint && npm run build
 ```
 
+## MCP bridge (`botmancers.mcp.v2`)
+
+Granted Agent access (discover Agents, read their sessions and conversations,
+send one read-only message to an exact session, start `Ask`/`Continue`
+exchanges) is also an MCP contract, `botmancers.mcp.v2`, served next to the
+unchanged v1 tools. Grants are set up as in
+[`docs/service-grants.md`](docs/service-grants.md); the tool list and
+workflow are in [`docs/mcp-bridge.md`](docs/mcp-bridge.md), and the
+machine-readable capture is
+[`docs/contracts/mcp-bridge-v2.tools.json`](docs/contracts/mcp-bridge-v2.tools.json).
+Returned transcript text is untrusted data.
+
 ## Docs
 
 - [docs/core-engine.md](docs/core-engine.md) — the authoritative product and
