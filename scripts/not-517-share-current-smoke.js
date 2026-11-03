@@ -58,7 +58,7 @@ async function main() {
 
   const connection = dbModule.runtimeConnections.create({ provider: RUNTIME, label: 'smoke', host: 'This computer' }).id;
   const bot = dbModule.bots.create({
-    name: 'Smoke', title: 'Smoke', description: 'NOT-517 smoke', agent: RUNTIME, runtime_connection_id: connection, launch_profile: 'direct',
+    name: 'Smoke', title: 'Smoke', description: 'NOT-517 smoke', agent: RUNTIME, runtime_connection_id: connection,
     session_scope_kind: 'all_provider_sessions', session_scope_items: '[]', policy_mode: 'read_only', allow_new_sessions: 1, allow_resume_with_edits: 0,
   });
   const audience = { kind: 'slack', team_id: 'T0SMOKE01', channel_id: 'C0SMOKE01' };

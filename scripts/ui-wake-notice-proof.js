@@ -11,12 +11,12 @@
 // - clicking Allow on Dev's Wake shows it allowed (no actions left);
 // - clicking Deny on Builder's Wake shows it denied (no actions left);
 // - the Wake rows read back allowed/denied through the API.
-// Dev is an Agent Deck (codex) Agent and the server runs with no
-// AGENT_DECK_RUN_TOKEN, so the allowed turn fails locally at token_missing;
-// the others are Hermes with no HERMES_API_SERVER_KEY. Nothing external runs.
+// Every Agent is Hermes and the server runs with no HERMES_API_SERVER_KEY,
+// so the allowed turn fails locally at an unconfigured runtime. Nothing
+// external runs.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/wake-notice.db node scripts/ui-wake-notice-proof.js --seed
-//        env -u HERMES_API_SERVER_KEY -u AGENT_DECK_RUN_TOKEN BOTMANCERS_DB_PATH=.temporal/wake-notice.db npx next dev -H 127.0.0.1 -p 43219   (other shell)
+//        env -u HERMES_API_SERVER_KEY BOTMANCERS_DB_PATH=.temporal/wake-notice.db npx next dev -H 127.0.0.1 -p 43219   (other shell)
 //        node scripts/ui-wake-notice-proof.js [--url http://127.0.0.1:43219] [--out .agent-dealer-visual-qa]
 'use strict';
 
@@ -51,11 +51,9 @@ function seed() {
   const { bots, conversations, messages, UI_OWNER_PRINCIPAL } = db;
   router.setWakeAvailabilityProbe(() => ({ available: true }));
 
-  const agent = (name, kind = 'hermes') => bots.create({ deck_id: `deck-${name.toLowerCase()}`, name, title: name, description: name, agent: kind });
+  const agent = (name, kind = 'hermes') => bots.create({ name, title: name, description: name, agent: kind });
   const tank = agent('Tank');
-  // An Agent Deck target is launchable, so Allow admits it; with no
-  // AGENT_DECK_RUN_TOKEN its launch stops locally at token_missing.
-  agent('Dev', 'codex');
+  agent('Dev');
   agent('Builder');
   const helper = agent('Helper');
   const reviewer = agent('Reviewer');

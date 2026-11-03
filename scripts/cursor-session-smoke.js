@@ -86,12 +86,12 @@ async function importStep() {
   emit('import', { process: process.pid, probe });
   const connection = dbModule.runtimeConnections.create({ provider: 'cursor', label: 'Cursor smoke', host: 'This computer' });
   const agent = dbModule.bots.create({
-    name: 'CursorSmoke', title: 'Cursor', description: 'Cursor smoke', agent: 'cursor', runtime_connection_id: connection.id, launch_profile: 'direct',
+    name: 'CursorSmoke', title: 'Cursor', description: 'Cursor smoke', agent: 'cursor', runtime_connection_id: connection.id,
     session_scope_kind: 'workspaces', session_scope_items: JSON.stringify([WORKSPACE]),
     policy_mode: 'workspace_write', allow_new_sessions: 1, allow_resume_with_edits: 1,
   });
   const capabilities = ps.agentProviderCapabilities(db, agent.id);
-  emit('import', { capability_report: capabilities, deck_id: dbModule.bots.getById(agent.id).deck_id, launch_profile: dbModule.bots.getById(agent.id).launch_profile });
+  emit('import', { capability_report: capabilities });
   let listing;
   try {
     const synced = await ps.syncAgentSessions(db, agent.id);

@@ -114,9 +114,10 @@ export function storedRetryPolicy(raw: string | null | undefined): RetryPolicy {
 
 export type FailureDisposition = 'retryable' | 'terminal' | 'manual_attention';
 
-// Direct provider codes that need an operator (install or sign in the
-// CLI, fix permissions, wait out a limit), whatever the adapter category.
-const MANUAL_CODES = ['provider_unavailable', 'auth_required', 'permission_denied', 'incompatible_version', 'usage_limit'];
+// Direct provider and registry codes that need an operator (install or
+// sign in the CLI, fix permissions, wait out a limit), whatever the
+// adapter category.
+const MANUAL_CODES = ['unavailable', 'provider_unavailable', 'agent_not_found', 'auth_required', 'permission_denied', 'incompatible_version', 'usage_limit'];
 
 const DISPOSITION: Record<AttemptFailureCategory, FailureDisposition> = {
   unavailable: 'retryable',

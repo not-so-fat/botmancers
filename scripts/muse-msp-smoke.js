@@ -53,7 +53,7 @@ function main() {
   say(`# NOT-508 Muse MSP smoke`);
   say(`head: ${head}${dirty ? ' (worktree has uncommitted changes)' : ''}`);
   say(`muse: ${execFileSync(MUSE_BIN, ['--version'], { encoding: 'utf8' }).trim()}`);
-  say(`node: ${process.version}  provider: --provider ${MUSE_PROVIDER}  agent deck: not configured`);
+  say(`node: ${process.version}  provider: --provider ${MUSE_PROVIDER}  launch: direct`);
 
   say('\n## 0. a past session created outside Botmancers (muse exec)');
   const exec = spawnSync(MUSE_BIN, ['exec', '--provider', MUSE_PROVIDER, 'Smoke: describe this empty workspace in one line.'], { cwd: ws, env, encoding: 'utf8' });
@@ -119,10 +119,10 @@ async function phase(name) {
   if (name === 'import') {
     const conn = dbModule.runtimeConnections.create({ provider: 'muse', label: 'Muse on this computer', host: 'This computer' }).id;
     agent = dbModule.bots.create({
-      name: 'MuseSmoke', title: 'Muse', description: 'Direct Muse smoke', agent: 'muse', runtime_connection_id: conn, launch_profile: 'direct',
+      name: 'MuseSmoke', title: 'Muse', description: 'Direct Muse smoke', agent: 'muse', runtime_connection_id: conn,
       session_scope_kind: 'workspaces', session_scope_items: JSON.stringify([ws]), policy_mode: 'read_only', allow_new_sessions: 0, allow_resume_with_edits: 0,
     });
-    say(`  agent: direct, deck=${dbModule.bots.getById(agent.id).deck_id ?? 'none'}, scope=1 workspace, policy=read_only`);
+    say(`  agent: direct, scope=1 workspace, policy=read_only`);
     const probe = await muse.createMuseSessionProvider(conn).probe();
     say(`  probe: status=${probe.status} muse=${probe.muse_version} msp_schema=${probe.schema_version} durability=${probe.durability}`);
     check(probe.status === 'ready', 'the MSP capability probe is ready');

@@ -10,9 +10,9 @@
 //   and records the processes it does start.
 //
 // Runtimes are controlled: coordinator (Hermes-transport) turns follow a
-// per-conversation script, and coding Agents run through the real Agent
-// Deck run adapter against the deterministic fake Agent Deck API
-// (test-support/fake-agent-deck-api.js) through its in-process fetch seam.
+// per-conversation script, and coding Agents run through the real direct
+// session-provider adapter against scripted in-process fakes
+// (test-support/fake-session-provider.js) over shared state files.
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
@@ -78,11 +78,7 @@ function installGuards(allowHosts = []) {
 
 function createContext(scenarioName, options = {}) {
   assertIsolatedEnvironment();
-  // options.allowHosts: the real Agent Deck host of the opt-in smoke only.
   installGuards(options.allowHosts);
-  // Fixture-only credentials, set in this process only; never a real
-  // secret. The opt-in smoke (options.realToken) keeps the operator's.
-  if (!options.realToken) process.env.AGENT_DECK_RUN_TOKEN = 'adg_acceptance_fixture_bearer';
 
   const { createJiti } = require('jiti');
   const jiti = createJiti(path.join(REPO_ROOT, 'test-acceptance-engine.js'), { alias: { '@': REPO_ROOT } });
@@ -90,11 +86,10 @@ function createContext(scenarioName, options = {}) {
   const db = lib('db.ts');
   const service = lib('agent-conversations.ts');
   const dispatch = lib('agent-dispatch.ts');
-  const deckApi = lib('agent-deck-api.ts');
-  const deckAttempt = lib('agent-deck-attempt.ts');
+  const sessionProvider = lib('session-provider.ts');
   const router = lib('wake-router.ts');
   const safety = lib('wake-safety.ts');
-  const { createFakeAgentDeck } = require('../fake-agent-deck-api.js');
+  const fake = require('../fake-session-provider.js');
   const raw = db.default;
   const { bots, conversations, engine, projector, UI_OWNER_PRINCIPAL } = db;
 
@@ -139,18 +134,68 @@ function createContext(scenarioName, options = {}) {
   }
 
   // ---- controlled runtimes ----------------------------------------------
-  // In-process by default; a restart worker (options.remoteDeck) reaches
-  // the scenario process's fake over loopback HTTP instead, at the server
-  // URL stored in the harness database.
-  const fakeDeck = createFakeAgentDeck({ token: process.env.AGENT_DECK_RUN_TOKEN });
-  if (!options.remoteDeck) deckApi.setAgentDeckApiFetch(fakeDeck.fetch);
-  deckAttempt.setAgentDeckApiPollIntervalForTests(5);
-  // Agent Deck scripts by target deck id; default: one successful result.
-  const deckScripts = new Map();
-  fakeDeck.onStart = body => {
-    const script = deckScripts.get(body.deckId);
-    return script ? script(body) : { result: `Answered: ${String(body.prompt).slice(-60)}` };
-  };
+  // One file-backed fake SessionProvider per Agent, registered for the
+  // Agent's runtime connection. State files live in the shared provider
+  // dir, so restart workers (separate processes) observe the same turns.
+  // A script seeds, in call order: results (verbatim turn outputs),
+  // holdNext (turns that stay running until released), failStarts plus
+  // startError (launch failures), failSends (send failures). Default: the
+  // fake's echo reply.
+  const providerDir = process.env.BOTMANCERS_ACCEPTANCE_PROVIDER_DIR
+    || fs.mkdtempSync(path.join(os.tmpdir(), `botmancers-acceptance-providers-${scenarioName}-`));
+  fs.mkdirSync(providerDir, { recursive: true });
+  const statePathFor = agentId => path.join(providerDir, `${agentId}.provider.json`);
+  const registeredProviders = new Set();
+  function ensureProvider(agentRow) {
+    if (registeredProviders.has(agentRow.runtime_connection_id)) return;
+    registeredProviders.add(agentRow.runtime_connection_id);
+    const statePath = statePathFor(agentRow.id);
+    const agentId = agentRow.id;
+    sessionProvider.registerSessionProvider(
+      { connectionId: agentRow.runtime_connection_id },
+      () => fake.createFakeSessionProvider({ statePath, kind: `acceptance-${agentId}` }),
+    );
+    const manifestPath = path.join(providerDir, 'providers.json');
+    const manifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : {};
+    manifest[agentRow.runtime_connection_id] = agentId;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  }
+  // Restart workers register every provider the orchestrator scripted.
+  function registerProvidersFromManifest(allBots) {
+    const manifestPath = path.join(providerDir, 'providers.json');
+    if (!fs.existsSync(manifestPath)) return;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    for (const [connectionId, agentId] of Object.entries(manifest)) {
+      const row = allBots.find(entry => entry.runtime_connection_id === connectionId) || { id: agentId, runtime_connection_id: connectionId };
+      ensureProvider(row);
+    }
+  }
+  function script(agentRow, hooks = {}) {
+    const statePath = statePathFor(agentRow.id);
+    fake.mutateFakeProvider(statePath, state => {
+      if (hooks.results) state.results = [...(state.results ?? []), ...hooks.results];
+      if (typeof hooks.holdNext === 'number') state.holdNext = (state.holdNext ?? 0) + hooks.holdNext;
+      if (typeof hooks.failStarts === 'number') state.failStarts = (state.failStarts ?? 0) + hooks.failStarts;
+      if (hooks.startError) state.startError = hooks.startError;
+      if (typeof hooks.failSends === 'number') state.failSends = (state.failSends ?? 0) + hooks.failSends;
+    });
+    ensureProvider(agentRow);
+  }
+  const providerTurns = agentRow => fake.loadFakeState(statePathFor(agentRow.id)).turns;
+  const providerCalls = (agentRow, op) => fake.loadFakeState(statePathFor(agentRow.id)).calls.filter(entry => entry.op === op);
+  const startsFor = agentRow => providerCalls(agentRow, 'startSession');
+  const sendsFor = agentRow => providerCalls(agentRow, 'sendTurn');
+  const cancelsFor = agentRow => providerCalls(agentRow, 'cancelTurn');
+  const turnState = (agentRow, turnId) => providerTurns(agentRow)[turnId]?.state ?? null;
+  // Releases the Agent's earliest still-running held turn with a verbatim
+  // output, so an observer (possibly another process) sees it complete.
+  function release(agentRow, result = null) {
+    const statePath = statePathFor(agentRow.id);
+    const turn = Object.values(fake.loadFakeState(statePath).turns).find(entry => entry.state === 'running' && entry.held);
+    if (!turn) throw new Error(`no held turn for ${agentRow.name}`);
+    fake.releaseFakeTurn(statePath, turn.id, result);
+    return turn.id;
+  }
 
   // Coordinator (Hermes transport) turns: a per-Agent script when one is
   // set, else a per-conversation plan of steps; each (input, request) =>
@@ -185,11 +230,20 @@ function createContext(scenarioName, options = {}) {
   const workspace = process.env.BOTMANCERS_ACCEPTANCE_WORKSPACE;
   const PERSON = { kind: 'person', id: 'acceptance-owner' };
   function agent(name, kind, fields = {}) {
-    return bots.create({
+    const bot = bots.create({
       name, title: name, description: `${name} (acceptance fixture)`, agent: kind,
-      ...(kind === 'hermes' ? {} : { working_directory: workspace }),
-      deck_id: `deck-${name.toLowerCase()}`, ...fields,
+      runtime_connection_id: db.runtimeConnections.ensureLocal(kind),
+      session_scope_kind: 'workspaces',
+      session_scope_items: JSON.stringify([workspace]),
+      policy_mode: 'read_only',
+      allow_new_sessions: 1,
+      allow_resume_with_edits: 0,
+      ...fields,
     });
+    // Every fixture Agent gets a scripted runtime, so turns never touch a
+    // real CLI even when the scenario seeds no script.
+    if (kind !== 'hermes') ensureProvider(bot);
+    return bots.getById(bot.id);
   }
   function block(envelope) {
     return '```botmancers-wake\n' + JSON.stringify({ version: 1, ...envelope }, null, 2) + '\n```';
@@ -234,7 +288,8 @@ function createContext(scenarioName, options = {}) {
 
   return {
     REPO_ROOT, jiti, lastEntry, lib, db, raw, service, dispatch, router, safety, engine, projector, bots, conversations, UI_OWNER_PRINCIPAL,
-    fakeDeck, deckScripts, plans, hermesScripts, coordinatorLaunches, deckApi, PERSON, workspace,
+    providerDir, plans, hermesScripts, coordinatorLaunches, PERSON, workspace,
+    script, startsFor, sendsFor, cancelsFor, turnState, release, registerProvidersFromManifest, providerCalls, providerTurns,
     check, engineCheck, conversationCheck, isolationCheck, results,
     one, all, requestsIn, attemptsOf, wakesIn, messagesIn, eventTypes, counts, sameCounts, projection, projectedKinds, inOrder,
     agent, block, ask, settle, routeHost, close,
