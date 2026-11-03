@@ -3,6 +3,8 @@
 > **Historical runbook — NOT-395 era (October 2026).** Kept as decision history
 > for the Agent Deck adapter. For the current architecture see the
 > authoritative [core-engine design](core-engine.md).
+> Agent Deck launches are being removed (NOT-541): see
+> [direct coding-agent Wakes](design/2026-11-03-direct-coding-agent-wakes.md).
 
 Template runbook for delegating a task to a headless Claude session wired to an
 agent-deck deck, proven on the owner's logged-in subscription. A later adapter
