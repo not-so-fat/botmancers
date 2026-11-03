@@ -6,7 +6,7 @@
 // and conversation prompts, across all four shipped coding-agent providers
 // (claude, codex, cursor, muse); readonly->read_only and edit->
 // workspace_write authority, never inferred; fresh-plus-binding and
-// prepareFinalization refused before any provider launch; replay of the same
+// refused combinations fail before any provider launch; replay of the same
 // Attempt correlation returns the original turn; restart reattachment (a
 // second process) observes the durable turn without a second runtime
 // process; abort/deadline via observe/cancel with truthful cancelled,
@@ -52,7 +52,6 @@ const attemptLib = jiti('./lib/session-provider-attempt.ts');
 const promptLib = jiti('./lib/attempt-prompt.ts');
 const adapterContract = jiti('./lib/attempt-adapter.ts');
 const dispatch = jiti('./lib/agent-dispatch.ts');
-const deckRun = jiti('./lib/agent-deck-run.ts');
 const fake = require('./test-support/fake-session-provider');
 
 const db = dbModule.default;
@@ -65,10 +64,6 @@ function assert(condition, label) {
 const count = (sql, ...args) => db.prepare(sql).get(...args).n;
 const SECRET = /SECRET/;
 const CATEGORIES = new Set(adapterContract.ATTEMPT_FAILURE_CATEGORIES);
-
-// Negative spy: every Agent Deck CLI spawn is counted.
-let deckCalls = 0;
-deckRun.setDeckRunProcess(async () => { deckCalls++; return { stdout: '', stderr: 'agent-deck disabled', exitCode: 127 }; });
 
 const PROVIDERS = ['claude', 'codex', 'cursor', 'muse'];
 
@@ -97,7 +92,6 @@ function fixture(agentId, agent, overrides = {}) {
     target: { agentId, agent },
     prompt: { kind: 'text', text: 'Explain the module' },
     cwd: '/work/alpha',
-    deck: null,
     toolProfile: 'readonly',
     sessionBinding: null,
     correlation: {},
@@ -113,7 +107,6 @@ if (RESTART) {
     .finally(() => {
       finished = true;
       clearInterval(keepAlive);
-      deckRun.resetDeckRunProcessForTests();
       try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best effort */ }
       if (failures > 0) {
         console.log(`\n${failures} assertion(s) failed.`);
@@ -145,7 +138,7 @@ async function main() {
   const noNew = makeAgent('NoNew', 'codex', ids.codex, { kind: 'workspaces', items: ['/work/alpha'] }, { mode: 'workspace_write', newSessions: false });
   assert(PROVIDERS.every(p => dbModule.bots.getById(agents[p].id).launch_profile === 'direct'), 'every attempt agent is direct with no deck');
   assert(dispatch.adapterForTransport('session-provider')?.name === 'session-provider', 'restart lookup resolves session-provider');
-  assert(dispatch.prepareDispatch, 'dispatch module loaded (selection unchanged: still Agent Deck for coding agents)');
+  assert(dispatch.prepareDispatch, 'dispatch module loaded (canonical coding selection is session-provider)');
   const adapter = attemptLib.createSessionProviderAttemptAdapter();
 
   console.log('\nFresh and resume across all four providers (text and conversation)');
@@ -228,8 +221,6 @@ async function main() {
   // Every refused combination below launches nothing.
   const refused = [
     ['fresh-plus-binding', fixture(agents.codex.id, 'codex', { freshSession: true, sessionBinding: { bindingId: 'b-1', externalSessionId: sessionRefs.codex }, correlation: { attemptId: 'att-ref-fresh' } }), 'session_mismatch'],
-    ['prepareFinalization-readonly', fixture(agents.codex.id, 'codex', { prepareFinalization: true, correlation: { attemptId: 'att-ref-prep-ro' } }), 'unsupported_authority'],
-    ['prepareFinalization-edit', fixture(agents.codex.id, 'codex', { toolProfile: 'edit', prepareFinalization: true, correlation: { attemptId: 'att-ref-prep-edit' } }), 'unsupported_authority'],
     ['missing-profile', fixture(agents.codex.id, 'codex', { toolProfile: undefined, correlation: { attemptId: 'att-ref-noprofile' } }), 'unsupported_authority'],
     ['unknown-profile', fixture(agents.codex.id, 'codex', { toolProfile: 'admin', correlation: { attemptId: 'att-ref-badprofile' } }), 'unsupported_authority'],
     ['missing-cwd', fixture(agents.codex.id, 'codex', { cwd: null, correlation: { attemptId: 'att-ref-nocwd' } }), 'unavailable'],
@@ -345,7 +336,7 @@ async function main() {
   const bigProviderTurn = db.prepare('SELECT provider_turn_id FROM provider_session_turns WHERE id = ?').get(big.externalRunId).provider_turn_id;
   const bigProviderSession = db.prepare('SELECT provider_session_id FROM provider_sessions WHERE id = ?').get(big.externalSessionId).provider_session_id;
   db.prepare('UPDATE provider_session_turns SET output = ? WHERE id = ?').run(`echo ${bigProviderTurn} ${bigProviderSession} ${'x'.repeat(40_000)}`, big.externalRunId);
-  const followed = await adapter.reconciler.follow(big.externalRunId, { resumeSessionId: null, prepareFinalization: false, deadlineAt: null });
+  const followed = await adapter.reconciler.follow(big.externalRunId, { resumeSessionId: null, deadlineAt: null });
   assert(followed.status === 'completed' && followed.outputTruncated === true && (followed.output?.length ?? 0) <= attemptLib.SESSION_PROVIDER_ATTEMPT_OUTPUT_LIMIT, 'oversized output is bounded with outputTruncated');
   assert(!SECRET.test(followed.output ?? '') && /\[redacted\]/.test(followed.output ?? ''), 'bounded output redacts provider ids');
   // Observe failure after the provider lost the turn.
@@ -356,15 +347,15 @@ async function main() {
   const doomedRef = doomedStart.turn.turn_ref;
   const providerTurnId = db.prepare('SELECT provider_turn_id FROM provider_session_turns WHERE id = ?').get(doomedRef).provider_turn_id;
   fake.mutateFakeProvider(codexState, state => { delete state.turns[providerTurnId]; });
-  const doomed = await adapter.reconciler.follow(doomedRef, { resumeSessionId: null, prepareFinalization: false, deadlineAt: null });
+  const doomed = await adapter.reconciler.follow(doomedRef, { resumeSessionId: null, deadlineAt: null });
   assert(doomed.status === 'failed' && doomed.failure.category === 'runtime_failed', 'a turn the provider lost fails runtime_failed');
   assert(!SECRET.test(JSON.stringify(doomed)), 'observe failure leaks no provider diagnostics');
 
   console.log('\nNo Agent Deck contact on any adapter path');
   const source = fs.readFileSync(path.join(ROOT, 'lib/session-provider-attempt.ts'), 'utf8');
   assert(!/from '\.\/agent-deck/.test(source) && !/require\(.*agent-deck/.test(source), 'the adapter imports no Agent Deck module');
-  assert(deckCalls === 0 && fetchCalls === 0, 'no Agent Deck CLI spawn and no network fetch');
-  assert(dispatch.ATTEMPT_ADAPTERS && Object.keys(dispatch.ATTEMPT_ADAPTERS).sort().join(',') === 'agent-deck-run,hermes-gateway', 'live dispatch still selects its pre-cutover transports');
+  assert(!fs.existsSync(path.join(ROOT, 'lib/agent-deck-run.ts')) && fetchCalls === 0, 'no Agent Deck run module to spawn and no network fetch');
+  assert(dispatch.ATTEMPT_ADAPTERS && Object.keys(dispatch.ATTEMPT_ADAPTERS).sort().join(',') === 'hermes-gateway,session-provider', 'live dispatch selects the direct transports');
 
   console.log(`\nDone: ${failures} failure(s).`);
 }
@@ -384,7 +375,7 @@ async function restart() {
   const sendsBefore = fake.providerCalls(STATES.claude, 'sendTurn');
   const inspected = await adapter.reconciler.inspect(ids.turnRef);
   assert(inspected.kind === 'run' && inspected.state === 'ended', 'inspect reads the durable terminal turn');
-  const followed = await adapter.reconciler.follow(ids.turnRef, { resumeSessionId: null, prepareFinalization: false, deadlineAt: null });
+  const followed = await adapter.reconciler.follow(ids.turnRef, { resumeSessionId: null, deadlineAt: null });
   assert(followed.status === 'completed' && followed.output === ids.output && followed.externalSessionId === ids.sessionRef, 'follow returns the same terminal output and session ref');
   assert(followed.externalRunId === ids.turnRef, 'follow keeps the same turn ref');
   assert(fake.providerCalls(STATES.claude, 'startSession') === startsBefore && fake.providerCalls(STATES.claude, 'sendTurn') === sendsBefore, 'reattach spawns no second runtime process');
