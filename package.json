@@ -60,7 +60,7 @@
     "test:exchange-ui": "node test-exchange-ui.js",
     "proof:exchanges": "node scripts/ui-exchanges-proof.js",
     "test:conversation-intake": "node test-conversation-intake.js",
-    "test:attempt-adapter": "node test-attempt-adapter.js",
+    "test:attempt-adapter": "node test-attempt-adapter.js && node test-session-provider-attempt-adapter.js",
     "test:wake-router": "node test-wake-router.js",
     "test:coordinator-loop": "node test-coordinator-loop.js",
     "test:conversation-projection": "node test-conversation-projection.js",
