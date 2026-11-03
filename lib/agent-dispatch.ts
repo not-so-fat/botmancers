@@ -27,6 +27,7 @@ import { agentTransport, resolveAgent, type AgentTransport, type BotAgent } from
 import { hermesProfilePathForBot } from './hermes';
 import { createHermesAttemptAdapter } from './hermes-attempt';
 import { createAgentDeckApiAttemptAdapter } from './agent-deck-attempt';
+import { createSessionProviderAttemptAdapter } from './session-provider-attempt';
 import { AGENT_DECK_API_MESSAGES, type AgentDeckApiErrorCode } from './agent-deck-api';
 import {
   resolveAndEnsureBotWorkdir,
@@ -134,9 +135,12 @@ function adapterFor(transport: AgentTransport): AttemptAdapter {
 
 // NOT-469: the adapter for a transport name recorded in a launch snapshot
 // (AttemptAdapter.name), used to reconcile an Attempt after a restart.
+// NOT-542: 'session-provider' is registered here for restart lookup only;
+// normal dispatch still selects Agent Deck until the cutover ticket.
 export function adapterForTransport(name: string): AttemptAdapter | null {
   if (name === 'hermes-gateway') return adapterFor('hermes-gateway');
   if (name === 'agent-deck-api') return adapterFor('agent-deck-run');
+  if (name === 'session-provider') return createSessionProviderAttemptAdapter();
   return null;
 }
 

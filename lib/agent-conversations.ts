@@ -859,7 +859,9 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
       }
       case 'fail':
         await controlled(() => {
-          engine.finishAttempt(attempt.id, { outcome: 'failed', errorCategory: decision.category, errorMessage: `Agent Deck refused the launch (${decision.code}).` });
+          // NOT-542: local turns refuse with the same decision but their own runtime name.
+          const refusedBy = adapter?.name === 'session-provider' ? 'The session provider' : 'Agent Deck';
+          engine.finishAttempt(attempt.id, { outcome: 'failed', errorCategory: decision.category, errorMessage: `${refusedBy} refused the launch (${decision.code}).` });
           engine.transitionWorkRequest(request.id, {
             from: 'running', to: 'failed', reason: 'retryable', errorCode: 'runtime_failed', errorMessage: 'The agent runtime did not start the turn.',
           });
