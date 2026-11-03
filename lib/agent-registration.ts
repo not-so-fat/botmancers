@@ -1,4 +1,5 @@
-// NOT-502: registered-Agent contract on top of a runtime connection.
+// NOT-543: direct-only registered-Agent contract on top of a runtime
+// connection.
 //
 // A runtime connection is one usable runtime installation/account on one
 // host ("Codex on this computer"). It stores only a provider, a label,
@@ -16,28 +17,23 @@
 // - default_workspace: optional convenience for new sessions, never an
 //   authorization scope. With a workspace scope it must sit inside one of
 //   the selected workspaces.
-// - launch_profile: direct | agent_deck. Only agent_deck carries a deck
-//   ID and the Agent Deck working-directory override; direct never
-//   contacts Agent Deck. A stored null is an unresolved legacy row: it
-//   stays readable and unlaunchable until the owner chooses.
 // - policy: read_only | workspace_write, allow_new_sessions,
 //   allow_resume_with_edits (requires workspace_write).
 // - home_session_id: optional Botmancers session ref that must belong to
 //   this Agent.
+//
+// There is no launch profile and no deck: every Agent launches direct
+// from its runtime connection. Hermes turns run on the persistent Hermes
+// gateway; coding-agent turns run direct local provider Sessions.
 //
 // Pure (no I/O): lookups the validator needs arrive through
 // RegistrationContext so the plain-node tests load it through jiti.
 import {
   AGENTS,
   AGENT_LABELS,
-  DECK_REQUIRED_ERROR,
   normalizeAgent,
-  parseRequestDeckId,
   type BotAgent,
 } from './bot-definition';
-
-export const LAUNCH_PROFILES = ['direct', 'agent_deck'] as const;
-export type LaunchProfile = (typeof LAUNCH_PROFILES)[number];
 
 export const POLICY_MODES = ['read_only', 'workspace_write'] as const;
 export type PolicyMode = (typeof POLICY_MODES)[number];
@@ -71,9 +67,6 @@ export interface LaunchPolicy {
 
 export interface Registration {
   runtime_connection_id: string;
-  launch_profile: LaunchProfile;
-  deck_id: string | null;
-  working_directory: string | null;
   session_scope: SessionScope;
   default_workspace: string | null;
   policy: LaunchPolicy;
@@ -85,11 +78,6 @@ export interface Registration {
 // were already read-only and every turn could start a session; resuming
 // with edits was never an owner-visible choice, so it stays off.
 export const MIGRATED_POLICY: LaunchPolicy = { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false };
-
-export const LAUNCH_PROFILE_LABELS: Record<LaunchProfile, string> = {
-  direct: 'Direct',
-  agent_deck: 'Agent Deck',
-};
 
 export const POLICY_MODE_LABELS: Record<PolicyMode, string> = {
   read_only: 'Read only',
@@ -105,11 +93,6 @@ export const SCOPE_KIND_LABELS: Record<ScopeKind, string> = {
 export const CONNECTION_REQUIRED_ERROR = 'Runtime connection is required. Pick the runtime this Agent uses.';
 export const CONNECTION_NOT_FOUND_ERROR = 'Runtime connection not found.';
 export const CONNECTION_PROVIDER_MISMATCH_ERROR = 'agent does not match the runtime connection provider.';
-export const PROFILE_REQUIRED_ERROR = 'Launch profile is required. Choose direct or agent_deck.';
-export const PROFILE_INVALID_ERROR = 'Invalid launch profile. Expected direct or agent_deck.';
-export const DIRECT_DECK_ERROR = 'A direct launch profile does not use Agent Deck. Remove deck_id or choose agent_deck.';
-export const DIRECT_WORKDIR_ERROR =
-  'working_directory is an Agent Deck setting. Use default_workspace for a direct launch profile.';
 export const SCOPE_REQUIRED_ERROR =
   'Session scope is required. Select workspaces, select sessions, or explicitly choose all_provider_sessions.';
 export const SCOPE_INVALID_ERROR = 'Invalid session scope kind. Expected workspaces, sessions, or all_provider_sessions.';
@@ -128,10 +111,6 @@ export const HOME_SESSION_FOREIGN_ERROR = 'home_session_id must be one of this A
 export const HOME_SESSION_OUT_OF_SCOPE_ERROR = 'home_session_id must be one of the selected sessions.';
 export const CONNECTION_LABEL_REQUIRED_ERROR = 'Connection name is required.';
 export const CONNECTION_PROVIDER_REQUIRED_ERROR = `Provider is required. Expected one of ${AGENTS.join('|')}.`;
-
-export function isLaunchProfile(value: unknown): value is LaunchProfile {
-  return typeof value === 'string' && (LAUNCH_PROFILES as readonly string[]).includes(value);
-}
 
 export function isScopeKind(value: unknown): value is ScopeKind {
   return typeof value === 'string' && (SCOPE_KINDS as readonly string[]).includes(value);
@@ -188,14 +167,39 @@ function stringList(value: unknown): string[] | null {
   return out;
 }
 
+// Expands a leading ~ against homeDir (default: process HOME) and
+// returns the path only when it is absolute afterwards.
+export function expandWorkspacePath(value: string | null | undefined, homeDir?: string): string | null {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) return null;
+  const home = homeDir && homeDir.trim() ? homeDir : (process.env.HOME ?? '').trim();
+  const expanded = trimmed === '~' ? home : trimmed.startsWith('~/') ? `${home}/${trimmed.slice(2)}` : trimmed;
+  return expanded.startsWith('/') ? expanded : null;
+}
+
+// The workspace an explicit fresh request starts in: the Agent's
+// default workspace when one is configured, else its single selected
+// workspace. Null when the Agent names no workspace for a new session
+// (a sessions scope, several workspaces without a default, or no
+// usable scope at all): the caller fails closed and names the fix.
+export function directLaunchWorkspace(
+  row: Pick<RegistrationRow, 'session_scope_kind' | 'session_scope_items' | 'default_workspace'>,
+  homeDir?: string,
+): string | null {
+  const preferred = expandWorkspacePath(row.default_workspace, homeDir);
+  if (preferred) return preferred;
+  const scope = readStoredScope(row);
+  if (scope?.kind === 'workspaces' && scope.workspaces.length === 1) {
+    return expandWorkspacePath(scope.workspaces[0], homeDir);
+  }
+  return null;
+}
+
 // ---- stored row ⇄ domain ----
 
 export interface RegistrationRow {
   agent?: string | null;
   runtime_connection_id?: string | null;
-  launch_profile?: string | null;
-  deck_id?: string | null;
-  working_directory?: string | null;
   session_scope_kind?: string | null;
   session_scope_items?: string | null;
   default_workspace?: string | null;
@@ -203,7 +207,6 @@ export interface RegistrationRow {
   allow_new_sessions?: number | boolean | null;
   allow_resume_with_edits?: number | boolean | null;
   home_session_id?: string | null;
-  needs_deck_selection?: number | boolean | null;
 }
 
 // Stored scope, or null when nothing usable is stored (fails closed).
@@ -242,17 +245,14 @@ export function readStoredPolicy(row: RegistrationRow): LaunchPolicy | null {
   };
 }
 
-export function storedLaunchProfile(row: RegistrationRow): LaunchProfile | null {
-  return isLaunchProfile(row.launch_profile) ? row.launch_profile : null;
-}
-
-// Columns written for one registration.
+// Columns written for one registration. The removed launch columns are
+// always cleared: launch_profile reads 'direct', deck and override NULL.
 export function registrationColumns(reg: Registration): Record<string, string | number | null> {
   return {
     runtime_connection_id: reg.runtime_connection_id,
-    launch_profile: reg.launch_profile,
-    deck_id: reg.launch_profile === 'agent_deck' ? reg.deck_id : null,
-    working_directory: reg.launch_profile === 'agent_deck' ? reg.working_directory : null,
+    launch_profile: 'direct',
+    deck_id: null,
+    working_directory: null,
     session_scope_kind: reg.session_scope.kind,
     session_scope_items: JSON.stringify(scopeItems(reg.session_scope)),
     default_workspace: reg.default_workspace,
@@ -269,8 +269,6 @@ export function registrationColumns(reg: Registration): Record<string, string | 
 export interface MigratedRegistration {
   runtime_connection_id: string;
   provider: BotAgent;
-  // agent_deck for rows with a selected deck; null (unresolved) otherwise.
-  launch_profile: LaunchProfile | null;
   session_scope_kind: ScopeKind;
   session_scope_items: string;
   policy_mode: PolicyMode;
@@ -278,22 +276,15 @@ export interface MigratedRegistration {
   allow_resume_with_edits: number;
 }
 
-// Deterministic NOT-502 migration for one bots row (after the NOT-456
-// agent migration). The row keeps every existing column (deck_id,
-// deck_name, working_directory, needs_deck_selection); this only adds the
-// registration columns:
-// - the local connection for its agent (shared by every row of that agent);
-// - agent_deck when a deck ID is selected and no selection is pending,
-//   otherwise null: unresolved, never silently direct;
-// - a workspace scope of exactly the directory it already launched in
-//   (the override, else ~/.botmancers/{id}), so authority never widens;
-// - MIGRATED_POLICY.
+// Deterministic registration fallback for one bots row without one (an
+// internal create, import, or duplicate that supplies no registration):
+// the local connection for its agent, a workspace scope of exactly the
+// directory it already launched in (the override, else
+// ~/.botmancers/{id}), so authority never widens, and MIGRATED_POLICY.
 export function migrateRegistration(row: {
   id: string;
   agent?: string | null;
-  deck_id?: string | null;
   working_directory?: string | null;
-  needs_deck_selection?: number | boolean | null;
 }): MigratedRegistration {
   let provider: BotAgent = 'hermes';
   try {
@@ -301,13 +292,10 @@ export function migrateRegistration(row: {
   } catch {
     provider = 'hermes';
   }
-  const deck = text(row.deck_id);
-  const pending = flag(row.needs_deck_selection);
   const workspace = text(row.working_directory) ?? `~/.botmancers/${row.id}`;
   return {
     runtime_connection_id: localConnectionId(provider),
     provider,
-    launch_profile: deck && !pending ? 'agent_deck' : null,
     session_scope_kind: 'workspaces',
     session_scope_items: JSON.stringify([workspace]),
     policy_mode: MIGRATED_POLICY.mode,
@@ -320,8 +308,8 @@ export function migrateRegistration(row: {
 
 export interface RegistrationContext {
   getConnection: (id: string) => RuntimeConnection | undefined;
-  // The provider's local connection id, created on demand (legacy
-  // agent+deck_id request compatibility only).
+  // The provider's local connection id, created on demand (agent-only
+  // update compatibility).
   localConnectionFor: (provider: BotAgent) => string;
   // Whether a Botmancers session ref belongs to the Agent. Always false
   // for an Agent that does not exist yet.
@@ -330,7 +318,6 @@ export interface RegistrationContext {
 
 export const REGISTRATION_KEYS = [
   'runtime_connection_id',
-  'launch_profile',
   'session_scope',
   'default_workspace',
   'policy',
@@ -459,7 +446,6 @@ function checkRegistration(
   ctx: RegistrationContext,
   errors: string[],
 ): void {
-  if (candidate.launch_profile === 'agent_deck' && !candidate.deck_id) errors.push(DECK_REQUIRED_ERROR);
   const scope = candidate.session_scope;
   if (scope.kind === 'sessions' && !scope.sessions.every(ref => ctx.sessionBelongsTo(agentId, ref))) {
     errors.push(SCOPE_SESSION_FOREIGN_ERROR);
@@ -498,86 +484,24 @@ function resolveConnection(
   return connection;
 }
 
-function parseDeck(value: unknown, errors: string[]): string | null {
-  try {
-    return parseRequestDeckId(value);
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
-    return null;
-  }
-}
-
 export interface ValidatedRegistration {
   errors: string[];
   registration: Registration | null;
   provider: BotAgent | null;
 }
 
-// Legacy create shape: { agent?, deck_id, working_directory? } with no
-// registration keys. Kept so existing callers keep working: it is exactly
-// the migration result for an Agent Deck row (local connection, the
-// launch workspace as scope, MIGRATED_POLICY). A request without a
-// registration and without a deck is not legacy: it fails with the
-// missing-registration errors (never a silent direct profile).
-export function isLegacyCreate(body: Record<string, unknown>): boolean {
-  return !hasRegistrationUpdate(body) && body.deck_id !== undefined;
-}
-
 export function validateCreateRegistration(body: Record<string, unknown>, ctx: RegistrationContext): ValidatedRegistration {
   const errors: string[] = [];
-  if (isLegacyCreate(body)) {
-    let provider: BotAgent = 'hermes';
-    try {
-      provider = normalizeAgent(body.agent) ?? 'hermes';
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
-    }
-    const deck_id = parseDeck(body.deck_id, errors);
-    if (!deck_id && errors.length === 0) errors.push(DECK_REQUIRED_ERROR);
-    const working_directory = text(body.working_directory);
-    if (errors.length > 0) return { errors, registration: null, provider: null };
-    return {
-      errors,
-      provider,
-      registration: {
-        runtime_connection_id: ctx.localConnectionFor(provider),
-        launch_profile: 'agent_deck',
-        deck_id,
-        working_directory,
-        // Filled with the Agent's default workdir once its ID exists.
-        session_scope: { kind: 'workspaces', workspaces: working_directory ? [working_directory] : [], sessions: [] },
-        default_workspace: null,
-        policy: { ...MIGRATED_POLICY },
-        home_session_id: null,
-      },
-    };
-  }
   const connection = resolveConnection(body, ctx, errors);
-  let profile: LaunchProfile | null = null;
-  if (body.launch_profile === undefined || body.launch_profile === null || body.launch_profile === '') errors.push(PROFILE_REQUIRED_ERROR);
-  else if (!isLaunchProfile(body.launch_profile)) errors.push(PROFILE_INVALID_ERROR);
-  else profile = body.launch_profile;
-  let deck_id: string | null = null;
-  let working_directory: string | null = null;
-  if (profile === 'direct') {
-    if (text(body.deck_id)) errors.push(DIRECT_DECK_ERROR);
-    if (text(body.working_directory)) errors.push(DIRECT_WORKDIR_ERROR);
-  } else if (profile === 'agent_deck') {
-    deck_id = parseDeck(body.deck_id, errors);
-    working_directory = text(body.working_directory);
-  }
   const scope = parseScope(body.session_scope, errors);
   const default_workspace = parseOptionalPath(body.default_workspace, errors);
   const policy = parsePolicy(body.policy, errors);
   const home_session_id = text(body.home_session_id);
-  if (!connection || !profile || !scope || !policy || errors.length > 0) {
+  if (!connection || !scope || !policy || errors.length > 0) {
     return { errors, registration: null, provider: null };
   }
   const registration: Registration = {
     runtime_connection_id: connection.id,
-    launch_profile: profile,
-    deck_id,
-    working_directory,
     session_scope: scope,
     default_workspace,
     policy,
@@ -591,9 +515,6 @@ export function validateCreateRegistration(body: Record<string, unknown>, ctx: R
 // null so an update must supply them.
 export interface StoredRegistration {
   runtime_connection_id: string | null;
-  launch_profile: LaunchProfile | null;
-  deck_id: string | null;
-  working_directory: string | null;
   session_scope: SessionScope | null;
   default_workspace: string | null;
   policy: LaunchPolicy | null;
@@ -603,9 +524,6 @@ export interface StoredRegistration {
 export function storedRegistration(row: RegistrationRow): StoredRegistration {
   return {
     runtime_connection_id: text(row.runtime_connection_id),
-    launch_profile: storedLaunchProfile(row),
-    deck_id: text(row.deck_id),
-    working_directory: text(row.working_directory),
     session_scope: readStoredScope(row),
     default_workspace: text(row.default_workspace),
     policy: readStoredPolicy(row),
@@ -614,13 +532,8 @@ export function storedRegistration(row: RegistrationRow): StoredRegistration {
 }
 
 // PATCH: merge the supplied fields over the stored registration, then
-// validate the whole candidate. Legacy compatibility on update:
-// - agent alone moves the Agent to that provider's local connection;
-// - deck_id alone (no launch_profile) is the owner choosing Agent Deck
-//   for an unresolved or Agent Deck row, and an invalid combination on a
-//   direct row.
-// Switching to direct drops the Agent Deck settings (deck_id and the
-// working-directory override); the legacy deck_name reference stays.
+// validate the whole candidate. Legacy compatibility on update: agent
+// alone moves the Agent to that provider's local connection.
 export function validateUpdateRegistration(
   agentId: string,
   row: RegistrationRow,
@@ -651,36 +564,6 @@ export function validateUpdateRegistration(
     errors.push(CONNECTION_REQUIRED_ERROR);
   }
 
-  let profile: LaunchProfile | null = stored.launch_profile;
-  if (body.launch_profile !== undefined) {
-    if (!isLaunchProfile(body.launch_profile)) {
-      errors.push(body.launch_profile === null || body.launch_profile === '' ? PROFILE_REQUIRED_ERROR : PROFILE_INVALID_ERROR);
-      profile = null;
-    } else profile = body.launch_profile;
-  } else if (body.deck_id !== undefined && profile !== 'direct') {
-    profile = 'agent_deck';
-  }
-
-  let deck_id = stored.deck_id;
-  let working_directory = stored.working_directory;
-  if (profile === 'direct') {
-    if (body.deck_id !== undefined && text(body.deck_id)) errors.push(DIRECT_DECK_ERROR);
-    if (body.working_directory !== undefined && text(body.working_directory)) errors.push(DIRECT_WORKDIR_ERROR);
-    deck_id = null;
-    working_directory = null;
-  } else if (profile === 'agent_deck') {
-    if (body.deck_id !== undefined) {
-      deck_id = parseDeck(body.deck_id, errors);
-    } else if (stored.launch_profile !== 'agent_deck' || flag(row.needs_deck_selection)) {
-      // A row becoming Agent Deck (or with a pending re-selection) names
-      // its deck in the same request: a stale legacy deck never resolves.
-      deck_id = null;
-    }
-    if (body.working_directory !== undefined) working_directory = text(body.working_directory);
-  } else if (errors.length === 0) {
-    errors.push(PROFILE_REQUIRED_ERROR);
-  }
-
   const scope = body.session_scope !== undefined ? parseScope(body.session_scope, errors) : stored.session_scope;
   if (body.session_scope === undefined && !scope) errors.push(SCOPE_REQUIRED_ERROR);
   const default_workspace = body.default_workspace !== undefined ? parseOptionalPath(body.default_workspace, errors) : stored.default_workspace;
@@ -688,14 +571,11 @@ export function validateUpdateRegistration(
   if (body.policy === undefined && !policy) errors.push(POLICY_REQUIRED_ERROR);
   const home_session_id = body.home_session_id !== undefined ? text(body.home_session_id) : stored.home_session_id;
 
-  if (!connection || !profile || !scope || !policy || errors.length > 0) {
+  if (!connection || !scope || !policy || errors.length > 0) {
     return { errors, registration: null, provider: null };
   }
   const registration: Registration = {
     runtime_connection_id: connection.id,
-    launch_profile: profile,
-    deck_id: profile === 'agent_deck' ? deck_id : null,
-    working_directory: profile === 'agent_deck' ? working_directory : null,
     session_scope: scope,
     default_workspace,
     policy,
@@ -736,8 +616,6 @@ export function validateConnectionInput(body: Record<string, unknown>): {
 export interface SerializedRegistration {
   runtime_connection_id: string | null;
   runtime_connection: { id: string; provider: BotAgent; label: string; host: string } | null;
-  launch_profile: LaunchProfile | null;
-  needs_launch_profile: boolean;
   session_scope: SessionScope | null;
   default_workspace: string | null;
   policy: LaunchPolicy | null;
@@ -751,8 +629,6 @@ export function serializeRegistration(row: RegistrationRow, connection: RuntimeC
     runtime_connection: connection
       ? { id: connection.id, provider: connection.provider, label: connection.label, host: connection.host }
       : null,
-    launch_profile: stored.launch_profile,
-    needs_launch_profile: stored.launch_profile === null,
     session_scope: stored.session_scope,
     default_workspace: stored.default_workspace,
     policy: stored.policy,
