@@ -1,26 +1,28 @@
 #!/usr/bin/env node
 // NOT-469: leased dispatcher with restart reconciliation (lib/dispatcher,
-// lib/agent-conversations).
+// lib/agent-conversations), NOT-543 direct cutover.
 //
-// Proves, with deterministic fakes (no network, no agent-deck child):
+// Proves, with deterministic fakes (no network, in-process providers):
 //
 // - competing worker processes on one database never hold the same lease
 //   or create two Attempts for one claim, and race takeovers of expired
 //   leases exactly once;
 // - the accepted NOT-468 decision table, row by row;
 // - startup and expired-lease reconciliation for running, completed,
-//   failed, canceled, died, unknown, unauthorized, unreachable, and
+//   failed, canceled, provider-lost, unknown, provider-unavailable, and
 //   no-run-id Attempts, never relaunching an ambiguous run;
 // - global and per-target concurrency limits with controlled adapter
 //   barriers, without losing queued work (also across a restart);
 // - a worker whose lease was taken over cannot commit, nor write runtime
 //   events or external ids while its adapter is still running;
-// - a launch POST whose response is lost (or 5xx) keeps the Attempt open
-//   and reconciles into the one run; only a pre-launch refusal fails;
+// - a refused direct launch fails the Attempt immediately; direct
+//   launches are synchronous registry calls, so there is no lost-response
+//   ambiguity (same-key idempotency is proven by the no-run-id and crash
+//   cases instead);
 // - ordered engine events for normal and crash-recovery flows;
-// - crash injection (SIGKILL) before launch, after launch acceptance,
+// - crash injection (SIGKILL) before launch, after provider acceptance,
 //   after run-id persistence, and before the terminal commit: no lost
-//   request and exactly one Agent Deck launch each.
+//   request and exactly one provider turn each.
 'use strict';
 
 const fs = require('fs');
@@ -49,12 +51,12 @@ const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 const db = jiti('./lib/db.ts');
 const service = jiti('./lib/agent-conversations.ts');
 const dispatch = jiti('./lib/agent-dispatch.ts');
-const deckApi = jiti('./lib/agent-deck-api.ts');
-const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
 const executor = jiti('./lib/attempt-executor.ts');
 const intake = jiti('./lib/conversation-intake.ts');
 const lib = jiti('./lib/dispatcher.ts');
-const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
+const providerContract = jiti('./lib/session-provider.ts');
+const sessions = jiti('./lib/provider-sessions.ts');
+const fake = require('./test-support/fake-session-provider');
 const raw = db.default;
 const { bots, engine } = db;
 
@@ -166,7 +168,7 @@ function runChild(env) {
 
 async function raceScenario() {
   console.log('\n[1] competing workers: one lease and one Attempt per claim');
-  const targets = [0, 1, 2, 3].map(i => botNamed(`Race Target ${i}`, { agent: 'hermes', deck_id: 'deck-race' }));
+  const targets = [0, 1, 2, 3].map(i => botNamed(`Race Target ${i}`, { agent: 'hermes' }));
   const ids = [];
   for (let i = 0; i < 40; i++) ids.push(queuedRequest(targets[i % 4].id, `race-${i}`));
   const idsFile = path.join(os.tmpdir(), `botmancers-race-${process.pid}.json`);
@@ -305,13 +307,15 @@ function decisionTable() {
 
 // ---------------------------------------------------------------------
 const DEAD_OWNER = 'dead-host.invalid:1:deadbeef';
-let fake;
 let codex;
 let hermes;
+let WORKROOT;
+let STATE;
 
 // The durable state a worker leaves when it dies mid-dispatch, built
 // from the real claim, Attempt, launch intent, and (optionally) the real
-// Agent Deck start: only the crash itself is simulated.
+// direct provider start through the adapter's own repost: only the crash
+// itself is simulated.
 async function crashedAttempt(label, options = {}) {
   const bot = options.bot || codex;
   const id = queuedRequest(bot.id, `crash-${label}`, `Reconcile ${label}`);
@@ -330,7 +334,9 @@ async function crashedAttempt(label, options = {}) {
   let runId = null;
   if (options.post) {
     const intent = dead.launchIntent(attempt.id);
-    runId = (await deckApi.startAgentDeckRun(JSON.parse(intent.body), intent.idempotency_key)).runId;
+    const launched = await prepared.adapter.reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
+    if (launched.kind !== 'accepted') throw new Error(`crashedAttempt launch not accepted: ${JSON.stringify(launched)}`);
+    runId = launched.runId;
   }
   if (options.forceRunId) runId = options.forceRunId;
   if (runId && options.persist !== false) engine.recordAttemptExternalIds(attempt.id, { externalRunId: runId });
@@ -339,144 +345,168 @@ async function crashedAttempt(label, options = {}) {
   return { id, attemptId: attempt.id, runId };
 }
 
-const startPosts = () => fake.calls('POST', '/api/agent-runs').length;
+// Provider-side evidence: starts and the fake turn ids behind them.
+const startCalls = () => fake.providerCalls(STATE, 'startSession');
+const observeCalls = () => fake.providerCalls(STATE, 'observeTurn');
+const turnRows = () => one('SELECT COUNT(*) AS n FROM provider_session_turns WHERE agent_id = ?', codex.id).n;
+// Script the next provider turn's output (the fake completes unheld
+// turns with the next queued result).
+function queueResults(...results) {
+  fake.mutateFakeProvider(STATE, state => { state.results = [...(state.results ?? []), ...results]; });
+}
+function holdNextTurns(count = 1) {
+  fake.mutateFakeProvider(STATE, state => { state.holdNext = (state.holdNext ?? 0) + count; });
+}
+function newTurnIds(before) {
+  const seen = new Set(before);
+  return fake.fakeTurnIds(STATE).filter(id => !seen.has(id));
+}
+function scriptTurn(fakeId, fields) {
+  fake.mutateFakeProvider(STATE, state => {
+    if (!state.turns[fakeId]) throw new Error(`no provider turn ${fakeId}`);
+    Object.assign(state.turns[fakeId], fields);
+  });
+}
 
 async function reconciliationScenarios() {
   console.log('\n[3] reconciliation follows runtime evidence, never relaunching an ambiguous run');
   service.configureDispatcher({ owner: `test-main:${process.pid}`, config: { maxGlobal: 50, maxPerTarget: 50 } });
 
   // running: reattach, observe to terminal, complete once.
-  fake.onStart = () => ({ result: 'DONE-running', hold: true });
+  holdNextTurns(1);
   const running = await crashedAttempt('running', { post: true });
-  const postsBefore = startPosts();
+  const runningFake = newTurnIds([]).at(-1);
+  const startsBefore = startCalls();
+  const observesBefore = observeCalls();
   const sweeping = service.sweepDispatch();
-  await waitFor(() => fake.calls('GET', '/events').some(call => call.path.includes(running.runId)), 'reattached run observed');
-  assert(engine.getWorkRequest(running.id).state === 'running' && attemptsOf(running.id)[0].finished_at === null, 'running: Attempt stays open while the run is live');
-  fake.release(running.runId);
+  await waitFor(() => observeCalls() > observesBefore, 'reattached turn observed');
+  assert(engine.getWorkRequest(running.id).state === 'running' && attemptsOf(running.id)[0].finished_at === null, 'running: Attempt stays open while the turn is live');
+  fake.releaseFakeTurn(STATE, runningFake, 'DONE-running');
   await sweeping;
   let request = engine.getWorkRequest(running.id);
   let attempts = attemptsOf(running.id);
-  assert(request.state === 'completed' && attempts.length === 1 && attempts[0].outcome === 'succeeded' && attempts[0].output === 'DONE-running', 'running: reattached and completed with the run output');
-  assert(startPosts() === postsBefore && repliesOf(running.id).length === 1 && !leaseOf(running.id), 'running: no re-POST, one reply, lease released');
+  assert(request.state === 'completed' && attempts.length === 1 && attempts[0].outcome === 'succeeded' && attempts[0].output === 'DONE-running', 'running: reattached and completed with the turn output');
+  assert(startCalls() === startsBefore && repliesOf(running.id).length === 1 && !leaseOf(running.id), 'running: no second start, one reply, lease released');
   assert(inOrder(types(running.id), ['dispatch_claimed', 'state_changed', 'attempt_started', 'launch_intent_recorded', 'dispatch_lease_taken_over', 'reconcile_decided', 'attempt_finished', 'state_changed', 'dispatch_released']),
     `running: ordered recovery events (${types(running.id).join(',')})`);
   assert(eventData(running.id, 'dispatch_lease_taken_over')[0].reason === 'lease_expired' && eventData(running.id, 'reconcile_decided')[0].action === 'reattach', 'running: takeover reason lease_expired, decision reattach');
 
   // completed (ended with a result).
-  fake.onStart = () => ({ result: 'DONE-completed' });
+  queueResults('DONE-completed');
   const completed = await crashedAttempt('completed', { post: true });
   await service.sweepDispatch();
   request = engine.getWorkRequest(completed.id);
   assert(request.state === 'completed' && attemptsOf(completed.id)[0].output === 'DONE-completed' && repliesOf(completed.id).length === 1, 'completed: reconciled succeeded with the recorded result, one reply');
 
   // failed (error).
-  fake.onStart = () => ({ state: 'error' });
+  const errorBefore = fake.fakeTurnIds(STATE);
   const errored = await crashedAttempt('error', { post: true });
+  scriptTurn(newTurnIds(errorBefore)[0], { state: 'failed', output: null, finished_at: Date.now() });
   await service.sweepDispatch();
   attempts = attemptsOf(errored.id);
-  assert(engine.getWorkRequest(errored.id).state === 'failed' && attempts[0].outcome === 'failed' && attempts[0].error_category === 'runtime_failed', 'failed: an error run fails runtime_failed');
+  assert(engine.getWorkRequest(errored.id).state === 'failed' && attempts[0].outcome === 'failed' && attempts[0].error_category === 'runtime_failed', 'failed: an error turn fails runtime_failed');
 
   // canceled.
-  fake.onStart = () => ({ state: 'canceled' });
+  const canceledBefore = fake.fakeTurnIds(STATE);
   const canceled = await crashedAttempt('canceled', { post: true });
+  await sessions.cancelProviderTurn(raw, codex.id, canceled.runId, { correlation: {} });
+  assert(newTurnIds(canceledBefore).length === 1, 'canceled: the crash left one provider turn');
   await service.sweepDispatch();
   assert(attemptsOf(canceled.id)[0].outcome === 'cancelled' && engine.getWorkRequest(canceled.id).state === 'failed', 'canceled: reconciled cancelled');
 
   // ended without a valid result.
-  fake.onStart = () => ({ result: '' });
+  const emptyBefore = fake.fakeTurnIds(STATE);
   const noResult = await crashedAttempt('no-result', { post: true });
+  scriptTurn(newTurnIds(emptyBefore)[0], { state: 'completed', output: '', finished_at: Date.now() });
   await service.sweepDispatch();
   assert(attemptsOf(noResult.id)[0].error_category === 'result_contract', 'ended without a valid result fails result_contract');
 
-  // interrupted: a died run.
-  fake.onStart = () => ({ hold: true });
-  const died = await crashedAttempt('died', { post: true });
-  fake.runs.get(died.runId).state = 'died';
-  const diedPosts = startPosts();
+  // provider-lost: the provider has no such turn anymore. The run is
+  // provably gone (not ambiguous), so the Attempt fails closed and the
+  // request fails under the one-Attempt policy; nothing relaunches.
+  const lostBefore = fake.fakeTurnIds(STATE);
+  const lost = await crashedAttempt('lost', { post: true });
+  const lostFake = newTurnIds(lostBefore)[0];
+  const lostTurns = turnRows();
+  const lostStarts = startCalls();
+  fake.mutateFakeProvider(STATE, state => { delete state.turns[lostFake]; });
   await service.sweepDispatch();
-  attempts = attemptsOf(died.id);
-  const diedAttention = attentionOf(died.id);
-  assert(attempts.length === 1 && attempts[0].outcome === 'interrupted', 'died: the Attempt is terminal interrupted (not failed)');
-  assert(diedAttention && diedAttention.reason === 'run_died' && engine.getWorkRequest(died.id).state === 'waiting', 'died: operator attention run_died, request waiting');
-  assert(startPosts() === diedPosts && !leaseOf(died.id), 'died: no relaunch, lease released');
+  attempts = attemptsOf(lost.id);
+  assert(attempts.length === 1 && attempts[0].outcome === 'failed' && attempts[0].error_category === 'abandoned', 'provider-lost: the Attempt fails abandoned/observation-lost (not interrupted, not relaunched)');
+  assert(engine.getWorkRequest(lost.id).state === 'failed' && !attentionOf(lost.id), 'provider-lost: request failed fast, no attention');
+  assert(turnRows() === lostTurns && startCalls() === lostStarts && !leaseOf(lost.id), 'provider-lost: no relaunch, lease released');
   await service.sweepDispatch();
-  assert(attemptsOf(died.id).length === 1 && startPosts() === diedPosts && engine.getWorkRequest(died.id).state === 'waiting', 'died: a later sweep does nothing while the flag is set');
-  const blockedClaim = service.currentDispatcher().recoverable().some(item => item.requestId === died.id);
-  assert(!blockedClaim, 'died: the flagged request is not recoverable automation');
+  assert(attemptsOf(lost.id).length === 1 && startCalls() === lostStarts && engine.getWorkRequest(lost.id).state === 'failed', 'provider-lost: a later sweep does nothing (terminal)');
 
-  // unknown run id (404 RUN_NOT_FOUND).
-  const unknown = await crashedAttempt('unknown', { forceRunId: 'run-20261014T000000-missing' });
-  const unknownPosts = startPosts();
+  // unknown run id (no registry turn).
+  const unknown = await crashedAttempt('unknown', { forceRunId: 'turn-20261014T000000-missing' });
+  const unknownStarts = startCalls();
   await service.sweepDispatch();
   attempts = attemptsOf(unknown.id);
   assert(attempts[0].finished_at === null && attentionOf(unknown.id)?.reason === 'run_not_found' && engine.getWorkRequest(unknown.id).state === 'waiting',
     'unknown: Attempt stays open with attention run_not_found');
-  assert(startPosts() === unknownPosts, 'unknown: never relaunched');
+  assert(startCalls() === unknownStarts, 'unknown: never relaunched');
 
-  // unauthorized: the launching grant expired.
-  fake.onStart = () => ({ result: 'DONE-grant' });
-  const expired = await crashedAttempt('grant-expired', { post: true });
-  process.env.AGENT_DECK_RUN_TOKEN = 'adg_rotated_or_revoked';
+  // provider unavailable at reconcile: the Attempt fails closed (no hang,
+  // no relaunch); the provider is restored afterwards.
+  queueResults('DONE-unavailable');
+  const down = await crashedAttempt('unavailable', { post: true });
+  const downTurns = turnRows();
+  const downStarts = startCalls();
+  providerContract.clearSessionProviders({ builtins: true });
   await service.sweepDispatch();
-  process.env.AGENT_DECK_RUN_TOKEN = fake.token;
-  assert(attemptsOf(expired.id)[0].finished_at === null && attentionOf(expired.id)?.reason === 'grant_expired', 'unauthorized: Attempt open, attention grant_expired');
+  providerContract.registerSessionProvider({ connectionId: codex.runtime_connection_id },
+    () => fake.createFakeSessionProvider({ statePath: STATE, kind: 'dispatch-main' }));
+  attempts = attemptsOf(down.id);
+  assert(attempts[0].outcome === 'failed' && engine.getWorkRequest(down.id).state === 'failed', 'unavailable: Attempt and request fail closed');
+  assert(turnRows() === downTurns && startCalls() === downStarts, 'unavailable: no relaunch while the provider is gone');
 
-  // unreachable: defer, keep the slot, then complete once reachable.
-  fake.onStart = () => ({ result: 'DONE-unreachable' });
-  const unreachable = await crashedAttempt('unreachable', { post: true });
-  deckApi.setAgentDeckApiFetch(async () => { throw new Error('connect ECONNREFUSED'); });
-  await service.sweepDispatch();
-  deckApi.setAgentDeckApiFetch(fake.fetch);
-  const deferredLease = leaseOf(unreachable.id);
-  assert(deferredLease && deferredLease.owner === service.currentDispatcher().owner && attemptsOf(unreachable.id)[0].finished_at === null
-    && engine.getWorkRequest(unreachable.id).state === 'running' && types(unreachable.id).includes('reconcile_deferred'),
-  'unreachable: deferred, Attempt open, lease (and slot) kept by the reconciler');
-  raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(unreachable.id);
-  await service.sweepDispatch();
-  assert(engine.getWorkRequest(unreachable.id).state === 'completed' && attemptsOf(unreachable.id).length === 1, 'unreachable: completed after Agent Deck returned');
-
-  // No run id, the first POST never landed: re-POST launches once.
-  fake.onStart = () => ({ result: 'DONE-before-launch' });
-  const runsBefore = fake.runs.size;
+  // No run id, the first start never landed: repost launches once.
+  queueResults('DONE-before-launch');
+  const turnsBefore = turnRows();
   const unlaunched = await crashedAttempt('no-run-id', {});
   await service.sweepDispatch();
-  assert(engine.getWorkRequest(unlaunched.id).state === 'completed' && fake.runs.size === runsBefore + 1 && attemptsOf(unlaunched.id)[0].external_run_id,
-    'no run id (never sent): one same-key re-POST, one launch, completed');
+  assert(engine.getWorkRequest(unlaunched.id).state === 'completed' && turnRows() === turnsBefore + 1 && attemptsOf(unlaunched.id)[0].external_run_id,
+    'no run id (never sent): one same-key repost, one launch, completed');
 
-  // No run id, the POST landed: same-key re-POST returns the same run.
-  fake.onStart = () => ({ result: 'DONE-after-accept' });
+  // No run id, the start landed: same-key repost returns the same turn.
+  queueResults('DONE-after-accept');
   const accepted = await crashedAttempt('accepted-lost', { post: true, persist: false });
-  const runsAfterAccept = fake.runs.size;
+  const turnsAfterAccept = turnRows();
+  const startsAfterAccept = startCalls();
   await service.sweepDispatch();
-  assert(engine.getWorkRequest(accepted.id).state === 'completed' && fake.runs.size === runsAfterAccept && attemptsOf(accepted.id)[0].external_run_id === accepted.runId,
-    'no run id (accepted, id lost): re-POST returned the original run, no second launch');
+  assert(engine.getWorkRequest(accepted.id).state === 'completed' && turnRows() === turnsAfterAccept && startCalls() === startsAfterAccept && attemptsOf(accepted.id)[0].external_run_id === accepted.runId,
+    'no run id (accepted, id lost): repost returned the original turn, no second launch');
 
-  // No run id under a rotated grant: never POST (NOT-468 N5c).
-  fake.onStart = () => ({ result: 'DONE-rotated' });
-  const rotated = await crashedAttempt('rotated', { post: true, persist: false });
-  const rotatedRuns = fake.runs.size;
-  const rotatedPosts = startPosts();
-  const previousToken = fake.token;
-  fake.token = 'adg_rotated_grant_valid';
-  process.env.AGENT_DECK_RUN_TOKEN = fake.token;
-  await service.sweepDispatch();
-  fake.token = previousToken;
-  process.env.AGENT_DECK_RUN_TOKEN = previousToken;
-  assert(startPosts() === rotatedPosts && fake.runs.size === rotatedRuns && attentionOf(rotated.id)?.reason === 'grant_mismatch' && attemptsOf(rotated.id)[0].finished_at === null,
-    'no run id under another grant: no re-POST, attention grant_mismatch');
-
-  // No run id, pre-launch rejection: fail launch_failed.
-  fake.onStart = () => ({ startError: { status: 422, code: 'WORKSPACE_MISSING' } });
+  // No run id, pre-launch rejection: fail launch_failed. The intent names
+  // the crashed workspace; after the crash the scope no longer covers it.
   const rejectedLaunch = await crashedAttempt('rejected', {});
+  const scopeBefore = { kind: codex.session_scope_kind, items: codex.session_scope_items };
+  db.bots.updateRegistration(codex.id, 'codex', {
+    runtime_connection_id: codex.runtime_connection_id,
+    session_scope: { kind: 'workspaces', workspaces: [path.join(WORKROOT, 'elsewhere')], sessions: [] },
+    default_workspace: null,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
   await service.sweepDispatch();
+  db.bots.updateRegistration(codex.id, 'codex', {
+    runtime_connection_id: codex.runtime_connection_id,
+    session_scope: { kind: scopeBefore.kind, workspaces: JSON.parse(scopeBefore.items), sessions: [] },
+    default_workspace: WORKROOT,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
+  codex = bots.getById(codex.id);
   attempts = attemptsOf(rejectedLaunch.id);
   assert(attempts[0].outcome === 'failed' && attempts[0].error_category === 'launch_failed' && engine.getWorkRequest(rejectedLaunch.id).state === 'failed' && !attentionOf(rejectedLaunch.id),
     'no run id, pre-launch rejection: failed launch_failed without attention');
 
   // Interrupted: a transport that cannot be observed after a restart.
+  const hermesAdapter = dispatch.adapterForTransport('hermes-gateway');
   dispatch.setAttemptAdapterOverride(transport => transport === 'hermes-gateway'
     ? { name: 'hermes-gateway', run: async () => { throw new Error('must not relaunch'); } }
-    : deckAttempt.createAgentDeckApiAttemptAdapter());
+    : hermesAdapter);
   const hermesCrash = await crashedAttempt('hermes', { bot: hermes });
   await service.sweepDispatch();
   dispatch.setAttemptAdapterOverride(null);
@@ -486,19 +516,21 @@ async function reconciliationScenarios() {
     'interrupted (unobservable transport): Attempt interrupted, request failed retryable, nothing relaunched');
 
   // Startup orphan: running with an open Attempt and no lease (NOT-468 F1).
-  fake.onStart = () => ({ result: 'DONE-orphan' });
+  queueResults('DONE-orphan');
   const orphan = await crashedAttempt('orphan', { post: true, unleased: true });
   await service.recoverCoordinatorLoops();
   assert(engine.getWorkRequest(orphan.id).state === 'completed' && eventData(orphan.id, 'dispatch_lease_taken_over')[0].reason === 'unleased_running',
     'startup: an unleased running request is taken over and reconciled');
 
   // A lease that is still live is left alone.
-  fake.onStart = () => ({ result: 'DONE-live', hold: true });
+  holdNextTurns(1);
+  const liveBefore = fake.fakeTurnIds(STATE);
   const live = await crashedAttempt('live', { post: true });
+  const liveFake = newTurnIds(liveBefore)[0];
   raw.prepare('UPDATE dispatch_leases SET expires_at = ? WHERE request_id = ?').run(Date.now() + 60_000, live.id);
   await service.sweepDispatch();
   assert(leaseOf(live.id).owner === DEAD_OWNER && !types(live.id).includes('dispatch_lease_taken_over'), 'a live lease of another worker is not taken over');
-  fake.release(live.runId);
+  fake.releaseFakeTurn(STATE, liveFake, 'DONE-live');
   raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(live.id);
   await service.sweepDispatch();
 }
@@ -507,82 +539,44 @@ async function reconciliationScenarios() {
 async function fencingScenario() {
   console.log('\n[4] a worker whose lease was taken over cannot commit');
   service.configureDispatcher({ owner: `test-a:${process.pid}`, config: { maxGlobal: 50, maxPerTarget: 50 } });
-  fake.onStart = () => ({ result: 'DONE-fenced', hold: true });
+  holdNextTurns(1);
+  const fenceBefore = fake.fakeTurnIds(STATE);
+  const startsBefore = startCalls();
   const accepted = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Fenced work', idempotencyKey: 'fence-1' });
   const id = accepted.accepted.requestId;
   await waitFor(() => attemptsOf(id)[0]?.external_run_id, 'live run id persisted');
-  const runId = attemptsOf(id)[0].external_run_id;
-  raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
   const other = lib.createDispatcher(raw, engine, { owner: `test-b:${process.pid}` });
+  raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
   const taken = other.takeOver(other.recoverable().find(item => item.requestId === id));
   assert(!!taken, 'worker B took over the expired lease');
-  fake.release(runId);
+  fake.releaseFakeTurn(STATE, newTurnIds(fenceBefore)[0], 'DONE-fenced');
   await accepted.dispatched;
   assert(engine.getWorkRequest(id).state === 'running' && attemptsOf(id)[0].finished_at === null && repliesOf(id).length === 0,
     'worker A observed the end but its fenced commit wrote nothing');
   raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
   await service.sweepDispatch();
-  assert(engine.getWorkRequest(id).state === 'completed' && repliesOf(id).length === 1 && attemptsOf(id).length === 1 && fake.calls('POST', '/api/agent-runs').filter(c => c.headers['idempotency-key'] === `botmancers-attempt-${attemptsOf(id)[0].id}`).length === 1,
+  assert(engine.getWorkRequest(id).state === 'completed' && repliesOf(id).length === 1 && attemptsOf(id).length === 1 && startCalls() === startsBefore + 1,
     'the next owner reconciled it once: one reply, one Attempt, one launch');
 }
 
 // ---------------------------------------------------------------------
-// A live launch POST that fails: only a proven pre-launch refusal fails
-// the Attempt. A lost response or a 5xx leaves it open (lease kept) and the
-// next reconcile re-POSTs under the same key, so no second run starts.
+// A live direct launch that the provider refuses fails the Attempt
+// immediately and releases the lease: direct launches are synchronous
+// registry calls, so there is no lost-response ambiguity to reconcile.
 async function launchFailureScenario() {
-  console.log('\n[4b] a failed launch POST fails only when provably pre-launch; ambiguous launches reconcile');
+  console.log('\n[4b] a refused direct launch fails fast; nothing stays ambiguous');
   service.configureDispatcher({ owner: `test-launch:${process.pid}`, config: { maxGlobal: 50, maxPerTarget: 50 } });
-  const isStart = (url, init) => init.method === 'POST' && new URL(String(url), 'http://fake').pathname === '/api/agent-runs';
-  const cases = [
-    // The fake processes the POST (a run starts), then the client gets a
-    // network error. The process does not die.
-    { label: 'lost response', processed: true, ambiguous: true },
-    { label: '503 SERVER_ERROR', startError: { status: 503, code: 'SERVER_ERROR' }, ambiguous: true },
-    { label: '422 WORKSPACE_MISSING', startError: { status: 422, code: 'WORKSPACE_MISSING' }, ambiguous: false },
-  ];
-  for (const [index, c] of cases.entries()) {
-    let starts = 0;
-    fake.onStart = () => (starts++ === 0 && c.startError ? { startError: c.startError } : { result: `DONE-launch-${index}` });
-    let dropped = false;
-    deckApi.setAgentDeckApiFetch(async (url, init) => {
-      if (c.processed && !dropped && isStart(url, init)) {
-        dropped = true;
-        await fake.fetch(url, init);
-        throw new Error('socket hang up');
-      }
-      return fake.fetch(url, init);
-    });
-    const runsBefore = fake.runs.size;
-    const sent = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: `Launch failure ${index}`, idempotencyKey: `launch-failure-${index}` });
-    const id = sent.accepted.requestId;
-    await sent.dispatched;
-    deckApi.setAgentDeckApiFetch(fake.fetch);
-    let attempts = attemptsOf(id);
-    const key = `botmancers-attempt-${attempts[0].id}`;
-    if (!c.ambiguous) {
-      assert(attempts.length === 1 && attempts[0].outcome === 'failed' && attempts[0].error_category === 'launch_failed'
-        && engine.getWorkRequest(id).state === 'failed' && !leaseOf(id) && !types(id).includes('reconcile_deferred') && fake.runs.size === runsBefore,
-      `${c.label}: a pre-launch rejection fails the Attempt and releases the lease`);
-      continue;
-    }
-    assert(fake.runs.size === runsBefore + (c.processed ? 1 : 0), `${c.label}: Agent Deck ${c.processed ? 'started a run' : 'started nothing'}`);
-    assert(engine.getWorkRequest(id).state === 'running' && attempts.length === 1 && attempts[0].finished_at === null && attempts[0].external_run_id === null
-      && repliesOf(id).length === 0, `${c.label}: the Attempt and request stay open (not failed)`);
-    assert(leaseOf(id)?.owner === service.currentDispatcher().owner && eventData(id, 'reconcile_deferred').at(-1)?.reason === 'launch_unconfirmed'
-      && !types(id).includes('dispatch_released'), `${c.label}: lease kept, deferred launch_unconfirmed`);
-    await service.startAgentDispatch(id);
-    assert(attemptsOf(id).length === 1 && fake.runs.size === runsBefore + (c.processed ? 1 : 0), `${c.label}: a repeated dispatch creates no Attempt and launches nothing`);
-    raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
-    await service.sweepDispatch();
-    attempts = attemptsOf(id);
-    const runIds = fake.calls('POST', '/api/agent-runs').filter(call => call.headers['idempotency-key'] === key).length;
-    assert(engine.getWorkRequest(id).state === 'completed' && attempts.length === 1 && attempts[0].output === `DONE-launch-${index}`
-      && fake.runs.size === runsBefore + 1 && runIds === 2 && repliesOf(id).length === 1,
-    `${c.label}: reconciled by one same-key re-POST into exactly one run (${fake.runs.size - runsBefore} runs, ${runIds} POSTs)`);
-    assert(inOrder(types(id), ['dispatch_claimed', 'launch_intent_recorded', 'reconcile_deferred', 'dispatch_lease_taken_over', 'reconcile_decided', 'runtime_started', 'attempt_finished', 'state_changed', 'dispatch_released']),
-      `${c.label}: ordered events (${types(id).join(',')})`);
-  }
+  fake.mutateFakeProvider(STATE, state => { state.failStarts = (state.failStarts ?? 0) + 1; state.startError = { code: 'runtime_error', message: 'model crashed' }; });
+  const turnsBefore = turnRows();
+  const sent = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Launch failure 0', idempotencyKey: 'launch-failure-0' });
+  const id = sent.accepted.requestId;
+  await sent.dispatched;
+  const attempts = attemptsOf(id);
+  assert(attempts.length === 1 && attempts[0].outcome === 'failed' && attempts[0].error_category === 'launch_failed'
+    && engine.getWorkRequest(id).state === 'failed' && !leaseOf(id) && !types(id).includes('reconcile_deferred') && turnRows() === turnsBefore,
+  'refused start: a pre-launch refusal fails the Attempt and releases the lease');
+  await service.startAgentDispatch(id);
+  assert(attemptsOf(id).length === 1, 'a repeated dispatch of the failed request creates no Attempt');
 }
 
 // ---------------------------------------------------------------------
@@ -645,8 +639,8 @@ async function staleWorkerScenario() {
 // ---------------------------------------------------------------------
 async function concurrencyScenario() {
   console.log('\n[5] global and per-target limits with adapter barriers');
-  const alpha = botNamed('Limit Alpha', { agent: 'hermes', deck_id: 'deck-limit' });
-  const beta = botNamed('Limit Beta', { agent: 'hermes', deck_id: 'deck-limit' });
+  const alpha = botNamed('Limit Alpha', { agent: 'hermes' });
+  const beta = botNamed('Limit Beta', { agent: 'hermes' });
   const live = new Map();
   const gates = [];
   let maxActive = 0;
@@ -722,7 +716,7 @@ async function concurrencyScenario() {
 async function normalFlowEvents() {
   console.log('\n[6] ordered engine events, normal flow');
   service.configureDispatcher({ owner: `test-normal:${process.pid}`, config: { maxGlobal: 50, maxPerTarget: 50 } });
-  fake.onStart = () => ({ result: 'DONE-normal' });
+  queueResults('DONE-normal');
   const accepted = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Normal flow', idempotencyKey: 'normal-1' });
   await accepted.dispatched;
   const id = accepted.accepted.requestId;
@@ -730,37 +724,42 @@ async function normalFlowEvents() {
   const expected = ['accepted', 'policy_selected', 'dispatch_claimed', 'state_changed', 'attempt_started', 'launch_intent_recorded', 'runtime_started', 'attempt_finished', 'state_changed', 'dispatch_released'];
   assert(list.join(',') === expected.join(','), `normal flow: ${list.join(',')}`);
   const intent = raw.prepare('SELECT * FROM attempt_launch_intents WHERE request_id = ?').get(id);
-  const post = fake.calls('POST', '/api/agent-runs').find(call => call.headers['idempotency-key'] === intent.idempotency_key);
-  assert(intent && post && JSON.stringify(post.body) === intent.body && intent.grant_fingerprint === deckApi.agentDeckGrantFingerprint(),
-    'launch intent is exactly the body and key that were POSTed, with the grant fingerprint');
-  assert(!intent.body.includes(fake.token) && !raw.prepare("SELECT 1 FROM engine_events WHERE data LIKE ?").get(`%${fake.token}%`), 'the grant token itself is never persisted');
+  const body = JSON.parse(intent.body);
+  assert(intent && /^botmancers-(attempt|direct)-/.test(intent.idempotency_key) && intent.grant_fingerprint === null
+    && body.agentId === codex.id && body.kind === 'start' && body.workspace === WORKROOT && body.authority === 'read_only'
+    && body.requester && typeof body.requester.id === 'string',
+  'launch intent is the replayable direct launch (key, workspace, authority) with no grant');
+  assert(!intent.body.includes('SECRET') && !raw.prepare("SELECT 1 FROM engine_events WHERE request_id = ? AND data LIKE '%SECRET%'").get(id), 'no provider id is persisted in the intent or events');
   const view = service.getAgentRequest(PERSON, id);
   assert(view.events.map(e => e.type).join('>') === 'accepted>dispatched>runtime_started>completed', 'API request events keep the documented vocabulary');
 }
 
 // ---------------------------------------------------------------------
-// Crash injection with real process death (SIGKILL). The fake Agent Deck
-// runs in this process behind a loopback server, so its runs outlive the
-// killed Botmancers process.
+// Crash injection with real process death (SIGKILL). The fake provider is
+// file-backed, so its turns outlive the killed Botmancers process and the
+// restart child observes the same provider state.
 async function crashChild() {
-  deckApi.setAgentDeckApiServerUrlForTests(process.env.CRASH_DECK_URL);
-  deckAttempt.setAgentDeckApiPollIntervalForTests(5);
   const point = process.env.CRASH_POINT;
+  const crashState = process.env.CRASH_STATE;
+  const bot = bots.getById(process.env.CRASH_BOT);
+  const inner = fake.createFakeSessionProvider({ statePath: crashState, kind: 'dispatch-crash' });
+  // after_accept: die right after the provider accepts, before the
+  // registry writes its row or the Attempt learns the run id.
+  const provider = process.env.DISPATCH_SCENARIO === 'crash-launch' && point === 'after_accept'
+    ? {
+      ...inner,
+      startSession: async input => {
+        const out = await inner.startSession(input);
+        if (out && out.ok) process.kill(process.pid, 'SIGKILL');
+        return out;
+      },
+    }
+    : inner;
+  providerContract.registerSessionProvider({ connectionId: bot.runtime_connection_id }, () => provider);
   if (process.env.DISPATCH_SCENARIO === 'crash-launch') {
     service.configureDispatcher({ config: { maxGlobal: 10, maxPerTarget: 10 } });
     const kill = () => process.kill(process.pid, 'SIGKILL');
-    if (point === 'after_launch_accepted') {
-      deckApi.setAgentDeckApiFetch(async (url, init) => {
-        const response = await fetch(url, init);
-        if (init.method === 'POST' && new URL(url).pathname === '/api/agent-runs') {
-          await response.json();
-          kill();
-        }
-        return response;
-      });
-    } else {
-      jiti('./lib/dispatcher.ts').setDispatchFaultHook(at => { if (at === point) kill(); });
-    }
+    if (point !== 'after_accept') jiti('./lib/dispatcher.ts').setDispatchFaultHook(at => { if (at === point) kill(); });
     const accepted = service.acceptAgentMessage(PERSON, { agentId: process.env.CRASH_BOT, content: `Crash ${point}`, idempotencyKey: `crash-${point}` });
     await accepted.dispatched;
     process.stdout.write('NOT-KILLED');
@@ -774,19 +773,12 @@ async function crashChild() {
 
 async function crashScenarios() {
   console.log('\n[7] crash injection: no lost request, no duplicate confirmed launch');
-  const crashFake = createFakeAgentDeck({ token: fake.token });
-  crashFake.onStart = body => ({ result: `DONE ${body.prompt.slice(-30)}` });
-  let url;
-  try {
-    url = await crashFake.listen();
-  } catch (error) {
-    assert(false, `loopback listen for the crash fake failed: ${error && error.message}`);
-    return;
-  }
-  const env = { CRASH_DECK_URL: url, CRASH_BOT: codex.id, AGENT_DECK_RUN_TOKEN: fake.token };
-  for (const point of ['before_launch', 'after_launch_accepted', 'after_run_id_persisted', 'before_terminal_commit']) {
-    const runsBefore = crashFake.runs.size;
-    const postsBefore = crashFake.calls('POST', '/api/agent-runs').length;
+  for (const point of ['before_launch', 'after_accept', 'after_run_id_persisted', 'before_terminal_commit']) {
+    const crashState = path.join(os.tmpdir(), `botmancers-dispatch-crash-${process.pid}-${point}.json`);
+    fs.rmSync(crashState, { force: true });
+    fake.mutateFakeProvider(crashState, state => { state.results = [`DONE crash ${point}`]; });
+    const env = { CRASH_STATE: crashState, CRASH_BOT: codex.id };
+    const turnsBefore = turnRows();
     const launch = await runChild({ ...env, DISPATCH_SCENARIO: 'crash-launch', CRASH_POINT: point });
     const request = one('SELECT * FROM work_requests WHERE idempotency_key = ?', `crash-${point}`);
     const crashedState = request && engine.getWorkRequest(request.id);
@@ -795,36 +787,37 @@ async function crashScenarios() {
       `${point}: process killed with the request running and its Attempt open (${launch.signal || launch.code}${launch.err ? ` ${launch.err.slice(0, 200)}` : ''})`);
     if (!request) continue;
     const intent = one('SELECT * FROM attempt_launch_intents WHERE attempt_id = ?', openAttempt.id);
-    assert(intent && intent.body && intent.idempotency_key === `botmancers-attempt-${openAttempt.id}`, `${point}: Attempt and launch intent were durable before the adapter ran`);
-    const launchedBeforeCrash = crashFake.runs.size - runsBefore;
-    if (point === 'before_launch') assert(launchedBeforeCrash === 0 && !openAttempt.external_run_id, 'before_launch: nothing launched, no run id');
-    if (point === 'after_launch_accepted') assert(launchedBeforeCrash === 1 && !openAttempt.external_run_id, 'after_launch_accepted: Agent Deck accepted the run, the id was lost with the process');
+    assert(intent && intent.body && /^botmancers-(attempt|direct)-/.test(intent.idempotency_key), `${point}: Attempt and launch intent were durable before the adapter ran`);
+    const launchedBeforeCrash = turnRows() - turnsBefore;
+    const providerTurns = () => fake.fakeTurnIds(crashState).length;
+    if (point === 'before_launch') assert(launchedBeforeCrash === 0 && providerTurns() === 0 && !openAttempt.external_run_id, 'before_launch: nothing launched, no run id');
+    if (point === 'after_accept') assert(launchedBeforeCrash === 0 && providerTurns() === 1 && !openAttempt.external_run_id, 'after_accept: provider accepted the turn, the id was lost with the process');
     if (point === 'after_run_id_persisted' || point === 'before_terminal_commit') {
-      assert(launchedBeforeCrash === 1 && openAttempt.external_run_id && crashFake.runs.has(openAttempt.external_run_id), `${point}: the confirmed run id was persisted immediately after acceptance`);
+      assert(launchedBeforeCrash === 1 && openAttempt.external_run_id, `${point}: the confirmed run id was persisted immediately after acceptance`);
     }
     const restart = await runChild({ ...env, DISPATCH_SCENARIO: 'crash-restart' });
     assert(restart.code === 0, `${point}: restart process exited cleanly${restart.err ? ` (${restart.err.slice(0, 200)})` : ''}`);
     const after = engine.getWorkRequest(request.id);
     const attempts = attemptsOf(request.id);
-    const posts = crashFake.calls('POST', '/api/agent-runs').length - postsBefore;
     assert(after.state === 'completed' && attempts.length === 1 && attempts[0].outcome === 'succeeded', `${point}: request completed by its one Attempt (no lost request)`);
-    assert(crashFake.runs.size - runsBefore === 1 && attempts[0].external_run_id && crashFake.runs.has(attempts[0].external_run_id),
-      `${point}: exactly one Agent Deck launch (${crashFake.runs.size - runsBefore} runs, ${posts} POSTs)`);
+    assert(turnRows() - turnsBefore === 1 && providerTurns() === 1 && attempts[0].external_run_id,
+      `${point}: exactly one provider turn (${turnRows() - turnsBefore} registry turns, ${providerTurns()} provider turns)`);
+    assert(attempts[0].output === `DONE crash ${point}`, `${point}: the reply carries the scripted turn output`);
     assert(repliesOf(request.id).length === 1 && !leaseOf(request.id), `${point}: one reply, lease released`);
     const list = types(request.id);
     const takeover = eventData(request.id, 'dispatch_lease_taken_over')[0];
     assert(takeover && takeover.reason === 'owner_exited', `${point}: startup took over the exited process's lease (${takeover && takeover.reason})`);
     const expectedOrder = ['dispatch_claimed', 'state_changed', 'attempt_started', 'launch_intent_recorded'];
-    if (point !== 'before_launch' && point !== 'after_launch_accepted') expectedOrder.push('runtime_started');
+    if (point !== 'before_launch' && point !== 'after_accept') expectedOrder.push('runtime_started');
     expectedOrder.push('dispatch_lease_taken_over', 'reconcile_decided');
-    if (point === 'before_launch' || point === 'after_launch_accepted') expectedOrder.push('runtime_started', 'reconcile_decided');
+    if (point === 'before_launch' || point === 'after_accept') expectedOrder.push('runtime_started', 'reconcile_decided');
     expectedOrder.push('attempt_finished', 'state_changed', 'dispatch_released');
     assert(inOrder(list, expectedOrder), `${point}: ordered crash-recovery events (${list.join(',')})`);
     const decisions = eventData(request.id, 'reconcile_decided').map(d => `${d.phase}/${d.action}`).join(',');
-    const expectedDecisions = point === 'before_launch' || point === 'after_launch_accepted' ? 'launch/repost,launch/reattach' : 'run/reattach';
+    const expectedDecisions = point === 'before_launch' || point === 'after_accept' ? 'launch/repost,launch/reattach' : 'run/reattach';
     assert(decisions === expectedDecisions, `${point}: decisions ${decisions}`);
+    fs.rmSync(crashState, { force: true });
   }
-  await crashFake.close();
 }
 
 // ---------------------------------------------------------------------
@@ -833,12 +826,21 @@ async function main() {
   if (SCENARIO === 'crash-launch' || SCENARIO === 'crash-restart') return crashChild();
 
   console.log('NOT-469 leased dispatcher');
-  fake = createFakeAgentDeck({ token: 'adg_NOT_469_fixture_bearer_never_persist' });
-  process.env.AGENT_DECK_RUN_TOKEN = fake.token;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
-  deckAttempt.setAgentDeckApiPollIntervalForTests(5);
-  codex = botNamed('Dispatch Codex', { agent: 'codex', deck_id: 'deck-dispatch' });
-  hermes = botNamed('Dispatch Hermes', { agent: 'hermes', deck_id: 'deck-dispatch' });
+  WORKROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-dispatcher-work-'));
+  STATE = path.join(os.tmpdir(), `botmancers-dispatcher-provider-${process.pid}.json`);
+  fs.rmSync(STATE, { force: true });
+  codex = botNamed('Dispatch Codex', { agent: 'codex' });
+  db.bots.updateRegistration(codex.id, 'codex', {
+    runtime_connection_id: db.runtimeConnections.ensureLocal('codex'),
+    session_scope: { kind: 'workspaces', workspaces: [WORKROOT], sessions: [] },
+    default_workspace: WORKROOT,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
+  codex = bots.getById(codex.id);
+  hermes = botNamed('Dispatch Hermes', { agent: 'hermes' });
+  providerContract.registerSessionProvider({ connectionId: codex.runtime_connection_id },
+    () => fake.createFakeSessionProvider({ statePath: STATE, kind: 'dispatch-main' }));
 
   await raceScenario();
   decisionTable();
@@ -852,6 +854,8 @@ async function main() {
 
   console.log(`\nTEST RESULT: ${failures === 0 ? 'PASS' : `FAIL (${failures} assertion(s))`}`);
   removeDb(DB_PATH);
+  fs.rmSync(STATE, { force: true });
+  fs.rmSync(WORKROOT, { recursive: true, force: true });
   process.exit(failures === 0 ? 0 : 1);
 }
 
