@@ -38,7 +38,12 @@ wake to exactly one stable Agent ID. Renaming an Agent does not rewrite historic
 wake targets.
 
 Agent Deck is an optional launch profile. It is not an Agent and it is not
-presented as a runtime; a direct profile never contacts it. An Agent without a usable launch configuration remains readable, but a
+presented as a runtime; a direct profile never contacts it.
+
+> **Direction (NOT-541):** coding Agents launch directly through their local
+> SessionProvider and Agent Deck is removed from the launch path entirely. See
+> [direct coding-agent Wakes](design/2026-11-03-direct-coding-agent-wakes.md);
+> that design wins over the Agent Deck material here once NOT-543 lands. An Agent without a usable launch configuration remains readable, but a
 wake that requires execution must fail closed with a clear explanation.
 
 ### Conversation
