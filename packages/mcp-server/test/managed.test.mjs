@@ -73,7 +73,6 @@ exec ${JSON.stringify(realNpm)} "$@"
     BOTMANCERS_UI_PORT: String(ui),
     BOTMANCERS_MCP_PORT: String(mcp),
     BOTMANCERS_STARTUP_TIMEOUT_MS: '15000',
-    BOTMANCERS_AGENT_DECK_URL: `http://127.0.0.1:${mcp}`,
     // Off unless a test turns it on, so no stray detached worker races a test.
     BOTMANCERS_DISABLE_AUTOUPDATER: '1',
     ...extra,

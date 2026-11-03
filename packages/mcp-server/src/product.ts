@@ -5,7 +5,7 @@
 //   start [--daemon] [--open]  launch (idempotent: an already healthy product is left alone)
 //   stop                       terminate the supervisor and both children
 //   status                     healthy / degraded / stopped, with versions and endpoints
-//   doctor                     preflight checks, including optional Hermes and Agent Deck
+//   doctor                     preflight checks, including optional Hermes and provider CLIs
 //   open                       open the UI in a browser
 //
 // Health: healthy only when the supervisor and both children are alive, the
@@ -47,11 +47,9 @@ export const PRODUCT_EXIT = {
 
 export const STARTUP_TIMEOUT_ENV = 'BOTMANCERS_STARTUP_TIMEOUT_MS';
 export const BROWSER_ENV = 'BOTMANCERS_BROWSER';
-export const AGENT_DECK_URL_ENV = 'BOTMANCERS_AGENT_DECK_URL';
 export const CORE_HEALTH_PATH = '/api/health';
 export const BRIDGE_HEALTH_PATH = '/healthz';
 const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
-const DEFAULT_AGENT_DECK_URL = 'http://127.0.0.1:1111';
 
 export interface ProductIo {
   stdout: (text: string) => void;
@@ -946,15 +944,6 @@ function onPath(command: string, env: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
-async function reachable(url: string): Promise<boolean> {
-  try {
-    await fetch(url, { signal: AbortSignal.timeout(1500), redirect: 'manual' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // NOT-519: the Slack relay line. A running core reports its state on the
 // read-only GET /api/health (lib/slack-runtime slackRuntimeStatus: state,
 // reason, connections, never a token); doctor never sends Slack anything and
@@ -1082,12 +1071,15 @@ export async function doctor(ctx: Ctx): Promise<number> {
 
   add(...slackDoctorLine(view.core?.ok ? view.core.body : undefined, core, !!view.record && !!view.core?.ok));
 
-  const deckUrl = (ctx.env[AGENT_DECK_URL_ENV] ?? '').trim() || DEFAULT_AGENT_DECK_URL;
-  const deckBin = onPath('agent-deck', ctx.env);
-  if (!deckBin) add('warn', 'agent-deck', 'Agent Deck is unavailable: `agent-deck` is not on PATH; coding-agent runs cannot launch.');
-  else if (!(await reachable(deckUrl))) add('warn', 'agent-deck', `Agent Deck is unavailable: ${deckBin} found, but its server at ${deckUrl} is not answering.`);
-  else if (!(core.AGENT_DECK_RUN_TOKEN ?? '').trim()) add('warn', 'agent-deck', `Agent Deck is reachable at ${deckUrl}, but AGENT_DECK_RUN_TOKEN is not set in ${ctx.paths.coreEnv}.`);
-  else add('ok', 'agent-deck', `agent-deck on PATH, server ${deckUrl} reachable, run token configured`);
+  const providers = ['claude', 'codex', 'cursor', 'muse'];
+  const found = providers.filter(name => onPath(name, ctx.env));
+  if (found.length === 0) {
+    add('warn', 'providers', 'No coding-agent CLI is on PATH (looked for claude, codex, cursor, muse); coding-agent runs cannot launch until one is installed and signed in.');
+  } else if (found.length < providers.length) {
+    add('warn', 'providers', `Coding-agent CLIs on PATH: ${found.join(', ')}; not found: ${providers.filter(name => !found.includes(name)).join(', ')}.`);
+  } else {
+    add('ok', 'providers', 'claude, codex, cursor, and muse are all on PATH.');
+  }
 
   // MCP clients connected by `setup --client` and their skill (optional: only warn).
   for (const [level, name, detail] of clientDoctorLines(ctx.env, ctx.paths, mcpTarget(ctx.paths, ctx.mcpPort))) add(level, name, detail);

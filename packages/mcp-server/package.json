@@ -61,7 +61,6 @@
     "check:skill": "node scripts/check-skill.mjs",
     "smoke:install": "node scripts/smoke-install.mjs",
     "smoke:product": "node scripts/smoke-product-install.mjs",
-    "smoke:managed": "node scripts/smoke-managed-install.mjs",
     "release:check": "node scripts/release.mjs",
     "prepack": "npm run build && npm run build:app"
   },

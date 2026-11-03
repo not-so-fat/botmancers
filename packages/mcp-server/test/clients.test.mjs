@@ -64,7 +64,7 @@ function sandbox(t, { defaultPorts = false } = {}) {
     PATH: process.env.PATH, HOME: user, BOTMANCERS_HOME: home, BOTMANCERS_DISABLE_AUTOUPDATER: '1',
     BOTMANCERS_APP_DIR: join(packages()[version], 'app'),
     ...(defaultPorts ? {} : { BOTMANCERS_MCP_PORT: '43999', BOTMANCERS_UI_PORT: '43998' }),
-    BOTMANCERS_AGENT_DECK_URL: 'http://127.0.0.1:9', ...extra,
+    ...extra,
   });
   const outputs = [];
   const bm = async (args, { version = VERSION, extra } = {}) => {

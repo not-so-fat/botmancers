@@ -10,12 +10,12 @@ your Botmancers database, data root, `~/.botmancers`, or this working tree.
 
 | Command | What it runs |
 | --- | --- |
-| `npm run test:acceptance` | The canonical fake-adapter suite: all core scenarios (`test-acceptance-engine.js`) |
+| `npm run test:acceptance` | The canonical scripted-provider suite: all core scenarios (`test-acceptance-engine.js`) |
 | `npm run test:acceptance -- talk-answer safety-denial` | Only the named scenarios |
 | `npm run test:acceptance -- --list` | Lists the scenarios and their fixtures |
 | `npm run test:acceptance -- --keep` | Keeps the roots of passing scenarios too, for inspection |
 | `npm run test:acceptance:harness` | Harness self-tests (`test-acceptance-harness.js`): isolation, cleanup, the clean-environment run, and the smoke guardrails |
-| `npm run smoke:agent-deck -- --workdir <dir> --deck <id>` | Opt-in smoke against a real Agent Deck server. Never part of the default suite. |
+| `npm run smoke:direct -- --workdir <dir>` | Opt-in smoke with real provider CLIs. Never part of the default suite. |
 | `npm run test:acceptance:live-server` | The older `test-acceptance-steps-1-7.js` report script. It needs a developer server on port 43123 and is kept only as history (see `ACCEPTANCE.md`). |
 
 The exit status is 0 only when every scenario passes and the production-state
@@ -36,10 +36,10 @@ under the system temp directory, named `botmancers-acceptance-<scenario>-XXXXXX`
 ```
 
 The harness builds the scenario's environment from scratch. Nothing is
-inherited from your shell, so no Hermes, Agent Deck, Cursor, or other
-credentials reach it, and neither does your Git config. Inside the scenario
-process, test-support/acceptance/engine-context.js does the following before
-any engine module loads:
+inherited from your shell, so no Hermes, Cursor, or other credentials
+reach it, and neither does your Git config. Inside the scenario process,
+test-support/acceptance/engine-context.js does the following before any
+engine module loads:
 
 - It refuses every network connection that is not to loopback and records the
   attempt. The run fails if any such attempt was made.
@@ -47,8 +47,9 @@ any engine module loads:
   `node` workers, and any shell command (`exec`, or `shell: true`). A refused
   process never starts; the call throws, the attempt is recorded, and the run
   fails.
-- It drives coding Agents through the real Agent Deck run adapter, pointed at
-  the deterministic fake Agent Deck API (`test-support/fake-agent-deck-api.js`).
+- It drives coding Agents through the real direct session-provider adapter,
+  pointed at scripted in-process fakes (`test-support/fake-session-provider.js`)
+  over shared state files, so restart workers observe the same turns.
 - It runs coordinator (Hermes transport) turns from per-conversation scripts.
 
 When a scenario covers routes, the context serves the real `app/api/**/route.ts`
@@ -91,29 +92,30 @@ asserted only one of them:
 
 | Scenario | Proves |
 | --- | --- |
-| `talk-answer` | The owner posts through the real UI route on an ephemeral port. Codex answers through one read-only Agent Deck run in the disposable workspace. The projection is the same in-process and over HTTP. A resend replays without new rows, and a foreign-origin POST is refused. |
-| `duplicate-wake` | A coordinator Wake runs exactly once under every kind of replay: the same person key, re-routing the same reply, replaying the follow-up, and startup recovery. There are no new rows, runs, or projected Wakes. |
+| `talk-answer` | The owner posts through the real UI route on an ephemeral port. Codex answers through one read-only provider session in the disposable workspace. The projection is the same in-process and over HTTP. A resend replays without new rows, and a foreign-origin POST is refused. |
+| `duplicate-wake` | A coordinator Wake runs exactly once under every kind of replay: the same person key, re-routing the same reply, replaying the follow-up, and startup recovery. There are no new rows, turns, or projected Wakes. |
 | `unavailable-target` | A Wake to a missing Agent is reported to the coordinator. A Wake to an unlaunchable Agent (Hermes not configured) is blocked with no Attempt. After the target becomes available, the owner retries it with `POST /api/wakes/{id}/retry` and it runs. |
-| `restart-recovery` | Worker process 1 crashes right after the Agent Deck run id is persisted. A fresh process 2 takes over the lease, reattaches the run, and completes it. There is no second launch, and the answer appears once. The fake Agent Deck is served over loopback so that both processes reach it. |
+| `restart-recovery` | Worker process 1 crashes right after the provider turn id is persisted. A fresh process 2 takes over the lease, reattaches the turn, and completes it. There is no second launch, and the answer appears once. The scripted providers share state files so that both processes observe the same turn. |
 | `composed-review` | The owner approves the first edit Wake over HTTP. Then implementation, an independent read-only review, a revision that resumes the implementation session, and a second review run, all composed by the coordinator. |
-| `lifecycle-controls` | Running work is cancelled, and the run is cancelled in Agent Deck. A 300 ms request deadline times out a held run. A bounded retry (two Attempts) recovers a transient failure. A finished request cannot be retried or cancelled. |
-| `safety-denial` | An edit Wake without a grant waits with Allow and Deny. A foreign-origin Allow is refused. The owner's Deny over HTTP cancels the request with no Attempt, no run, and no grant, and a later Allow cannot revive it. |
+| `lifecycle-controls` | Running work is cancelled, and the turn is cancelled in the runtime. A 300 ms request deadline times out a held turn. A bounded retry (two Attempts) recovers a transient failure. A finished request cannot be retried or cancelled. |
+| `safety-denial` | An edit Wake without a grant waits with Allow and Deny. A foreign-origin Allow is refused. The owner's Deny over HTTP cancels the request with no Attempt, no turn, and no grant, and a later Allow cannot revive it. |
 
 `self-test-failure` fails on purpose. It runs only when you name it, and the
 harness self-test uses it to prove that a failing root is preserved.
 
-## Opt-in real Agent Deck smoke
+## Opt-in direct smoke
 
 ```
-AGENT_DECK_RUN_TOKEN=... npm run smoke:agent-deck -- \
-  --workdir /tmp/my-disposable-repo --deck <deck id> \
-  [--agent codex|claude|cursor] [--server http://127.0.0.1:1111] \
-  [--prompt "..."] [--evidence out.json]
+npm run smoke:direct -- \
+  --workdir /tmp/my-disposable-repo \
+  [--agent claude] [--reviewer codex] [--evidence out.json]
 ```
 
-The smoke runs one read-only conversation turn through the canonical engine
-against a real Agent Deck server. Botmancers state still lives in a disposable
-harness root. Only the server and the workdir you give it are real.
+The smoke registers two local Agents and runs an implement -> review -> revise
+round through direct provider Sessions: a fresh implementation turn (owner
+grant), a read-only review turn, and a revision turn that resumes the
+implementation session. Botmancers state still lives in a disposable harness
+root. Only the provider CLIs and the workdir you give it are real.
 
 The smoke refuses to start, with exit status 2 and before it creates any state,
 unless all of the following hold:
@@ -124,10 +126,8 @@ unless all of the following hold:
   Create this file only in a repository that may be changed or deleted.
 - The workdir is outside this repository, is not your home directory (and does
   not contain it), is not inside `~/.botmancers`, and is not `/`.
-- `AGENT_DECK_RUN_TOKEN` and `--deck` are set.
-- `--server` is an http(s) URL with no `user:password@`, query string, or
-  fragment. Pass the token only through `AGENT_DECK_RUN_TOKEN`.
-- The evidence file (`--evidence` or the default) is new, its directory
+- Both provider CLIs answer `--version`.
+- The evidence file (`--evidence` or stdout only) is new, its directory
   exists, and it is outside the workdir, this repository, `~/.botmancers`, and
   every configured production path. Writing it therefore cannot change the
   state the smoke verifies, and it never overwrites an existing file.
@@ -139,30 +139,33 @@ dir=$(mktemp -d) && cd "$dir" && git init -q -b main \
   && echo "disposable" > .botmancers-disposable && git add -A && git commit -qm init
 ```
 
-The smoke writes its evidence to the `--evidence` path, or by default to
-`$TMPDIR/botmancers-agent-deck-smoke-<time>.json`, and prints it. The evidence
-records:
+The smoke prints its evidence, and writes it to the `--evidence` path when
+one is given. The evidence records:
 
-- The Node, Botmancers, and Botmancers commit versions, and the Agent Deck
-  version when the server reports one.
-- The server, deck, and agent.
-- The Work Request, Attempt, Agent Deck run, and session ids.
-- The outcome, the projection kinds, and a preview of the reply.
-- The workdir's HEAD and clean state before and after the run, and whether
+- The Node, provider CLI, and Botmancers commit versions.
+- The two Agents and their providers.
+- The three Work Requests (kind, state, Attempt count), whether the revision
+  resumed the implementation session, and a preview of the replies.
+- The adapters used (`session-provider`), the non-loopback connections
+  attempted (must be none), and any stale `AGENT_DECK_*` environment,
+  recorded as ignored.
+- The workdir's HEAD and status before and after the round, and whether
   production state stayed unchanged.
 
-The smoke passes only if the request completed, production state is unchanged,
-and the workdir is still clean at the same HEAD. A run that dirties the workdir
-or commits to it prints `SMOKE RESULT: FAIL`.
+The smoke passes only if every request completed, the revision resumed the
+implementation session, production state is unchanged, and the workdir holds
+exactly the smoke note at the same HEAD. A round that dirties the workdir
+beyond it prints `SMOKE RESULT: FAIL`.
 
 Before anything is printed or written, the evidence is redacted:
 
-- The token, and every environment value whose name looks secret (`*TOKEN*`,
-  `*SECRET*`, `*API_KEY*`, and similar), is replaced.
-- So are `Bearer …`, `adg_…`, `sk-…`, `gh?_…`, and `xox?-…` patterns, URL
-  userinfo (`scheme://user:pass@`), and any field whose name looks secret.
+- Every environment value whose name looks secret (`*TOKEN*`, `*SECRET*`,
+  `*API_KEY*`, and similar) is replaced.
+- So are `Bearer …`, `sk-…`, `gh?_…`, and `xox?-…` patterns, URL userinfo
+  (`scheme://user:pass@`), and any field whose name looks secret.
+- Provider-private turn and session ids are never included.
 
 The harness root is removed after a passing smoke and kept after a failing one.
 `npm run test:acceptance:harness` runs the guardrails and the whole smoke flow
-against the fake Agent Deck served over loopback. That run proves the refusals
-and that the token never reaches the output.
+with scripted in-process providers. That run proves the refusals and that no
+secret or provider-private id reaches the output.

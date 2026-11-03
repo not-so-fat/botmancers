@@ -49,7 +49,7 @@ export const PRODUCT_HELP = `Usage: botmancers <command>
 Run Botmancers (UI, API, core engine, and MCP bridge) from this package:
 
   setup                     Create BOTMANCERS_HOME (owner-only) and generate the
-                            bridge credentials; prints Hermes and Agent Deck steps;
+                            bridge credentials; prints Hermes and provider steps;
                             refreshes the clients set up with --client
   setup --client codex|cursor|claude [--remove]
                             Connect that client to the MCP bridge and install the
@@ -59,7 +59,7 @@ Run Botmancers (UI, API, core engine, and MCP bridge) from this package:
                             on 127.0.0.1:3332 under one supervisor
   stop                      Stop the supervisor, core, and bridge
   status                    Report healthy / degraded / stopped, versions, endpoints
-  doctor                    Check the installation, home, ports, Hermes, Agent Deck
+  doctor                    Check the installation, home, ports, Hermes, provider CLIs
   open                      Open the UI in a browser
   mcp [options]             Run only the MCP bridge (same as bare \`botmancers\`)
   install [--to VERSION]    Managed install into ~/.botmancers/versions with the

@@ -24,7 +24,6 @@ claude -p --output-format stream-json --verbose --input-format text \
 - `cwd` is the explicit workspace for a start (already checked against the
   Agent's scope), or the workspace the session recorded for a resume (Claude
   Code finds a session through its project directory).
-- The environment is inherited minus every `AGENT_DECK*` variable.
 - Authority maps to an explicit mode and tool list. Botmancers never infers
   authority, and nothing here bypasses Claude Code's permission checks:
 

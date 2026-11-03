@@ -67,8 +67,8 @@ The machine-readable schema is
 | `resumeWorkRequest` | revision only | Canonical implementation Work Request whose Session Binding must resume |
 | `limits` | no | Narrower attempt/deadline hints; never broader than engine policy |
 
-The envelope cannot contain a tool profile, Agent Deck, working directory,
-runtime, external run/session ID, caller identity, target Agent ID, grant, budget,
+The envelope cannot contain a tool profile, working directory, runtime,
+external run/session ID, caller identity, target Agent ID, grant, budget,
 or idempotency key.
 
 Botmancers derives and validates:
@@ -119,28 +119,17 @@ If the person names a reviewer, Tank uses it. Otherwise Tank may choose a distin
 launchable Agent; if no suitable choice is clear, Tank asks the person. Reviewer
 output advises Tank but does not itself trigger a revision.
 
-## Finalization decision
+## Finalization decision (removed)
 
-After a prepared implementation or revision and its distinct read-only review
-both finish, the coordinator may explicitly accept or reject those exact Attempts:
-
-````text
-```botmancers-finalize
-{
-  "version": 1,
-  "decision": "accept",
-  "implementationAttemptId": "<canonical Attempt id>",
-  "reviewAttemptId": "<canonical Attempt id>",
-  "commitMessage": "Optional bounded message"
-}
-```
-````
-
-Free-form review or coordinator prose is never approval. The block cannot contain
-paths, digests, modes, a working directory, or an external run ID. Botmancers
-validates the two Attempts, source conversation, lineage, independent reviewer,
-and immutable candidate artifact, then submits the already-persisted manifest.
-A `reject` decision records that nothing was committed.
+A `botmancers-finalize` block existed before the direct cutover: after a
+prepared implementation or revision and its distinct read-only review both
+finished, the coordinator could explicitly accept or reject those exact
+Attempts, and Botmancers submitted the already-persisted manifest as one
+audited commit. Reviewed Git finalization was removed with the direct
+cutover (Botmancers adds no commit, PR, worktree, or remote-run
+orchestration): a `botmancers-finalize` block in a coordinator reply is
+not a decision and is ignored. Pre-cutover finalization history still
+projects.
 
 ## Legacy compatibility
 

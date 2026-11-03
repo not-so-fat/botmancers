@@ -3,8 +3,7 @@
 `lib/cursor-session-provider.ts` is a direct `SessionProvider`
 (see [core-engine.md](../core-engine.md#provider-sessions)) for sessions created
 by the **Cursor Agent CLI or SDK**. Every runtime connection whose provider is
-`cursor` gets it by default (`lib/provider-sessions.ts`); Agent Deck is never
-contacted.
+`cursor` gets it by default (`lib/provider-sessions.ts`).
 
 **Arbitrary Cursor IDE chat tabs are not supported.** The provider never opens
 Cursor's own stores (`~/.cursor`, the IDE's `state.vscdb`, or any other
