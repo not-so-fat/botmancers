@@ -11,7 +11,8 @@
 // real route handlers (proxy.ts, app/api/v0/mcp, app/api/v0/**) are served
 // on an ephemeral loopback port and driven as an MCP client would over
 // Streamable HTTP with bearer service tokens; coordinator turns are
-// scripted and coding Agents run against the fake Agent Deck API.
+// scripted and coding Agents run through the real direct
+// session-provider adapter against scripted in-process fakes.
 //
 // Covers: initialize and tools/list against the captured contract
 // (docs/contracts/mcp-bridge-v1.tools.json); fail-closed authentication
@@ -115,21 +116,21 @@ async function child() {
   const OTHER_TOKEN = 'bmt_other_service_fixture_token_9876';
   const TABLES = ['conversations', 'conversation_participants', 'conversation_intakes', 'messages', 'wakes', 'work_requests', 'work_attempts', 'engine_events', 'conversation_events', 'session_bindings'];
   const counts = () => Object.fromEntries(TABLES.map(table => [table, raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n]));
-  const deckStarts = () => ctx.fakeDeck.calls('POST', '/api/agent-runs').length;
-  const snapshot = () => ({ ...counts(), deck_starts: deckStarts(), coordinator_runs: ctx.coordinatorLaunches.length });
+  const directStarts = () => ctx.startsFor(dev).length + ctx.startsFor(holder).length + ctx.sendsFor(dev).length + ctx.sendsFor(holder).length;
+  const snapshot = () => ({ ...counts(), direct_starts: directStarts(), coordinator_runs: ctx.coordinatorLaunches.length });
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   // ---- fixtures ----------------------------------------------------------
   const tank = ctx.agent('Tank', 'hermes');
-  const dev = ctx.agent('Dev', 'claude');
+  // Dev performs the granted implementation turn, so its policy allows
+  // workspace writes; Holder only takes read-only conversation turns.
+  const dev = ctx.agent('Dev', 'claude', { policy_mode: 'workspace_write' });
   const other = ctx.agent('Other', 'hermes');
   const holder = ctx.agent('Holder', 'codex');
-  ctx.deckScripts.set(dev.deck_id, () => ({ result: 'Implemented: retry for the uploader.', sessionId: 'dev-session-secret-1' }));
-  ctx.deckScripts.set(holder.deck_id, body => {
-    if (/FAIL-ME/.test(body.prompt)) return { state: 'error', errorMessage: 'client failed' };
-    if (/HOLD-ME/.test(body.prompt)) return { result: 'Held answer.', hold: true, sessionId: 'holder-session-secret' };
-    return { result: 'Holder answer.' };
-  });
+  ctx.script(dev, { results: ['Implemented: retry for the uploader.'] });
+  // Holder's first turn (HOLD-ME) stays running until released; later
+  // turns complete with the echo reply unless held again.
+  ctx.script(holder, { holdNext: 1 });
   // Tank: a Wake for "[wake]" objectives, a report on its continuation,
   // a plain answer otherwise.
   ctx.hermesScripts.set(tank.id, (input, request) => {
@@ -440,7 +441,7 @@ async function child() {
     check(wakeRequest && wakeRequest.requester_kind === 'bot' && wakeRequest.requester_id === tank.id && wakeRequest.parent_request_id === root.id
       && wakeRequest.root_principal_kind === 'service' && wakeRequest.root_principal_id === 'grok-bot' && wakeRequest.tool_profile === 'edit',
       'the implementation request is created by the coordinator\'s Wake (requester bot:Tank, parent = the direct request, root principal recorded as the service)');
-    check(ctx.attemptsOf(wakeRequest.id).length === 0 && ctx.fakeDeck.calls('POST', '/api/agent-runs').filter(c => c.body.deckId === dev.deck_id).length === 0, 'no Attempt and no Dev run before the grant');
+    check(ctx.attemptsOf(wakeRequest.id).length === 0 && ctx.startsFor(dev).length === 0, 'no Attempt and no Dev turn before the grant');
     const decision = engine.latestSafetyDecision(wakeRequest.id);
     check(decision && decision.decision === 'blocked' && decision.principal_type === 'agent_principal', `safety decision: blocked for the Agent caller (got ${decision && `${decision.decision}/${decision.principal_type}`})`);
     const pendingView = await call('botmancers_get_conversation', { conversation_id: conv });
@@ -504,8 +505,10 @@ async function child() {
   section('AC6 status snapshots: pending, running, succeeded, failed, cancelled');
   {
     const start = async (objective, key) => record(await call('botmancers_start_task', { coordinator: 'Holder', objective, idempotency_key: key })).data;
+    const fakeDirect = require('./test-support/fake-session-provider.js');
+    const holderState = path.join(ctx.providerDir, `${holder.id}.provider.json`);
     const running = await start('HOLD-ME: long analysis', 'status-running');
-    await waitFor(() => ctx.attemptsOf(running.request_id).some(a => a.external_run_id && a.finished_at === null), 'the held run to start');
+    await waitFor(() => ctx.attemptsOf(running.request_id).some(a => a.external_run_id && a.finished_at === null), 'the held turn to start');
     const pending = await start('Second question for Holder', 'status-pending');
     const toCancel = await start('Third question for Holder', 'status-cancelled');
     const read = async id => record(await call('botmancers_get_request', { request_id: id })).data;
@@ -513,11 +516,23 @@ async function child() {
     const pendingView = await read(pending.request_id);
     await ctx.service.cancelAgentRequest({ kind: 'service', id: 'grok-bot' }, toCancel.request_id, 'caller withdrew');
     const cancelledView = await read(toCancel.request_id);
-    const runId = ctx.attemptsOf(running.request_id)[0].external_run_id;
-    ctx.fakeDeck.release(runId);
+    ctx.release(holder, 'Held answer.');
     await ctx.settle([running.request_id, pending.request_id]);
     const succeededView = await read(running.request_id);
+    // The failing turn is held first so the failure lands before it can
+    // complete on its own.
+    ctx.script(holder, { holdNext: 1 });
+    const failedBefore = fakeDirect.fakeTurnIds(holderState);
     const failed = await start('FAIL-ME please', 'status-failed');
+    let failedTurn = null;
+    await waitFor(() => {
+      const ids = fakeDirect.fakeTurnIds(holderState).filter(id => !failedBefore.includes(id));
+      if (ids.length > 0) { failedTurn = ids[0]; return true; }
+      return false;
+    }, 'the FAIL-ME turn to start');
+    fakeDirect.mutateFakeProvider(holderState, state => {
+      Object.assign(state.turns[failedTurn], { state: 'failed', output: null, held: false, finished_at: Date.now() });
+    });
     await ctx.settle([failed.request_id]);
     const failedView = await read(failed.request_id);
 
@@ -591,15 +606,19 @@ async function child() {
     process.env.BOTMANCERS_SERVICE_TOKENS = tokens;
   }
 
-  section('AC6 no session binding, run id, credential, or deck leak');
+  section('AC6 no session binding, run id, provider id, credential, or workspace leak');
   {
     const text = allText.join('\n');
     const runIds = raw.prepare('SELECT external_run_id FROM work_attempts WHERE external_run_id IS NOT NULL').all().map(r => r.external_run_id);
     const sessions = raw.prepare('SELECT external_session_id FROM session_bindings').all().map(r => r.external_session_id);
-    const leaks = [TOKEN, OTHER_TOKEN, digest(TOKEN), process.env.AGENT_DECK_RUN_TOKEN, 'dev-session-secret-1', 'holder-session-secret', ...sessions, ...runIds,
-      dev.deck_id, holder.deck_id, 'session_binding', 'external_run_id', 'external_session_id', 'policy_snapshot', 'tool_profile', ctx.workspace]
+    // Every provider turn and session id behind the direct coding turns.
+    const providerIds = [dev, holder].flatMap(agent => Object.entries(ctx.providerTurns(agent))
+      .flatMap(([turnId, turn]) => [turnId, turn.session]));
+    const leaks = [TOKEN, OTHER_TOKEN, digest(TOKEN), ...sessions, ...runIds, ...providerIds,
+      'session_binding', 'external_run_id', 'external_session_id', 'policy_snapshot', 'tool_profile', ctx.workspace]
       .filter(needle => needle && text.includes(needle));
-    check(sessions.length > 0 && runIds.length > 0, `fixtures produced session bindings (${sessions.length}) and run ids (${runIds.length}) to look for`);
+    check(sessions.length > 0 && runIds.length > 0 && providerIds.length > 0,
+      `fixtures produced session bindings (${sessions.length}), run ids (${runIds.length}), and provider ids (${providerIds.length}) to look for`);
     check(leaks.length === 0, `no bridge response contains them${leaks.length ? ` (leaked: ${leaks.join(', ')})` : ''}`);
   }
 
@@ -726,7 +745,7 @@ async function child() {
       intent: `Plan the ${key} rollout`, executionKind: 'implementation', toolProfile: 'edit', idempotencyKey: `v2-seed-${key}`, now,
     });
     engine.transitionWorkRequest(request.id, { from: 'queued', to: 'running', now });
-    const attempt = engine.createAttempt(request.id, { kind: 'launch', adapter: 'hermes', toolProfile: 'edit', launchSnapshot: { transport: 'hermes-gateway', cwd: ctx.workspace, deck: bot.deck_id }, now });
+    const attempt = engine.createAttempt(request.id, { kind: 'launch', adapter: 'hermes', toolProfile: 'edit', launchSnapshot: { transport: 'hermes-gateway', cwd: ctx.workspace }, now });
     engine.finishAttempt(attempt.id, { outcome: 'succeeded', output: 'done', externalSessionId: secret, now });
     const binding = engine.bindSession({ agentId: bot.id, adapter: 'hermes', externalSessionId: secret, conversationId: conv.id, requestId: request.id, sourceAttemptId: attempt.id, now });
     engine.transitionWorkRequest(request.id, { from: 'running', to: 'completed', result: { reply_message_id: null }, now });
@@ -741,7 +760,7 @@ async function child() {
   });
   const scoutS = seedSession(scout, PROVIDER.scout, 'scout');
   const vaultS = seedSession(vault, PROVIDER.vault, 'vault');
-  ctx.db.messages.create(sageEnded.conv.id, 'bot', `I resumed ${PROVIDER.sageOld} in ${ctx.workspace} on ${sage.deck_id}.`, sage.id);
+  ctx.db.messages.create(sageEnded.conv.id, 'bot', `I resumed ${PROVIDER.sageOld} in ${ctx.workspace}.`, sage.id);
   const GRANTS_PATH = path.join(process.env.HOME, 'config', 'service-grants.json');
   process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
   process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE = '1000';
@@ -862,7 +881,7 @@ async function child() {
     conforms('botmancers_get_conversation', thread, 'get_conversation (v2 path)');
     check(thread.data.contract === 'botmancers.mcp.v2' && thread.data.content_trust === 'untrusted'
       && thread.data.messages.some(m => m.content.includes('[redacted runtime id]') && m.content.includes('[redacted]')) && !thread.text.includes(PROVIDER.sageOld),
-    'v2 path: the transcript is returned redacted (provider id, workspace, Deck) and marked untrusted');
+    'v2 path: the transcript is returned redacted (provider id, workspace) and marked untrusted');
     const firstPage = await v2call('botmancers_get_conversation', { conversation_id: sageEnded.conv.id, agent_id: sage.id, limit: 1 });
     check(firstPage.data.messages.length === 1 || firstPage.data.next_cursor === null, 'v2 path: limit bounds the message page');
     const v1Read = await call('botmancers_get_conversation', { conversation_id: sageEnded.conv.id });
@@ -1044,7 +1063,7 @@ async function child() {
   {
     const textAll = v2Text.join('\n');
     const runIds = raw.prepare('SELECT external_run_id FROM work_attempts WHERE external_run_id IS NOT NULL').all().map(r => r.external_run_id);
-    const leaks = [...Object.values(PROVIDER), `${PROVIDER.sageOld}-next`, TOKEN, OTHER_TOKEN, digest(TOKEN), sage.deck_id, scout.deck_id, vault.deck_id, ctx.workspace,
+    const leaks = [...Object.values(PROVIDER), `${PROVIDER.sageOld}-next`, TOKEN, OTHER_TOKEN, digest(TOKEN), ctx.workspace,
       ...runIds].filter(needle => needle && textAll.includes(needle));
     check(v2Text.length > 60, `collected ${v2Text.length} v2 responses`);
     check(leaks.length === 0, `no v2 response contains a private value${leaks.length ? ` (leaked: ${leaks.join(', ')})` : ''}`);
@@ -1079,7 +1098,6 @@ async function child() {
 
   await ctx.service.waitForAgentDispatchIdle();
   await ctx.close();
-  await ctx.fakeDeck.close();
   console.log(`\n${passes} passed, ${failures} failed`);
   return failures === 0 ? 0 : 1;
 }
