@@ -217,7 +217,7 @@ export async function smoke({ tarball, registryVersion } = {}) {
     check(anonymous.status === 401, `the same read with a wrong token -> ${anonymous.status}`);
 
     const owner = { 'content-type': 'application/json', origin: base };
-    const agent = await (await fetch(`${base}/api/bots`, { method: 'POST', headers: owner, body: JSON.stringify({ name: 'Smokey', title: 'Install smoke', description: 'smoke', deck_id: '00000000-0000-4000-8000-000000000001' }) })).json();
+    const agent = await (await fetch(`${base}/api/bots`, { method: 'POST', headers: owner, body: JSON.stringify({ name: 'Smokey', title: 'Install smoke', description: 'smoke', runtime_connection_id: 'rc-local-hermes', session_scope: { kind: 'all_provider_sessions' }, policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false } }) })).json();
     check(typeof agent.id === 'string', `created Agent ${agent.name} (${agent.id}) through the UI API`);
     const conversation = await (await fetch(`${base}/api/conversations?botId=${agent.id}`)).json();
     const posted = await fetch(`${base}/api/conversations/${conversation.id}/messages`, { method: 'POST', headers: owner, body: JSON.stringify({ content: 'smoke: kept across restarts' }) });

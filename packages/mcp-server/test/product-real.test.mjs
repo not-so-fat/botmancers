@@ -57,7 +57,7 @@ test('real app: home-rooted state survives stop/start from two cwds; the bridge 
   assert.equal(root200.status, 200);
   assert.match(await root200.text(), /<title>Botmancers/);
 
-  const agent = await api('POST', '/api/bots', { name: 'Persisto', title: 'Persistence probe', description: 'probe', deck_id: '00000000-0000-4000-8000-000000000001' });
+  const agent = await api('POST', '/api/bots', { name: 'Persisto', title: 'Persistence probe', description: 'probe', runtime_connection_id: 'rc-local-hermes', session_scope: { kind: 'all_provider_sessions' }, policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false } });
   assert.equal(agent.status, 200, JSON.stringify(agent.json));
   const conversation = await api('GET', `/api/conversations?botId=${agent.json.id}`);
   assert.equal(conversation.status, 200);

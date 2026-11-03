@@ -484,7 +484,7 @@ test('doctor distinguishes missing Hermes configuration and missing provider CLI
   const bare = await s.run(['doctor'], { PATH: '/usr/bin:/bin' });
   assert.equal(bare.code, 0, bare.stdout);
   assert.match(bare.stdout, /^ {2}warn {2}hermes {6}Hermes is not configured: .*HERMES_API_SERVER_KEY/m);
-  assert.match(bare.stdout, /^ {2}warn {2}providers {2}No coding-agent CLI is on PATH \(looked for claude, codex, cursor, muse\)/m);
+  assert.match(bare.stdout, /^ {2}warn {2}providers {3}No coding-agent CLI is on PATH \(looked for claude, codex, cursor, muse\)/m);
   assert.match(bare.stdout, /^ {2}ok {4}config/m);
   assert.match(bare.stdout, /^ {2}ok {4}ports/m);
   assert.match(bare.stdout, /^result: ok \(2 warnings\)$/m);
@@ -496,11 +496,11 @@ test('doctor distinguishes missing Hermes configuration and missing provider CLI
   const partial = await s.run(['doctor'], { PATH: `${bin}:/usr/bin:/bin` });
   assert.equal(partial.code, 0);
   assert.match(partial.stdout, /^ {2}ok {4}hermes {6}HERMES_API_SERVER_KEY is configured/m);
-  assert.match(partial.stdout, /^ {2}warn {2}providers {2}Coding-agent CLIs on PATH: claude; not found: codex, cursor, muse\./m);
+  assert.match(partial.stdout, /^ {2}warn {2}providers {3}Coding-agent CLIs on PATH: claude; not found: codex, cursor, muse\./m);
 
   for (const name of ['codex', 'cursor', 'muse']) writeFileSync(join(bin, name), '#!/bin/sh\necho 0.0.0\n', { mode: 0o755 });
   const full = await s.run(['doctor'], { PATH: `${bin}:/usr/bin:/bin` });
-  assert.match(full.stdout, /^ {2}ok {4}providers {2}claude, codex, cursor, and muse are all on PATH\./m);
+  assert.match(full.stdout, /^ {2}ok {4}providers {3}claude, codex, cursor, and muse are all on PATH\./m);
   for (const output of [bare.stdout, partial.stdout, full.stdout]) {
     assert.ok(!output.includes(SENTINEL_HERMES), 'doctor printed a secret');
   }
