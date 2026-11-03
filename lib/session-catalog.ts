@@ -85,7 +85,7 @@ export interface SessionSummary {
   last_activity_at: number;
   origin: { conversation: SessionOriginConversation | null; work_request: SessionOriginWorkRequest | null };
   // Only what the source Attempt's stored launch snapshot recorded.
-  context: { workspace: string | null; deck: string | null };
+  context: { workspace: string | null };
   // NOT-509: additive. Provider-reported usage with explicit coverage.
   usage: UsageSummary;
 }
@@ -274,14 +274,14 @@ function summarize(row: CatalogRow, usage: UsageSummary = emptyUsage()): Session
         ? { id: row.origin_request_id, execution_kind: row.request_kind, state: row.request_state }
         : null,
     },
-    context: { workspace: snapshotField(snapshot, 'cwd') ?? row.ps_workspace ?? null, deck: snapshotField(snapshot, 'deck') },
+    context: { workspace: snapshotField(snapshot, 'cwd') ?? row.ps_workspace ?? null },
     usage,
   };
 }
 
 // A native session: status follows the provider lifecycle (open is
 // active, archived is ended); it has no Conversation or Work Request
-// origin and no Deck.
+// origin.
 function summarizeNative(row: NativeRow, usage: UsageSummary = emptyUsage()): SessionSummary {
   const created = row.provider_created_at ?? row.created_at;
   const resumable = row.resumable === null ? null : row.resumable === 1;
@@ -304,7 +304,7 @@ function summarizeNative(row: NativeRow, usage: UsageSummary = emptyUsage()): Se
     ended_at: archivedAt,
     last_activity_at: Math.max(created, row.provider_updated_at ?? 0, row.turn_last_at ?? 0),
     origin: { conversation: null, work_request: null },
-    context: { workspace: row.workspace, deck: null },
+    context: { workspace: row.workspace },
     usage,
   };
 }

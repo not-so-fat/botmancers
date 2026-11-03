@@ -1,9 +1,9 @@
 // NOT-467: one transport-neutral contract for executing a single Attempt.
 //
 // A runtime adapter receives one immutable AttemptInput (target launch
-// snapshot, prompt, working directory, deck, explicit tool profile,
-// optional opaque session binding, deadline/cancellation, correlation IDs)
-// and returns runtime evidence: started/progress events through a callback
+// snapshot, prompt, working directory, explicit tool profile, optional
+// opaque session binding, deadline/cancellation, correlation IDs) and
+// returns runtime evidence: started/progress events through a callback
 // and exactly one normalized completed/failed AttemptResult. Adapters never
 // throw for runtime failures, never choose orchestration (whether a review
 // or revision runs), never infer tool authority from the Agent type, and
@@ -17,11 +17,10 @@ import type { BotAgent } from './bot-definition';
 import type { ToolProfile } from './engine-store';
 import type { NormalizedUsage } from './usage';
 
-// NOT-487: 'agent-deck-api' is the canonical Agent Deck transport (public
-// run HTTP API); 'agent-deck-run' is the legacy CLI compatibility adapter.
-// NOT-542: 'session-provider' runs coding-agent Attempts through Botmancers'
-// own SessionProvider registry, with no Agent Deck contact.
-export type AttemptAdapterName = 'hermes-gateway' | 'agent-deck-run' | 'agent-deck-api' | 'session-provider';
+// NOT-543: the two direct transports. 'hermes-gateway' serves Hermes
+// turns; 'session-provider' runs coding-agent Attempts through
+// Botmancers' own SessionProvider registry.
+export type AttemptAdapterName = 'hermes-gateway' | 'session-provider';
 
 // Who is launched. Frozen by the caller before launch and recorded as the
 // Attempt's launch snapshot; adapters read it, never widen it.
@@ -61,19 +60,15 @@ export interface AttemptCorrelation {
 export interface AttemptInput {
   target: AttemptLaunchSnapshot;
   prompt: AttemptPrompt;
+  // Explicit absolute launch workspace for a fresh direct start; null for
+  // Hermes turns and for resumes (the session names its own workspace).
   cwd: string | null;
-  deck: string | null;
   toolProfile: ToolProfile;
   sessionBinding: AttemptSessionBinding | null;
   // Epoch ms after which the attempt is reported timed_out.
   deadlineAt?: number | null;
   signal?: AbortSignal | null;
   correlation: AttemptCorrelation;
-  // NOT-487: ask the runtime to capture a Git baseline before launch so the
-  // edit can later be finalized into one reviewed commit. Only an edit
-  // Attempt may ask; the caller decides (implementation and revision in a
-  // Git worktree), never the adapter.
-  prepareFinalization?: boolean;
   // NOT-497: launch in a new runtime session the target owns from now on
   // (a Continue destination). Never together with sessionBinding. An
   // adapter whose launch would otherwise reuse a standing session (the
@@ -114,27 +109,6 @@ export interface AttemptFailure {
   message: string;
 }
 
-// NOT-487: public finalization evidence of a prepared edit Attempt: the
-// opaque baseline reference/digest captured before launch and, once the run
-// is terminal, the ordered candidate manifest (paths, digests, modes; never
-// file contents or host paths) or the reason it is unavailable.
-export interface AttemptCandidateManifest {
-  baselineRef: string;
-  baselineDigest: string;
-  baseCommit: string;
-  manifestDigest: string;
-  files: { path: string; sha256: string | null; mode: '100644' | '100755' | null }[];
-}
-
-export interface AttemptFinalizationEvidence {
-  baselineRef: string | null;
-  baselineDigest: string | null;
-  candidate:
-    | { ok: true; manifest: AttemptCandidateManifest }
-    | { ok: false; code: string; message: string }
-    | null;
-}
-
 export interface AttemptResult {
   status: 'completed' | 'failed';
   adapter: AttemptAdapterName;
@@ -145,8 +119,6 @@ export interface AttemptResult {
   startedAt: number;
   finishedAt: number;
   failure: AttemptFailure | null;
-  // NOT-487: present only for an Attempt launched with prepareFinalization.
-  finalization?: AttemptFinalizationEvidence | null;
   // NOT-469: the launch request failed in a way that does not prove no run
   // started (for example the response was lost). A dispatcher keeps the
   // Attempt open and reconciles it under the same idempotency key.
@@ -195,7 +167,6 @@ export type RunObservation =
 // launch snapshot and intent, never from process memory.
 export interface AttemptFollowInput {
   resumeSessionId: string | null;
-  prepareFinalization: boolean;
   deadlineAt: number | null;
   signal?: AbortSignal | null;
 }
@@ -206,15 +177,13 @@ export interface AttemptFollowInput {
 export interface AttemptReconciler {
   currentGrantFingerprint(): string | null;
   inspect(runId: string): Promise<RunObservation>;
-  // Re-sends a persisted launch intent. 'accepted' names the run Agent
-  // Deck holds for the key (the original, or the first launch when the
-  // earlier POST never arrived).
+  // Re-sends a persisted launch intent. 'accepted' names the run the
+  // runtime holds for the key (the original, or the first launch when
+  // the earlier request never arrived).
   repost(intent: { idempotencyKey: string; body: string }): Promise<RunObservation>;
   // Observes an existing run to a terminal result, exactly like the tail
   // of run(): the same result contract, deadline, and session checks.
   follow(runId: string, input: AttemptFollowInput, onEvent?: AttemptEventSink): Promise<AttemptResult>;
-  // Public finalization evidence of a terminal (including died) run.
-  evidence(runId: string): Promise<AttemptFinalizationEvidence>;
   // NOT-473: asks the runtime to stop a run Botmancers abandoned
   // (cancellation or deadline). 'requested' means the runtime accepted the
   // cancel; 'failed' that it could not be reached or refused. Absent: the

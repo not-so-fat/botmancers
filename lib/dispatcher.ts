@@ -56,7 +56,7 @@ export interface DispatchConfig {
   leaseMs: number;
   // How often a live worker renews its lease.
   heartbeatMs: number;
-  // Retry delay of a deferred reconcile (Agent Deck unreachable).
+  // Retry delay of a deferred reconcile (runtime unreachable).
   deferMs: number;
   // NOT-473: a running request whose cancellation was requested this long
   // ago is abandoned even while its worker still holds a live lease.
@@ -566,8 +566,11 @@ export type ReconcileDecision =
   // relaunched automatically.
   | { action: 'interrupted'; reason: string };
 
-// Pre-launch rejections: Agent Deck refused before any model work, so the
-// Attempt fails and a later fresh Attempt is safe.
+// Pre-launch rejections: the runtime refused before any model work, so
+// the Attempt fails and a later fresh Attempt is safe. The direct
+// registry reports invalid input, scope, authority, and resumability as
+// 400; the remaining rules are the retired remote-run answers, kept so
+// their persisted observations still decide the same way.
 const PRE_LAUNCH_REJECTIONS: { status: number; code: RegExp }[] = [
   { status: 400, code: /.*/ },
   { status: 404, code: /^DECK_NOT_FOUND$/ },
@@ -580,11 +583,11 @@ function preLaunchRejection(observation: { status: number | null; code: string |
   return PRE_LAUNCH_REJECTIONS.some(rule => rule.status === observation.status && rule.code.test(observation.code ?? ''));
 }
 
-// A failed live POST: true only when Agent Deck provably started no model
-// work (no grant was sent, the grant was refused, or a known pre-launch
-// rejection). Anything else (unreachable, a lost response, 5xx, an
-// unrecognized answer) is ambiguous: the run may be live, so the Attempt
-// stays open for same-key reconciliation.
+// A failed live launch: true only when the runtime provably started no
+// model work (no grant was sent, the grant was refused, or a known
+// pre-launch rejection). Anything else (unreachable, a lost response,
+// 5xx, an unrecognized answer) is ambiguous: the run may be live, so the
+// Attempt stays open for same-key reconciliation.
 export function launchRejectedBeforeWork(observation: RunObservation): boolean {
   switch (observation.kind) {
     case 'no_grant':

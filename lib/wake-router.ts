@@ -141,9 +141,8 @@ export type TargetAvailability = { available: true } | { available: false; reaso
 export type AvailabilityProbe = (bot: Bot) => TargetAvailability;
 
 // Whether a configured Agent's launch adapter can take work right now.
-// Agent Deck HTTP attempts perform their authenticated availability check
-// at launch; unlike the retired CLI path, a non-loopback workspace server
-// is a supported transport and must not be rejected here.
+// Direct provider Attempts perform their availability check at launch
+// (installed CLI, sign-in, scope); only Hermes is decided here.
 export function defaultAvailability(bot: Bot): TargetAvailability {
   if (agentTransport(resolveAgent(bot).agent) === 'hermes-gateway') {
     return loadHermesConfig()
@@ -333,17 +332,12 @@ function availabilityOutcome(target: { id: string; name: string }, policy: Execu
   const bot = bots.getById(target.id) as Bot;
   const agent = resolveAgent(bot);
   if (!agent.launchable) {
-    // NOT-502: one reason per launch blocker; a direct profile never
-    // reports a missing deck.
-    const reason = agent.launch_blocker === 'launch_profile'
-      ? `${target.name} has no Agent Deck selected and no launch profile chosen.`
+    // NOT-543: one direct-runtime reason per launch blocker.
+    const reason = agent.launch_blocker === 'connection'
+      ? `${target.name} has no runtime connection.`
       : agent.launch_blocker === 'session_scope'
         ? `${target.name} has no session scope.`
-        : agent.launch_blocker === 'direct_runtime'
-          ? `${target.name} launches directly; direct ${agent.agent} sessions are not available yet.`
-          : agent.needs_deck_selection
-            ? `${target.name} has no Agent Deck selected.`
-            : `${target.name} has an unsupported Agent type.`;
+        : `${target.name} has an unsupported Agent type.`;
     return { status: 'blocked', code: 'target_unconfigured', reason, target, policy, grant };
   }
   const availability = (availabilityOverride ?? defaultAvailability)(bot);

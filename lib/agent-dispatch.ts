@@ -1,37 +1,28 @@
-// NOT-446: runtime-neutral dispatch for the agent conversation API.
+// NOT-543: direct-only dispatch for the agent conversation API.
 //
-// Callers name an agent; this module routes the turn through that bot's
-// stored agent on its selected Agent Deck (NOT-456), or directly for a
-// direct launch profile (NOT-502) and returns only the
-// reply text or a typed failure. Every agent follows one contract: it
-// launches only when an Agent Deck is selected, and its adapter
-// (AGENT_TRANSPORTS) serves the turn. Completion is typed by the adapter contract, never read
-// from reply prose: a Hermes turn completes when the gateway answers the
-// chat request with HTTP 200, and a coding-agent turn completes only when
-// the public Agent Deck event API reports a terminal result and status is
-// not error/died. The start acknowledgement is transport acceptance, not
-// completion.
+// Callers name an agent; this module routes the turn through that Agent's
+// own runtime connection and returns only the reply text or a typed
+// failure. Hermes turns run on the persistent Hermes gateway; every
+// coding-agent turn (Cursor, Claude, Codex, Muse Code) runs a direct
+// local provider Session through the SessionProvider-backed adapter
+// (./session-provider-attempt). No coding-agent dispatch contacts Agent
+// Deck: there is no deck, launch profile, run token, or remote grant.
+//
+// Completion is typed by the adapter contract, never read from reply
+// prose: a Hermes turn completes when the gateway answers the chat
+// request with HTTP 200, and a coding-agent turn completes only when the
+// provider turn ends completed. The start acknowledgement is transport
+// acceptance, not completion.
 //
 // Failure messages are fixed per category so adapter output (which can
-// carry URLs, stderr, or gateway error bodies) never reaches the caller.
-//
-// NOT-487: canonical coding-agent turns run through the Agent Deck public
-// run API (./agent-deck-attempt), authenticated with the server-only
-// AGENT_DECK_RUN_TOKEN. The `agent-deck run` CLI adapter (./agent-deck-run)
-// remains only for legacy non-canonical turns; an API failure never falls
-// back to it.
-import fs from 'fs';
-import path from 'path';
+// carry paths, stderr, or gateway error bodies) never reaches the caller.
 import type { Bot } from './db';
 import { agentTransport, resolveAgent, type AgentTransport, type BotAgent } from './bot-definition';
+import { directLaunchWorkspace, readStoredScope } from './agent-registration';
+import { ensureBotWorkdir } from './agent-workdir';
 import { hermesProfilePathForBot } from './hermes';
 import { createHermesAttemptAdapter } from './hermes-attempt';
-import { createAgentDeckApiAttemptAdapter } from './agent-deck-attempt';
 import { createSessionProviderAttemptAdapter } from './session-provider-attempt';
-import { AGENT_DECK_API_MESSAGES, type AgentDeckApiErrorCode } from './agent-deck-api';
-import {
-  resolveAndEnsureBotWorkdir,
-} from './agent-deck-settings';
 import { TOOL_PROFILE_FOR_KIND, type ToolProfile } from './engine-store';
 import type { AttemptAdapter, AttemptInput, AttemptResult } from './attempt-adapter';
 
@@ -46,17 +37,18 @@ export class DispatchFailure extends Error {
   }
 }
 
-export const AGENT_DECK_NOT_SELECTED = 'The agent has no Agent Deck selected.';
-// NOT-502: fixed caller-facing text for the other launch blockers.
-export const LAUNCH_PROFILE_NOT_CHOSEN = 'The agent has no launch profile chosen.';
-export const SESSION_SCOPE_MISSING = 'The agent has no session scope.';
-export const DIRECT_LAUNCH_UNAVAILABLE = 'Direct launch is not available for this agent yet.';
+export const CONNECTION_NOT_CHOSEN = 'The agent has no runtime connection. Choose one in Config.';
+export const SESSION_SCOPE_MISSING = 'The agent has no session scope. Choose one in Config.';
+export const AGENT_TYPE_UNSUPPORTED = 'The agent has an unsupported Agent type.';
+export const DEFAULT_WORKSPACE_MISSING =
+  'The agent has no default workspace for a new session. Set one in Config, or resume one of its sessions.';
+export const SESSIONS_SCOPE_CANNOT_START =
+  'This turn starts a new session but the agent is limited to selected sessions.';
 
 function blockedDispatchMessage(blocker: ReturnType<typeof resolveAgent>['launch_blocker']): string {
-  if (blocker === 'launch_profile') return LAUNCH_PROFILE_NOT_CHOSEN;
+  if (blocker === 'connection') return CONNECTION_NOT_CHOSEN;
   if (blocker === 'session_scope') return SESSION_SCOPE_MISSING;
-  if (blocker === 'direct_runtime') return DIRECT_LAUNCH_UNAVAILABLE;
-  return AGENT_DECK_NOT_SELECTED;
+  return AGENT_TYPE_UNSUPPORTED;
 }
 
 export interface DispatchHistoryEntry {
@@ -76,10 +68,6 @@ export interface DispatchTurn {
   toolProfile?: ToolProfile;
   // NOT-472: opaque session to resume (a revision). Omitted: a fresh launch.
   sessionBinding?: AttemptInput['sessionBinding'];
-  // NOT-487: the caller's request to prepare Git finalization (an
-  // implementation or revision). Honored only for an Agent Deck edit turn
-  // whose working directory is inside a Git worktree.
-  prepareFinalization?: boolean;
   // NOT-497: launch in a new runtime session (a Continue destination).
   freshSession?: boolean;
 }
@@ -108,7 +96,7 @@ function systemPromptFor(bot: Bot): string {
 
 // NOT-467: runtime adapter selection plus launch-input resolution for one
 // direct turn. Workflow policy stays with the caller; the adapter receives
-// the resolved deck, working directory, and explicit tool profile.
+// the resolved working directory and explicit tool profile.
 export interface PreparedDispatch {
   agent: BotAgent;
   adapter: AttemptAdapter;
@@ -119,7 +107,7 @@ export interface PreparedDispatch {
 // here); selection is by the agent's transport only.
 export const ATTEMPT_ADAPTERS: Record<AgentTransport, () => AttemptAdapter> = {
   'hermes-gateway': () => createHermesAttemptAdapter({ fetchImpl: hermesFetch }),
-  'agent-deck-run': () => createAgentDeckApiAttemptAdapter(),
+  'session-provider': () => createSessionProviderAttemptAdapter(),
 };
 
 let adapterOverride: ((transport: AgentTransport) => AttemptAdapter) | null = null;
@@ -135,38 +123,41 @@ function adapterFor(transport: AgentTransport): AttemptAdapter {
 
 // NOT-469: the adapter for a transport name recorded in a launch snapshot
 // (AttemptAdapter.name), used to reconcile an Attempt after a restart.
-// NOT-542: 'session-provider' is registered here for restart lookup only;
-// normal dispatch still selects Agent Deck until the cutover ticket.
+// Removed transports ('agent-deck-run', 'agent-deck-api') have no adapter:
+// their open Attempts reconcile as interrupted, never relaunched.
 export function adapterForTransport(name: string): AttemptAdapter | null {
   if (name === 'hermes-gateway') return adapterFor('hermes-gateway');
-  if (name === 'agent-deck-api') return adapterFor('agent-deck-run');
   if (name === 'session-provider') return createSessionProviderAttemptAdapter();
   return null;
 }
 
-// Whether a working directory is inside a Git worktree (a `.git` entry in
-// it or an ancestor). A filesystem read only: no Git command runs here.
-export function isInGitWorktree(dir: string): boolean {
-  let current = path.resolve(dir);
-  for (;;) {
-    if (fs.existsSync(path.join(current, '.git'))) return true;
-    const parent = path.dirname(current);
-    if (parent === current) return false;
-    current = parent;
+// The explicit absolute workspace a fresh direct turn starts in: the
+// Agent's default workspace, else its single selected workspace. Created
+// on demand immediately before launch, like the former per-bot default.
+// Resumes never reach here: the session names its own workspace.
+function freshLaunchWorkspace(bot: Bot): string {
+  const workspace = directLaunchWorkspace(bot);
+  if (!workspace) {
+    const scope = readStoredScope(bot);
+    throw new DispatchFailure(
+      'agent_unavailable',
+      scope?.kind === 'sessions' ? SESSIONS_SCOPE_CANNOT_START : DEFAULT_WORKSPACE_MISSING,
+    );
+  }
+  try {
+    return ensureBotWorkdir(workspace);
+  } catch {
+    throw new DispatchFailure('agent_unavailable', 'The agent working directory is unavailable.');
   }
 }
 
 export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
   const resolved = resolveAgent(turn.bot);
-  // NOT-502: only the agent_deck profile carries (and needs) a deck. A
-  // direct profile is launchable only on a transport that never contacts
-  // Agent Deck (Hermes); nothing here reaches Agent Deck for it.
-  if (!resolved.launchable || (resolved.launch_profile === 'agent_deck' && !resolved.deck_id)) {
+  if (!resolved.launchable) {
     throw new DispatchFailure('agent_unavailable', blockedDispatchMessage(resolved.launch_blocker));
   }
   const base = {
     prompt: { kind: 'conversation' as const, system: systemPromptFor(turn.bot), history: turn.history },
-    deck: resolved.deck_id,
     toolProfile: turn.toolProfile ?? TOOL_PROFILE_FOR_KIND.conversation,
     sessionBinding: turn.sessionBinding ?? null,
     correlation: {},
@@ -183,26 +174,23 @@ export function prepareDispatch(turn: DispatchTurn): PreparedDispatch {
       },
     };
   }
-  let cwd: string;
-  try {
-    cwd = resolveAndEnsureBotWorkdir(turn.bot.id, resolved.working_directory);
-  } catch {
-    throw new DispatchFailure('agent_unavailable', 'The agent working directory is unavailable.');
-  }
+  // An exact session binding resumes that session; any other turn starts
+  // fresh in the allowed default/selected workspace.
+  const cwd = base.sessionBinding ? null : freshLaunchWorkspace(turn.bot);
   return {
     agent: resolved.agent,
-    adapter: adapterFor('agent-deck-run'),
+    adapter: adapterFor('session-provider'),
     input: {
       ...base,
       target: { agentId: turn.bot.id, agent: resolved.agent },
       cwd,
-      ...(turn.prepareFinalization && base.toolProfile === 'edit' && isInGitWorktree(cwd) ? { prepareFinalization: true } : {}),
     },
   };
 }
 
 // Fixed caller-facing text per failure category, so adapter diagnostics
-// (URLs, stderr, gateway error bodies) never reach the caller.
+// (paths, stderr, gateway error bodies) never reach the caller. A stable
+// provider code is kept in brackets so the owner can act on it.
 export function dispatchFailureFor(result: AttemptResult): DispatchFailure {
   const category = result.failure?.category ?? 'runtime_failed';
   if (result.adapter === 'hermes-gateway') {
@@ -211,25 +199,15 @@ export function dispatchFailureFor(result: AttemptResult): DispatchFailure {
     }
     return new DispatchFailure('runtime_failed', `The agent runtime did not complete the turn (${result.failure?.code ?? 'unknown'}).`);
   }
-  // NOT-487: Agent Deck API failures name their stable, actionable reason
-  // (token, grant, or server) without echoing the transport diagnostics.
-  const apiCode = result.adapter === 'agent-deck-api' ? apiFailureCode(result) : null;
-  if (apiCode) return new DispatchFailure('agent_unavailable', `${AGENT_DECK_API_MESSAGES[apiCode]} [${apiCode}]`);
-  if (category === 'unavailable') {
-    return new DispatchFailure('agent_unavailable', 'The agent runtime is not available.');
+  const code = typeof result.failure?.code === 'string' && result.failure.code ? ` [${result.failure.code}]` : '';
+  if (category === 'unavailable' || category === 'unsupported_authority') {
+    return new DispatchFailure('agent_unavailable', `The agent runtime is not available${code}.`);
   }
   if (category === 'cancelled') return new DispatchFailure('runtime_failed', 'The agent run was cancelled.');
   if (category === 'launch_failed') {
     return new DispatchFailure('runtime_failed', 'The agent runtime did not start the turn.');
   }
   return new DispatchFailure('runtime_failed', 'The agent runtime did not complete the turn.');
-}
-
-const API_UNAVAILABLE: AgentDeckApiErrorCode[] = ['agent_deck_token_missing', 'agent_deck_unauthorized', 'agent_deck_forbidden', 'agent_deck_unreachable'];
-
-function apiFailureCode(result: AttemptResult): AgentDeckApiErrorCode | null {
-  const code = result.failure?.code as AgentDeckApiErrorCode | null | undefined;
-  return code && API_UNAVAILABLE.includes(code) ? code : null;
 }
 
 export function replyFor(result: AttemptResult): string {
