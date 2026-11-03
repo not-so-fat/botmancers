@@ -63,7 +63,7 @@ const json = async res => { try { return await res.json(); } catch { return null
 let clock = 1_700_000_000_000;
 function makeBot(name) {
   clock += 1000;
-  return bots.create({ deck_id: 'deck-test', name, title: '', description: '' }, { created_at: clock });
+  return bots.create({ name, title: '', description: '' }, { created_at: clock });
 }
 
 function expectConflict(body, field, label) {
@@ -118,7 +118,13 @@ async function main() {
   console.log('\n(3) Write paths return one conflict shape');
   const before = sqlite.prepare('SELECT COUNT(*) AS n FROM bots').get().n;
 
-  const createRes = await request(botsRoute.POST, 'POST', '/api/bots', { name: ' dev ', deck_id: 'deck-test' });
+  const nameConn = db.runtimeConnections.ensureLocal('codex');
+  const createRes = await request(botsRoute.POST, 'POST', '/api/bots', {
+    name: ' dev ',
+    runtime_connection_id: nameConn,
+    session_scope: { kind: 'all_provider_sessions' },
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+  });
   assert(createRes.status === 409, `POST /api/bots duplicate -> 409 (got ${createRes.status})`);
   const createBody = await json(createRes);
   expectConflict(createBody, 'name', 'create');

@@ -128,7 +128,7 @@ function packetJson() {
 }
 
 function agent(name) {
-  return bots.create({ name, title: 'Agent', description: `${name} fixture`, agent: 'hermes', deck_id: 'deck-builder' });
+  return bots.create({ name, title: 'Agent', description: `${name} fixture`, agent: 'hermes' });
 }
 function seedSession(bot, secret, key, intent) {
   const conv = conversations.getByBotId(bot.id);

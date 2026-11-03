@@ -308,7 +308,7 @@ export function submitErrorMessage(code: string | null, message: string | null):
     case 'session_ended': return 'This session has ended and can’t be resumed.';
     case 'session_not_resumable': return 'Botmancers can’t resume this session under the Agent’s current runtime.';
     case 'source_session_busy': return 'This session already has an exchange in progress. Wait for it or cancel it from its card.';
-    case 'agent_unavailable': return message || 'That Agent has no Agent Deck selected.';
+    case 'agent_unavailable': return message || 'That Agent can’t launch yet. Choose its runtime connection and session scope in Config.';
     case 'idempotency_conflict': return 'This request changed while it was being sent. Send again.';
     // NOT-507: pin refusals. The session is never swapped for another.
     case 'session_missing': return 'The runtime no longer has this session. Its history stays here; choose another session.';

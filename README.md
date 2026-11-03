@@ -9,6 +9,9 @@ its own provider CLI through its registered runtime connection. There is no
 launch profile, deck, run token, or remote runner to configure. Hermes turns
 run on the persistent Hermes gateway.
 
+The UI shows agents only: create, open, mention, and delete individual
+agents. Legacy group data stays stored and reachable through `/api/groups`.
+
 ## Minimal setup (copy-tested)
 
 Prerequisites: Node 20+, Git, and the provider CLIs you want to use,
