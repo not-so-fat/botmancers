@@ -12,8 +12,11 @@
 // the lock), the packaged app build (app/ built from this commit and
 // version), tests, package contents, publish
 // config, `npm publish --dry-run`, and canary installs of the exact tarball
-// into clean temporary projects: bridge-only, the full product, and the
-// managed install (scripts/install.sh, launcher, staged N+1, restart, rollback).
+// into clean temporary projects: bridge-only and the full product. (The
+// managed install itself — scripts/install.sh, the launcher, staged
+// upgrades, rollback — is covered by `npm test`'s managed suite; its
+// exact-tarball registry smoke went away with the Agent Deck launch
+// surface in NOT-543.)
 // Run `npm run build && npm run build:app` first.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -246,9 +249,7 @@ step('canary install of the exact tarball', () => {
     assert(/^PASS clean-install smoke/m.test(out), out);
     const product = runLogged(process.execPath, ['scripts/smoke-product-install.mjs', '--tarball', tarball], 5 * 60_000);
     assert(/^PASS product install smoke/m.test(product), product);
-    const managed = runLogged(process.execPath, ['scripts/smoke-managed-install.mjs', '--tarball', tarball], 5 * 60_000);
-    assert(/^PASS managed install smoke/m.test(managed), managed);
-    return `${entry.filename} ${integrity} installed into clean projects; npx botmancers served health, tools/list, tools/call; botmancers setup/start --daemon served the UI, /api/v0, and the bridge against the same engine, kept state across stop/start, and stopped cleanly; scripts/install.sh installed it as a managed release whose launcher ran the product, staged N+1 beside it, activated N+1 at one restart, rolled back, and kept user state`;
+    return `${entry.filename} ${integrity} installed into clean projects; npx botmancers served health, tools/list, tools/call; botmancers setup/start --daemon served the UI, /api/v0, and the bridge against the same engine, kept state across stop/start, and stopped cleanly`;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

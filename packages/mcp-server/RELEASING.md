@@ -37,9 +37,11 @@ A release is published once, straight to `latest`, by the maintainer from a
 fresh clone of the tag, with npm 2FA (`npm run release:publish`). There
 is no canary dist-tag and no CI publish, so nothing needs configuring on
 npmjs.com. The safety net is before the publish: `release:check` installs the
-exact tarball into clean projects (bridge-only, full product, managed install)
+exact tarball into clean projects (bridge-only, full product)
 and `release-botmancers.yml` runs the same check on the tag, on the release
-runner.
+runner. The managed install path (`scripts/install.sh`, the launcher, staged
+upgrades, rollback) is covered by `npm test`'s managed suite instead of an
+exact-tarball smoke.
 
 ## Procedure
 
@@ -57,20 +59,15 @@ runner.
    ```
 
    This checks version consistency, the changelog entry, a clean git tree,
-   that `app/` was built from this commit and version, the tests, package
-   contents against the allowlist (including the bundled UI/core runtime),
-   publish configuration, `npm publish --dry-run`, and canary installs of the
-   exact tarball into clean temporary projects: bridge-only
-   (`smoke-install.mjs`), the full product (`smoke-product-install.mjs`:
-   `setup`, `start --daemon`, UI, `/api/v0`, bridge against the same engine,
-   restart, `status`/`doctor`/`stop`), and the managed install
-   (`smoke-managed-install.mjs`: a local registry serves the exact tarball as
-   N and a version-bumped repack as N+1; `scripts/install.sh` installs N into
-   a temporary `~/.botmancers/versions` with the `~/.local/bin` launcher as the
-   only `botmancers` on `PATH`; the launcher runs `--version`, `doctor`, and the
-   product; the background updater stages N+1 beside the live N; one restart
-   activates it; `install --to N` rolls back; user state and its hashes are
-   unchanged; `BOTMANCERS_DISABLE_AUTOUPDATER=1` makes no registry request). It never writes to the registry.
+   that `app/` was built from this commit and version, the tests (including
+   the managed-install suite: `scripts/install.sh`, the launcher, staged
+   upgrades, rollback), package contents against the allowlist (including the
+   bundled UI/core runtime), publish configuration, `npm publish --dry-run`,
+   and canary installs of the exact tarball into clean temporary projects:
+   bridge-only (`smoke-install.mjs`) and the full product
+   (`smoke-product-install.mjs`: `setup`, `start --daemon`, UI, `/api/v0`,
+   bridge against the same engine, restart, `status`/`doctor`/`stop`). It
+   never writes to the registry.
 
    Save the evidence for the release ticket, bound to the commit you will tag
    (the transcripts record the commit SHA and exact version):
@@ -82,7 +79,6 @@ runner.
    npm run check:pack -- --out release-evidence/pack-manifest.txt
    npm run smoke:install -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/clean-install-smoke.txt
    npm run smoke:product -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/product-install-smoke.txt
-   npm run smoke:managed -- --tarball /tmp/botmancers-X.Y.Z.tgz --out release-evidence/managed-install-smoke.txt
    ```
 
    Pass `--tarball` to the smokes: without it they run `npm pack`, whose
