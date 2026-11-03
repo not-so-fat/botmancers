@@ -607,9 +607,15 @@ export function decideWithoutRunId(input: {
 }): ReconcileDecision {
   if (!input.reconcilable) return { action: 'interrupted', reason: 'runtime_unobservable' };
   if (!input.intent?.body || !input.intent.idempotency_key) return { action: 'attention', reason: 'launch_intent_missing' };
-  if (!input.currentGrantFingerprint) return { action: 'attention', reason: 'grant_unavailable' };
+  // NOT-542: a local durable turn carries no grant by design; a null intent
+  // grant with a null current grant replays through the registry's own
+  // idempotency (never a second runtime process), without grant checks.
+  const intentGrant = input.intent.grant_fingerprint ?? null;
+  const currentGrant = input.currentGrantFingerprint ?? null;
+  if (intentGrant === null && currentGrant === null) return { action: 'repost' };
+  if (!currentGrant) return { action: 'attention', reason: 'grant_unavailable' };
   // Never POST under another grant: it could launch a second run (N5c).
-  if (input.intent.grant_fingerprint !== input.currentGrantFingerprint) return { action: 'attention', reason: 'grant_mismatch' };
+  if (intentGrant !== currentGrant) return { action: 'attention', reason: 'grant_mismatch' };
   return { action: 'repost' };
 }
 

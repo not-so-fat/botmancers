@@ -19,7 +19,9 @@ import type { NormalizedUsage } from './usage';
 
 // NOT-487: 'agent-deck-api' is the canonical Agent Deck transport (public
 // run HTTP API); 'agent-deck-run' is the legacy CLI compatibility adapter.
-export type AttemptAdapterName = 'hermes-gateway' | 'agent-deck-run' | 'agent-deck-api';
+// NOT-542: 'session-provider' runs coding-agent Attempts through Botmancers'
+// own SessionProvider registry, with no Agent Deck contact.
+export type AttemptAdapterName = 'hermes-gateway' | 'agent-deck-run' | 'agent-deck-api' | 'session-provider';
 
 // Who is launched. Frozen by the caller before launch and recorded as the
 // Attempt's launch snapshot; adapters read it, never widen it.

@@ -30,6 +30,7 @@ import {
   type AttemptPrompt,
   type AttemptResult,
 } from './attempt-adapter';
+import { attemptPromptText } from './attempt-prompt';
 
 export const DECK_RUNTIMES = ['codex', 'claude', 'cursor', 'muse'] as const;
 
@@ -427,12 +428,10 @@ export async function listAvailableAgents(): Promise<BotAgent[]> {
 // exactly the input's; there is no default here and nothing is derived
 // from the Agent type. A resumed run reporting a different session than
 // the binding fails closed as a session mismatch.
+// NOT-542: shared deterministic rendering lives in ./attempt-prompt; this
+// wrapper keeps the Agent Deck call sites unchanged.
 export function deckPromptForAttempt(prompt: AttemptPrompt): string {
-  if (prompt.kind === 'text') return prompt.text;
-  const transcript = prompt.history
-    .map(entry => `[${entry.fromAgent ? 'you' : entry.speakerLabel}] ${entry.content}`)
-    .join('\n\n');
-  return `${prompt.system}\n\nConversation so far (reply to the last message):\n\n${transcript}`;
+  return attemptPromptText(prompt);
 }
 
 function errorText(error: unknown): string {
