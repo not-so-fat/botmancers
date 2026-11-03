@@ -5,7 +5,8 @@
 //
 // Deterministic: the dispatcher runs on a fake clock (advanced by hand),
 // adapters are controlled fakes that finish only when the test says so,
-// and Agent Deck is the in-process fake. Proves:
+// and direct coding turns run against a scripted in-process
+// SessionProvider. Proves:
 //
 // [1] cancel from queued, blocked, running (cooperative and stalled),
 //     waiting, and terminal states, each with an explicit idempotent
@@ -20,9 +21,9 @@
 //     retry is recorded as evidence and never completes the request;
 //     external cancellation is requested only where the runtime supports
 //     it and is recorded honestly where it does not; a cancel or deadline
-//     arriving during reconciliation I/O (inspect, re-POST) wins over the
-//     reconcile decision; losing sight of a run whose cleanup cancel fails
-//     records it abandoned and never retries beside it;
+//     arriving during reconciliation runtime I/O (follow, re-POST) wins
+//     over the reconcile decision; losing sight of a turn whose cleanup
+//     cancel fails records it abandoned and never retries beside it;
 // [5] conversation projections distinguish cancel requested, cancelled,
 //     timed out, retry scheduled, and retries exhausted.
 'use strict';
@@ -53,15 +54,15 @@ const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 const db = jiti('./lib/db.ts');
 const service = jiti('./lib/agent-conversations.ts');
 const dispatch = jiti('./lib/agent-dispatch.ts');
-const deckApi = jiti('./lib/agent-deck-api.ts');
-const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
 const executor = jiti('./lib/attempt-executor.ts');
 const intake = jiti('./lib/conversation-intake.ts');
 const policy = jiti('./lib/request-policy.ts');
 const control = jiti('./lib/work-request-control.ts');
 const lib = jiti('./lib/dispatcher.ts');
 const adapterLib = jiti('./lib/attempt-adapter.ts');
-const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
+const providerContract = jiti('./lib/session-provider.ts');
+const sessions = jiti('./lib/provider-sessions.ts');
+const fake = require('./test-support/fake-session-provider.js');
 const raw = db.default;
 const { bots, engine, projector } = db;
 
@@ -179,7 +180,70 @@ const runsFor = id => runs.filter(entry => entry.requestId === id);
 
 let hermes;
 let codex;
-let fake;
+let WORKROOT;
+let STATE;
+
+// The direct provider behind every coding turn: the file-backed fake,
+// wrapped so a test can gate one provider call in flight (reconciliation
+// races), refuse cancels while the turn keeps running, or fail one
+// observe. providerSpy counts wrapper-level calls (including refused
+// ones, which never reach the fake's own log).
+let providerGate = null;
+let failCancelWith = null;
+let failObserveWith = null;
+const providerSpy = { startSession: 0, sendTurn: 0, observeTurn: 0, cancelTurn: 0 };
+function wrappedProvider() {
+  const inner = fake.createFakeSessionProvider({ statePath: STATE, kind: 'control-main' });
+  const wrap = method => async input => {
+    providerSpy[method] += 1;
+    if (providerGate && providerGate.method === method && !providerGate.hit) {
+      providerGate.hit = true;
+      await providerGate.gate;
+    }
+    if (method === 'cancelTurn' && failCancelWith) return { ok: false, error: { ...failCancelWith } };
+    if (method === 'observeTurn' && failObserveWith) {
+      const failure = failObserveWith;
+      failObserveWith = null;
+      return { ok: false, error: { ...failure } };
+    }
+    return inner[method](input);
+  };
+  return {
+    ...inner,
+    startSession: wrap('startSession'), sendTurn: wrap('sendTurn'), observeTurn: wrap('observeTurn'), cancelTurn: wrap('cancelTurn'),
+  };
+}
+function gateProviderCall(method) {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  providerGate = { method, hit: false, gate, release: () => release() };
+  return providerGate;
+}
+function clearProviderGate() { providerGate = null; }
+
+// Provider-side evidence: starts, observes, cancels, and turn states.
+const startCalls = () => fake.providerCalls(STATE, 'startSession');
+const observeCalls = () => fake.providerCalls(STATE, 'observeTurn');
+const cancelCalls = () => fake.providerCalls(STATE, 'cancelTurn');
+const registryTurn = ref => sessions.getProviderTurn(raw, codex.id, ref);
+const fakeTurnState = fakeId => fake.loadFakeState(STATE).turns[fakeId]?.state ?? null;
+const providerTurnIdOf = runId => one('SELECT provider_turn_id AS id FROM provider_session_turns WHERE id = ?', runId)?.id ?? null;
+function holdNextTurns(count = 1) {
+  fake.mutateFakeProvider(STATE, state => { state.holdNext = (state.holdNext ?? 0) + count; });
+}
+function scriptProviderTurn(fakeId, fields) {
+  fake.mutateFakeProvider(STATE, state => {
+    if (!state.turns[fakeId]) throw new Error(`no provider turn ${fakeId}`);
+    Object.assign(state.turns[fakeId], fields);
+  });
+}
+function deleteProviderTurn(fakeId) {
+  fake.mutateFakeProvider(STATE, state => { delete state.turns[fakeId]; });
+}
+function newTurnIds(before) {
+  const seen = new Set(before);
+  return fake.fakeTurnIds(STATE).filter(id => !seen.has(id));
+}
 
 // ---------------------------------------------------------------------
 async function cancelStateMachine() {
@@ -445,9 +509,11 @@ function policyUnits() {
   for (const category of adapterLib.ATTEMPT_FAILURE_CATEGORIES) {
     assert(policy.classifyFailure(category) === expected[category], `category ${category} -> ${expected[category]}`);
   }
-  for (const code of ['agent_deck_token_missing', 'agent_deck_unauthorized', 'agent_deck_forbidden']) {
+  for (const code of ['unavailable', 'provider_unavailable', 'agent_not_found', 'auth_required', 'permission_denied', 'incompatible_version', 'usage_limit']) {
     assert(policy.classifyFailure('unavailable', code) === 'manual_attention', `code ${code} -> manual_attention`);
   }
+  assert(policy.classifyFailure('runtime_failed', 'auth_required') === 'manual_attention', 'a manual code wins whatever the adapter category');
+  assert(policy.classifyFailure('unavailable', 'internal') === 'retryable', 'an unknown code falls back to the category disposition');
   const p = { max_attempts: 6, base_delay_ms: 1000, max_delay_ms: 5000, attempt_timeout_ms: null };
   const delays = [1, 2, 3, 4, 5].map(n => policy.backoffDelay(p, n));
   assert(delays.join(',') === '1000,2000,4000,5000,5000', `deterministic capped exponential backoff (${delays.join(',')})`);
@@ -653,31 +719,34 @@ async function supersedingRetry() {
   dispatch.setAttemptAdapterOverride(null);
 }
 
-// External cancellation where the runtime supports it (Agent Deck).
+// External cancellation where the runtime supports it (direct provider).
 async function externalCancel() {
-  console.log('\n[4b] Agent Deck runs are cancelled externally; the outcome is recorded');
+  console.log('\n[4b] direct provider turns are cancelled externally; the outcome is recorded');
   configure({ heartbeatMs: 10 });
   clock = Date.now();
-  fake.onStart = () => ({ result: 'DONE-never', hold: true });
-  const sent = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Cancel the deck run', idempotencyKey: 'deck-cancel' });
+  holdNextTurns(1);
+  const cancelsBefore = cancelCalls();
+  const sent = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Cancel the direct turn', idempotencyKey: 'direct-cancel' });
   const id = sent.accepted.requestId;
-  await waitFor(() => attemptsOf(id)[0]?.external_run_id, 'deck run id persisted');
+  await waitFor(() => attemptsOf(id)[0]?.external_run_id, 'direct turn id persisted');
   const runId = attemptsOf(id)[0].external_run_id;
+  const fakeId = providerTurnIdOf(runId);
   // Another process records the intent: this worker learns it from its heartbeat.
   const remote = control.createRequestControl(raw, engine, { now: () => clock });
   const outcome = remote.cancel(id, { actor: PERSON, reason: 'from another process' });
   assert(outcome.outcome === 'cancel_requested', 'intent recorded by another process');
   await sent.dispatched;
   const attempts = attemptsOf(id);
-  assert(req(id).state === 'cancelled' && attempts[0].outcome === 'cancelled' && fake.runs.get(runId).state === 'canceled'
-    && fake.calls('POST', `/api/agent-runs/${runId}/cancel`).length >= 1 && repliesOf(id).length === 0,
-  'heartbeat saw the intent; the adapter cancelled the Agent Deck run; request cancelled');
+  assert(req(id).state === 'cancelled' && attempts[0].outcome === 'cancelled' && attempts[0].error_category === 'cancelled'
+    && registryTurn(runId).state === 'cancelled' && fakeTurnState(fakeId) === 'cancelled'
+    && cancelCalls() >= cancelsBefore + 1 && count(id, 'external_cancel') === 0 && repliesOf(id).length === 0,
+  'heartbeat saw the intent; the adapter cancelled the provider turn; a clean cancelled Attempt, request cancelled');
 
-  // A worker that is gone: the sweep abandons and asks Agent Deck to cancel.
-  fake.onStart = () => ({ result: 'DONE-orphan', hold: true });
-  const orphan = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Orphaned deck run', idempotencyKey: 'deck-cancel-orphan' });
+  // A worker that is gone: the sweep abandons and asks the provider to cancel.
+  holdNextTurns(1);
+  const orphan = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Orphaned direct turn', idempotencyKey: 'direct-cancel-orphan' });
   const orphanId = orphan.accepted.requestId;
-  await waitFor(() => attemptsOf(orphanId)[0]?.external_run_id, 'orphan run id persisted');
+  await waitFor(() => attemptsOf(orphanId)[0]?.external_run_id, 'orphan turn id persisted');
   const orphanRun = attemptsOf(orphanId)[0].external_run_id;
   // Simulate the worker's death: its lease is gone, the intent arrives.
   raw.prepare('DELETE FROM dispatch_leases WHERE request_id = ?').run(orphanId);
@@ -686,70 +755,63 @@ async function externalCancel() {
   await service.sweepDispatch();
   const external = eventData(orphanId, 'external_cancel');
   assert(req(orphanId).state === 'cancelled' && attemptsOf(orphanId)[0].error_category === 'abandoned' && external.length === 1 && external[0].status === 'requested'
-    && fake.runs.get(orphanRun).state === 'canceled', `worker gone: abandoned, Agent Deck cancel requested (${external.map(e => e.status).join(',')})`);
+    && registryTurn(orphanRun).state === 'cancelled', `worker gone: abandoned, provider cancel requested (${external.map(e => e.status).join(',')})`);
   await orphan.dispatched;
   assert(req(orphanId).state === 'cancelled' && repliesOf(orphanId).length === 0, 'the old worker\'s result never completed the request');
 
-  // The cancel endpoint refuses: the run is not stopped, so the Attempt is
-  // abandoned with failed external cancellation, not finished as stopped.
+  // The provider refuses the cancel: the turn is not stopped, so the
+  // Attempt is abandoned with failed external cancellation, not finished
+  // as stopped.
   configure({ heartbeatMs: 10 });
-  fake.onStart = () => ({ result: 'DONE-refused', hold: true, cancelError: { status: 503, code: 'CANCEL_UNAVAILABLE' } });
-  const refused = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Cancel refused', idempotencyKey: 'deck-cancel-refused' });
+  holdNextTurns(1);
+  failCancelWith = { code: 'unavailable', message: 'cancel refused' };
+  const refused = service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Cancel refused', idempotencyKey: 'direct-cancel-refused' });
   const refusedId = refused.accepted.requestId;
-  await waitFor(() => attemptsOf(refusedId)[0]?.external_run_id, 'refused run id persisted');
+  await waitFor(() => attemptsOf(refusedId)[0]?.external_run_id, 'refused turn id persisted');
   const refusedRun = attemptsOf(refusedId)[0].external_run_id;
+  const refusedFake = providerTurnIdOf(refusedRun);
+  const spyBefore = providerSpy.cancelTurn;
   remote.cancel(refusedId, { actor: PERSON });
   await refused.dispatched;
+  failCancelWith = null;
   let refusedAttempt = attemptsOf(refusedId)[0];
   let refusedExternal = eventData(refusedId, 'external_cancel');
   let refusedAbandon = eventData(refusedId, 'attempt_abandoned');
   assert(req(refusedId).state === 'cancelled' && refusedAttempt.outcome === 'cancelled' && refusedAttempt.error_category === 'abandoned'
     && /did not accept the cancel/.test(refusedAttempt.error_message) && refusedAbandon.length === 1 && refusedAbandon[0].external_cancel === 'failed',
-  'cancel endpoint failure: the Attempt is recorded abandoned, not cancelled as if stopped');
+  'cancel refused: the Attempt is recorded abandoned, not cancelled as if stopped');
   assert(refusedExternal.length === 1 && refusedExternal[0].status === 'failed' && refusedExternal[0].external_run_id === refusedRun
-    && fake.runs.get(refusedRun).state === 'running' && fake.calls('POST', `/api/agent-runs/${refusedRun}/cancel`).length === 1,
-  `cancel endpoint failure: external_cancel is failed and the run is still running (${refusedExternal.map(e => e.status).join(',')})`);
-  fake.release(refusedRun);
+    && fakeTurnState(refusedFake) === 'running' && providerSpy.cancelTurn === spyBefore + 1,
+  `cancel refused: external_cancel is failed and the provider turn still runs (${refusedExternal.map(e => e.status).join(',')})`);
+  fake.releaseFakeTurn(STATE, refusedFake, 'DONE-refused');
 
-  // The same on the Attempt deadline: a refused cancel is not a stopped run.
+  // The same on the request deadline: a refused cancel is not a stopped turn.
   clock = Date.now();
-  fake.onStart = () => ({ result: 'DONE-deadline', hold: true, cancelError: { status: 503, code: 'CANCEL_UNAVAILABLE' } });
+  holdNextTurns(1);
+  failCancelWith = { code: 'unavailable', message: 'cancel refused' };
   const timedOut = withPolicy({ BOTMANCERS_REQUEST_DEADLINE_MS: 300, BOTMANCERS_RETRY_MAX_ATTEMPTS: 1 }, () =>
-    service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Deadline cancel refused', idempotencyKey: 'deck-deadline-refused' }));
+    service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Deadline cancel refused', idempotencyKey: 'direct-deadline-refused' }));
   const timedId = timedOut.accepted.requestId;
   await timedOut.dispatched;
+  failCancelWith = null;
   refusedAttempt = attemptsOf(timedId)[0];
   const timedRun = refusedAttempt.external_run_id;
+  const timedFake = providerTurnIdOf(timedRun);
   refusedExternal = eventData(timedId, 'external_cancel');
   refusedAbandon = eventData(timedId, 'attempt_abandoned');
   assert(req(timedId).state === 'failed' && refusedAttempt.outcome === 'timed_out' && refusedAttempt.error_category === 'abandoned'
     && refusedAbandon.length === 1 && refusedAbandon[0].reason === 'timed_out' && refusedAbandon[0].external_cancel === 'failed'
     && refusedExternal.length === 1 && refusedExternal[0].status === 'failed' && refusedExternal[0].reason === 'timed_out'
-    && fake.runs.get(timedRun).state === 'running' && repliesOf(timedId).length === 0,
-  `deadline cancel failure: Attempt abandoned, external_cancel failed, run still running (${req(timedId).state}/${refusedAttempt.outcome}/${refusedExternal.map(e => e.status).join(',')})`);
-  fake.release(timedRun);
+    && fakeTurnState(timedFake) === 'running' && repliesOf(timedId).length === 0,
+  `deadline cancel failure: Attempt abandoned, external_cancel failed, turn still running (${req(timedId).state}/${refusedAttempt.outcome}/${refusedExternal.map(e => e.status).join(',')})`);
+  fake.releaseFakeTurn(STATE, timedFake, 'DONE-deadline');
 }
 
 // ---------------------------------------------------------------------
-// Holds the first Agent Deck call matching `match` until release(): the
-// test changes control state while that runtime I/O is in flight.
-function gateDeck(match) {
-  let release;
-  const gate = new Promise(resolve => { release = resolve; });
-  const state = { hit: false, release: () => release() };
-  deckApi.setAgentDeckApiFetch(async (url, init) => {
-    if (!state.hit && match(init.method, new URL(url, 'http://fake').pathname)) {
-      state.hit = true;
-      await gate;
-    }
-    return fake.fetch(url, init);
-  });
-  return state;
-}
-
 // The durable state a worker leaves when it dies mid-dispatch (as in
 // test-dispatcher): the real claim, Attempt, and launch intent; optionally
-// the real Agent Deck start. Only the crash is simulated.
+// the real direct provider start through the adapter's own repost. Only
+// the crash is simulated.
 async function crashedAttempt(key, options = {}) {
   // Intake stamps the deadline from the wall clock.
   if (options.deadlineMs) clock = Date.now();
@@ -762,13 +824,16 @@ async function crashedAttempt(key, options = {}) {
   const attempt = engine.transaction(() => {
     const claim = dead.claim(id, { data: { agent } });
     const begun = executor.beginAttempt(engine, id, { agent, adapter: prepared.adapter, input: prepared.input, snapshot: { agent }, now: clock });
-    dead.recordLaunchIntent(claim.lease, begun.attempt.id, prepared.adapter.name, prepared.adapter.launchIntent(begun.input));
+    const intent = prepared.adapter.launchIntent ? prepared.adapter.launchIntent(begun.input) : null;
+    dead.recordLaunchIntent(claim.lease, begun.attempt.id, prepared.adapter.name, intent);
     return begun.attempt;
   });
   let runId = options.forceRunId ?? null;
   if (options.post) {
     const intent = dead.launchIntent(attempt.id);
-    runId = (await deckApi.startAgentDeckRun(JSON.parse(intent.body), intent.idempotency_key)).runId;
+    const launched = await prepared.adapter.reconciler.repost({ idempotencyKey: intent.idempotency_key, body: intent.body });
+    if (launched.kind !== 'accepted') throw new Error(`crashedAttempt launch not accepted: ${JSON.stringify(launched)}`);
+    runId = launched.runId;
   }
   if (runId) engine.recordAttemptExternalIds(attempt.id, { externalRunId: runId });
   raw.prepare('UPDATE dispatch_leases SET expires_at = 0 WHERE request_id = ?').run(id);
@@ -776,156 +841,163 @@ async function crashedAttempt(key, options = {}) {
 }
 
 async function reconcileRaces() {
-  console.log('\n[4c] cancellation or a deadline arriving during reconciliation I/O wins over the reconcile decision');
-  configure({ heartbeatMs: 60_000 });
+  console.log('\n[4c] cancellation or a deadline arriving during reconciliation runtime I/O wins over the reconcile decision');
+  // Direct inspect is a local registry read; the reconcile runtime I/O is
+  // the follow (observe) and the same-key re-POST (start), both gated at
+  // the provider seam. The heartbeat is fast so a cancel intent aborts a
+  // gated follow promptly.
+  configure({ heartbeatMs: 10 });
   clock = Date.now();
   const remote = control.createRequestControl(raw, engine, { now: () => clock });
   const decisions = id => eventData(id, 'reconcile_decided').map(d => `${d.phase}/${d.action}`).join(',');
 
-  // attention: the run is unknown (run_not_found), but a cancel arrives
-  // while the inspect is pending.
-  const lost = await crashedAttempt('race-attention-cancel', { forceRunId: 'run-20261014T000000-gone' });
-  let gate = gateDeck((method, p) => method === 'GET' && p === `/api/agent-runs/${lost.runId}`);
+  // follow: a running turn is reattached, but a cancel arrives while the
+  // follow observes it.
+  holdNextTurns(1);
+  const held = fake.fakeTurnIds(STATE);
+  const following = await crashedAttempt('race-follow-cancel', { post: true });
+  let gate = gateProviderCall('observeTurn');
   let sweeping = service.sweepDispatch();
-  await waitFor(() => gate.hit, 'inspect in flight');
-  assert(remote.cancel(lost.id, { actor: PERSON, reason: 'during inspect' }).outcome === 'cancel_requested', 'attention race: intent recorded while inspect is pending');
+  await waitFor(() => gate.hit, 'follow observe in flight');
+  assert(remote.cancel(following.id, { actor: PERSON, reason: 'during follow' }).outcome === 'cancel_requested', 'follow race: intent recorded while the follow observes');
   gate.release();
   await sweeping;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
-  assert(req(lost.id).state === 'cancelled' && !attentionOf(lost.id) && !types(lost.id).includes('reconcile_decided')
-    && attemptsOf(lost.id)[0].outcome === 'cancelled' && attemptsOf(lost.id)[0].error_category === 'abandoned' && !leaseOf(lost.id),
-  `attention race: cancelled, no attention flag, no decision recorded (${req(lost.id).state}, ${decisions(lost.id) || 'none'})`);
+  clearProviderGate();
+  assert(req(following.id).state === 'cancelled' && attemptsOf(following.id)[0].outcome === 'cancelled'
+    && attemptsOf(following.id)[0].error_category === 'cancelled' && decisions(following.id) === 'run/reattach'
+    && registryTurn(following.runId).state === 'cancelled' && repliesOf(following.id).length === 0 && !leaseOf(following.id),
+  `follow race: cancelled, the reattached turn stopped, never completed (${req(following.id).state}, ${decisions(following.id)})`);
 
-  // attention (interrupted_attention): the run died, but the request
-  // deadline passes while the inspect is pending.
-  fake.onStart = () => ({ hold: true });
-  const died = await crashedAttempt('race-died-deadline', { post: true, deadlineMs: 5_000 });
-  fake.runs.get(died.runId).state = 'died';
-  gate = gateDeck((method, p) => method === 'GET' && p === `/api/agent-runs/${died.runId}`);
+  // follow: the request deadline passes while the follow observes a live
+  // turn. The commit sees the deadline first: timed out, and the turn's
+  // late completion is evidence only.
+  holdNextTurns(1);
+  const diedBefore = fake.fakeTurnIds(STATE);
+  const died = await crashedAttempt('race-follow-deadline', { post: true, deadlineMs: 5_000 });
+  const diedFake = newTurnIds(diedBefore)[0];
+  assert(held.length < fake.fakeTurnIds(STATE).length && diedFake, 'follow race: the crash left a live provider turn');
+  gate = gateProviderCall('observeTurn');
   sweeping = service.sweepDispatch();
-  await waitFor(() => gate.hit, 'inspect in flight');
+  await waitFor(() => gate.hit, 'follow observe in flight');
   advance(10_000);
   gate.release();
+  fake.releaseFakeTurn(STATE, diedFake, 'DONE-after-deadline');
   await sweeping;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
+  clearProviderGate();
   let reqRow = req(died.id);
-  assert(reqRow.state === 'failed' && reqRow.error_code === 'timed_out' && !attentionOf(died.id) && attemptsOf(died.id)[0].outcome === 'timed_out'
-    && attemptsOf(died.id).length === 1,
-  `died race: the deadline wins, no run_died attention (${reqRow.state}/${reqRow.error_code}, attention ${attentionOf(died.id)?.reason ?? 'none'})`);
+  assert(reqRow.state === 'failed' && reqRow.error_code === 'timed_out' && !attentionOf(died.id) && attemptsOf(died.id).length === 1
+    && attemptsOf(died.id)[0].outcome === 'succeeded' && eventData(died.id, 'late_result_recorded').length === 1 && repliesOf(died.id).length === 0,
+  `follow race: the deadline wins; the followed Attempt keeps its succeeded evidence (${reqRow.state}/${reqRow.error_code})`);
 
   // terminal (fail): the same-key re-POST is refused, but a cancel arrives
-  // while it is in flight: cancelled, not failed runtime_failed.
-  fake.onStart = () => ({ startError: { status: 422, code: 'CLIENT_UNSUPPORTED' } });
+  // while it is in flight: cancelled, not failed launch_failed.
+  fake.mutateFakeProvider(STATE, state => { state.failStarts = (state.failStarts ?? 0) + 1; state.startError = { code: 'unsupported', message: 'model cannot start' }; });
   const refused = await crashedAttempt('race-fail-cancel');
-  gate = gateDeck((method, p) => method === 'POST' && p === '/api/agent-runs');
+  gate = gateProviderCall('startSession');
   sweeping = service.sweepDispatch();
   await waitFor(() => gate.hit, 're-POST in flight');
   remote.cancel(refused.id, { actor: PERSON });
   gate.release();
   await sweeping;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
+  clearProviderGate();
   reqRow = req(refused.id);
   assert(reqRow.state === 'cancelled' && reqRow.error_code === 'cancelled' && attemptsOf(refused.id)[0].outcome === 'cancelled'
     && decisions(refused.id) === 'launch/repost',
   `fail race: cancelled, the refusal decision never recorded (${reqRow.state}/${reqRow.error_code}, ${decisions(refused.id)})`);
 
   // terminal (fail) with a deadline crossing during the re-POST.
+  fake.mutateFakeProvider(STATE, state => { state.failStarts = (state.failStarts ?? 0) + 1; state.startError = { code: 'unsupported', message: 'model cannot start' }; });
   const refusedLate = await crashedAttempt('race-fail-deadline', { deadlineMs: 5_000 });
-  gate = gateDeck((method, p) => method === 'POST' && p === '/api/agent-runs');
+  gate = gateProviderCall('startSession');
   sweeping = service.sweepDispatch();
   await waitFor(() => gate.hit, 're-POST in flight');
   advance(10_000);
   gate.release();
   await sweeping;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
+  clearProviderGate();
   reqRow = req(refusedLate.id);
-  assert(reqRow.state === 'failed' && reqRow.error_code === 'timed_out' && attemptsOf(refusedLate.id)[0].outcome === 'timed_out',
-    `fail race: the deadline wins over runtime_failed (${reqRow.state}/${reqRow.error_code})`);
+  assert(reqRow.state === 'failed' && reqRow.error_code === 'timed_out' && attemptsOf(refusedLate.id)[0].outcome === 'timed_out'
+    && decisions(refusedLate.id) === 'launch/repost',
+  `fail race: the deadline wins over launch_failed (${reqRow.state}/${reqRow.error_code})`);
 
   // repost: the re-POST is accepted after a cancel arrived meanwhile. The
-  // run it names is recorded and asked to stop; it is never followed.
-  fake.onStart = () => ({ result: 'DONE-repost-race', hold: true });
+  // turn it names is recorded and asked to stop; it is never followed.
+  const observesBefore = observeCalls();
   const reposted = await crashedAttempt('race-repost-cancel');
-  gate = gateDeck((method, p) => method === 'POST' && p === '/api/agent-runs');
+  gate = gateProviderCall('startSession');
   sweeping = service.sweepDispatch();
   await waitFor(() => gate.hit, 're-POST in flight');
   remote.cancel(reposted.id, { actor: PERSON });
   gate.release();
   await sweeping;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
+  clearProviderGate();
   const repostRun = attemptsOf(reposted.id)[0].external_run_id;
   const repostCancel = eventData(reposted.id, 'external_cancel');
-  assert(req(reposted.id).state === 'cancelled' && repostRun && fake.runs.get(repostRun).state === 'canceled'
+  assert(req(reposted.id).state === 'cancelled' && repostRun && registryTurn(repostRun).state === 'cancelled'
     && repostCancel.length === 1 && repostCancel[0].status === 'requested' && repostCancel[0].external_run_id === repostRun
-    && fake.calls('GET', `/api/agent-runs/${repostRun}/events`).length === 0 && repliesOf(reposted.id).length === 0,
-  `repost race: cancelled, the accepted run recorded and cancelled, never followed (${req(reposted.id).state}, ${repostCancel.map(e => e.status).join(',')})`);
+    && observeCalls() === observesBefore && repliesOf(reposted.id).length === 0,
+  `repost race: cancelled, the accepted turn recorded and cancelled, never followed (${req(reposted.id).state}, ${repostCancel.map(e => e.status).join(',')})`);
 
   // repost after a cancel landed before the sweep: nothing is POSTed.
-  const posts = fake.calls('POST', '/api/agent-runs').length;
+  const starts = startCalls();
   const early = await crashedAttempt('race-repost-early');
   remote.cancel(early.id, { actor: PERSON });
   await service.sweepDispatch();
-  assert(req(early.id).state === 'cancelled' && fake.calls('POST', '/api/agent-runs').length === posts && !types(early.id).includes('reconcile_decided'),
+  assert(req(early.id).state === 'cancelled' && startCalls() === starts && !types(early.id).includes('reconcile_decided'),
     'repost: a request cancelled before reconciliation is never re-POSTed');
   await service.waitForAgentDispatchIdle();
 }
 
-// Observation of a live Agent Deck run fails (not the unreachable case,
-// which defers). Under a retry-enabled policy the cleanup cancel decides:
-// accepted, the run is stopped and a retry may follow; refused, the run
-// may continue, so the Attempt is abandoned and nothing relaunches.
+// Observation of a live provider turn fails. Under a retry-enabled policy
+// the cleanup cancel decides: accepted, the turn is stopped and a retry
+// may follow; refused, the turn may continue, so the Attempt is abandoned
+// and nothing relaunches.
 async function observationLoss() {
-  console.log('\n[4d] losing sight of a run: a failed cleanup cancel is abandoned evidence, never a retry');
+  console.log('\n[4d] losing sight of a turn: a failed cleanup cancel is abandoned evidence, never a retry');
   configure({ heartbeatMs: 60_000 });
   clock = Date.now();
-  const failEvents = runIdOf => deckApi.setAgentDeckApiFetch(async (url, init) => {
-    const p = new URL(url, 'http://fake').pathname;
-    const run = runIdOf();
-    if (run && init.method === 'GET' && p === `/api/agent-runs/${run}/events`) {
-      fake.requests.push({ method: init.method, path: p, query: {}, headers: {}, body: null });
-      return { status: 500, json: async () => ({ success: false, error: 'boom', error_code: 'INTERNAL' }) };
-    }
-    return fake.fetch(url, init);
-  });
 
-  for (const c of [
-    { label: 'cancel refused', cancelError: { status: 503, code: 'CANCEL_UNAVAILABLE' } },
-    { label: 'cancel accepted', cancelError: null },
-  ]) {
-    fake.onStart = () => ({ result: 'DONE-unobserved', hold: true, ...(c.cancelError ? { cancelError: c.cancelError } : {}) });
-    const startsBefore = fake.calls('POST', '/api/agent-runs').length;
-    let id = null;
-    failEvents(() => (id ? attemptsOf(id)[0]?.external_run_id ?? null : null));
-    const sent = withPolicy({ BOTMANCERS_RETRY_MAX_ATTEMPTS: 3, BOTMANCERS_RETRY_BASE_DELAY_MS: 1_000 }, () =>
-      service.acceptAgentMessage(PERSON, { agentId: codex.id, content: `Unobserved ${c.label}`, idempotencyKey: `observation-lost-${c.label}` }));
-    id = sent.accepted.requestId;
-    await sent.dispatched;
-    deckApi.setAgentDeckApiFetch(fake.fetch);
-    const attempt = attemptsOf(id)[0];
-    const runId = attempt.external_run_id;
-    const abandon = eventData(id, 'attempt_abandoned');
-    const external = eventData(id, 'external_cancel');
-    if (c.cancelError) {
-      assert(attempt.outcome === 'failed' && attempt.error_category === 'abandoned' && /did not accept the cancel/.test(attempt.error_message)
-        && abandon.length === 1 && abandon[0].reason === 'observation_lost' && abandon[0].external_cancel === 'failed'
-        && external.length === 1 && external[0].status === 'failed' && external[0].external_run_id === runId,
-      `${c.label}: Attempt abandoned with failed external cancel (${attempt.error_category}, ${external.map(e => e.status).join(',')})`);
-      assert(req(id).state === 'waiting' && attentionOf(id)?.reason === 'external_cancel_failed' && req(id).next_eligible_at === null
-        && fake.runs.get(runId).state === 'running',
-      `${c.label}: no retry scheduled; operator attention while the run still runs (${req(id).state}, ${attentionOf(id)?.reason ?? 'none'})`);
-      advance(60_000);
-      await service.sweepDispatch();
-      await service.waitForAgentDispatchIdle();
-      assert(attemptsOf(id).length === 1 && fake.calls('POST', '/api/agent-runs').length === startsBefore + 1 && req(id).state === 'waiting',
-        `${c.label}: later sweeps launch no second Attempt beside the live run (${attemptsOf(id).length} Attempts)`);
-      fake.release(runId);
-    } else {
-      assert(attempt.outcome === 'failed' && attempt.error_category !== 'abandoned' && abandon.length === 0 && external.length === 0
-        && fake.runs.get(runId).state === 'canceled' && req(id).state === 'queued' && req(id).next_eligible_at !== null && !attentionOf(id),
-      `${c.label}: the run was stopped, so the retryable failure schedules a bounded retry (${req(id).state}, ${attempt.error_category})`);
-      await service.cancelWorkRequest(id, { actor: PERSON });
-    }
-  }
+  // Cancel refused: the provider lost the turn mid-observation, so the
+  // cleanup cancel fails too.
+  holdNextTurns(1);
+  const refused = withPolicy({ BOTMANCERS_RETRY_MAX_ATTEMPTS: 3, BOTMANCERS_RETRY_BASE_DELAY_MS: 1_000 }, () =>
+    service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Unobserved cancel refused', idempotencyKey: 'observation-lost-refused' }));
+  const refusedId = refused.accepted.requestId;
+  await waitFor(() => attemptsOf(refusedId)[0]?.external_run_id, 'turn started');
+  const refusedRun = attemptsOf(refusedId)[0].external_run_id;
+  deleteProviderTurn(providerTurnIdOf(refusedRun));
+  await refused.dispatched;
+  const refusedAttempt = attemptsOf(refusedId)[0];
+  const refusedAbandon = eventData(refusedId, 'attempt_abandoned');
+  const refusedExternal = eventData(refusedId, 'external_cancel');
+  assert(refusedAttempt.outcome === 'failed' && refusedAttempt.error_category === 'abandoned' && /did not accept the cancel/.test(refusedAttempt.error_message)
+    && refusedAbandon.length === 1 && refusedAbandon[0].reason === 'observation_lost' && refusedAbandon[0].external_cancel === 'failed'
+    && refusedExternal.length === 1 && refusedExternal[0].status === 'failed' && refusedExternal[0].external_run_id === refusedRun,
+  `cancel refused: Attempt abandoned with failed external cancel (${refusedAttempt.error_category}, ${refusedExternal.map(e => e.status).join(',')})`);
+  assert(req(refusedId).state === 'waiting' && attentionOf(refusedId)?.reason === 'external_cancel_failed' && req(refusedId).next_eligible_at === null
+    && registryTurn(refusedRun).state === 'running',
+  `cancel refused: no retry scheduled; operator attention while the registry turn still runs (${req(refusedId).state}, ${attentionOf(refusedId)?.reason ?? 'none'})`);
+  const startsBefore = startCalls();
+  advance(60_000);
+  await service.sweepDispatch();
+  await service.waitForAgentDispatchIdle();
+  assert(attemptsOf(refusedId).length === 1 && startCalls() === startsBefore && req(refusedId).state === 'waiting',
+    `cancel refused: later sweeps launch no second Attempt beside the live turn (${attemptsOf(refusedId).length} Attempts)`);
+
+  // Cancel accepted: one observe fails, the cleanup stops the turn, and
+  // the retryable failure schedules a bounded retry.
+  failObserveWith = { code: 'internal', message: 'observe blew up' };
+  const accepted = withPolicy({ BOTMANCERS_RETRY_MAX_ATTEMPTS: 3, BOTMANCERS_RETRY_BASE_DELAY_MS: 1_000 }, () =>
+    service.acceptAgentMessage(PERSON, { agentId: codex.id, content: 'Unobserved cancel accepted', idempotencyKey: 'observation-lost-accepted' }));
+  const acceptedId = accepted.accepted.requestId;
+  await accepted.dispatched;
+  const acceptedAttempt = attemptsOf(acceptedId)[0];
+  const acceptedRun = acceptedAttempt.external_run_id;
+  assert(acceptedAttempt.outcome === 'failed' && acceptedAttempt.error_category === 'runtime_failed'
+    && count(acceptedId, 'attempt_abandoned') === 0 && count(acceptedId, 'external_cancel') === 0
+    && registryTurn(acceptedRun).state === 'cancelled' && req(acceptedId).state === 'queued' && req(acceptedId).next_eligible_at !== null && !attentionOf(acceptedId),
+  `cancel accepted: the turn was stopped, so the retryable failure schedules a bounded retry (${req(acceptedId).state}, ${acceptedAttempt.error_category})`);
+  await service.cancelWorkRequest(acceptedId, { actor: PERSON });
 }
 
 // ---------------------------------------------------------------------
@@ -1000,12 +1072,20 @@ async function projections() {
 // ---------------------------------------------------------------------
 async function main() {
   console.log('NOT-473 cancellation, deadlines, and bounded retries');
-  fake = createFakeAgentDeck({ token: 'adg_NOT_473_fixture_bearer' });
-  process.env.AGENT_DECK_RUN_TOKEN = fake.token;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
-  deckAttempt.setAgentDeckApiPollIntervalForTests(5);
-  hermes = botNamed('Control Hermes', { agent: 'hermes', deck_id: 'deck-control' });
-  codex = botNamed('Control Codex', { agent: 'codex', deck_id: 'deck-control' });
+  WORKROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-request-control-work-'));
+  STATE = path.join(os.tmpdir(), `botmancers-request-control-provider-${process.pid}.json`);
+  fs.rmSync(STATE, { force: true });
+  hermes = botNamed('Control Hermes', { agent: 'hermes' });
+  codex = botNamed('Control Codex', { agent: 'codex' });
+  db.bots.updateRegistration(codex.id, 'codex', {
+    runtime_connection_id: db.runtimeConnections.ensureLocal('codex'),
+    session_scope: { kind: 'workspaces', workspaces: [WORKROOT], sessions: [] },
+    default_workspace: WORKROOT,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
+  codex = bots.getById(codex.id);
+  providerContract.registerSessionProvider({ connectionId: codex.runtime_connection_id }, () => wrappedProvider());
 
   await cancelStateMachine();
   await deadlineScenarios();
@@ -1023,6 +1103,8 @@ async function main() {
   finished = true;
   console.log(`\nTEST RESULT: ${failures === 0 ? 'PASS' : `FAIL (${failures} assertion(s))`}`);
   removeDb(DB_PATH);
+  fs.rmSync(STATE, { force: true });
+  fs.rmSync(WORKROOT, { recursive: true, force: true });
   process.exit(failures === 0 ? 0 : 1);
 }
 
