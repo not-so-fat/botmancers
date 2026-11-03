@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { AGENT_OPTIONS, type DeckListState } from '@/lib/bot-runtime-ui';
-import { LAUNCH_PROFILE_LABELS, LOCAL_HOST, POLICY_MODE_LABELS, SCOPE_KIND_LABELS } from '@/lib/agent-registration';
+import { AGENT_OPTIONS } from '@/lib/bot-runtime-ui';
+import { LOCAL_HOST, POLICY_MODE_LABELS, SCOPE_KIND_LABELS } from '@/lib/agent-registration';
 import {
   CONNECTIONS_ERROR_COPY,
   CONNECTIONS_LOADING_COPY,
@@ -16,7 +16,6 @@ import {
   type RegistrationFormView,
   type SessionOption,
 } from '@/lib/agent-registration-ui';
-import { AgentDeckFields } from '@/app/components/AgentDeckRuntime';
 
 type Variant = 'modal' | 'config';
 
@@ -41,7 +40,7 @@ const CLASSES: Record<Variant, {
     picks: 'runtime-picks',
     pick: 'runtime-pick',
     stack: 'reg-stack',
-    control: 'deck-control',
+    control: 'reg-control',
     input: '',
     hint: 'runtime-hint',
     error: 'form-error reg-error',
@@ -144,10 +143,10 @@ function AddConnection({ idPrefix, variant, onAdd }: {
   );
 }
 
-// NOT-502: the registered-Agent fields, each its own concept: runtime
-// connection, session scope, default workspace, launch profile (Agent
-// Deck controls only for agent_deck), policy, and on Config the optional
-// home session.
+// NOT-543: the registered-Agent fields, each its own concept: runtime
+// connection, session scope, default workspace, policy, and on Config
+// the optional home session. Every Agent launches direct from its
+// runtime connection: there is no launch profile and no deck.
 export function RegistrationFields({
   idPrefix,
   variant,
@@ -158,11 +157,8 @@ export function RegistrationFields({
   connections,
   onRetryConnections,
   onAddConnection,
-  deckState,
-  onRetryDecks,
-  savedDeckId,
-  workdirPlaceholder,
-  workdirHint,
+  workspacePlaceholder,
+  workspaceHint,
   sessions,
   includeHomeSession,
 }: {
@@ -175,11 +171,8 @@ export function RegistrationFields({
   connections: ConnectionListState;
   onRetryConnections: () => void;
   onAddConnection: (input: { provider: string; label: string; host: string }) => Promise<ConnectionOption | string>;
-  deckState: DeckListState;
-  onRetryDecks: () => void;
-  savedDeckId?: string | null;
-  workdirPlaceholder: string;
-  workdirHint: string;
+  workspacePlaceholder: string;
+  workspaceHint: string;
   // The Agent's own sessions (Config). Undefined on New Agent: a new
   // Agent has none, so the sessions scope is not offered.
   sessions?: SessionOption[];
@@ -295,54 +288,15 @@ export function RegistrationFields({
           type="text"
           className={css.input || undefined}
           value={form.defaultWorkspace}
+          placeholder={workspacePlaceholder}
           aria-invalid={err('defaultWorkspace') ? true : undefined}
-          aria-describedby={describe('defaultWorkspace', `${idPrefix}-default-workspace-hint`)}
+          aria-describedby={describe('defaultWorkspace', `${idPrefix}-default-workspace-hint`, `${idPrefix}-default-workspace-note`)}
           onChange={e => onChange({ defaultWorkspace: e.target.value })}
         />
-        <p id={`${idPrefix}-default-workspace-hint`} className={css.hint}>{HINTS.defaultWorkspace}</p>
+        <p id={`${idPrefix}-default-workspace-hint`} className={css.hint}>{workspaceHint}</p>
+        <p id={`${idPrefix}-default-workspace-note`} className={css.hint}>{HINTS.defaultWorkspace}</p>
         <FieldError id={errId('defaultWorkspace')} message={err('defaultWorkspace')} variant={variant} />
       </div>
-
-      <fieldset className={css.fieldset} data-field="launch-profile">
-        <legend className={css.legend} id={`${idPrefix}-profile-legend`}>{LABELS.launchProfile}</legend>
-        <div className={css.stack} role="radiogroup" aria-labelledby={`${idPrefix}-profile-legend`} aria-required="true" aria-describedby={describe('launchProfile')}>
-          {(['direct', 'agent_deck'] as const).map(profile => (
-            <label key={profile} className={css.pick}>
-              <input
-                type="radio"
-                name={`${idPrefix}-profile`}
-                value={profile}
-                checked={form.launchProfile === profile}
-                aria-describedby={`${idPrefix}-profile-${profile}-hint`}
-                onChange={() => onChange({ launchProfile: profile })}
-              />
-              {' ' + LAUNCH_PROFILE_LABELS[profile]}
-              <span id={`${idPrefix}-profile-${profile}-hint`} className={`reg-option-hint ${css.hint}`}>
-                {profile === 'direct' ? HINTS.direct : HINTS.agentDeck}
-              </span>
-            </label>
-          ))}
-        </div>
-        <FieldError id={errId('launchProfile')} message={err('launchProfile')} variant={variant} />
-        {view.showsAgentDeck ? (
-          <>
-            <AgentDeckFields
-              idPrefix={idPrefix}
-              variant={variant}
-              deckId={form.deckId}
-              onDeckId={value => onChange({ deckId: value })}
-              deckState={deckState}
-              onRetry={onRetryDecks}
-              savedDeckId={savedDeckId}
-              workingDirectory={form.workingDirectory}
-              onWorkingDirectory={value => onChange({ workingDirectory: value })}
-              workdirPlaceholder={workdirPlaceholder}
-              workdirHint={workdirHint}
-            />
-            <FieldError id={errId('deck')} message={err('deck')} variant={variant} />
-          </>
-        ) : null}
-      </fieldset>
 
       <fieldset className={css.fieldset} data-field="policy">
         <legend className={css.legend} id={`${idPrefix}-policy-legend`}>{LABELS.policy}</legend>

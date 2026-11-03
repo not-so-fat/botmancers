@@ -8,9 +8,10 @@ import BotAvatar from '@/app/components/BotAvatar';
 import type { AvatarConfig } from '@/lib/avatar';
 import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 import {
-  NEW_BOT_WORKDIR_HINT,
-  deckEventDisplay,
-  type DeckListState,
+  NEW_AGENT_WORKSPACE_HINT,
+  WORKSPACE_TEMPLATE,
+  agentEventDisplay,
+  rosterRuntimeLine,
 } from '@/lib/bot-runtime-ui';
 import {
   DEFAULT_REGISTRATION_FORM,
@@ -19,9 +20,7 @@ import {
   registrationFormView,
   type RegistrationFormInput,
 } from '@/lib/agent-registration-ui';
-import { RosterRuntimeLine } from '@/app/components/AgentDeckRuntime';
 import { RegistrationFields } from '@/app/components/AgentRegistration';
-import { useDeckList } from '@/app/components/useDeckList';
 import { useRuntimeConnections } from '@/app/components/useRuntimeConnections';
 import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
@@ -57,12 +56,10 @@ interface Bot {
   unread?: number;
   latest?: string;
   agent?: string | null;
-  deck_id?: string | null;
-  deck_name?: string | null;
-  working_directory?: string | null;
-  needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
-  launch_profile?: string | null;
+  launch_blocker?: string | null;
+  runtime_connection_id?: string | null;
+  runtime_connection?: { id: string; provider: string; label: string; host: string } | null;
 }
 
 interface Message {
@@ -134,15 +131,15 @@ function mentionAt(content: string, name: string) {
 
 function renderThreadBody(text: string, keyPrefix: string) {
   const lines = String(text ?? '').split('\n');
-  if (!lines.some(line => deckEventDisplay(line) !== null)) return text;
+  if (!lines.some(line => agentEventDisplay(line) !== null)) return text;
   const out: ReactNode[] = [];
   lines.forEach((line, index) => {
     if (index > 0) out.push(<br key={keyPrefix + '-br-' + index} />);
-    const event = deckEventDisplay(line);
+    const event = agentEventDisplay(line);
     if (event) {
       out.push(
-        <span key={keyPrefix + '-' + index} className="deck-event">
-          <span className="deck-event-label">{event.label}</span>
+        <span key={keyPrefix + '-' + index} className="agent-event">
+          <span className="agent-event-label">{event.label}</span>
           {event.detail ? ' ' + event.detail : ''}
         </span>
       );
@@ -232,11 +229,6 @@ export default function Home() {
   const pendingAfter = useRef<Record<string, number>>({});
   const logoSettled = useRef(false);
   const [logoDrop, setLogoDrop] = useState(false);
-  // NOT-502: the Agent Deck list is requested only when an Agent Deck
-  // Agent is on the roster or the New Agent dialog picks Agent Deck.
-  const [modalWantsDecks, setModalWantsDecks] = useState(false);
-  const decksEnabled = modalWantsDecks || bots.some(bot => bot.launch_profile === 'agent_deck');
-  const { state: deckState, retry: retryDecks } = useDeckList(decksEnabled);
 
   useEffect(() => {
     if (logoSettled.current || bots.length === 0) return;
@@ -759,7 +751,7 @@ export default function Home() {
       <div className="bot-copy">
         {editingId === bot.id ? rowRename(bot) : rowOpen(bot)}
         {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-        <RosterRuntimeLine bot={bot} state={deckState} />
+        <div className="bot-runtime" title={rosterRuntimeLine(bot)}>{rosterRuntimeLine(bot)}</div>
       </div>
       {rowActions(bot)}
       {rowTip(bot)}
@@ -963,7 +955,7 @@ export default function Home() {
                   {rowActions(bot)}
                 </div>
                 {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-                <RosterRuntimeLine bot={bot} state={deckState} />
+                <div className="bot-runtime" title={rosterRuntimeLine(bot)}>{rosterRuntimeLine(bot)}</div>
                 {rowTip(bot)}
               </div>
             ) : agentRow(bot))}
@@ -1309,7 +1301,6 @@ export default function Home() {
       ) : null}
       {manageOpen ? (
         <ManageAgentsPanel
-          deckState={deckState}
           onClose={() => {
             setManageOpen(false);
             requestAnimationFrame(() => manageRef.current?.focus());
@@ -1345,11 +1336,6 @@ export default function Home() {
     {showBotModal && (
       <BotModal
         anchorRef={newRef}
-        deckState={deckState}
-        onRetryDecks={() => {
-          setModalWantsDecks(true);
-          retryDecks();
-        }}
         onClose={closeBotModal}
         onCreated={() => {
           loadBots();
@@ -1518,10 +1504,8 @@ function FileLinks({ names }: { names: string[] }) {
 }
 
 
-function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
+function BotModal({ anchorRef, onClose, onCreated }: {
   anchorRef: React.RefObject<HTMLButtonElement | null>;
-  deckState: DeckListState;
-  onRetryDecks: () => void;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -1572,12 +1556,10 @@ function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
     target.focus();
   };
 
-  const view = registrationFormView(form, deckState, connections.state);
+  const view = registrationFormView(form, connections.state);
 
   const changeForm = (patch: Partial<RegistrationFormInput>) => {
     setBotError('');
-    // NOT-502: the Agent Deck list is fetched only once Agent Deck is picked.
-    if (patch.launchProfile === 'agent_deck' && form.launchProfile !== 'agent_deck') onRetryDecks();
     setForm(current => ({ ...current, ...patch }));
   };
 
@@ -1631,10 +1613,8 @@ function BotModal({ anchorRef, deckState, onRetryDecks, onClose, onCreated }: {
             connections={connections.state}
             onRetryConnections={connections.retry}
             onAddConnection={connections.add}
-            deckState={deckState}
-            onRetryDecks={onRetryDecks}
-            workdirPlaceholder=""
-            workdirHint={NEW_BOT_WORKDIR_HINT}
+            workspacePlaceholder={WORKSPACE_TEMPLATE}
+            workspaceHint={NEW_AGENT_WORKSPACE_HINT}
           />
           {botError ? <p className="form-error" role="alert">{botError}</p> : null}
           </div>

@@ -366,9 +366,8 @@ textarea {
   text-overflow: ellipsis;
 }
 
-/* NOT-445/NOT-457: one roster "Agent: … · Agent Deck: …" line. Same 12px de-emphasised style as
-   .bot-preview; wraps (so the unavailable-deck marker stays visible),
-   then clamps with an ellipsis. Plain text, never interactive. */
+/* NOT-445/NOT-543: one roster "Agent: … · <connection>" line. Same 12px de-emphasised style as
+   .bot-preview; wraps, then clamps with an ellipsis. Plain text, never interactive. */
 .bot-runtime {
   margin: 2px 0 0;
   max-width: 100%;
@@ -382,15 +381,6 @@ textarea {
   -webkit-line-clamp: 3;
   line-clamp: 3;
   overflow-wrap: anywhere;
-}
-
-.bot-runtime-deck {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
 }
 
 .mark {
@@ -943,10 +933,10 @@ button.thread-name {
   color: var(--danger);
 }
 
-/* NOT-437: same-thread delegation trace. Deck event lines render in the
+/* NOT-437: same-thread delegation trace. Agent event lines render in the
    thread's monospace run style at the existing message size; long ids and
    results wrap, never truncate. No event line is clickable. */
-.deck-event {
+.agent-event {
   font-family: var(--mono);
   font-size: 14px;
   line-height: 1.45;
@@ -1202,7 +1192,7 @@ button.thread-name {
   accent-color: var(--accent);
 }
 
-.form-card .deck-control {
+.form-card .reg-control {
   width: 100%;
   box-sizing: border-box;
   margin: 0 0 8px;
@@ -1244,8 +1234,8 @@ button.thread-name {
   accent-color: var(--accent);
 }
 
-/* NOT-457: Agent, then Agent Deck, then working directory. The Agent
-   radio group is a bare fieldset whose legend matches the field labels;
+/* NOT-457: connection, then scope, then workspace, then policy. Each
+   section is a bare fieldset whose legend matches the field labels;
    every control in the sequence shows a visible keyboard focus ring. */
 .agent-fieldset {
   min-width: 0;
@@ -1300,7 +1290,7 @@ button.thread-name {
   gap: 16px;
 }
 
-.form-card .deck-control[aria-invalid="true"],
+.form-card .reg-control[aria-invalid="true"],
 .form-card input[aria-invalid="true"],
 .form-card textarea[aria-invalid="true"] {
   border-color: var(--accent);
@@ -1327,7 +1317,7 @@ button.thread-name {
 
 .form-card input:focus-visible,
 .form-card textarea:focus-visible,
-.form-card .deck-control:focus-visible,
+.form-card .reg-control:focus-visible,
 .form-card button:focus-visible,
 .form-card a:focus-visible,
 .cfg-page input[type="radio"]:focus-visible {
@@ -1350,7 +1340,7 @@ button.thread-name {
   text-decoration: none;
 }
 
-.deck-event-label {
+.agent-event-label {
   color: var(--accent);
 }
 

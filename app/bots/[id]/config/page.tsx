@@ -7,9 +7,8 @@ import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import SharePolicyCard from '@/app/components/SharePolicyCard';
 import { DELETE_KEEPS_COPY, DELETE_REMOVES_COPY } from '@/lib/bot-deletion';
 import {
-  configWorkdirHint,
+  configWorkspaceHint,
   defaultWorkdirFor,
-  isMigratedPending,
 } from '@/lib/bot-runtime-ui';
 import {
   hasRegistrationErrors,
@@ -22,7 +21,6 @@ import {
 } from '@/lib/agent-registration-ui';
 import type { LaunchPolicy, SessionScope } from '@/lib/agent-registration';
 import { RegistrationFields } from '@/app/components/AgentRegistration';
-import { useDeckList } from '@/app/components/useDeckList';
 import { useRuntimeConnections } from '@/app/components/useRuntimeConnections';
 import BotAvatar from '@/app/components/BotAvatar';
 import AvatarChoiceGroup from '@/app/components/AvatarChoiceGroup';
@@ -49,16 +47,11 @@ interface Bot {
   import_operation_id?: string | null;
   import_timestamp?: number | null;
   agent?: string | null;
-  deck_id?: string | null;
-  deck_name?: string | null;
-  working_directory?: string | null;
-  needs_deck_selection?: boolean | number | null;
   launchable?: boolean | null;
   launch_blocker?: string | null;
-  // NOT-502 registration (see lib/agent-registration).
+  // NOT-543 direct registration (see lib/agent-registration).
   runtime_connection_id?: string | null;
   runtime_connection?: { id: string; provider: string; label: string; host: string } | null;
-  launch_profile?: string | null;
   session_scope?: SessionScope | null;
   default_workspace?: string | null;
   policy?: LaunchPolicy | null;
@@ -172,10 +165,6 @@ export default function BotConfigPage() {
   const [runtimeEditing, setRuntimeEditing] = useState(false);
   const [runtimeForm, setRuntimeForm] = useState<RegistrationFormInput | null>(null);
   const [runtimeShowErrors, setRuntimeShowErrors] = useState(false);
-  // NOT-502: a direct-profile Agent never requests the Agent Deck list;
-  // it loads only for an Agent Deck Agent or once Agent Deck is picked.
-  const decksEnabled = data?.bot.launch_profile === 'agent_deck' || runtimeForm?.launchProfile === 'agent_deck';
-  const { state: deckState, retry: retryDecks } = useDeckList(Boolean(decksEnabled));
   const connections = useRuntimeConnections();
   const [sessions, setSessions] = useState<SessionOption[] | undefined>(undefined);
   const [runtimePhase, setRuntimePhase] = useState<Phase>('clean');
@@ -327,7 +316,6 @@ export default function BotConfigPage() {
     setRuntimeShowErrors(false);
     setRuntimePhase('clean');
     setRuntimeError('');
-    if (data.bot.launch_profile === 'agent_deck') retryDecks();
     connections.retry();
   }
 
@@ -393,7 +381,7 @@ export default function BotConfigPage() {
 
   async function saveRuntime(): Promise<void> {
     if (!data || !runtimeForm) return;
-    if (hasRegistrationErrors(registrationFormView(runtimeForm, deckState, connections.state))) {
+    if (hasRegistrationErrors(registrationFormView(runtimeForm, connections.state))) {
       setRuntimeShowErrors(true);
       setRuntimePhase('error');
       setRuntimeError(FIX_FIELDS_ERROR);
@@ -794,7 +782,7 @@ export default function BotConfigPage() {
               </div>
               {(() => {
                 if (!runtimeEditing || !runtimeForm) {
-                  const view = registrationReadView(bot, bot.launch_profile === 'agent_deck' ? deckState : null, sessions);
+                  const view = registrationReadView(bot, sessions);
                   return (
                     <div data-field="runtime-read">
                       <dl className="text-sm">
@@ -807,10 +795,7 @@ export default function BotConfigPage() {
                       </dl>
                       {view.notices.map(notice => (
                         <p key={notice} className="text-sm cfg-dirty mt-2">
-                          {notice}{' '}
-                          {/Settings/.test(notice) ? (
-                            <Link href="/settings" className="cfg-link">Open Settings</Link>
-                          ) : null}
+                          {notice}
                         </p>
                       ))}
                       <button
@@ -822,28 +807,21 @@ export default function BotConfigPage() {
                     </div>
                   );
                 }
-                const formView = registrationFormView(runtimeForm, deckState, connections.state);
-                const savedDeckId = bot.launch_profile === 'agent_deck' && !isMigratedPending(bot) ? bot.deck_id : null;
+                const formView = registrationFormView(runtimeForm, connections.state);
                 return (
                   <>
                     <RegistrationFields
                       idPrefix="cfg"
                       variant="config"
                       form={runtimeForm}
-                      onChange={patch => {
-                        if (patch.launchProfile === 'agent_deck' && runtimeForm.launchProfile !== 'agent_deck') retryDecks();
-                        patchRuntimeForm(patch);
-                      }}
+                      onChange={patchRuntimeForm}
                       view={formView}
                       showErrors={runtimeShowErrors}
                       connections={connections.state}
                       onRetryConnections={connections.retry}
                       onAddConnection={connections.add}
-                      deckState={deckState}
-                      onRetryDecks={retryDecks}
-                      savedDeckId={savedDeckId}
-                      workdirPlaceholder={defaultWorkdirFor(bot.id)}
-                      workdirHint={configWorkdirHint(bot.id)}
+                      workspacePlaceholder={defaultWorkdirFor(bot.id)}
+                      workspaceHint={configWorkspaceHint(bot.id)}
                       sessions={sessions}
                       includeHomeSession
                     />

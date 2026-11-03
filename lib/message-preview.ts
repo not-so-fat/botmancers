@@ -1,6 +1,6 @@
 // One-line roster preview of an agent's latest message.
 import { parseRun, runLine } from './run';
-import { deckEventDisplay } from './bot-runtime-ui';
+import { agentEventDisplay } from './bot-runtime-ui';
 import { classifyRuntimeFailure } from './runtime-failure';
 
 export function latestLine(content?: string) {
@@ -11,7 +11,7 @@ export function latestLine(content?: string) {
   // as the raw sentinel attributed to the agent.
   const failure = classifyRuntimeFailure(content);
   if (failure) return failure.title;
-  const event = deckEventDisplay(content);
+  const event = agentEventDisplay(content);
   if (event) return `${event.label} ${event.detail}`.replace(/\s+/g, ' ').trim();
   return content.replace(/\s+/g, ' ').trim();
 }
