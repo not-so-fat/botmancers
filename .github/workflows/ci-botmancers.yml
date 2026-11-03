@@ -61,21 +61,18 @@ jobs:
           npm run test:engine-store
           npm run test:service-grants
           npm run test:mcp-bridge
-      - name: Focused Claude provider and Agent Deck compatibility suites (NOT-506)
+      - name: Focused Claude provider and direct cutover suites (NOT-506, NOT-543)
         working-directory: .
         run: |
           npm run test:claude-session-provider
-          npm run test:agent-deck-run
-          npm run test:agent-deck-finalization
-          npm run test:agent-deck-settings
-      - name: Focused Cursor and direct Codex providers and Agent Deck compatibility suites (NOT-505, NOT-504)
+          npm run test:direct-cutover
+          npm run test:direct-migration
+      - name: Focused Cursor and direct Codex providers and attempt adapter suites (NOT-505, NOT-504, NOT-542)
         working-directory: .
         run: |
           npm run test:cursor-session-provider
           npm run test:codex-session-provider
-          npm run test:agent-deck-run
-          npm run test:agent-deck-finalization
-          npm run test:agent-deck-settings
+          npm run test:attempt-adapter
       - name: Focused session usage suites (NOT-509)
         working-directory: .
         run: |
