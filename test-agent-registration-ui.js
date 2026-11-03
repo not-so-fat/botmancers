@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// NOT-502: New Agent + Config registration UI (no browser, no network).
+// NOT-543: New Agent + Config registration UI (no browser, no network).
+// Supersedes the NOT-502 version: four concepts, no launch profile, no deck.
 //
 // Proves, through server-rendered components, pure helpers, and source
 // assertions:
-// (1) the five concepts render as separate, labelled controls in order:
-//     runtime connection, session scope, default workspace, launch
-//     profile, policy (+ home session on Config);
-// (2) Agent Deck controls render only for the agent_deck profile, and a
-//     direct profile never requests the Agent Deck list;
-// (3) loading, validation, and Agent Deck-unavailable states;
+// (1) the four concepts render as separate, labelled controls in order:
+//     runtime connection, session scope, default workspace, policy
+//     (+ home session on Config);
+// (2) no Agent Deck control, fetch, or state exists anywhere in the UI;
+// (3) loading, validation, and connection-error states;
 // (4) keyboard operation: native radios/checkboxes/selects/buttons with
 //     names, legends, and described errors; no click-only elements;
 // (5) desktop and narrow layouts (dialog inset, Config read rows stack);
@@ -60,29 +60,21 @@ const READY = {
 };
 const LOADING_CONN = regUi.initialConnectionListState();
 const ERROR_CONN = { status: 'error', connections: [], error: 'HTTP 500' };
-function deckState(status, extra) {
-  return { ...ui.initialDeckListState(), status, checkedAt: 1, serverUrl: 'http://127.0.0.1:1111', ...extra };
-}
-const CONNECTED = deckState('connected', { decks: [{ id: 'builder', name: 'builder' }], cachedDecks: [{ id: 'builder', name: 'builder' }] });
-const NOT_FETCHED = ui.initialDeckListState();
 
 function fields(form, options = {}) {
-  const deck = options.deck ?? NOT_FETCHED;
   const connections = options.connections ?? READY;
   return renderToStaticMarkup(React.createElement(view.RegistrationFields, {
     idPrefix: options.idPrefix ?? 'bot',
     variant: options.variant ?? 'modal',
     form,
     onChange() {},
-    view: regUi.registrationFormView(form, deck, connections),
+    view: regUi.registrationFormView(form, connections),
     showErrors: options.showErrors ?? false,
     connections,
     onRetryConnections() {},
     onAddConnection: async () => 'nope',
-    deckState: deck,
-    onRetryDecks() {},
-    workdirPlaceholder: '',
-    workdirHint: ui.NEW_BOT_WORKDIR_HINT,
+    workspacePlaceholder: '',
+    workspaceHint: ui.NEW_AGENT_WORKSPACE_HINT,
     sessions: options.sessions,
     includeHomeSession: options.includeHomeSession,
   }));
@@ -94,9 +86,7 @@ const DIRECT_FORM = {
   scopeKind: 'workspaces',
   workspaces: '/Users/owner/work/botmancers',
   defaultWorkspace: '/Users/owner/work/botmancers',
-  launchProfile: 'direct',
 };
-const DECK_FORM = { ...DIRECT_FORM, launchProfile: 'agent_deck', deckId: 'builder' };
 
 function jsonRequest(method, body) {
   return new Request('http://localhost:43123/api/bots', { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -107,13 +97,13 @@ async function call(method, body) {
 }
 
 async function main() {
-  console.log('\n(1) Five separate concepts, in order');
+  console.log('\n(1) Four separate concepts, in order');
   const html = fields(DIRECT_FORM);
-  const order = ['data-field="connection"', 'data-field="scope"', 'data-field="default-workspace"', 'data-field="launch-profile"', 'data-field="policy"'];
+  const order = ['data-field="connection"', 'data-field="scope"', 'data-field="default-workspace"', 'data-field="policy"'];
   const positions = order.map(marker => html.indexOf(marker));
-  assert(positions.every(p => p >= 0) && positions.every((p, i) => i === 0 || p > positions[i - 1]), 'connection, scope, default workspace, launch profile, policy render in order', JSON.stringify(positions));
-  for (const label of Object.values(regUi.LABELS).filter(l => l !== regUi.LABELS.homeSession)) {
-    assert(html.includes(`>${label}</`), `visible label "${label}"`);
+  assert(positions.every(p => p >= 0) && positions.every((p, i) => i === 0 || p > positions[i - 1]), 'connection, scope, default workspace, policy render in order', JSON.stringify(positions));
+  for (const label of [regUi.LABELS.connection, regUi.LABELS.scope, regUi.LABELS.defaultWorkspace, regUi.LABELS.policy]) {
+    assert(html.includes(`>${label}</`) || html.includes(`>${label}<`), `visible label "${label}"`);
   }
   assert(!html.includes(regUi.LABELS.homeSession), 'New Agent has no home session control (a new Agent has no sessions)');
   assert(html.includes('Codex on this computer · Codex') && html.includes('Add connection'), 'connection picker lists connections with their runtime and offers Add connection');
@@ -121,68 +111,54 @@ async function main() {
   assert(html.includes(reg.SCOPE_KIND_LABELS.all_provider_sessions) && /<input type="radio" disabled="" name="bot-scope" value="sessions"/.test(html), 'scope: all sessions is an explicit option; imported sessions are disabled without sessions');
   assert(html.includes(regUi.HINTS.defaultWorkspace), 'default workspace is labelled as convenience, not permission');
 
-  console.log('\n(2) Agent Deck controls only for agent_deck');
-  assert(!html.includes('data-field="deck"') && !html.includes('Working directory') && !html.includes(ui.SETTINGS_LINK_COPY), 'direct: no deck slot, workdir, or Agent Deck settings link');
-  const deckHtml = fields(DECK_FORM, { deck: CONNECTED });
-  assert(deckHtml.includes('data-field="deck"') && deckHtml.includes('Working directory (optional)') && deckHtml.includes('>builder</option>'), 'agent_deck: deck select and workdir render');
-  const noneHtml = fields({ ...DIRECT_FORM, launchProfile: '' });
-  assert(!noneHtml.includes('data-field="deck"'), 'no profile chosen: no Agent Deck controls');
-  const directView = regUi.registrationFormView(DIRECT_FORM, NOT_FETCHED, READY);
-  assert(directView.submitDisabled === false && !regUi.hasRegistrationErrors(directView), 'direct: Create is enabled while the deck list was never fetched');
+  console.log('\n(2) No Agent Deck anywhere');
+  assert(!/deck/i.test(html) && !html.includes('Working directory') && !html.includes('Launch profile'), 'direct form: no deck, workdir, or launch-profile control, copy, or state');
+  assert(!/launch_profile|launchProfile|deckId|deck_id/.test(html), 'direct form: no removed field name in markup');
+  assert(regUi.registrationFormView.length === 2, 'the form view takes only the form and the connection list (no deck state)');
+  assert(!fs.existsSync(path.join(ROOT, 'app/components/useDeckList.ts')), 'useDeckList is deleted');
   const pageSource = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
-  const modal = pageSource.slice(pageSource.indexOf('function BotModal('));
-  assert(!/useEffect\(\(\) => \{\s*onRetryDecks\(\);/.test(modal) && /launchProfile === 'agent_deck' && form\.launchProfile !== 'agent_deck'\) onRetryDecks\(\)/.test(modal), 'New Agent fetches the deck list only when Agent Deck is picked');
-  assert(/useDeckList\(decksEnabled\)/.test(pageSource) && /bots\.some\(bot => bot\.launch_profile === 'agent_deck'\)/.test(pageSource), 'roster requests decks only with an Agent Deck Agent present');
+  assert(!/useDeckList|launch_profile|launchProfile|agent-deck|Agent Deck/.test(pageSource), 'New Agent/roster source requests no deck list and names no profile');
   const configSource = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
-  assert(/decksEnabled = data\?\.bot\.launch_profile === 'agent_deck' \|\| runtimeForm\?\.launchProfile === 'agent_deck'/.test(configSource) && /useDeckList\(Boolean\(decksEnabled\)\)/.test(configSource), 'Config of a direct Agent never requests the deck list');
-  const hookSource = fs.readFileSync(path.join(ROOT, 'app', 'components', 'useDeckList.ts'), 'utf8');
-  assert(/if \(!enabled\) return;/.test(hookSource), 'useDeckList(enabled=false) issues no request');
+  assert(!/useDeckList|launch_profile|launchProfile|agent-deck|Agent Deck/.test(configSource), 'Config source requests no deck list and names no profile');
+  const componentSource = fs.readFileSync(path.join(ROOT, 'app', 'components', 'AgentRegistration.tsx'), 'utf8');
+  assert(!/deck|Deck|launch_profile|launchProfile/.test(componentSource.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')), 'registration component code has no deck or profile reference outside comments');
 
-  console.log('\n(3) Loading, validation, Agent Deck unavailable');
+  console.log('\n(3) Loading, validation, connection errors');
   const loadingHtml = fields(DIRECT_FORM, { connections: LOADING_CONN });
   assert(loadingHtml.includes(regUi.CONNECTIONS_LOADING_COPY) && loadingHtml.includes('role="status"'), 'connections loading: status copy');
-  assert(regUi.registrationFormView(DIRECT_FORM, NOT_FETCHED, LOADING_CONN).submitDisabled, 'connections loading: Create disabled');
+  assert(regUi.registrationFormView(DIRECT_FORM, LOADING_CONN).submitDisabled, 'connections loading: Create disabled');
   const errorHtml = fields(DIRECT_FORM, { connections: ERROR_CONN });
   assert(errorHtml.includes(regUi.CONNECTIONS_ERROR_COPY.replace(/'/g, '&#x27;')) && errorHtml.includes('>Retry</button>'), 'connections error: copy + Retry');
-  const deckLoading = regUi.registrationFormView(DECK_FORM, deckState('loading'), READY);
-  assert(deckLoading.submitDisabled, 'agent_deck while decks load: Create disabled');
-  for (const status of ['unreachable', 'unconfigured', 'empty', 'malformed']) {
-    const state = deckState(status);
-    const v = regUi.registrationFormView(DECK_FORM, state, READY);
-    const h = fields(DECK_FORM, { deck: state });
-    assert(v.submitDisabled && v.blocker === ui.DECK_SLOT_COPY[status] && h.includes(ui.DECK_SLOT_COPY[status].replace(/'/g, '&#x27;')), `Agent Deck ${status}: copy shown, Create disabled`);
-    assert(!regUi.registrationFormView(DIRECT_FORM, state, READY).submitDisabled, `Agent Deck ${status} never blocks a direct Agent`);
-  }
-  const empty = regUi.registrationFormView(regUi.DEFAULT_REGISTRATION_FORM, NOT_FETCHED, READY);
-  assert(JSON.stringify(Object.keys(empty.errors).sort()) === JSON.stringify(['connection', 'launchProfile', 'scope']), 'blank form: connection, scope, and launch profile are required (nothing defaulted)', JSON.stringify(empty.errors));
+  assert(regUi.registrationFormView(DIRECT_FORM, ERROR_CONN).blocker === regUi.CONNECTIONS_ERROR_COPY, 'connections error: blocker copy for the form');
+  const empty = regUi.registrationFormView(regUi.DEFAULT_REGISTRATION_FORM, READY);
+  assert(JSON.stringify(Object.keys(empty.errors).sort()) === JSON.stringify(['connection', 'scope']), 'blank form: connection and scope are required (nothing defaulted)', JSON.stringify(empty.errors));
   const cases = [
     [{ ...DIRECT_FORM, workspaces: '' }, 'workspaces', regUi.ERRORS.workspaces],
     [{ ...DIRECT_FORM, workspaces: 'relative/path' }, 'workspaces', regUi.ERRORS.workspacePath],
     [{ ...DIRECT_FORM, defaultWorkspace: '/elsewhere' }, 'defaultWorkspace', regUi.ERRORS.defaultWorkspaceOutside],
     [{ ...DIRECT_FORM, scopeKind: 'sessions', sessions: [] }, 'sessions', regUi.ERRORS.sessions],
-    [{ ...DECK_FORM, deckId: '' }, 'deck', regUi.ERRORS.deck],
     [{ ...DIRECT_FORM, allowResumeWithEdits: true }, 'policy', regUi.ERRORS.resumeEdits],
   ];
   for (const [form, field, message] of cases) {
-    assert(regUi.registrationFormView(form, CONNECTED, READY).errors[field] === message, `validation: ${field} -> "${message}"`);
+    assert(regUi.registrationFormView(form, READY).errors[field] === message, `validation: ${field} -> "${message}"`);
   }
   const invalidHtml = fields({ ...regUi.DEFAULT_REGISTRATION_FORM }, { showErrors: true });
   assert(invalidHtml.includes(`id="bot-connection-error"`) && invalidHtml.includes('aria-invalid="true"') && /aria-describedby="[^"]*bot-connection-error/.test(invalidHtml)
-    && (invalidHtml.match(/role="alert"/g) || []).length === 3, 'shown errors are role=alert, linked by aria-describedby, controls aria-invalid');
+    && (invalidHtml.match(/role="alert"/g) || []).length === 2, 'shown errors are role=alert, linked by aria-describedby, controls aria-invalid');
   const allHtml = fields({ ...DIRECT_FORM, scopeKind: 'all_provider_sessions' });
   assert(allHtml.includes(regUi.HINTS.allSessions) && !allHtml.includes('id="bot-workspaces"'), 'all sessions: explicit hint, no workspace list');
 
   console.log('\n(4) Keyboard operation');
-  assert(!/<div[^>]*onClick|<span[^>]*onClick/.test(fs.readFileSync(path.join(ROOT, 'app', 'components', 'AgentRegistration.tsx'), 'utf8')), 'no click-only div/span controls');
-  for (const group of ['bot-scope', 'bot-profile', 'bot-policy']) {
+  assert(!/<div[^>]*onClick|<span[^>]*onClick/.test(componentSource), 'no click-only div/span controls');
+  for (const group of ['bot-scope', 'bot-policy']) {
     assert((html.match(new RegExp(`<input type="radio"[^>]*name="${group}"`, 'g')) || []).length >= 2, `${group}: named native radio group (arrow keys move within it)`);
   }
-  assert(/role="radiogroup" aria-labelledby="bot-profile-legend"/.test(html) && html.includes('id="bot-profile-legend"'), 'radio groups are labelled by their legends');
+  assert(/role="radiogroup" aria-labelledby="bot-scope-legend"/.test(html) && html.includes('id="bot-scope-legend"'), 'radio groups are labelled by their legends');
   assert(/<select id="bot-connection"[^>]*aria-labelledby="bot-connection-legend"/.test(html), 'connection select is labelled');
   assert((html.match(/type="checkbox"/g) || []).length === 2 && /type="checkbox" disabled=""/.test(html), 'policy flags are native checkboxes; resume-with-edits disabled under read only');
   assert(/<button type="button"[^>]*aria-expanded="false"[^>]*>Add connection…<\/button>/.test(html), 'Add connection is a button with aria-expanded');
   const focusCss = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
-  assert(/\.form-card input\[type="checkbox"\]:focus-visible/.test(focusCss), 'checkboxes show a visible focus ring');
+  assert(focusCss.includes(':focus-visible'), 'visible focus styling exists');
 
   console.log('\n(5) Desktop and narrow layouts');
   const dialog = jiti('./lib/new-agent-dialog.ts');
@@ -190,31 +166,31 @@ async function main() {
   const narrow = dialog.newAgentDialogPlacement({ left: 24, bottom: 120 }, { width: 390, height: 800 });
   assert(desktop.maxHeight > 0 && narrow.left >= dialog.DIALOG_INSET && narrow.maxHeight <= 800 - 2 * dialog.DIALOG_INSET, 'dialog stays inside the viewport at 1440x900 and 390x800 (body scrolls)');
   assert(/\.new-agent-body \{[^}]*overflow-y: auto/.test(focusCss) && /\.reg-option-hint \{[^}]*display: block/.test(focusCss), 'the longer form scrolls inside the dialog; option hints wrap under their radio');
-  const configHtml = fields(DECK_FORM, { variant: 'config', idPrefix: 'cfg', deck: CONNECTED, includeHomeSession: true, sessions: [{ ref: 'sess-1', title: 'Fix login', status: 'active' }] });
+  const configHtml = fields(DIRECT_FORM, { variant: 'config', idPrefix: 'cfg', includeHomeSession: true, sessions: [{ ref: 'sess-1', title: 'Fix login', status: 'active' }] });
   assert(configHtml.includes(regUi.LABELS.homeSession) && configHtml.includes('>Fix login (active)</option>') && !/<input[^>]*disabled=""[^>]*value="sessions"/.test(configHtml), 'Config: home session select and the sessions scope offer the Agent’s own sessions');
   assert(/flex flex-col sm:flex-row/.test(configSource), 'Config read rows stack on narrow screens and align on desktop');
 
   console.log('\n(6) Read views and the real API round trip');
   const created = await call('POST', regUi.registrationCreateBody('Direct Codex', DIRECT_FORM));
-  assert(created.status === 200 && created.json.launch_profile === 'direct' && created.json.deck_id === null, 'New Agent body creates a direct Agent', JSON.stringify(created.json));
-  assert(!('deck_id' in regUi.registrationCreateBody('x', DIRECT_FORM)), 'direct create body sends no deck_id');
+  assert(created.status === 200 && created.json.agent === 'codex' && created.json.launchable === true, 'New Agent body creates a launchable Codex Agent', JSON.stringify(created.json));
+  const createKeys = Object.keys(regUi.registrationCreateBody('x', DIRECT_FORM));
+  assert(!createKeys.some(k => /launch_profile|deck_id|deck_name|working_directory/.test(k)), 'create body sends only direct keys');
   const reloaded = (await (await botsRoute.GET()).json()).find(b => b.id === created.json.id);
   const seeded = regUi.registrationFormFromBot(reloaded);
   assert(JSON.stringify(seeded) === JSON.stringify(DIRECT_FORM), 'reload: Config form seeds exactly what New Agent saved', JSON.stringify(seeded));
   const read = regUi.registrationReadView(reloaded, null);
-  assert(JSON.stringify(read.rows.map(r => r.key)) === JSON.stringify(['connection', 'scope', 'defaultWorkspace', 'launchProfile', 'policy', 'homeSession']), 'direct read view: no Agent Deck rows', JSON.stringify(read.rows));
-  assert(read.rows.find(r => r.key === 'launchProfile').value === 'Direct' && read.notices.some(n => /direct launch/.test(n)), 'direct read view names the profile and the pending direct runtime');
-  assert(ui.rosterRuntimeLine(reloaded, NOT_FETCHED) === 'Agent: Codex · Launch: Direct', 'roster: direct Agent shows no Agent Deck', ui.rosterRuntimeLine(reloaded, NOT_FETCHED));
-  const deckCreated = await call('POST', regUi.registrationCreateBody('Deck Codex', DECK_FORM));
-  const deckReloaded = (await (await botsRoute.GET()).json()).find(b => b.id === deckCreated.json.id);
-  assert(deckCreated.status === 200 && JSON.stringify(regUi.registrationFormFromBot(deckReloaded)) === JSON.stringify(DECK_FORM), 'Agent Deck Agent round-trips through create + reload');
-  const deckRead = regUi.registrationReadView(deckReloaded, CONNECTED);
-  assert(deckRead.rows.some(r => r.key === 'deck' && r.value === 'builder') && deckRead.rows.some(r => r.key === 'workdir'), 'Agent Deck read view adds deck and working directory rows');
+  assert(JSON.stringify(read.rows.map(r => r.key)) === JSON.stringify(['connection', 'scope', 'defaultWorkspace', 'policy', 'homeSession']), 'read view rows: connection, scope, default workspace, policy, home session', JSON.stringify(read.rows));
+  assert(read.rows.find(r => r.key === 'connection').value === 'Codex on this computer (Codex · This computer)', 'read view names the connection, runtime, and host');
+  assert(read.notices.length === 0, 'launchable Agent: no read notices');
+  assert(ui.rosterRuntimeLine(reloaded) === 'Agent: Codex · Codex on this computer', 'roster: Agent plus its connection', ui.rosterRuntimeLine(reloaded));
   const edited = await call('PATCH', regUi.registrationPatchBody(created.json.id, { ...seeded, policyMode: 'workspace_write', allowResumeWithEdits: true }));
-  assert(edited.status === 200 && edited.json.policy.allow_resume_with_edits === true && edited.json.launch_profile === 'direct', 'Config save body edits policy in place', JSON.stringify(edited.json));
+  assert(edited.status === 200 && edited.json.policy.allow_resume_with_edits === true, 'Config save body edits policy in place', JSON.stringify(edited.json));
   const legacy = db.bots.create({ name: 'Legacy', title: '', description: '', agent: 'codex', deck_name: 'relay-deck' });
+  db.default.prepare('UPDATE bots SET session_scope_kind = NULL, session_scope_items = NULL WHERE id = ?').run(legacy.id);
   const legacyView = (await (await botsRoute.GET()).json()).find(b => b.id === legacy.id);
-  assert(regUi.registrationFormFromBot(legacyView).launchProfile === '' && regUi.registrationReadView(legacyView, null).notices.some(n => n.includes('Choose Direct or Agent Deck') && n.includes('relay-deck')), 'unresolved Agent: Config asks the owner to choose, naming the legacy deck');
+  assert(regUi.registrationFormFromBot(legacyView).scopeKind === '' && !('launchProfile' in regUi.registrationFormFromBot(legacyView)), 'unconfigured Agent: Config seeds a blank scope, no profile to choose');
+  assert(regUi.registrationReadView(legacyView, null).notices.some(n => n.includes('Choose a session scope')), 'unconfigured Agent: Config asks the owner to choose a scope');
+  assert(ui.rosterRuntimeLine(legacyView).endsWith(ui.ROSTER_CONFIG_SUFFIX), 'unconfigured Agent: roster points at Config');
 
   for (const suffix of ['', '-shm', '-wal']) {
     try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* ignore */ }

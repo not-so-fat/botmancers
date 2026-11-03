@@ -8,11 +8,11 @@
 //   <root>/home               HOME (so ~/.botmancers/<agent> workdirs land here)
 //   <root>/workspace          a disposable Git repository (one commit)
 //   <root>/bin                PATH: only node and git, so no coding runtime
-//                             (agent-deck, claude, codex, cursor) is reachable
+//                             (claude, codex, cursor, muse) is reachable
 //   <root>/logs               scenario stdout/stderr
 //
 // The environment handed to scenario processes is built from scratch, not
-// inherited: no Hermes, Agent Deck, Cursor, or other credentials, no user
+// inherited: no Hermes, Cursor, or other credentials, no user
 // HOME or Git config. `finish(ok)` removes the root after a passing run and
 // keeps it (with FAILED.txt naming what failed) after a failing one.
 'use strict';
@@ -99,7 +99,7 @@ function which(command) {
 }
 
 // A PATH with only node and git: anything else a scenario tried to spawn
-// (agent-deck, claude, codex, ...) would fail with ENOENT.
+// (claude, codex, ...) would fail with ENOENT.
 function buildBin(binDir) {
   fs.mkdirSync(binDir, { recursive: true });
   const tools = { node: process.execPath, git: which('git') };

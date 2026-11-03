@@ -20,8 +20,7 @@
 // outputTruncated when cut), normalized usage, durable start/finish times,
 // and the cancel outcome. Provider diagnostics never leak verbatim: failure
 // messages are fixed per category and only the stable provider code is
-// kept. prepareFinalization is refused explicitly: Agent Deck Git
-// finalization is not reimplemented here.
+// kept.
 //
 // Restart: the reconciler reads the durable provider turn (inspect/follow)
 // and replays the persisted launch intent through the registry's own
@@ -38,7 +37,6 @@ import {
   type AttemptEventSink,
   type AttemptFailure,
   type AttemptFailureCategory,
-  type AttemptFinalizationEvidence,
   type AttemptFollowInput,
   type AttemptInput,
   type AttemptLaunchIntent,
@@ -121,9 +119,6 @@ interface LaunchPlan {
 }
 
 function planFor(input: Readonly<AttemptInput>): { ok: true; plan: LaunchPlan } | { ok: false; failure: AttemptFailure } {
-  if (input.prepareFinalization === true) {
-    return { ok: false, failure: attemptFailure('unsupported_authority', 'Session provider attempts do not support prepareFinalization.') };
-  }
   if (input.freshSession && input.sessionBinding) {
     return { ok: false, failure: attemptFailure('session_mismatch', 'A fresh-session turn cannot resume a session.') };
   }
@@ -250,9 +245,8 @@ function resultBuilder(startedAt: number) {
 }
 
 // Translates one terminal provider turn. Attempt times are the adapter's
-// own start/finish (like the Agent Deck adapters), so they stay ordered
-// across runtimes with their own clocks; the turn's durable times remain in
-// the registry for audit.
+// own start/finish, so they stay ordered across runtimes with their own
+// clocks; the turn's durable times remain in the registry for audit.
 function terminalResult(turn: ProviderTurnView, resumeSessionId: string | null, fallbackStartedAt: number): AttemptResult {
   const { result, failed } = resultBuilder(fallbackStartedAt);
   const ids = { externalRunId: turn.turn_ref, externalSessionId: turn.session_ref };
@@ -409,12 +403,6 @@ export function createSessionProviderAttemptAdapter(options: { db?: Db } = {}): 
     async follow(runId, input: AttemptFollowInput) {
       const startedAt = Date.now();
       const { failed } = resultBuilder(startedAt);
-      if (input.prepareFinalization) {
-        return failed(
-          attemptFailure('unsupported_authority', 'Session provider attempts do not support prepareFinalization.'),
-          { externalRunId: runId },
-        );
-      }
       const agentId = agentIdForTurn(database, runId);
       if (!agentId) {
         return failed(attemptFailure('runtime_failed', 'The provider turn was not found.'), { externalRunId: runId });
@@ -422,9 +410,6 @@ export function createSessionProviderAttemptAdapter(options: { db?: Db } = {}): 
       return followTurn(database, runId, agentId, {
         resumeSessionId: input.resumeSessionId, deadlineAt: input.deadlineAt ?? null, signal: input.signal ?? null, correlation: {},
       }, startedAt);
-    },
-    async evidence(): Promise<AttemptFinalizationEvidence> {
-      return { baselineRef: null, baselineDigest: null, candidate: null };
     },
     async cancel(runId) {
       try {

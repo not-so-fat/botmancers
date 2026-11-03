@@ -49,7 +49,7 @@ const db = dbModule.default;
 async function main() {
   const connection = dbModule.runtimeConnections.create({ provider: 'codex', label: 'Codex', host: 'This computer' });
   const forge = dbModule.bots.create({
-    name: 'Forge', title: 'Implementer', description: 'Native Codex sessions', agent: 'codex', runtime_connection_id: connection.id, launch_profile: 'direct',
+    name: 'Forge', title: 'Implementer', description: 'Native Codex sessions', agent: 'codex', runtime_connection_id: connection.id,
     session_scope_kind: 'all_provider_sessions', session_scope_items: '[]',
     policy_mode: 'workspace_write', allow_new_sessions: 0, allow_resume_with_edits: 1,
   });

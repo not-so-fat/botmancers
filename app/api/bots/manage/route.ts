@@ -7,22 +7,16 @@ export async function GET() {
     const rows = bots.managementRows().map(row => {
       const bot = serializeAgent(row.bot) as unknown as {
         agent: string;
-        deck_id: string | null;
-        deck_name: string | null;
-        needs_deck_selection: boolean;
-        launch_profile: string | null;
-        needs_launch_profile: boolean;
+        launchable: boolean;
+        runtime_connection: { id: string; provider: string; label: string; host: string } | null;
       };
       return {
         id: row.bot.id,
         name: row.bot.name,
         hidden: row.bot.hidden ? 1 : 0,
         agent: bot.agent,
-        deck_id: bot.deck_id,
-        deck_name: bot.deck_name,
-        needs_deck_selection: bot.needs_deck_selection,
-        launch_profile: bot.launch_profile,
-        needs_launch_profile: bot.needs_launch_profile,
+        launchable: bot.launchable,
+        runtime_connection: bot.runtime_connection,
         source_provider: row.bot.source_provider ?? null,
         created_at: row.bot.created_at,
         last_activity: row.last_activity,

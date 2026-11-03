@@ -3,18 +3,17 @@
 //
 // Self-contained: isolated SQLite file pre-seeded with pre-NOT-446 UI
 // rows, a test-only authenticator injected at the API boundary, a stub
-// Hermes gateway and Agent Deck public API at their fetch seams. The legacy
-// Agent Deck process seam counts unexpected CLI fallback. No dev server,
-// network, or real runs.
+// Hermes gateway and a scripted in-process direct SessionProvider. No dev
+// server, network, or real runs.
 //
 // Covers: fail-closed auth and principal mismatch with zero writes, all
-// three principal kinds against Hermes and Agent Deck agents, exact-retry
-// and conflicting-retry idempotency with row counts, bot-to-bot and
-// external-caller histories retrieved after a database reopen in a fresh
-// process, typed unavailable/failure envelopes with no credential leak,
-// transport acknowledgement not treated as completion, and the legacy UI
-// threads readable through the compatibility participants and writable
-// through the UI route.
+// three principal kinds against Hermes and direct coding agents,
+// exact-retry and conflicting-retry idempotency with row counts, bot-to-bot
+// and external-caller histories retrieved after a database reopen in a
+// fresh process, typed unavailable/failure envelopes with no credential
+// leak, transport acknowledgement not treated as completion, and the
+// legacy UI threads readable through the compatibility participants and
+// writable through the UI route.
 'use strict';
 
 const fs = require('fs');
@@ -93,7 +92,7 @@ const db = jiti('./lib/db.ts');
 const api = jiti('./lib/agent-api.ts');
 const service = jiti('./lib/agent-conversations.ts');
 const dispatch = jiti('./lib/agent-dispatch.ts');
-const deckRun = jiti('./lib/agent-deck-run.ts');
+const providerContract = jiti('./lib/session-provider.ts');
 
 const raw = db.default;
 const { bots } = db;
@@ -119,37 +118,25 @@ dispatch.setAgentDispatchHermesFetch(async (url, init) => {
   return new Response(JSON.stringify({ choices: [{ message: { content: `hermes reply #${hermesCalls.length} to ${last}` } }] }), { status: 200 });
 });
 
-// NOT-487: canonical Agent Deck turns go through the public run API; the
-// fake Agent Deck server captures every start. The CLI seam counts spawns
-// and must stay at zero.
-const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
-const deckApi = jiti('./lib/agent-deck-api.ts');
-const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
-const fakeDeck = createFakeAgentDeck();
-process.env.AGENT_DECK_RUN_TOKEN = fakeDeck.token;
-deckApi.setAgentDeckApiFetch(fakeDeck.fetch);
-deckAttempt.setAgentDeckApiPollIntervalForTests(5);
-const deckStarts = [];
-let deckMode = 'ok';
-let releaseGate = null;
-fakeDeck.onStart = body => {
-  deckStarts.push(body);
-  if (deckMode === 'noend') return { state: 'died' };
-  const script = { result: run => `deck reply from ${run.runId}` };
-  if (deckMode === 'gate') {
-    script.hold = true;
-    setImmediate(() => {
-      const runId = [...fakeDeck.runs.keys()].pop();
-      releaseGate = () => fakeDeck.release(runId);
-    });
+// NOT-543: canonical coding turns go through the direct SessionProvider
+// adapter against a scripted in-process fake; its state file captures
+// every start.
+const fake = require('./test-support/fake-session-provider.js');
+const WORKROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-api-work-'));
+const STATE = path.join(os.tmpdir(), `botmancers-agent-api-provider-${process.pid}.json`);
+fs.rmSync(STATE, { force: true });
+const directStarts = () => fake.providerCalls(STATE, 'startSession');
+const directSends = () => fake.providerCalls(STATE, 'sendTurn');
+// Waits for the next provider turn after `before` and returns its id.
+async function waitForNewTurn(before, label) {
+  const seen = new Set(before);
+  for (let i = 0; i < 400; i++) {
+    const ids = fake.fakeTurnIds(STATE).filter(id => !seen.has(id));
+    if (ids.length > 0) return ids[0];
+    await new Promise(resolve => setTimeout(resolve, 5));
   }
-  return script;
-};
-let cliSpawns = 0;
-deckRun.setDeckRunProcess(async () => {
-  cliSpawns += 1;
-  return { stdout: '', stderr: 'canonical turns never spawn the agent-deck CLI', exitCode: 1 };
-});
+  throw new Error(`timed out waiting for ${label}`);
+}
 
 // ---- helpers -------------------------------------------------------------
 
@@ -164,7 +151,7 @@ function counts() {
     intakes: count('conversation_intakes'),
     conversations: count('conversations'),
     hermesLaunches: hermesCalls.length,
-    deckLaunches: deckStarts.length,
+    directLaunches: directStarts() + directSends(),
   };
 }
 function sameCounts(a, b) {
@@ -234,10 +221,22 @@ async function main() {
   log('NOT-446 agent conversation API contract test (isolated DB, injected authenticator, stub runtimes)');
   log(`DB: ${DB_PATH}`);
 
-  const hermesAgent = bots.create({ deck_id: 'deck-test', name: 'Hermy', title: 'Analyst', description: 'Replies briefly.', agent: 'hermes' });
-  const deckAgent = bots.create({ name: 'Decky', title: 'Coder', description: 'Codes.', agent: 'codex', deck_id: 'deck-api' });
-  const teamBot = bots.create({ deck_id: 'deck-test', name: 'Teammate', title: 'Coordinator', description: 'Coordinates.', agent: 'hermes' });
-  const unresolvedDeck = bots.create({ name: 'Stale', title: 'Coder', description: 'Old.', agent: 'codex', deck_name: 'old-deck', needs_deck_selection: 1 });
+  const hermesAgent = bots.create({ name: 'Hermy', title: 'Analyst', description: 'Replies briefly.', agent: 'hermes' });
+  const codexAgent = bots.create({ name: 'Decky', title: 'Coder', description: 'Codes.', agent: 'codex' });
+  const teamBot = bots.create({ name: 'Teammate', title: 'Coordinator', description: 'Coordinates.', agent: 'hermes' });
+  const unconfiguredCodex = bots.create({ name: 'Stale', title: 'Coder', description: 'Old.', agent: 'codex' });
+  // Creation heals a local connection; the unconfigured fixture clears it
+  // back to NULL (as in test-agent-registration).
+  raw.prepare('UPDATE bots SET runtime_connection_id = NULL WHERE id = ?').run(unconfiguredCodex.id);
+  db.bots.updateRegistration(codexAgent.id, 'codex', {
+    runtime_connection_id: db.runtimeConnections.ensureLocal('codex'),
+    session_scope: { kind: 'workspaces', workspaces: [WORKROOT], sessions: [] },
+    default_workspace: WORKROOT,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
+  providerContract.registerSessionProvider({ connectionId: db.bots.getById(codexAgent.id).runtime_connection_id },
+    () => fake.createFakeSessionProvider({ statePath: STATE, kind: 'agent-api-main' }));
 
   const person = { kind: 'person', id: 'alice' };
   const service_ = { kind: 'service', id: 'ci-pipeline' };
@@ -278,7 +277,7 @@ async function main() {
   log('\nAC1 principal kinds x runtimes');
   const firstByPair = {};
   for (const principal of [person, botPrincipal, service_]) {
-    for (const target of [hermesAgent, deckAgent]) {
+    for (const target of [hermesAgent, codexAgent]) {
       const key = `open-${principal.kind}-${target.name}`;
       const res = await post(principal, target.id, { content: `hello ${target.name} from ${principal.kind}`, idempotencyKey: key });
       const ok = res.status === 202 && !!res.json.conversationId && !!res.json.requestId && !!res.json.acceptedMessageId;
@@ -291,18 +290,21 @@ async function main() {
       firstByPair[`${principal.kind}-${target.name}`] = { ...res.json, key, content: `hello ${target.name} from ${principal.kind}`, agentId: target.id, principal };
     }
   }
-  assert(hermesCalls.length === 3 && deckStarts.length === 3, `runtime-neutral dispatch: 3 Hermes turns and 3 Agent Deck runs (got ${hermesCalls.length}/${deckStarts.length})`);
-  // NOT-462: the direct dispatchDeckRun() conversation turn is not the
-  // composite implementation workflow; it stays read-only.
+  assert(hermesCalls.length === 3 && directStarts() === 3, `runtime-neutral dispatch: 3 Hermes turns and 3 direct turns (got ${hermesCalls.length}/${directStarts()})`);
+  // NOT-462: the direct conversation turn is not the composite
+  // implementation workflow; it stays read-only. NOT-543: every coding
+  // turn is a fresh direct start in the default workspace, never a
+  // resume, with no launch profile or deck anywhere.
+  const starts = fake.loadFakeState(STATE).calls.filter(entry => entry.op === 'startSession');
   assert(
-    deckStarts.length > 0 && deckStarts.every(body => body.tools === 'readonly' && !body.resumeSessionId && !body.prepareFinalization) && cliSpawns === 0,
-    `direct Agent Deck conversation turns launch through the API with tools readonly and no finalization (got ${deckStarts.map(body => body.tools).join(',')}, cli spawns ${cliSpawns})`
+    starts.length === 3 && starts.every(entry => entry.authority === 'read_only' && entry.workspace === WORKROOT) && directSends() === 0,
+    `direct conversation turns start fresh read-only sessions in the default workspace (got ${starts.map(entry => entry.authority).join(',')}, sends ${directSends()})`
   );
   assert(hermesCalls.every(call => !call.url.includes(HERMES_KEY)), 'Hermes adapter used its own configured credentials');
   // NOT-465: requests are canonical Work Requests; the launch Attempt
   // records the dispatched agent. NOT-477: agent_requests no longer exists.
   const dispatchedAgents = raw.prepare("SELECT DISTINCT adapter FROM work_attempts ORDER BY adapter").all().map(row => row.adapter);
-  assert(JSON.stringify(dispatchedAgents) === JSON.stringify(['codex', 'hermes']), `requests record the dispatched agent identity, never Agent Deck (got ${dispatchedAgents.join(',')})`);
+  assert(JSON.stringify(dispatchedAgents) === JSON.stringify(['codex', 'hermes']), `requests record the dispatched agent identity (got ${dispatchedAgents.join(',')})`);
   const legacyTables = raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agent_requests', 'agent_request_events')").all();
   const queueTable = raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'processing_queue'").all();
   const uiTurnRows = raw.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE executor <> 'dispatcher'").get().n;
@@ -348,7 +350,7 @@ async function main() {
   assert(lastHermes.messages.some(m => m.role === 'assistant') && lastHermes.messages.some(m => m.content.includes(`hello Hermy from bot`)), 'continued turn sends the durable prior history to the runtime');
 
   const extFirst = firstByPair['service-Decky'];
-  const extSecond = await post(service_, deckAgent.id, { content: 'second external turn', conversationId: extFirst.conversationId, idempotencyKey: 'ext-2' });
+  const extSecond = await post(service_, codexAgent.id, { content: 'second external turn', conversationId: extFirst.conversationId, idempotencyKey: 'ext-2' });
   await settle(extSecond.json.requestId);
   const joinThird = await post(service_, hermesAgent.id, { content: 'Hermy, review Decky', conversationId: extFirst.conversationId, idempotencyKey: 'ext-3' });
   await settle(joinThird.json.requestId);
@@ -361,7 +363,7 @@ async function main() {
   assert(team.participants.map(p => p.kind).join(',') === 'bot,bot', 'team conversation participants are both bots');
   assert(team.messages.map(m => m.sender.kind).join(',') === 'bot,bot,bot,bot', 'team history: caller bot, agent, caller bot, agent');
   assert(team.messages[0].sender.id === teamBot.id && team.messages[1].sender.id === hermesAgent.id, 'team history sender identities are explicit');
-  assert(ext.origin.kind === 'service' && ext.participants.map(p => `${p.kind}:${p.id}`).join(',') === `service:ci-pipeline,bot:${deckAgent.id},bot:${hermesAgent.id}`, 'external conversation origin and participants (agent joined on address)');
+  assert(ext.origin.kind === 'service' && ext.participants.map(p => `${p.kind}:${p.id}`).join(',') === `service:ci-pipeline,bot:${codexAgent.id},bot:${hermesAgent.id}`, 'external conversation origin and participants (agent joined on address)');
   assert(ext.messages.length === 6 && ext.messages.every((m, i) => m.seq === i + 1), 'external history ordered with stable sequence');
 
   const forbidden = await getConversation(person, teamFirst.conversationId);
@@ -385,7 +387,7 @@ async function main() {
   assert([...teamAfter.requests, ...extAfter.requests].every(r => r.state === 'completed' && r.reply && r.events.map(e => e.type).join('>') === 'accepted>dispatched>runtime_started>completed'), 'runtime-neutral result state and events durable after reopen');
 
   log('\nPhase 1 done; failure and compatibility fixtures follow.');
-  return phaseTwo({ hermesAgent, deckAgent, unresolvedDeck, person, service_, agentConversationId: team.conversationId });
+  return phaseTwo({ hermesAgent, codexAgent, unconfiguredCodex, person, service_, agentConversationId: team.conversationId });
 }
 
 async function phaseTwo(ctx) {
@@ -403,11 +405,11 @@ async function phaseTwo(ctx) {
 
 async function phaseTwoRun(ctx, m) {
   const raw2 = m.db.default;
-  const { hermesAgent, deckAgent, unresolvedDeck, person } = ctx;
+  const { hermesAgent, codexAgent, unconfiguredCodex, person } = ctx;
   const hermesBase = hermesCalls.length;
-  const deckBase = deckStarts.length;
+  const startsBase = directStarts();
   const hermes2 = { get length() { return hermesCalls.length - hermesBase; } };
-  const deck2 = { get length() { return deckStarts.length - deckBase; } };
+  const directStarts2 = () => directStarts() - startsBase;
 
   async function post2(principal, agentId, body) {
     const response = await m.api.handleSendAgentMessage(
@@ -442,29 +444,37 @@ async function phaseTwoRun(ctx, m) {
     assert(rejected.json.state === 'failed' && rejected.json.failure.code === 'runtime_failed', 'Hermes gateway rejection fails with runtime_failed');
     assert(!rejected.text.includes(HERMES_KEY) && !fetched.text.includes(HERMES_KEY) && !fetched.text.includes('127.0.0.1'), 'failure envelope exposes no adapter credential or endpoint');
 
-    const stale = await post2(person, unresolvedDeck.id, { content: 'build it', idempotencyKey: 'fail-deck-stale', wait: true });
-    log(`  Agent Deck without deck selection -> state=${stale.json.state} failure=${JSON.stringify(stale.json.failure)}`);
-    assert(stale.json.state === 'failed' && stale.json.failure.code === 'agent_unavailable' && deck2.length === 0, 'Agent Deck agent without a launchable deck fails with agent_unavailable and launches nothing');
+    // The AC3 reopen child re-opened the database, and the load migration
+    // heals NULL connections; restore the unconfigured fixture.
+    raw2.prepare('UPDATE bots SET runtime_connection_id = NULL WHERE id = ?').run(unconfiguredCodex.id);
+    const stale = await post2(person, unconfiguredCodex.id, { content: 'build it', idempotencyKey: 'fail-direct-stale', wait: true });
+    log(`  direct agent without a runtime connection -> state=${stale.json.state} failure=${JSON.stringify(stale.json.failure)}`);
+    assert(stale.json.state === 'failed' && stale.json.failure.code === 'agent_unavailable' && directStarts2() === 0, 'direct agent without a runtime connection fails with agent_unavailable and launches nothing');
 
-    deckMode = 'noend';
-    const noend = await post2(person, deckAgent.id, { content: 'build it', idempotencyKey: 'fail-deck-noend', wait: true });
-    deckMode = 'ok';
-    log(`  Agent Deck acked but no end event -> state=${noend.json.state} failure=${JSON.stringify(noend.json.failure)} events=${noend.json.events.map(e => e.type).join('>')}`);
-    assert(noend.json.state === 'failed' && noend.json.failure.code === 'runtime_failed' && replyCount(noend.json.requestId) === 0, 'launch acknowledgement without a terminal event (run died) is a failure, not completion');
+    fake.mutateFakeProvider(STATE, state => { state.holdNext = (state.holdNext ?? 0) + 1; });
+    const failedBefore = fake.fakeTurnIds(STATE);
+    const failedPost = await post2(person, codexAgent.id, { content: 'build it', idempotencyKey: 'fail-direct-turn' });
+    const failedTurn = await waitForNewTurn(failedBefore, 'held turn to fail');
+    fake.mutateFakeProvider(STATE, state => { Object.assign(state.turns[failedTurn], { state: 'failed', output: null, held: false, finished_at: Date.now() }); });
+    await m.service.waitForAgentDispatchIdle();
+    const noend = await getRequest2(person, failedPost.json.requestId);
+    log(`  provider turn failed -> state=${noend.json.state} failure=${JSON.stringify(noend.json.failure)} events=${noend.json.events.map(e => e.type).join('>')}`);
+    assert(noend.json.state === 'failed' && noend.json.failure.code === 'runtime_failed' && replyCount(noend.json.requestId) === 0, 'a failed provider turn is a failure, not completion');
 
-    deckMode = 'gate';
-    const gated = await post2(person, deckAgent.id, { content: 'long task', idempotencyKey: 'deck-gated' });
+    fake.mutateFakeProvider(STATE, state => { state.holdNext = (state.holdNext ?? 0) + 1; });
+    const gatedBefore = fake.fakeTurnIds(STATE);
+    const gated = await post2(person, codexAgent.id, { content: 'long task', idempotencyKey: 'direct-gated' });
     const running = m.service.startAgentDispatch(gated.json.requestId);
-    for (let i = 0; i < 50 && !releaseGate; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    const gatedTurn = await waitForNewTurn(gatedBefore, 'held turn');
     const mid = await getRequest2(person, gated.json.requestId);
-    log(`  Agent Deck acked, run still going -> state=${mid.json.state} events=${mid.json.events.map(e => e.type).join('>')} reply=${JSON.stringify(mid.json.reply)}`);
+    log(`  provider acked, turn still going -> state=${mid.json.state} events=${mid.json.events.map(e => e.type).join('>')} reply=${JSON.stringify(mid.json.reply)}`);
     assert(mid.json.state === 'dispatched' && mid.json.reply === null && mid.json.events.some(e => e.type === 'runtime_started'), 'transport acknowledgement leaves the request dispatched with no reply');
-    releaseGate();
-    deckMode = 'ok';
+    fake.releaseFakeTurn(STATE, gatedTurn, 'direct reply to the long task');
     await running;
+    await m.service.waitForAgentDispatchIdle();
     const done = await getRequest2(person, gated.json.requestId);
-    log(`  Agent Deck end event -> state=${done.json.state} reply=${JSON.stringify(done.json.reply && done.json.reply.content)}`);
-    assert(done.json.state === 'completed' && done.json.reply.content.startsWith('deck reply from run-'), 'request completes only after the run end event');
+    log(`  provider turn end -> state=${done.json.state} reply=${JSON.stringify(done.json.reply && done.json.reply.content)}`);
+    assert(done.json.state === 'completed' && done.json.reply.content === 'direct reply to the long task', 'request completes only after the turn end event');
 
     const missingAgent = await post2(person, 'no-such-agent', { content: 'hi', idempotencyKey: 'missing-agent' });
     assert(missingAgent.status === 404 && missingAgent.json.error.code === 'agent_not_found', 'unknown agent fails with agent_not_found');
@@ -510,10 +520,10 @@ async function phaseTwoRun(ctx, m) {
     assert(uiPost.status === 200 && uiMessages.length === before + 2, 'legacy direct thread writable through the UI route (user message plus bot reply)');
     assert(uiMessages[before].sender_kind === 'person' && uiMessages[before + 1].sender_kind === 'bot', 'UI writes record sender kinds in the shared history model');
 
-    const newGroup = m.db.groups.create('Fresh team', [hermesAgent.id, deckAgent.id]);
+    const newGroup = m.db.groups.create('Fresh team', [hermesAgent.id, codexAgent.id]);
     const newGroupConversation = m.db.conversations.getByGroupId(newGroup.id);
     const participants = raw2.prepare('SELECT participant_kind || \':\' || participant_id AS p FROM conversation_participants WHERE conversation_id = ? ORDER BY rowid').all(newGroupConversation.id).map(r => r.p);
-    assert(participants.join(',') === `person:local-owner,bot:${hermesAgent.id},bot:${deckAgent.id}`, 'new UI group threads get explicit participants');
+    assert(participants.join(',') === `person:local-owner,bot:${hermesAgent.id},bot:${codexAgent.id}`, 'new UI group threads get explicit participants');
   }
 
   // AC5 (UI boundary): the unauthenticated UI routes cannot reach agent conversations.
@@ -524,7 +534,7 @@ async function phaseTwoRun(ctx, m) {
     const queued = () => raw2.prepare("SELECT COUNT(*) AS n FROM work_requests WHERE executor <> 'dispatcher'").get().n;
     const before = { ...counts(), queue: queued(), messagesInConversation: raw2.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(id).n };
     const jsonPost = body => new Request(`http://engine.test/api/conversations/${id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const hostile = `@${hermesAgent.name} @${deckAgent.name} leak this`;
+    const hostile = `@${hermesAgent.name} @${codexAgent.name} leak this`;
 
     const uiGet = await m.uiRoute.GET(new Request(`http://engine.test/api/conversations/${id}/messages`), params);
     const uiGetText = await uiGet.text();
@@ -558,6 +568,8 @@ async function phaseTwoRun(ctx, m) {
     try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* best effort */ }
   }
   try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(STATE, { force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(WORKROOT, { recursive: true, force: true }); } catch { /* best effort */ }
   process.exit(0);
 }
 

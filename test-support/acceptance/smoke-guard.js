@@ -1,15 +1,14 @@
-// NOT-476: guardrails of the opt-in real Agent Deck smoke
-// (scripts/agent-deck-smoke.js, docs/acceptance-harness.md).
+// NOT-476/NOT-543: guardrails of the direct operator smoke
+// (scripts/direct-smoke.js, docs/acceptance-harness.md).
 //
 // A real coding Agent runs in the working directory it is given, so the
 // smoke refuses any directory that is not explicitly disposable: it must be
 // named, exist, be the root of a clean Git repository, carry the
 // .botmancers-disposable marker at its root, and lie outside this
 // repository, the user's home directory itself, ~/.botmancers, and the
-// filesystem root. The server URL may carry no credentials, and the evidence
-// file may not land in the workdir or any protected Botmancers state, nor
-// overwrite an existing file. Captured evidence is redacted before it is
-// printed or written.
+// filesystem root. The evidence file may not land in the workdir or any
+// protected Botmancers state, nor overwrite an existing file. Captured
+// evidence is redacted before it is printed or written.
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS harness consumed by standalone Node tests. */
@@ -72,17 +71,6 @@ function validateDisposableWorkdir(workdir, { home = os.userInfo().homedir, repo
   return resolved;
 }
 
-// Returns the normalized http(s) server URL or throws a GuardError. Userinfo,
-// a query, or a fragment could carry credentials into the evidence.
-function validateServerUrl(raw) {
-  let url;
-  try { url = new URL(raw); } catch { throw new GuardError('invalid_argument', '--server must be an http(s) URL.'); }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new GuardError('invalid_argument', '--server must be an http(s) URL.');
-  if (url.username || url.password) throw new GuardError('server_credentials', '--server must not embed credentials (user:password@); pass the token in AGENT_DECK_RUN_TOKEN.');
-  if (url.search || url.hash) throw new GuardError('server_credentials', '--server must not carry a query string or fragment.');
-  return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
-}
-
 // Returns the resolved evidence file path or throws a GuardError. The file
 // must be new, in an existing directory, and outside the workdir, this
 // repository, ~/.botmancers, and every configured production path, so that
@@ -114,7 +102,6 @@ const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENT
 const SECRET_PATTERNS = [
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, '$1[REDACTED]@'],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [REDACTED]'],
-  [/\badg_[A-Za-z0-9_-]+/g, '[REDACTED]'],
   [/\bsk-[A-Za-z0-9_-]{8,}/g, '[REDACTED]'],
   [/\bgh[pousr]_[A-Za-z0-9]{16,}/g, '[REDACTED]'],
   [/\bxox[abposr]-[A-Za-z0-9-]{8,}/g, '[REDACTED]'],
@@ -149,4 +136,4 @@ function redact(value, secrets) {
   return value;
 }
 
-module.exports = { DISPOSABLE_MARKER, GuardError, redact, redactText, secretValues, validateDisposableWorkdir, validateEvidencePath, validateServerUrl };
+module.exports = { DISPOSABLE_MARKER, GuardError, redact, redactText, secretValues, validateDisposableWorkdir, validateEvidencePath };

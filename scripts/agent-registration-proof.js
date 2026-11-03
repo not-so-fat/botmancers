@@ -1,17 +1,14 @@
 #!/usr/bin/env node
-// NOT-502: real-app proof for Agent registration. Drives the running app
-// (default http://localhost:43123, started from this checkout with an
+// NOT-543: real-app proof for direct Agent registration. Drives the running
+// app (default http://localhost:43123, started from this checkout with an
 // isolated BOTMANCERS_HOME) in headless Chrome over CDP:
 //
-// 1. points the workspace Agent Deck setting at a loopback stub that
-//    serves GET /api/launch/decks and records every request it gets;
-// 2. registers a direct Codex Agent through New Agent and checks that no
-//    Agent Deck request was made (browser and stub);
-// 3. registers an Agent Deck-backed Codex Agent (the deck list loads only
-//    once Agent Deck is picked);
-// 4. reloads both Agents' Config pages and confirms the direct Agent's
-//    page (read view, Edit, reload) never requests a deck;
-// 5. captures desktop 1440x900 and mobile 390x800 screenshots.
+// 1. registers a Codex Agent through New Agent (connection, scope,
+//    workspace, policy) and checks that no launch-profile or deck
+//    control exists and no /api/agent-deck/* request is made;
+// 2. reloads the Agent's Config page and confirms the read view, Edit,
+//    and reload show the direct registration and request no deck;
+// 3. captures desktop 1440x900 and mobile 390x800 screenshots.
 //
 // Usage: node scripts/agent-registration-proof.js [--url URL] [--out DIR]
 'use strict';
@@ -19,7 +16,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const http = require('http');
 const { spawn } = require('child_process');
 
 const arg = (name, fallback) => {
@@ -39,22 +35,6 @@ function check(ok, label) {
   return ok;
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-function startDeckStub() {
-  const hits = [];
-  const server = http.createServer((req, res) => {
-    hits.push(`${req.method} ${req.url}`);
-    console.log(`  [stub] ${new Date().toISOString()} ${req.method} ${req.url}`);
-    if (req.method === 'GET' && req.url === '/api/launch/decks') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, data: { decks: [{ id: 'deck-builder', name: 'builder' }, { id: 'deck-review', name: 'review' }] } }));
-      return;
-    }
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end('{"error":"not found"}');
-  });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, hits, url: `http://127.0.0.1:${server.address().port}` })));
-}
 
 async function launchChrome() {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-reg-proof-'));
@@ -94,12 +74,6 @@ function connect(wsUrl, onEvent) {
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
-  const stub = await startDeckStub();
-  const settings = await fetch(`${URL_BASE}/api/agent-deck/settings`, {
-    // The owner boundary (proxy.ts) needs same-origin proof for writes.
-    method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: new URL(URL_BASE).origin }, body: JSON.stringify({ server_url: stub.url }),
-  });
-  check(settings.ok, `workspace Agent Deck server -> loopback stub ${stub.url}`);
 
   const browserRequests = [];
   const chrome = await launchChrome();
@@ -139,11 +113,10 @@ async function main() {
     fs.writeFileSync(file, Buffer.from(data, 'base64'));
     console.log(`  screenshot: ${file}`);
   };
-  const deckRequests = () => browserRequests.filter(url => url.includes('/api/agent-deck/decks'));
+  const deckRequests = () => browserRequests.filter(url => url.includes('/api/agent-deck/'));
   const reset = () => {
     console.log(`  [reset] ${new Date().toISOString()}`);
     browserRequests.length = 0;
-    stub.hits.length = 0;
   };
   // React-controlled form helpers (dispatch the events React listens to).
   const helpers = `
@@ -175,88 +148,62 @@ async function main() {
     await waitFor('!!document.querySelector("#bot-connection")', 'New Agent dialog with connections');
   }
 
-  async function fillCommon(name) {
-    await evaluate(`__setValue('#bot-name', ${JSON.stringify(name)})`);
-    await evaluate(`__setValue('#bot-connection', 'rc-local-codex')`);
-  }
-
-  console.log('\n(1) Register a direct Codex Agent (desktop)');
+  console.log('\n(1) Register a Codex Agent (desktop)');
   await viewport(DESKTOP);
   reset();
   await navigate(`${URL_BASE}/`);
   await openNewAgent();
-  await fillCommon('Direct Codex');
+  await evaluate(`__setValue('#bot-name', 'Direct Codex')`);
+  await evaluate(`__setValue('#bot-connection', 'rc-local-codex')`);
   await evaluate(`__click('input[name="bot-scope"][value="workspaces"]')`);
   await waitFor('!!document.querySelector("#bot-workspaces")', 'workspace list');
   await evaluate(`__setValue('#bot-workspaces', '/Users/owner/work/botmancers')`);
   await evaluate(`__setValue('#bot-default-workspace', '/Users/owner/work/botmancers')`);
-  await evaluate(`__click('input[name="bot-profile"][value="direct"]')`);
   await sleep(300);
-  check(await evaluate('!document.querySelector("[data-field=deck]") && !document.querySelector("#bot-workdir")'), 'Direct chosen: no Agent Deck controls rendered');
+  check(await evaluate('!document.querySelector("[data-field=launch-profile]") && !document.querySelector("[data-field=deck]") && !document.querySelector("#bot-deck") && !document.querySelector("#bot-workdir")'), 'no launch-profile or deck controls rendered');
   await shot('desktop-1440x900-new-agent-direct');
   await scrollDialogToEnd();
-  await shot('desktop-1440x900-new-agent-direct-profile-policy');
+  await shot('desktop-1440x900-new-agent-direct-policy');
   await evaluate('document.querySelector(".new-agent-dialog button[type=submit]").click(), true');
   await waitFor('!document.querySelector(".new-agent-dialog")', 'dialog closes after Create');
-  check(deckRequests().length === 0 && stub.hits.length === 0, `no Agent Deck request while registering the direct Agent (browser=${deckRequests().length}, stub=${stub.hits.length})`);
-
-  console.log('\n(2) Register an Agent Deck-backed Codex Agent (desktop)');
-  await openNewAgent();
-  await fillCommon('Deck Codex');
-  await evaluate(`__click('input[name="bot-scope"][value="all_provider_sessions"]')`);
-  await evaluate(`__click('input[name="bot-profile"][value="agent_deck"]')`);
-  await waitFor('!!document.querySelector("#bot-deck") && document.querySelectorAll("#bot-deck option").length > 1', 'deck list from the stub');
-  await evaluate(`__setValue('#bot-deck', 'deck-builder')`);
-  check(deckRequests().length > 0 && stub.hits.includes('GET /api/launch/decks'), 'picking Agent Deck loads the verified deck list');
-  await evaluate(`document.querySelector('[data-field=launch-profile]').scrollIntoView({ block: 'start' }), true`);
-  await sleep(200);
-  await shot('desktop-1440x900-new-agent-agent-deck');
-  await evaluate('document.querySelector(".new-agent-dialog button[type=submit]").click(), true');
-  await waitFor('!document.querySelector(".new-agent-dialog")', 'dialog closes after Create');
+  check(deckRequests().length === 0, `no Agent Deck request while registering the Agent (browser=${deckRequests().length})`);
 
   const agents = await (await fetch(`${URL_BASE}/api/bots`)).json();
   const direct = agents.find(a => a.name === 'Direct Codex');
-  const deck = agents.find(a => a.name === 'Deck Codex');
-  check(direct && direct.launch_profile === 'direct' && direct.deck_id === null && direct.runtime_connection_id === 'rc-local-codex', `direct Agent stored: ${JSON.stringify(direct && { profile: direct.launch_profile, deck: direct.deck_id, scope: direct.session_scope, policy: direct.policy })}`);
-  check(deck && deck.launch_profile === 'agent_deck' && deck.deck_id === 'deck-builder' && deck.runtime_connection_id === direct.runtime_connection_id, 'Agent Deck Agent stored with its deck on the shared connection');
+  check(direct && direct.launch_profile === undefined && direct.deck_id === undefined && direct.runtime_connection_id === 'rc-local-codex', `direct Agent stored: ${JSON.stringify(direct && { connection: direct.runtime_connection_id, scope: direct.session_scope, policy: direct.policy })}`);
 
-  console.log('\n(3) Reload both Agents');
+  console.log('\n(2) Reload the Agent');
   await navigate(`${URL_BASE}/`);
-  await waitFor(`document.body.innerText.includes('Launch: Direct') && document.body.innerText.includes('Agent Deck: builder')`, 'roster lines for both Agents');
+  await waitFor(`document.body.innerText.includes('Agent: Codex')`, 'roster line for the Agent');
   await shot('desktop-1440x900-roster-reloaded');
   reset();
   await navigate(`${URL_BASE}/bots/${direct.id}/config`);
-  await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'direct Config read view');
+  await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'Config read view');
   await showAgentCard();
   await shot('desktop-1440x900-config-direct');
   await evaluate(helpers);
   await evaluate(`Array.from(document.querySelectorAll('[data-field=runtime-read] button')).find(b => b.textContent.trim() === 'Edit').click(), true`);
-  await waitFor('!!document.querySelector("#cfg-connection")', 'direct Config edit form');
+  await waitFor('!!document.querySelector("#cfg-connection")', 'Config edit form');
   await sleep(500);
   await showAgentCard('.registration-fields');
   await shot('desktop-1440x900-config-direct-edit');
   await navigate(`${URL_BASE}/bots/${direct.id}/config`);
-  await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'direct Config after reload');
+  await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'Config after reload');
   await sleep(500);
-  check(deckRequests().length === 0 && stub.hits.length === 0, `direct Agent Config (read, Edit, reload) requested no deck (browser=${deckRequests().length}, stub=${stub.hits.length})`);
-  await navigate(`${URL_BASE}/bots/${deck.id}/config`);
-  await waitFor(`!!document.querySelector("[data-field=runtime-read]") && document.querySelector("[data-field=runtime-read]").innerText.includes('builder')`, 'Agent Deck Config shows its deck');
-  await showAgentCard();
-  await shot('desktop-1440x900-config-agent-deck');
+  check(deckRequests().length === 0, `Config (read, Edit, reload) requested no deck (browser=${deckRequests().length})`);
 
-  console.log('\n(4) Mobile 390x800');
+  console.log('\n(3) Mobile 390x800');
   await viewport(MOBILE);
   reset();
   await navigate(`${URL_BASE}/bots/${direct.id}/config`);
-  await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'direct Config (mobile)');
+  await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'Config (mobile)');
   await evaluate(`document.querySelector('[data-field=runtime-read]').scrollIntoView({ block: 'start' }), true`);
   await sleep(300);
   await shot('mobile-390x800-config-direct');
-  check(deckRequests().length === 0, 'mobile: direct Config requested no deck');
+  check(deckRequests().length === 0, 'mobile: Config requested no deck');
   await navigate(`${URL_BASE}/`);
   await openNewAgent();
   await evaluate(helpers);
-  await evaluate(`__click('input[name="bot-profile"][value="direct"]')`);
   await scrollDialogToEnd();
   const fits = await evaluate('(() => { const r = document.querySelector(".new-agent-dialog").getBoundingClientRect(); return r.left >= 16 && r.right <= innerWidth - 16 && r.bottom <= innerHeight - 16; })()');
   check(fits, 'mobile: New Agent dialog stays inside a 16px inset');
@@ -264,7 +211,6 @@ async function main() {
 
   cdp.close();
   chrome.proc.kill();
-  stub.server.close();
   console.log(failures ? `\nPROOF RESULT: FAIL (${failures})` : '\nPROOF RESULT: PASS');
   process.exit(failures ? 1 : 0);
 }

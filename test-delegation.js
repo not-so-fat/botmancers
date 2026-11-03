@@ -21,7 +21,8 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
 const db = jiti('./lib/db.ts');
 const agent = jiti('./lib/agent.ts');
-const deckRun = jiti('./lib/agent-deck-run.ts');
+const providerContract = jiti('./lib/session-provider.ts');
+const fake = require('./test-support/fake-session-provider');
 
 const { bots, conversations, messages } = db;
 const { uiTurns } = jiti('./lib/ui-turns.ts');
@@ -68,9 +69,9 @@ async function main() {
   assert(typeof MAX_DEPTH === 'number' && MAX_DEPTH > 0, `depth constant imported (DELEGATION_MAX_DEPTH=${MAX_DEPTH})`);
   assert(typeof MAX_TURNS === 'number' && MAX_TURNS > 0, `budget constant imported (DELEGATION_MAX_DELEGATED_TURNS=${MAX_TURNS})`);
 
-  const origin = bots.create({ deck_id: 'deck-test', name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
-  const botA = bots.create({ deck_id: 'deck-test', name: 'A', title: 'Drafter', description: 'Drafts.' });
-  const botB = bots.create({ deck_id: 'deck-test', name: 'B', title: 'Checker', description: 'Checks drafts.' });
+  const origin = bots.create({ name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
+  const botA = bots.create({ name: 'A', title: 'Drafter', description: 'Drafts.' });
+  const botB = bots.create({ name: 'B', title: 'Checker', description: 'Checks drafts.' });
   const conv = conversations.getByBotId(origin.id);
   assert(!!conv, 'origin thread exists');
 
@@ -206,57 +207,31 @@ async function main() {
   assert(messages.getByConversation(conv.id).length === countAfterStop, 'no duplicate stopped notice');
 
   // Scenario 6: single-runtime direct dispatch. An ordinary message to
-  // an agent-deck bot launches the stored agent/deck/workdir directly
-  // from the queue loop (no Hermes turn first, no model-reply directive
-  // parsed); a Hermes reply that literally contains `DECK codex: ...`
-  // is posted as ordinary text and launches nothing.
+  // a codex bot launches a direct local provider Session from the queue
+  // loop (no Hermes turn first, no model-reply directive parsed); a
+  // Hermes reply that literally contains `DECK codex: ...` is posted as
+  // ordinary text and launches nothing.
   log('\nScenario 6: direct dispatch from the stored runtime via the queue');
-  const coder = bots.create({ deck_id: 'deck-test', name: 'Coder', title: 'Coder', description: 'Builds widgets.' });
   const coderWorkdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-coder-workdir-'));
-  db.bots.updateAgentSelection(coder.id, {
-    agent: 'codex', deck_id: 'deck-id-9', working_directory: coderWorkdir,
+  const coder = bots.create({
+    name: 'Coder', title: 'Coder', description: 'Builds widgets.', agent: 'codex',
+    runtime_connection_id: db.runtimeConnections.ensureLocal('codex'),
+    session_scope_kind: 'workspaces', session_scope_items: JSON.stringify([coderWorkdir]),
+    default_workspace: coderWorkdir, policy_mode: 'read_only', allow_new_sessions: 1, allow_resume_with_edits: 0,
   });
+  const coderState = path.join(os.tmpdir(), `botmancers-delegation-provider-${process.pid}.json`);
+  try { fs.rmSync(coderState, { force: true }); } catch { /* fresh start */ }
+  providerContract.registerSessionProvider(
+    { connectionId: coder.runtime_connection_id },
+    () => fake.createFakeSessionProvider({ statePath: coderState, kind: 'delegation-coder' }),
+  );
   const coderConv = conversations.getByBotId(coder.id);
-  const deckRecorded6 = [];
-  let deckRuns6 = 0;
-  deckRun.setDeckRunProcess(async argv => {
-    deckRecorded6.push(argv);
-    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
-      const runId = argv[3];
-      const sessionId = runId === 'run-deck-2' ? `ses-for-${runId}` : 'ses-deck-impl';
-      return {
-        stdout: JSON.stringify({
-          runId, deck: 'deck-id-9', client: 'codex', state: 'ended', sessionId,
-          startedAt: '2026-10-12T00:00:00.000Z', lastLogTs: '2026-10-12T00:01:00.000Z',
-          logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
-        }),
-        stderr: '', exitCode: 0,
-      };
-    }
-    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
-      const runId = argv[3];
-      const body = runId === 'run-deck-2' ? 'review says: add the venue' : `output of ${runId}`;
-      const lines = [
-        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
-        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, subtype: 'success', result: body }),
-        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
-      ].join('\n') + '\n';
-      return { stdout: lines, stderr: '', exitCode: 0 };
-    }
-    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
-      deckRuns6++;
-      const runId = `run-deck-${deckRuns6}`;
-      return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
-    }
-    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
-  });
   agent.setDelegationChatStub(() => {
-    throw new Error('Hermes adapter must not run for an agent-deck turn');
+    throw new Error('Hermes adapter must not run for a direct coding turn');
   });
   const user6 = messages.create(coderConv.id, 'user', 'Build the widget through the coding agent.');
   uiTurns.enqueue(coderConv.id, coder.id);
   await drain();
-  deckRun.setDeckRunProcess(null);
 
   const thread6 = chainAfter(coderConv.id, user6.id);
   const observed6 = thread6
@@ -266,33 +241,24 @@ async function main() {
   log(`  observation types: ${observed6.join(' -> ')}`);
   // NOT-471: an ordinary message is one Agent turn, not the composite
   // implement/review/resume sequence.
-  assert(observed6.length === 0, 'direct dispatch posts no composite deck observations');
+  assert(observed6.length === 0, 'direct dispatch posts no composite observations');
   const replies6 = thread6.filter(m => m.sender_type === 'bot' && m.sender_id === coder.id);
-  assert(replies6.length === 1 && replies6[0].content === 'output of run-deck-1', 'direct dispatch posts the one run\'s reply');
-  const implStart6 = deckRecorded6.find(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'deck-id-9');
+  assert(replies6.length === 1 && /^fake reply #\d+: Build the widget through the coding agent\./.test(replies6[0].content), 'direct dispatch posts the one turn\'s reply');
+  const calls6 = fake.loadFakeState(coderState).calls;
+  const starts6 = calls6.filter(call => call.op === 'startSession');
   assert(
-    !!implStart6 && implStart6.includes('--client') && implStart6.includes('codex') &&
-    implStart6.includes('--cwd') && implStart6.includes(coderWorkdir),
-    'direct dispatch launches the stored agent/deck/workdir without parsing a directive'
+    starts6.length === 1 && starts6[0].workspace === coderWorkdir && starts6[0].authority === 'read_only',
+    'direct dispatch starts one readonly turn in the Agent’s default workspace without parsing a directive'
   );
-  const launches6 = deckRecorded6.filter(a => a[0] === 'agent-deck' && a[1] === 'run' && a[2] === 'deck-id-9');
-  assert(
-    JSON.stringify(launches6.map(a => a[a.indexOf('--tools') + 1])) === JSON.stringify(['readonly']),
-    'queue-driven coding-Agent turn launches exactly one readonly run'
-  );
-  assert(!deckRecorded6.some(a => a[1] === 'run' && a.includes('--resume')), 'direct dispatch never resumes a session');
+  assert(!calls6.some(call => call.op === 'sendTurn'), 'direct dispatch never resumes a session');
   const chain6 = agent.getDelegationState(coderConv.id);
   assert(!!chain6 && chain6.handoffs === 0 && chain6.turns === 1, `direct dispatch consumes a turn, not a handoff (handoffs=${chain6 ? chain6.handoffs : '?'}, turns=${chain6 ? chain6.turns : '?'})`);
   assert(thread6.every(m => m.conversation_id === coderConv.id), 'all direct-dispatch observations stay in the originating thread');
   assert(uiTurns.countPending(coderConv.id) === 0, 'queue drained after the direct-dispatch sequence');
 
   // A Hermes reply carrying directive-shaped text is conversational, not
-  // routing: it posts verbatim and starts no deck run.
-  const deckRecorded6b = [];
-  deckRun.setDeckRunProcess(async argv => {
-    deckRecorded6b.push(argv);
-    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
-  });
+  // routing: it posts verbatim and starts no provider turn.
+  const callsBefore6b = fake.loadFakeState(coderState).calls.length;
   agent.setDelegationChatStub(ctx => {
     if (ctx.botName === 'Origin') return 'DECK codex: Implement the widget.';
     return 'No response';
@@ -300,7 +266,6 @@ async function main() {
   const user6b = messages.create(conv.id, 'user', 'What would the coding agent do?');
   uiTurns.enqueue(conv.id, origin.id);
   await drain();
-  deckRun.setDeckRunProcess(null);
   const thread6b = chainAfter(conv.id, user6b.id);
   assert(
     thread6b.some(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('DECK codex: Implement the widget.')),
@@ -308,53 +273,55 @@ async function main() {
   );
   assert(
     !thread6b.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck')),
-    'directive-shaped Hermes reply posts no deck observations'
+    'directive-shaped Hermes reply posts no runtime observations'
   );
-  assert(deckRecorded6b.length === 0, 'directive-shaped Hermes reply starts no deck run');
+  assert(fake.loadFakeState(coderState).calls.length === callsBefore6b, 'directive-shaped Hermes reply starts no provider turn');
   assert(uiTurns.countPending(conv.id) === 0, 'queue drained after the directive-shaped reply');
   try { fs.rmSync(coderWorkdir, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(coderState, { force: true }); } catch { /* best effort */ }
 
-  // Scenario 9: a bot that still needs Agent Deck selection cannot launch,
-  // so the notice names the legacy deck and the caller still returns to
-  // report instead of stalling with its frame on the stack. No deck run
-  // starts and no deck ID is guessed from the legacy name.
-  log('\nScenario 9: needs-deck-selection returns to the caller');
+  // Scenario 9: an unconfigured bot cannot launch, so the notice names
+  // the missing scope and the caller still returns to report instead of
+  // stalling with its frame on the stack. No provider turn starts.
+  log('\nScenario 9: unconfigured Agent returns to the caller');
   const stuck = bots.create({
-    name: 'Stuck', title: 'Stuck', description: 'Migrated before a deck was selected.',
-    agent: 'codex', deck_name: 'relay-deck', working_directory: '/tmp/stuck-work',
+    name: 'Stuck', title: 'Stuck', description: 'Never configured a scope.',
+    agent: 'codex',
   });
+  db.default.prepare('UPDATE bots SET session_scope_kind = NULL, session_scope_items = NULL WHERE id = ?').run(stuck.id);
   const stuckRow = bots.getById(stuck.id);
   assert(
-    !!stuckRow && stuckRow.deck_id === null && Number(stuckRow.needs_deck_selection) === 1,
-    'needs-deck-selection row stores no deck ID with the marker set'
+    !!stuckRow && stuckRow.session_scope_kind === null,
+    'unconfigured row stores no session scope'
   );
-  const deckRecorded9 = [];
-  deckRun.setDeckRunProcess(async argv => {
-    deckRecorded9.push(argv);
-    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
-  });
+  const stuckState = path.join(os.tmpdir(), `botmancers-delegation-stuck-${process.pid}.json`);
+  try { fs.rmSync(stuckState, { force: true }); } catch { /* fresh start */ }
+  providerContract.registerSessionProvider(
+    { connectionId: stuckRow.runtime_connection_id },
+    () => fake.createFakeSessionProvider({ statePath: stuckState, kind: 'delegation-stuck' }),
+  );
   const calls9 = {};
   agent.setDelegationChatStub(ctx => {
     calls9[ctx.botName] = (calls9[ctx.botName] || 0) + 1;
     if (ctx.botName === 'Origin' && calls9.Origin === 1) return 'WAKE Stuck: Please build the widget.';
-    if (ctx.botName === 'Origin') return 'REPORT: deck unavailable, proceeding manually.';
+    if (ctx.botName === 'Origin') return 'REPORT: runtime unavailable, proceeding manually.';
     return 'No response';
   });
   const user9 = messages.create(conv.id, 'user', 'Build the widget through the coding agent.');
   uiTurns.enqueue(conv.id, origin.id);
   await drain();
-  deckRun.setDeckRunProcess(null);
   const thread9 = chainAfter(conv.id, user9.id);
   assert(
-    thread9.some(m => m.sender_type === 'bot' && m.sender_id === stuck.id && m.content.startsWith('[Deck needs selection]') && m.content.includes('relay-deck')),
-    'unresolved deck posts [Deck needs selection] naming the legacy deck'
+    thread9.some(m => m.sender_type === 'bot' && m.sender_id === stuck.id && m.content.startsWith('[Session scope needed]')),
+    'unconfigured Agent posts [Session scope needed]'
   );
-  assert(deckRecorded9.length === 0, 'unresolved deck starts no deck run and guesses no deck ID');
+  assert(fake.loadFakeState(stuckState).calls.length === 0, 'unconfigured Agent starts no provider turn');
   assert(
-    thread9.some(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('REPORT: deck unavailable')),
+    thread9.some(m => m.sender_type === 'bot' && m.sender_id === origin.id && m.content.includes('REPORT: runtime unavailable')),
     'caller still reports after the refused launch (caller-managed return)'
   );
   assert(uiTurns.countPending(conv.id) === 0, 'queue drained after the refused launch');
+  try { fs.rmSync(stuckState, { force: true }); } catch { /* best effort */ }
 
   // Scenario 10: a WAKE handoff carrying deck-mentioning text is not
   // hijacked. 'WAKE B: update the deck notes: ...' contains 'deck

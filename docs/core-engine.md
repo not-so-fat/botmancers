@@ -16,8 +16,8 @@ Botmancers lets a developer stay in one durable conversation while configured
 agents can wake one another, perform bounded work, and return results to that same
 conversation without the developer copying prompts, outputs, or session IDs.
 
-The conversation and its wake history are the product. Runtimes, Agent Deck,
-queues, and review loops are implementation machinery that serve that experience.
+The conversation and its wake history are the product. Runtimes, queues,
+and review loops are implementation machinery that serve that experience.
 
 ## Product model
 
@@ -28,18 +28,18 @@ instructions, capabilities, and a registration (NOT-502, see
 [`docs/design/agent-registration.md`](design/agent-registration.md)): one
 runtime connection (whose provider is the Agent type: `Hermes`, `Cursor`,
 `Claude`, `Codex`, or `Muse Code`), an explicit session scope, an optional
-default workspace, a launch profile (`direct` or `agent_deck`), a launch
-policy, and an optional home session. Only the `agent_deck` profile carries a
-selected Agent Deck and its optional working directory.
+default workspace, a launch policy, and an optional home session.
 
 Agent names are unique within one Botmancers instance under case-insensitive,
 trimmed comparison. The display name is preserved, while Botmancers resolves every
 wake to exactly one stable Agent ID. Renaming an Agent does not rewrite historical
 wake targets.
 
-Agent Deck is an optional launch profile. It is not an Agent and it is not
-presented as a runtime; a direct profile never contacts it. An Agent without a usable launch configuration remains readable, but a
-wake that requires execution must fail closed with a clear explanation.
+Every Agent launches direct from its runtime connection: Hermes turns run
+on the persistent Hermes gateway and coding-agent turns run direct local
+provider Sessions. There is no launch profile, deck, or run token. An
+Agent without a usable launch configuration remains readable, but a wake
+that requires execution must fail closed with a clear explanation.
 
 ### Conversation
 
@@ -167,7 +167,7 @@ A **SessionProvider** (`lib/session-provider.ts`) is the transport-neutral
 boundary to the sessions a coding-agent runtime holds natively, including ones
 that existed before Botmancers. It is selected by the registered Agent's
 runtime connection (`registerSessionProvider({ connectionId } | { provider })`),
-never by Agent Deck. Real runtime adapters register by provider kind: `claude`
+never by anything else. Real runtime adapters register by provider kind: `claude`
 connections get the direct Claude Code provider
 ([claude-session-provider.md](claude-session-provider.md), NOT-506), and Cursor
 connections get the direct Cursor CLI/SDK provider
@@ -232,8 +232,7 @@ per-turn seam of the Work Request engine.
 
 `lib/muse-session-provider.ts` is the provider for runtime connections whose
 provider is `muse` (kind `muse-msp`). It speaks the stable Muse Session
-Protocol (MSP v1) to `muse serve` over stdio; Agent Deck stays an optional
-alternate launch profile and is never required.
+Protocol (MSP v1) to `muse serve` over stdio.
 
 - **Probe.** The `initialize` handshake supplies the Muse version, the MSP
   envelope schema version, and session durability. Muse older than 1.4.0 or
@@ -297,9 +296,8 @@ never 0 unless the provider said 0.
   `output_tokens`, `cost_usd`, bare or under `usage`). A `result` event is
   cumulative and wins; Codex turns add up; an event replayed with the same
   `seq` counts once. Malformed values become unknown and unsupported or
-  missing data yields no usage; the session result is never blocked. The
-  Agent Deck adapter reads the run's events; a SessionProvider reports
-  `ProviderTurnResult.usage`.
+  missing data yields no usage; the session result is never blocked. A
+  SessionProvider reports `ProviderTurnResult.usage`.
 - **Summary.** Each metric is aggregated on its own: `sum` (null when no
   sample reported it), `known` and `total` sample counts, and `quality`
   `complete` (all reported), `partial` (some; the sum is a lower bound), or
@@ -398,8 +396,8 @@ source hop request, and that message cannot be deleted under its exchange.
   Hop creation, claim, and result projection commit in the same transaction as
   the exchange state they move.
 - **Validation.** The source reference must be an active binding of the named
-  Agent, bound under the runtime that Agent dispatches today. The Agent must
-  have an Agent Deck. A source session runs at most one open exchange at a
+  Agent, bound under the runtime that Agent dispatches today. A source
+  session runs at most one open exchange at a
   time. Unknown references and other Agents' references get the same
   `session_not_found`. Requests for other authority (`authority_not_allowed`),
   non-owner requesters, and bodies that name another exchange
@@ -450,12 +448,13 @@ converge rather than remain parallel engines.
 Runtime adapters translate the shared attempt contract:
 
 - The Hermes adapter talks to the persistent Hermes gateway.
-- The Agent Deck adapter launches supported coding Agents through
-  `agent-deck run` and resumes their external session when requested.
+- The session-provider adapter runs coding-agent turns as direct local
+  provider Sessions and resumes their external session when requested.
 
 Adapters do not decide product workflow. They receive a target, prompt, working
-directory, deck, tool profile, and optional session binding; they return events,
-session data, results, and errors.
+directory (a fresh direct start) or nothing to resume (an exact session
+binding), a tool profile, and correlation IDs; they return events, session
+data, results, and errors.
 
 ## Tool authority
 
@@ -474,25 +473,15 @@ The initial profiles are:
 Unsupported authority fails closed. Edit authority is never granted merely because
 the target is a coding Agent.
 
-## Reviewed Git finalization
+## Workspace writes (no Git orchestration)
 
-A sandboxed coding Agent owns working-tree edits but does not receive broader host
-or `.git` authority merely to create a commit. Botmancers owns the workflow decision:
-it records the Agent Deck baseline reference, persists Agent Deck's terminal
-candidate path-and-digest manifest, obtains explicit reviewer and coordinator
-acceptance naming the exact implementation and review Attempts, and submits that
-same immutable manifest. Agent Deck owns the host-local
-mechanism that discovers the candidate manifest, validates the approved copy, and
-creates one audited commit.
-
-Finalization is run-scoped, separately authorized, idempotent, and fail-closed on a
-base/ref race, changed pre-existing dirty path, unexpected path, digest mismatch, or
-Git lock conflict. Replay and restart of one explicit acceptance reuse its stored
-request and idempotency key. After a terminal non-commit, a later explicit acceptance
-creates a new auditable request, so a coordinator can retry after an authorization or
-transient operational failure; an open or committed finalization still prevents a
-second request. It preserves unrelated user changes. Push and PR creation remain
-separate authorized steps. The detailed contract and PoC evidence are in
+Direct workspace-write turns may edit the configured workspace. Botmancers
+adds no commit, PR, worktree, or remote-run orchestration: a reviewed Git
+finalization flow existed before the direct cutover and was removed with
+it. Pre-cutover finalization history still projects (see the
+`finalization_*` projection kinds), but no new finalization is written and
+no `botmancers-finalize` block is honored. The retired contract and its PoC
+evidence are in
 [the October 13 Git-finalization decision](design/2026-10-13-git-finalization-contract.md).
 
 ## Delegation and review policy
@@ -637,7 +626,7 @@ returns an error and writes nothing.
 - Recover `running` work after process restart by reconciling external run state or
   marking the attempt interrupted and retryable.
 - Support cancellation and bounded timeouts at the Work Request level.
-- Record requesting identity, target Agent, deck, working directory, tool profile,
+- Record requesting identity, target Agent, working directory, tool profile,
   adapter, run/session IDs, prompts or prompt hashes, results, and artifacts.
 - Enforce the [Wake safety policy](#wake-safety-policy) (principals, grants,
   depth, budget, and concurrency) before launch.
@@ -646,7 +635,7 @@ returns an error and writes nothing.
 
 ## Current code and convergence
 
-The current Agent identity plus Agent Deck model is directionally consistent with
+The current direct Agent identity model is directionally consistent with
 this product. Every unit of work, from every entry point, is a Work Request with
 one lifecycle (`queued`, `running`, `waiting`, `blocked`, then `completed`,
 `failed`, or `cancelled`) in `work_requests`. A request's `executor` names the
@@ -715,7 +704,7 @@ above them:
 | `lib/agent-conversations.ts` | Conversation events and projections only |
 | `lib/agent.ts`, `lib/ui-turns.ts` | UI turn executor: UI thread features over UI turn Work Requests |
 | `lib/agent-dispatch.ts` | Runtime adapter selection, not workflow policy |
-| `lib/agent-deck-run.ts` | Agent Deck transport and session resume |
+| `lib/session-provider-attempt.ts` | Direct session-provider transport and session resume |
 | `lib/session-catalog.ts` | Read-only Agent session catalog over Session Bindings (Sessions view) |
 | `lib/usage.ts`, `lib/usage-samples.ts` | Provider-reported usage: parsing, aggregation with coverage, and idempotent samples |
 

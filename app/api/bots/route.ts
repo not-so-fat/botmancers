@@ -1,13 +1,11 @@
 import { NextResponse } from 'next/server';
-import { randomUUID } from 'crypto';
 import db, { BotDeletionError, bots, conversations, messages, registrationContext, serializeAgent } from '@/lib/db';
 import { uiTurns } from '@/lib/ui-turns';
 import { blockedReasonCopy, parseDeleteIds, type DeletePreview } from '@/lib/bot-deletion';
 import { processUiTurns } from '@/lib/agent';
-import { hasAgentUpdate, LEGACY_DECK_NAME_FIELD_ERROR, LEGACY_RUNTIME_FIELD_ERROR, validateUpdateAgent } from '@/lib/bot-definition';
+import { LEGACY_RUNTIME_FIELD_ERROR, REMOVED_LAUNCH_FIELD_ERROR } from '@/lib/bot-definition';
 import {
   hasRegistrationUpdate,
-  isLegacyCreate,
   validateCreateRegistration,
   validateUpdateRegistration,
 } from '@/lib/agent-registration';
@@ -37,15 +35,16 @@ export async function POST(request: Request) {
       );
     }
 
-    // NOT-502: the registered Agent: a runtime connection, an explicit
-    // session scope, an optional default workspace, a launch profile
-    // (direct | agent_deck; only agent_deck needs a deck ID), and a launch
-    // policy. The NOT-456 shape { agent, deck_id } is still accepted as an
-    // Agent Deck registration on the agent's local connection. Every
-    // field is validated before anything is written.
+    // NOT-543: the registered Agent, direct-only: a runtime connection,
+    // an explicit session scope, an optional default workspace, and a
+    // launch policy. Removed launch fields (launch profile, deck,
+    // working-directory override) and legacy runtime fields are
+    // rejected. Every field is validated before anything is written.
     const legacyErrors: string[] = [];
     if (body.runtime !== undefined || body.agent_client !== undefined) legacyErrors.push(LEGACY_RUNTIME_FIELD_ERROR);
-    if (body.deck_name !== undefined) legacyErrors.push(LEGACY_DECK_NAME_FIELD_ERROR);
+    if (body.launch_profile !== undefined || body.deck_id !== undefined || body.deck_name !== undefined || body.working_directory !== undefined) {
+      legacyErrors.push(REMOVED_LAUNCH_FIELD_ERROR);
+    }
     if (legacyErrors.length > 0) return NextResponse.json({ error: legacyErrors[0], errors: legacyErrors }, { status: 400 });
     const selection = validateCreateRegistration(body, registrationContext);
     if (selection.errors.length > 0 || !selection.registration || !selection.provider) {
@@ -55,10 +54,6 @@ export async function POST(request: Request) {
       );
     }
     const registration = selection.registration;
-    const botId = randomUUID();
-    if (isLegacyCreate(body) && registration.session_scope.workspaces.length === 0) {
-      registration.session_scope.workspaces = [`~/.botmancers/${botId}`];
-    }
 
     // NOT-431: optional nested avatar config object. A string avatar stays
     // the legacy uploaded image; an object configures the composable avatar.
@@ -82,12 +77,7 @@ export async function POST(request: Request) {
       description: description ? String(description) : '',
       avatar: typeof avatar === 'string' ? avatar : undefined,
       agent: selection.provider,
-      deck_id: registration.launch_profile === 'agent_deck' ? registration.deck_id : null,
-      deck_name: null,
-      working_directory: registration.launch_profile === 'agent_deck' ? registration.working_directory : null,
-      needs_deck_selection: 0,
       runtime_connection_id: registration.runtime_connection_id,
-      launch_profile: registration.launch_profile,
       session_scope_kind: registration.session_scope.kind,
       session_scope_items: JSON.stringify(
         registration.session_scope.kind === 'workspaces' ? registration.session_scope.workspaces : registration.session_scope.sessions
@@ -96,11 +86,12 @@ export async function POST(request: Request) {
       policy_mode: registration.policy.mode,
       allow_new_sessions: registration.policy.allow_new_sessions ? 1 : 0,
       allow_resume_with_edits: registration.policy.allow_resume_with_edits ? 1 : 0,
+      home_session_id: registration.home_session_id,
       avatar_color: avatarConfig.fields.avatar_color ?? null,
       avatar_eyes: avatarConfig.fields.avatar_eyes ?? null,
       avatar_hands: avatarConfig.fields.avatar_hands ?? null,
       avatar_accessory: avatarConfig.fields.avatar_accessory ?? null,
-    }, { id: botId });
+    });
 
     // Claude Code keeps past conversations in its local session store. Load
     // every in-scope page as part of registration so the new Agent's Sessions
@@ -170,21 +161,18 @@ export async function PATCH(request: Request) {
       const description = body.description !== undefined ? String(body.description) : bot.description;
       identity = { name, title, description };
     }
-    // NOT-502: registration fields (and the NOT-456 agent/deck_id/
-    // working_directory fields) merge over the stored registration and the
-    // whole candidate is validated: an invalid combination writes nothing.
-    // Legacy runtime fields and deck_name are rejected.
+    // NOT-543: registration fields (and agent alone, which moves the Agent
+    // to that provider's local connection) merge over the stored
+    // registration and the whole candidate is validated: an invalid
+    // combination writes nothing. Legacy runtime fields and removed
+    // launch fields are rejected.
     const legacyErrors: string[] = [];
     if (body.runtime !== undefined || body.agent_client !== undefined) legacyErrors.push(LEGACY_RUNTIME_FIELD_ERROR);
-    if (body.deck_name !== undefined) legacyErrors.push(LEGACY_DECK_NAME_FIELD_ERROR);
+    if (body.launch_profile !== undefined || body.deck_id !== undefined || body.deck_name !== undefined || body.working_directory !== undefined) {
+      legacyErrors.push(REMOVED_LAUNCH_FIELD_ERROR);
+    }
     if (legacyErrors.length > 0) return reject(legacyErrors);
-    // An unresolved legacy row edited through the NOT-456 fields alone
-    // (agent and/or working_directory, no deck, no registration) keeps
-    // its unresolved state: nothing here chooses a profile for the owner.
-    const unresolvedLegacyEdit = !bot.launch_profile && !hasRegistrationUpdate(body) && body.deck_id === undefined && hasAgentUpdate(body);
-    const legacySelection = unresolvedLegacyEdit ? validateUpdateAgent(body) : null;
-    if (legacySelection && legacySelection.errors.length > 0) return reject(legacySelection.errors);
-    const selection = !unresolvedLegacyEdit && (hasAgentUpdate(body) || hasRegistrationUpdate(body))
+    const selection = (body.agent !== undefined || hasRegistrationUpdate(body))
       ? validateUpdateRegistration(id, bot, body, registrationContext)
       : null;
     if (selection && (selection.errors.length > 0 || !selection.registration || !selection.provider)) return reject(selection.errors);
@@ -199,7 +187,6 @@ export async function PATCH(request: Request) {
         else bots.markRead(id);
       }
       if (identity) bots.updateIdentity(id, identity.name, identity.title, identity.description);
-      if (legacySelection) bots.updateAgentSelection(id, legacySelection.fields);
       if (selection?.registration && selection.provider) bots.updateRegistration(id, selection.provider, selection.registration);
     })();
     const updated = bots.getById(id);

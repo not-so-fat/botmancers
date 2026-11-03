@@ -293,7 +293,6 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction, sha
           </div>
           {request ? <div><dt>Work request</dt><dd>{request}</dd></div> : null}
           {row.context.workspace ? <div><dt>Workspace</dt><dd>{row.context.workspace}</dd></div> : null}
-          {row.context.deck ? <div><dt>Deck</dt><dd>{row.context.deck}</dd></div> : null}
         </dl>
         {available.length > 0 ? (
           <div className="session-actions" role="group" aria-label={`Actions for ${row.title}`}>

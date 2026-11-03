@@ -47,7 +47,7 @@ async function phaseA(tmp, workspace) {
   const db = dbModule.default;
   const connection = dbModule.runtimeConnections.create({ provider: 'claude', label: 'Claude Code (smoke)', host: 'This computer' });
   const agent = dbModule.bots.create({
-    name: 'Claude smoke', title: 'Claude', description: 'NOT-506 smoke', agent: 'claude', runtime_connection_id: connection.id, launch_profile: 'direct',
+    name: 'Claude smoke', title: 'Claude', description: 'NOT-506 smoke', agent: 'claude', runtime_connection_id: connection.id,
     session_scope_kind: 'workspaces', session_scope_items: JSON.stringify([workspace]),
     policy_mode: 'workspace_write', allow_new_sessions: 0, allow_resume_with_edits: 1,
   });
@@ -57,7 +57,7 @@ async function phaseA(tmp, workspace) {
   const ref = sync.imported[0];
   const page = await ps.readProviderTranscript(db, agent.id, ref, { limit: 10 });
   return {
-    agent_id: agent.id, deck_id: dbModule.bots.getById(agent.id).deck_id, provider_kind: caps && caps.provider_kind,
+    agent_id: agent.id, provider_kind: caps && caps.provider_kind,
     imported: sync.imported.length, reimported_on_repeat: again.imported.length, session_ref: ref, transcript_page: page.entries.map(e => ({ seq: e.seq, role: e.role, text: e.text.slice(0, 120) })),
   };
 }
@@ -110,7 +110,7 @@ async function main() {
   out(redact({ step: 'botmancers_process_A_import', ...a }));
   const b = run('B', [a.agent_id, a.session_ref, APPROVE_WRITE ? 'write' : 'no-write']);
   out(redact({ step: 'botmancers_process_B_after_restart', ...b }));
-  const ok = a.provider_kind === 'claude-code' && a.deck_id === null && a.imported === 1 && a.reimported_on_repeat === 0
+  const ok = a.provider_kind === 'claude-code' && a.imported === 1 && a.reimported_on_repeat === 0
     && b.read_only.state === 'completed' && b.recalled_codeword && b.read_only.session_ref === a.session_ref
     && (!APPROVE_WRITE || (b.workspace_write.state === 'completed' && b.file_written === CODEWORD)) && b.provider_session_rows === 1;
   out({ step: 'verdict', ok });

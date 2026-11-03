@@ -17,7 +17,6 @@ import { mcpPost, rpc } from '../scripts/harness.mjs';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const SENTINEL_HERMES = 'hermes-SENTINEL-0123456789abcdef';
-const SENTINEL_DECK = 'deck-SENTINEL-0123456789abcdef';
 const SENTINEL_CURSOR = 'cursor-SENTINEL-0123456789abcdef';
 
 async function sandbox(t, { version = VERSION, defaultPorts = false } = {}) {
@@ -34,7 +33,6 @@ async function sandbox(t, { version = VERSION, defaultPorts = false } = {}) {
     BOTMANCERS_APP_DIR: app,
     ...(defaultPorts ? {} : { BOTMANCERS_UI_PORT: String(ui), BOTMANCERS_MCP_PORT: String(mcp) }),
     BOTMANCERS_STARTUP_TIMEOUT_MS: '15000',
-    BOTMANCERS_AGENT_DECK_URL: `http://127.0.0.1:${mcp}`,
     ...extra,
   });
   const run = (args, extra = {}, options = {}) => cli(args, { env: env(extra), cwd: options.cwd ?? root });
@@ -92,12 +90,12 @@ test('fresh setup, stopped status, and help agree on the default UI and MCP port
 
 test('setup creates an owner-only home with distinct credentials and only the service-token digest in core.env', async t => {
   const s = await sandbox(t);
-  const env = { HERMES_API_SERVER_KEY: SENTINEL_HERMES, AGENT_DECK_RUN_TOKEN: SENTINEL_DECK, CURSOR_API_KEY: SENTINEL_CURSOR };
+  const env = { HERMES_API_SERVER_KEY: SENTINEL_HERMES, CURSOR_API_KEY: SENTINEL_CURSOR };
   const first = await s.run(['setup'], env);
   assert.equal(first.code, 0, first.stderr);
   assert.match(first.stdout, /initialized .* \(owner-only\)/);
   assert.match(first.stdout, /HERMES_API_SERVER_KEY=<your Hermes gateway key>/);
-  assert.match(first.stdout, /AGENT_DECK_RUN_TOKEN=<token issued by Agent Deck>/);
+  assert.match(first.stdout, /Coding-agent runs are not configured by setup:/);
   assert.match(first.stdout, /botmancers start --daemon/);
   assert.match(first.stdout, new RegExp(`UI http://127\\.0\\.0\\.1:${s.ui} {3}MCP http://127\\.0\\.0\\.1:${s.mcp}/mcp`), 'explicit port overrides reach setup output');
 
@@ -114,8 +112,8 @@ test('setup creates an owner-only home with distinct credentials and only the se
   assert.ok(!core.includes(service) && !core.includes(mcp), 'core.env holds no raw token');
 
   const everything = readdirSync(s.home, { recursive: true }).map(rel => join(s.home, rel)).filter(path => statSync(path).isFile()).map(path => readFileSync(path, 'utf8')).join('\n');
-  for (const sentinel of [SENTINEL_HERMES, SENTINEL_DECK, SENTINEL_CURSOR]) assert.ok(!everything.includes(sentinel), `setup wrote ${sentinel}`);
-  assert.ok(!/^\s*(?:HERMES_API_SERVER_KEY|AGENT_DECK_RUN_TOKEN|CURSOR_API_KEY)=/m.test(everything), 'no external credential lines');
+  for (const sentinel of [SENTINEL_HERMES, SENTINEL_CURSOR]) assert.ok(!everything.includes(sentinel), `setup wrote ${sentinel}`);
+  assert.ok(!/^\s*(?:HERMES_API_SERVER_KEY|CURSOR_API_KEY)=/m.test(everything), 'no external credential lines');
   assertNoTokens(s.home, first.stdout, first.stderr);
 
   // Re-running keeps the credentials and the operator's own lines, and re-tightens modes.
@@ -480,35 +478,33 @@ test('an operator-exported BOTMANCERS_SERVICE_TOKENS stays usable next to the ge
   assertNoTokens(s.home, start.stdout, start.stderr, status.stdout);
 });
 
-test('doctor distinguishes missing Hermes configuration and unavailable Agent Deck without printing secrets', async t => {
+test('doctor distinguishes missing Hermes configuration and missing provider CLIs without printing secrets', async t => {
   const s = await sandbox(t);
   assert.equal((await s.run(['setup'])).code, 0);
   const bare = await s.run(['doctor'], { PATH: '/usr/bin:/bin' });
   assert.equal(bare.code, 0, bare.stdout);
   assert.match(bare.stdout, /^ {2}warn {2}hermes {6}Hermes is not configured: .*HERMES_API_SERVER_KEY/m);
-  assert.match(bare.stdout, /^ {2}warn {2}agent-deck {2}Agent Deck is unavailable: `agent-deck` is not on PATH/m);
+  assert.match(bare.stdout, /^ {2}warn {2}providers {3}No coding-agent CLI is on PATH \(looked for claude, codex, cursor, muse\)/m);
   assert.match(bare.stdout, /^ {2}ok {4}config/m);
   assert.match(bare.stdout, /^ {2}ok {4}ports/m);
   assert.match(bare.stdout, /^result: ok \(2 warnings\)$/m);
 
   const bin = join(s.root, 'bin');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'agent-deck'), '#!/bin/sh\necho 0.0.0\n', { mode: 0o755 });
-  writeFileSync(join(s.home, 'config/core.env'), `${readFileSync(join(s.home, 'config/core.env'), 'utf8')}HERMES_API_SERVER_KEY=${SENTINEL_HERMES}\nAGENT_DECK_RUN_TOKEN=${SENTINEL_DECK}\n`);
-  const closed = await freePort();
-  const unreachable = await s.run(['doctor'], { PATH: `${bin}:/usr/bin:/bin`, BOTMANCERS_AGENT_DECK_URL: `http://127.0.0.1:${closed}` });
-  assert.equal(unreachable.code, 0);
-  assert.match(unreachable.stdout, /^ {2}ok {4}hermes {6}HERMES_API_SERVER_KEY is configured/m);
-  assert.match(unreachable.stdout, new RegExp(`^ {2}warn {2}agent-deck {2}Agent Deck is unavailable: .*agent-deck found, but its server at http://127\\.0\\.0\\.1:${closed} is not answering`, 'm'));
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\necho 0.0.0\n', { mode: 0o755 });
+  writeFileSync(join(s.home, 'config/core.env'), `${readFileSync(join(s.home, 'config/core.env'), 'utf8')}HERMES_API_SERVER_KEY=${SENTINEL_HERMES}\n`);
+  const partial = await s.run(['doctor'], { PATH: `${bin}:/usr/bin:/bin` });
+  assert.equal(partial.code, 0);
+  assert.match(partial.stdout, /^ {2}ok {4}hermes {6}HERMES_API_SERVER_KEY is configured/m);
+  assert.match(partial.stdout, /^ {2}warn {2}providers {3}Coding-agent CLIs on PATH: claude; not found: codex, cursor, muse\./m);
 
-  const deck = await listenOn(await freePort());
-  t.after(() => deck.close());
-  const reachable = await s.run(['doctor'], { PATH: `${bin}:/usr/bin:/bin`, BOTMANCERS_AGENT_DECK_URL: `http://127.0.0.1:${deck.address().port}` });
-  assert.doesNotMatch(reachable.stdout, /agent-deck .*not on PATH/);
-  for (const output of [bare.stdout, unreachable.stdout, reachable.stdout]) {
-    assert.ok(!output.includes(SENTINEL_HERMES) && !output.includes(SENTINEL_DECK), 'doctor printed a secret');
+  for (const name of ['codex', 'cursor', 'muse']) writeFileSync(join(bin, name), '#!/bin/sh\necho 0.0.0\n', { mode: 0o755 });
+  const full = await s.run(['doctor'], { PATH: `${bin}:/usr/bin:/bin` });
+  assert.match(full.stdout, /^ {2}ok {4}providers {3}claude, codex, cursor, and muse are all on PATH\./m);
+  for (const output of [bare.stdout, partial.stdout, full.stdout]) {
+    assert.ok(!output.includes(SENTINEL_HERMES), 'doctor printed a secret');
   }
-  assertNoTokens(s.home, bare.stdout, unreachable.stdout, reachable.stdout);
+  assertNoTokens(s.home, bare.stdout, partial.stdout, full.stdout);
 });
 
 // NOT-519: the Slack line reads the running core's GET /api/health only and

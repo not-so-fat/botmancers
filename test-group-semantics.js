@@ -558,10 +558,16 @@ async function main() {
   unchanged('pin, hide, unhide, mark unread');
   assert((await patchBots({ id: keepA.id, name: 'KeepAlpha' })).status === 200, 'rename agent');
   unchanged('rename agent');
+  const keepConn = db.runtimeConnections.ensureLocal('codex');
   const createdAgent = await botsRoute.POST(new Request('http://localhost/api/bots', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'KeepNew', deck_id: 'deck-test' }),
+    body: JSON.stringify({
+      name: 'KeepNew',
+      runtime_connection_id: keepConn,
+      session_scope: { kind: 'all_provider_sessions' },
+      policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    }),
   }));
   assert(createdAgent.status === 200 || createdAgent.status === 201, `create agent (got ${createdAgent.status})`);
   unchanged('create agent');

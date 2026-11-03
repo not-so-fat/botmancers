@@ -55,25 +55,16 @@ import {
 // NOT-471/NOT-477: an ordinary coding-Agent turn is one Attempt. The
 // composite implement/review/resume helper is removed; implementation,
 // review, and revision are coordinator Wakes (./coordinator-loop).
-import {
-  createAgentDeckAttemptAdapter,
-  parseDeckRuntime,
-  type DeckRuntime,
-} from './agent-deck-run';
+import { createSessionProviderAttemptAdapter } from './session-provider-attempt';
 import { recoverCoordinatorLoops, startAgentDispatch, sweepDispatch } from './agent-conversations';
 import { selectExecutionPolicy } from './execution-policy';
 import {
-  agentLabel,
   agentTransport,
   resolveAgent,
   type BotAgent,
 } from './bot-definition';
-import {
-  getAgentDeckServerUrl,
-  isLocalAgentDeckUrl,
-  remoteLaunchUnsupportedMessage,
-  resolveAndEnsureBotWorkdir,
-} from './agent-deck-settings';
+import { directLaunchWorkspace, readStoredScope } from './agent-registration';
+import { ensureBotWorkdir } from './agent-workdir';
 
 // Conversational delegation limits (NOT-395). NOT-475: the legacy path tells
 // the same story as the approved Wake safety limits (depth 3, budget 12)
@@ -87,7 +78,7 @@ export const DELEGATION_BUDGET_REASON =
   `[Delegation limit] Budget limit reached (max ${DELEGATION_MAX_DELEGATED_TURNS} delegated turns per user message). No further delegated turn.`;
 // NOT-442: prompts no longer advertise a DECK directive. Ordinary turns
 // dispatch through the bot's own stored agent (see agentForBot and
-// processAgentDeckTurn); the model is never asked to route work, so no
+// processDirectTurn); the model is never asked to route work, so no
 // capability-probe text is presented and no probe state is cached here.
 
 export const DELEGATION_STOPPED_REASON =
@@ -100,11 +91,10 @@ export const DELEGATION_STOPPED_REASON =
 
 // NOT-435: the embedded example model loop is removed. Hermes turns run
 // on the persistent Hermes gateway and record HERMES_GATEWAY_TRANSPORT;
-// Cursor/Claude/Codex/Muse Code turns launch through `agent-deck run` and
-// record AGENT_DECK_TRANSPORT. Both are adapters of the same agent +
-// Agent Deck contract (NOT-456).
+// Cursor/Claude/Codex/Muse Code turns run direct local provider Sessions
+// and record SESSION_PROVIDER_TRANSPORT.
 export const HERMES_GATEWAY_TRANSPORT = 'hermes-gateway';
-export const AGENT_DECK_TRANSPORT = 'agent-deck';
+export const SESSION_PROVIDER_TRANSPORT = 'session-provider';
 
 // NOT-456: every stored bot resolves to exactly one agent
 // (hermes|cursor|claude|codex|muse); a missing agent reads as Hermes.
@@ -113,32 +103,23 @@ export function agentForBot(bot: Pick<Bot, 'agent'>): BotAgent {
 }
 
 function transportForBot(bot: Pick<Bot, 'agent'>): string {
-  return agentTransport(agentForBot(bot)) === 'hermes-gateway' ? HERMES_GATEWAY_TRANSPORT : AGENT_DECK_TRANSPORT;
+  return agentTransport(agentForBot(bot)) === 'hermes-gateway' ? HERMES_GATEWAY_TRANSPORT : SESSION_PROVIDER_TRANSPORT;
 }
 
-// Visible thread error when an agent cannot launch because no Agent Deck
-// is selected. Applies to every agent, Hermes included. The legacy
-// free-text deck name (when present) is named so the owner knows what to
-// select; no deck discovery runs here and no ID is ever guessed from it.
-export function deckNeedsSelectionMessage(botName: string, legacyDeckName: string | null): string {
-  const legacy = legacyDeckName ? ` (legacy deck "${legacyDeckName}")` : '';
-  return `[Deck needs selection] ${botName} cannot launch: no Agent Deck is selected${legacy}. Select a deck, or choose the Direct launch profile in Config, before launching.`;
-}
-
-// NOT-502: visible thread notice per launch blocker. A missing deck on an
-// Agent Deck row and an unresolved legacy row (no profile yet) use the
-// Agent Deck notice above; a direct profile never mentions a deck.
+// NOT-543: visible thread notice per launch blocker. A missing runtime
+// connection, an invalid scope, or an unsupported agent fails closed
+// with a direct-runtime explanation naming the Config fix.
 export function launchBlockedMessage(bot: Pick<Bot, 'name'> & Parameters<typeof resolveAgent>[0]): string {
   const resolved = resolveAgent(bot);
   switch (resolved.launch_blocker) {
+    case 'connection':
+      return `[Agent unavailable] ${bot.name} cannot launch: no runtime connection. Choose one in Config.`;
     case 'session_scope':
       return `[Session scope needed] ${bot.name} cannot launch: select its session scope in Config.`;
-    case 'direct_runtime':
-      return `[Direct launch unavailable] ${bot.name} is registered for direct launch; direct ${agentLabel(resolved.agent)} sessions are not available in this Botmancers version yet.`;
     case 'agent':
       return `[Launch blocked] ${bot.name} has an unsupported Agent type.`;
     default:
-      return deckNeedsSelectionMessage(bot.name, resolved.deck_name);
+      return `[Launch blocked] ${bot.name} cannot launch. Check its registration in Config.`;
   }
 }
 
@@ -505,7 +486,7 @@ function dropSnapshot(item: UiTurn): void {
 }
 
 // Latest `[Handing off to <bot>]` task addressed to this bot after the
-// latest user message, if any. A WAKE- or handoff-delegated Agent Deck
+// latest user message, if any. A WAKE- or handoff-delegated coding-agent
 // turn runs this task; a direct turn runs the latest user message.
 function handoffTaskFor(conversationMessages: Message[], botName: string): string | null {
   let lastUserIdx = -1;
@@ -524,24 +505,21 @@ function handoffTaskFor(conversationMessages: Message[], botName: string): strin
   return null;
 }
 
-// NOT-456: one launch gate for every agent. A bot without a selected
-// Agent Deck posts a visible notice (naming any legacy deck reference)
-// and hands control back to its delegating caller; nothing launches.
-function postDeckNeedsSelection(item: UiTurn, bot: Bot, chain: DelegationChain | null): void {
+// NOT-456: one launch gate for every agent. An unlaunchable bot posts
+// its direct-runtime notice and hands control back to its delegating
+// caller; nothing launches.
+function postLaunchBlocked(item: UiTurn, bot: Bot, chain: DelegationChain | null): void {
   messages.create(item.conversation_id, 'bot', launchBlockedMessage(bot), bot.id);
   returnToCaller(item, chain, bot.id);
   continueUiTurns();
 }
 
-// NOT-442/NOT-456: direct deck-run dispatch. An ordinary message to a
-// Cursor/Claude/Codex/Muse Code agent launches that agent on its selected
-// deck ID directly: no Hermes turn runs first and no model-reply directive is
-// parsed. The launch snapshot is held with the agent-deck transport and
-// the effective working directory (stored override or
-// ~/.botmancers/{botId}, created on demand), so it records what ran.
-// NOT-443: a non-local workspace server URL fails explicitly here;
-// remote `agent-deck run` targeting is unconfirmed.
-async function processAgentDeckTurn(args: {
+// NOT-442/NOT-543: direct dispatch. An ordinary message to a
+// Cursor/Claude/Codex/Muse Code agent runs that agent's direct local
+// provider Session: no Hermes turn runs first and no model-reply
+// directive is parsed. The launch snapshot is held with the
+// session-provider transport, so it records what ran.
+async function processDirectTurn(args: {
   item: UiTurn;
   bot: Bot;
   conversationMessages: Message[];
@@ -552,9 +530,10 @@ async function processAgentDeckTurn(args: {
 }): Promise<void> {
   const { item, bot, conversationMessages, latestUser, chain, openGroupTurn, delegated } = args;
   // Re-hold the snapshot captured at the bot-row read so every exit
-  // below flushes the agent-deck transport with the stored configuration.
-  holdSnapshot(item, bot, { path: null, present: null, content: null }, null, AGENT_DECK_TRANSPORT);
-  // Unaddressed group turns stay silent: a deck launch is never spent
+  // below flushes the session-provider transport with the stored
+  // configuration.
+  holdSnapshot(item, bot, { path: null, present: null, content: null }, null, SESSION_PROVIDER_TRANSPORT);
+  // Unaddressed group turns stay silent: a direct launch is never spent
   // on a message nobody directed at this bot.
   if (openGroupTurn) {
     dropSnapshot(item);
@@ -568,31 +547,18 @@ async function processAgentDeckTurn(args: {
     return;
   }
   const resolved = resolveAgent(bot);
-  if (!resolved.launchable || !resolved.deck_id) {
-    // NOT-502: registering an Agent never starts a session, and a direct
-    // profile's auto-greeting is not a request: stay silent.
-    if (resolved.launch_profile === 'direct' && !latestUser && !delegated) {
+  if (!resolved.launchable) {
+    // Registering an Agent never starts a session, and its
+    // auto-greeting is not a request: stay silent.
+    if (!latestUser && !delegated) {
       dropSnapshot(item);
       continueUiTurns();
       return;
     }
-    postDeckNeedsSelection(item, bot, chain);
+    postLaunchBlocked(item, bot, chain);
     return;
   }
-  let client;
-  try {
-    client = parseDeckRuntime(resolved.agent);
-  } catch {
-    messages.create(
-      item.conversation_id,
-      'bot',
-      `[Deck failed] agent=${resolved.agent} deck=${resolved.deck_id} error=Invalid agent-deck run client.`,
-      bot.id
-    );
-    returnToCaller(item, chain, bot.id);
-    continueUiTurns();
-    return;
-  }
+  const client = resolved.agent;
   const task = (delegated ? handoffTaskFor(conversationMessages, bot.name) : null)
     ?? latestUser?.content
     ?? null;
@@ -609,60 +575,27 @@ async function processAgentDeckTurn(args: {
     continueUiTurns();
     return;
   }
-  // NOT-443: remote launch is unconfirmed. A non-local workspace server
-  // URL fails explicitly here instead of running locally against a
-  // same-named deck; no `agent-deck run` child starts on this path.
-  const agentDeckServerUrl = getAgentDeckServerUrl();
-  if (!isLocalAgentDeckUrl(agentDeckServerUrl)) {
-    messages.create(item.conversation_id, 'bot', remoteLaunchUnsupportedMessage(agentDeckServerUrl), bot.id);
-    returnToCaller(item, chain, bot.id);
-    continueUiTurns();
-    return;
-  }
-  // NOT-443: per-bot default workdir (~/.botmancers/{botId}), created on
-  // demand immediately before launch; a stored override wins.
-  let cwd: string;
-  try {
-    cwd = resolveAndEnsureBotWorkdir(bot.id, resolved.working_directory);
-  } catch (error) {
-    messages.create(
-      item.conversation_id,
-      'bot',
-      `[Deck failed] agent=${client} deck=${resolved.deck_id} error=${String(error instanceof Error ? error.message : error).slice(0, 300)}`,
-      bot.id
-    );
-    returnToCaller(item, chain, bot.id);
-    continueUiTurns();
-    return;
-  }
   chain?.addTurns(1);
   const skillState = readSkillState(bot.name);
   const rememberedFacts = memories.latestFacts(bot.id);
-  // Re-hold with the resolved launch configuration: the stored agent
-  // client and deck ID plus the effective working directory.
-  holdSnapshot(
-    item,
-    { ...bot, agent: client, deck_id: resolved.deck_id, working_directory: cwd },
-    skillState,
-    rememberedFacts,
-    AGENT_DECK_TRANSPORT
-  );
+  // Re-hold with the resolved launch configuration: the stored agent.
+  holdSnapshot(item, { ...bot, agent: client }, skillState, rememberedFacts, SESSION_PROVIDER_TRANSPORT);
   // NOT-471: one Agent turn per message, never an automatic
   // implement/review/resume sequence. A turn accepted through conversation
   // intake dispatches its canonical Work Request (one Attempt under that
   // request's validated read-only policy); a continuation turn (a legacy
   // WAKE handoff, tick, or routine) runs one read-only Attempt on its task.
   const answered = item.kind === 'message'
-    ? await runCanonicalDeckTurn(item, bot, client, resolved.deck_id)
-    : await runDirectDeckTurn({ item, bot, client, deck: resolved.deck_id, cwd, task: task.trim(), chain, delegated });
+    ? await runCanonicalDirectTurn(item, bot, client)
+    : await runDirectTurn({ item, bot, client, task: task.trim(), chain, delegated });
   // A Stop-silent turn (neither result nor failure) suppresses the
   // return, like every other stopped path.
   if (answered) returnToCaller(item, chain, bot.id);
   continueUiTurns();
 }
 
-function postDeckFailed(item: UiTurn, bot: Bot, client: DeckRuntime, deck: string, error: string): void {
-  messages.create(item.conversation_id, 'bot', `[Deck failed] agent=${client} deck=${deck} error=${error.slice(0, 300)}`, bot.id);
+function postAgentFailed(item: UiTurn, bot: Bot, client: BotAgent, error: string): void {
+  messages.create(item.conversation_id, 'bot', `[Agent failed] agent=${client} error=${error.slice(0, 300)}`, bot.id);
 }
 
 // The UI message turn is handed to the canonical dispatcher
@@ -670,45 +603,69 @@ function postDeckFailed(item: UiTurn, bot: Bot, client: DeckRuntime, deck: strin
 // one Attempt, and projects the reply into the source conversation. A
 // failed request posts its fixed failure text here so the thread shows
 // it. Returns whether the turn answered (reply or failure).
-async function runCanonicalDeckTurn(item: UiTurn, bot: Bot, client: DeckRuntime, deck: string): Promise<boolean> {
+async function runCanonicalDirectTurn(item: UiTurn, bot: Bot, client: BotAgent): Promise<boolean> {
   const requestId = item.id;
   uiTurns.handOff(requestId);
   await startAgentDispatch(requestId);
   const request = engine.getWorkRequest(requestId);
   if (request?.state === 'failed') {
-    postDeckFailed(item, bot, client, deck, request.error_message ?? request.error_code ?? 'The agent runtime did not complete the turn.');
+    postAgentFailed(item, bot, client, request.error_message ?? request.error_code ?? 'The agent runtime did not complete the turn.');
     return true;
   }
   return request?.state === 'completed';
+}
+
+// The explicit absolute workspace a fresh continuation turn starts in:
+// the Agent's default workspace, else its single selected workspace,
+// created on demand. Null when the Agent names no workspace for a new
+// session: the caller posts the direct-runtime notice.
+function continuationWorkspace(bot: Bot): string | null {
+  const workspace = directLaunchWorkspace(bot);
+  if (!workspace) return null;
+  try {
+    return ensureBotWorkdir(workspace);
+  } catch {
+    return null;
+  }
 }
 
 // One read-only Attempt for a continuation turn. A
 // delegated turn came from a legacy WAKE handoff, so it runs under the
 // legacy-Wake conversation rule; anything else is a direct conversation
 // turn. Either way the central policy selects read-only.
-async function runDirectDeckTurn(args: {
+async function runDirectTurn(args: {
   item: UiTurn;
   bot: Bot;
-  client: DeckRuntime;
-  deck: string;
-  cwd: string;
+  client: BotAgent;
   task: string;
   chain: DelegationChain | null;
   delegated: boolean;
 }): Promise<boolean> {
-  const { item, bot, client, deck, cwd, task, chain, delegated } = args;
+  const { item, bot, client, task, chain, delegated } = args;
   const selection = selectExecutionPolicy(delegated
     ? { entryPoint: 'wake', executionKind: 'conversation', wakeSyntax: 'legacy' }
     : { entryPoint: 'ui', executionKind: 'conversation' });
   if (!selection.ok) {
-    postDeckFailed(item, bot, client, deck, selection.reason);
+    postAgentFailed(item, bot, client, selection.reason);
     return true;
   }
-  const result = await createAgentDeckAttemptAdapter().run({
+  const cwd = continuationWorkspace(bot);
+  if (!cwd) {
+    const scope = readStoredScope(bot);
+    postAgentFailed(
+      item,
+      bot,
+      client,
+      scope?.kind === 'sessions'
+        ? 'This turn starts a new session but the agent is limited to selected sessions.'
+        : 'The agent has no default workspace for a new session. Set one in Config.',
+    );
+    return true;
+  }
+  const result = await createSessionProviderAttemptAdapter().run({
     target: { agentId: bot.id, agent: client },
     prompt: { kind: 'text', text: task },
     cwd,
-    deck,
     toolProfile: selection.policy.tool_profile,
     sessionBinding: null,
     correlation: { conversationId: item.conversation_id },
@@ -716,7 +673,7 @@ async function runDirectDeckTurn(args: {
   // Stop promises no late messages; the run's outcome is discarded.
   if (chain?.stopped) return false;
   if (result.status !== 'completed' || result.output === null) {
-    postDeckFailed(item, bot, client, deck, result.failure?.message ?? `agent-deck run ${result.externalRunId ?? 'unknown'} failed`);
+    postAgentFailed(item, bot, client, result.failure?.message ?? `provider turn ${result.externalRunId ?? 'unknown'} failed`);
     return true;
   }
   messages.create(item.conversation_id, 'bot', result.output, bot.id);
@@ -1621,14 +1578,12 @@ async function processUiTurn(item: UiTurn) {
     }
   }
 
-  // NOT-456: agent + Agent Deck dispatch. Every agent launches only on a
-  // selected deck. Cursor/Claude/Codex/Muse Code launch through
-  // `agent-deck run` directly from the ordinary message; everything below
-  // this branch is the Hermes gateway adapter. No model reply is parsed
-  // for a DECK directive.
+  // NOT-543: direct dispatch. Cursor/Claude/Codex/Muse Code run their
+  // direct local provider Session from the ordinary message; everything
+  // below this branch is the Hermes gateway adapter.
   const launch = resolveAgent(bot);
-  if (agentTransport(launch.agent) === 'agent-deck-run') {
-    await processAgentDeckTurn({
+  if (agentTransport(launch.agent) === 'session-provider') {
+    await processDirectTurn({
       item,
       bot,
       conversationMessages,
@@ -1646,7 +1601,7 @@ async function processUiTurn(item: UiTurn) {
       continueUiTurns();
       return;
     }
-    postDeckNeedsSelection(item, bot, chain);
+    postLaunchBlocked(item, bot, chain);
     return;
   }
 
@@ -1688,8 +1643,8 @@ async function processUiTurn(item: UiTurn) {
   }
 
   // NOT-442: the model is never asked to route work. Hermes prompts
-  // carry only the WAKE delegation rules; an agent-deck bot never reaches
-  // this path (it dispatches directly in processAgentDeckTurn above).
+  // carry only the WAKE delegation rules; a coding-agent bot never reaches
+  // this path (it dispatches directly in processDirectTurn above).
   const delegatedHowTo = delegatingCallerName
     ? `You were delegated by @${delegatingCallerName}. Complete the task in your context and reply with your result in this thread.
 Your reply will be returned to @${delegatingCallerName}, who manages the sequence and reports back.
@@ -1755,10 +1710,11 @@ The standing rules decide the whole reply. If they require one short sentence, w
     sent.push({ role: 'system' as const, content: rememberedBlock });
   }
   const skillState = readSkillState(bot.name);
-  // NOT-442: this is the Hermes conversational path (agent-deck bots
+  // NOT-442: this is the Hermes conversational path (coding-agent bots
   // dispatched above). The turn runs on the bot's Hermes session and
-  // records the Hermes gateway transport. No model reply is routed to
-  // Agent Deck: ordinary messages to agent-deck bots dispatch directly.
+  // records the Hermes gateway transport. No model reply is routed to a
+  // provider Session: ordinary messages to coding-agent bots dispatch
+  // directly.
   // NOT-435 removed the embedded example model loop, so no fallback
   // transport exists after a Hermes failure.
   holdSnapshot(item, bot, skillState, rememberedFacts, HERMES_GATEWAY_TRANSPORT);
@@ -1978,7 +1934,7 @@ The standing rules decide the whole reply. If they require one short sentence, w
       const resolved = resolveWakeTargets(directives, conversation);
       // NOT-456: only launchable Hermes agents are poked through the
       // gateway; any other target falls through to the queued path,
-      // which applies that agent's own adapter and deck gate.
+      // which applies that agent's own adapter and launch gate.
       const specialistTargets = resolved.filter(
         (target): target is { directive: WakeDirective; bot: Bot; group: false; unknown: false } =>
           !target.group && !target.unknown &&
@@ -2001,8 +1957,8 @@ The standing rules decide the whole reply. If they require one short sentence, w
   }
 
   // NOT-442: no directive routing. A model reply is never parsed for a
-  // DECK directive: agent-deck bots dispatch directly from the ordinary
-  // message in processAgentDeckTurn, and Hermes replies stay
+  // DECK directive: coding-agent bots dispatch directly from the ordinary
+  // message in processDirectTurn, and Hermes replies stay
   // conversational (WAKE handoffs below are the only reply routing).
 
   const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*([\s\S]+)/);

@@ -94,8 +94,8 @@ npx botmancers start --daemon --open
 `setup` creates `~/.botmancers` (owner-only) and generates two local
 credentials: the service token the bridge uses to call the core engine (the
 engine stores only its SHA-256 digest) and the MCP token your MCP clients
-send to the bridge. It never writes Hermes, Agent Deck, or coding-agent
-credentials; it prints where to add them. `start --daemon` launches the UI,
+send to the bridge. It never writes Hermes or coding-agent credentials;
+it prints where to add them. `start --daemon` launches the UI,
 API, core engine, and bridge in the background and returns once both are
 healthy; `--open` opens the UI in your browser.
 
@@ -106,9 +106,10 @@ Then:
    `HERMES_API_SERVER_KEY=<your gateway key>` (and `HERMES_BASE_URL` if the
    gateway is not `http://127.0.0.1:8642`) to `~/.botmancers/config/core.env`,
    then `botmancers stop && botmancers start --daemon`.
-3. **Configure Agent Deck** for coding-agent runs: install Agent Deck so
-   `agent-deck` is on `PATH` and its server runs on `http://127.0.0.1:1111`,
-   and add `AGENT_DECK_RUN_TOKEN=<token issued by Agent Deck>` to `core.env`.
+3. **Install coding-agent CLIs** for coding-agent runs: install the provider
+   CLIs you need (`claude`, `codex`, `cursor`, `muse`) and sign each one in.
+   No token goes in `core.env`; register Agents against their runtime
+   connections in the Botmancers UI.
 4. **Connect an MCP client** to `http://127.0.0.1:3332/mcp` with
    `Authorization: Bearer <BOTMANCERS_MCP_TOKEN>`, taking the token from
    `~/.botmancers/config/bridge.env`. For Codex, Cursor, or Claude Code,
@@ -132,7 +133,7 @@ release rather than `npx`: `npm install -g botmancers@0.6.1`, then run
 | `botmancers start [--daemon] [--open]` | Starts the UI/core and the bridge. Without `--daemon` it stays in the foreground until Ctrl-C. Starting a healthy product again changes nothing. | `0` running; `1` a previous start is degraded; `6` a port is in use; `7` the core or bridge failed (both are stopped); `8` packaged app incomplete; `9` home not writable; `10` not set up |
 | `botmancers stop` | Stops the supervisor, the core, and the bridge. Safe to repeat. | `0`; `1` a process would not stop |
 | `botmancers status` | Reports `healthy`, `degraded`, or `stopped`, with the install kind, launcher, the CLI, current, and pending versions, the versions the live core and bridge report, both endpoints, process ids, and the restart action. | `0` healthy; `1` degraded; `3` stopped |
-| `botmancers doctor` | Checks the install kind, the launcher and `PATH` shadowing, the updater, Node, the packaged app, the home and its permissions, the credentials, the SQLite driver, ports, Hermes, Agent Deck, and the MCP clients set up with `--client`. Hermes, Agent Deck, and clients are optional and only warn. | `0` ok; `1` a check failed |
+| `botmancers doctor` | Checks the install kind, the launcher and `PATH` shadowing, the updater, Node, the packaged app, the home and its permissions, the credentials, the SQLite driver, ports, Hermes, provider CLIs, and the MCP clients set up with `--client`. Hermes, provider CLIs, and clients are optional and only warn. | `0` ok; `1` a check failed |
 | `botmancers open` | Opens the UI in a browser (`BOTMANCERS_BROWSER` overrides the command). | `0`; `1` no browser; `3` not running |
 | `botmancers mcp [options]` | Runs only the bridge; identical to bare `botmancers`. | see [bridge exit codes](#startup-checks-and-exit-codes) |
 | `botmancers install [--to VERSION] [--migrate-cli] [--purge-global]` | Managed install or rollback: downloads the release into `~/.botmancers/versions/VERSION`, verifies it, makes it current, and writes the launcher. `--purge-global` also runs `npm uninstall -g botmancers`; nothing else uninstalls it. | `0`; `1` download or verification failed; `2` usage |
@@ -158,7 +159,7 @@ Everything the product writes lives under `BOTMANCERS_HOME` (default
 
 | Path | Contents |
 | --- | --- |
-| `config/core.env` | Core engine configuration: the bridge's service-token digest and anything you add (Hermes, Agent Deck, coordinators). Variables exported in your shell take precedence. |
+| `config/core.env` | Core engine configuration: the bridge's service-token digest and anything you add (Hermes, coordinators). Variables exported in your shell take precedence. |
 | `config/bridge.env` | The bridge's service token and MCP token. Keep private. |
 | `config/clients/<client>.json` | What `setup --client` manages in that client: the version, and the SHA-256 of each skill file and of the MCP entry it wrote. No token. |
 | `data/` | The SQLite database and its WAL. |

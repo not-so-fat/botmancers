@@ -72,9 +72,13 @@ async function runMain() {
   const engineStore = jiti('./lib/engine-store.ts');
 
   router.setWakeAvailabilityProbe(() => ({ available: true }));
-  const tank = bots.create({ deck_id: 'deck-tank', name: 'Tank', title: 'Coordinator', description: 'Coordinates.', agent: 'hermes' });
-  const dev = bots.create({ deck_id: 'deck-dev', name: 'Dev', title: 'Developer', description: 'Implements.', agent: 'claude' });
-  bots.create({ name: 'Idle', title: 'Idle', description: 'No deck yet.', agent: 'cursor' });
+  const tank = bots.create({ name: 'Tank', title: 'Coordinator', description: 'Coordinates.', agent: 'hermes' });
+  const dev = bots.create({ name: 'Dev', title: 'Developer', description: 'Implements.', agent: 'claude' });
+  // Idle is readable but unlaunchable: no runtime connection, so its Wake
+  // blocks as target_unconfigured until the owner configures one.
+  const idle = bots.create({ name: 'Idle', title: 'Idle', description: 'No runtime connection yet.', agent: 'cursor' });
+  const idleConnection = idle.runtime_connection_id;
+  raw.prepare('UPDATE bots SET runtime_connection_id = NULL WHERE id = ?').run(idle.id);
   const conversation = conversations.getByBotId(tank.id);
 
   const ask = messages.create(conversation.id, 'user', 'Implement notifications.');
@@ -107,7 +111,7 @@ async function runMain() {
   assert(wakeAccepted.engineEventId === firstAccepted.id && wakeAccepted.requestSequence === 1, 'wake_accepted names its source engine event and sequence');
   assert(kindsOf(views, blocked.request.id).join(',') === 'wake_blocked', 'blocked Wake projects only wake_blocked (never accepted)');
   const wakeBlocked = views.find(view => view.kind === 'wake_blocked');
-  assert(wakeBlocked.state === 'blocked' && wakeBlocked.wakeId === blocked.wake.id && wakeBlocked.data.reason_code === 'target_unconfigured' && wakeBlocked.text === 'Wake blocked: Idle — Idle has no Agent Deck selected and no launch profile chosen.' && wakeBlocked.data.actions.length === 0, 'wake_blocked carries the persisted reason');
+  assert(wakeBlocked.state === 'blocked' && wakeBlocked.wakeId === blocked.wake.id && wakeBlocked.data.reason_code === 'target_unconfigured' && wakeBlocked.text === 'Wake blocked: Idle — Idle has no runtime connection.' && wakeBlocked.data.actions.length === 0, 'wake_blocked carries the persisted reason');
   assert(kindsOf(views, root.id).join(',') === 'request_queued', 'person request projects as request_queued');
 
   console.log('Stored metadata');
@@ -138,7 +142,7 @@ async function runMain() {
     },
   };
   const attemptInput = {
-    target: { agentId: dev.id }, deck: 'deck-dev', cwd: null, toolProfile: 'edit',
+    target: { agentId: dev.id }, cwd: null, toolProfile: 'edit',
     prompt: { kind: 'text', text: 'Add notifications.' }, correlation: { conversationId: conversation.id },
   };
   const prepared = executor.beginAttempt(engine, work.id, { agent: 'claude', adapter, input: attemptInput });
@@ -219,8 +223,9 @@ async function runMain() {
 
   console.log('Blocked Wake recovers');
   router.setWakeAvailabilityProbe(() => ({ available: true }));
-  // NOT-502: configuring = choosing the Agent Deck profile with a deck.
-  raw.prepare("UPDATE bots SET deck_id = 'deck-idle', needs_deck_selection = 0, launch_profile = 'agent_deck' WHERE name = 'Idle'").run();
+  // NOT-543: configuring = choosing a runtime connection; the stored
+  // session scope is still there, so restoring the connection unblocks.
+  raw.prepare('UPDATE bots SET runtime_connection_id = ? WHERE name = ?').run(idleConnection, 'Idle');
   router.retryWake(blocked.wake.id);
   views = projector.listConversationEvents(conversation.id);
   // NOT-475: a recovered blocked Wake is accepted now (wake-safety fixture
@@ -229,7 +234,7 @@ async function runMain() {
   assert(views.find(view => view.requestId === blocked.request.id && view.kind === 'wake_accepted').data.reason === 'target_available', 'acceptance carries its reason');
 
   console.log('Interleaved requests');
-  const other = bots.create({ deck_id: 'deck-o', name: 'Other', title: 'Other', description: 'Other.', agent: 'hermes' });
+  const other = bots.create({ name: 'Other', title: 'Other', description: 'Other.', agent: 'hermes' });
   const thread = conversations.getByBotId(other.id);
   const src = messages.create(thread.id, 'user', 'two things');
   const base = 1_000_000;
@@ -294,7 +299,7 @@ async function runMain() {
   assert(Array.isArray(apiBody.messages) && apiBody.messages.some(message => message.content === 'Notifications added.'), '/api/v0 messages are unchanged alongside events');
 
   console.log('Legacy history stays readable');
-  const legacyBot = bots.create({ deck_id: 'deck-l', name: 'Legacy', title: 'Legacy', description: 'Legacy.', agent: 'hermes' });
+  const legacyBot = bots.create({ name: 'Legacy', title: 'Legacy', description: 'Legacy.', agent: 'hermes' });
   const legacyThread = conversations.getByBotId(legacyBot.id);
   const legacyAsk = messages.create(legacyThread.id, 'user', 'old question');
   const legacyReply = messages.create(legacyThread.id, 'bot', 'old answer', legacyBot.id);

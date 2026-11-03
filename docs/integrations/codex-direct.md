@@ -5,7 +5,7 @@
 It is installed by default for every runtime connection whose provider is
 `codex`, so a registered direct Codex Agent can discover, read, start, resume,
 observe, and cancel native Codex sessions — including threads created before
-Botmancers — without Agent Deck. Set `BOTMANCERS_CODEX_PROVIDER=off` to not
+Botmancers. Set `BOTMANCERS_CODEX_PROVIDER=off` to not
 install it; `BOTMANCERS_CODEX_BIN` names the `codex` executable (default
 `codex` on `PATH`).
 

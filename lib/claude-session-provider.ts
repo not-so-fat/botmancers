@@ -137,13 +137,12 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-// The environment a turn runs with: the base environment without any Agent
-// Deck variable (the direct provider never routes through a deck), and
-// without any inherited session context (NOT-517): only a context minted
-// for this turn is set, by the launch.
+// The environment a turn runs with: the base environment without any
+// inherited session context (NOT-517): only a context minted for this
+// turn is set, by the launch.
 export function claudeTurnEnv(base: NodeJS.ProcessEnv, sessionContext: string | null = null): NodeJS.ProcessEnv {
   const env = {} as NodeJS.ProcessEnv;
-  for (const [key, value] of Object.entries(withoutSessionContextEnv(base))) if (!/^AGENT_DECK/.test(key) && value !== undefined) env[key] = value;
+  for (const [key, value] of Object.entries(withoutSessionContextEnv(base))) if (value !== undefined) env[key] = value;
   if (sessionContext !== null) env[SESSION_CONTEXT_ENV] = sessionContext;
   return env;
 }

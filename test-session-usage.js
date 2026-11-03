@@ -11,9 +11,9 @@
 //   duplicate terminal results, late results, resume Attempts, partial
 //   samples, explicit zero, and a restart (new connection) reconciling the
 //   same Attempt; pre-launch failures write nothing;
-// - the Agent Deck adapter end to end against the fake run API, and
-//   provider turns through the fake session provider, including malformed
-//   usage that leaves the session result intact;
+// - the direct session-provider adapter end to end against the fake
+//   session provider, and provider turns through the same fake, including
+//   malformed usage that leaves the session result intact;
 // - catalog summaries/details, owner routes, and the service API carry the
 //   normalized summary under existing grants, never the raw breakdown;
 // - Sessions UI helpers and source: compact totals, Partial / Not reported
@@ -161,14 +161,14 @@ function runningRequest(agent, kind = 'implementation', parent = null) {
   return request;
 }
 const completed = (usageValue, extra = {}) => ({
-  status: 'completed', adapter: 'agent-deck-api', externalRunId: `run-${++keyN}`, externalSessionId: null, output: 'ok', artifacts: [],
+  status: 'completed', adapter: 'session-provider', externalRunId: `run-${++keyN}`, externalSessionId: null, output: 'ok', artifacts: [],
   startedAt: Date.now(), finishedAt: Date.now(), failure: null, usage: usageValue, ...extra,
 });
 const samplesOf = attemptId => db.prepare('SELECT * FROM usage_samples WHERE attempt_id = ?').all(attemptId);
 
 function storeFixtures() {
   console.log('\nPersistence: one sample per Attempt (usage_samples)');
-  const agent = bots.create({ name: 'Store', title: 'Implementer', description: 'Store cases', agent: 'claude', deck_id: 'deck-builder' });
+  const agent = bots.create({ name: 'Store', title: 'Implementer', description: 'Store cases', agent: 'claude' });
   const req = runningRequest(agent);
   const attempt = engine.createAttempt(req.id, { kind: 'launch', adapter: 'claude', toolProfile: 'edit', launchSnapshot: {} });
   const reported = completed({ input_tokens: 100, output_tokens: 20, cost_usd: 0.25, source: 'result' });
@@ -252,7 +252,7 @@ function storeFixtures() {
   'detail lists one usage entry per run, without keys or raw breakdown');
 
   console.log('\nDeletion takes the samples with their Attempts');
-  const doomed = bots.create({ name: 'Doomed', title: 'x', description: 'x', agent: 'claude', deck_id: 'deck-builder' });
+  const doomed = bots.create({ name: 'Doomed', title: 'x', description: 'x', agent: 'claude' });
   const dreq = runningRequest(doomed);
   const da = engine.createAttempt(dreq.id, { kind: 'launch', adapter: 'claude', toolProfile: 'edit', launchSnapshot: {} });
   engine.transaction(() => executor.recordAttemptResult(engine, da.id, completed({ input_tokens: 1, output_tokens: 1, cost_usd: 0, source: 'result' })));
@@ -263,48 +263,49 @@ function storeFixtures() {
 }
 
 async function adapterFixtures() {
-  console.log('\nAgent Deck adapter: usage from run events (fake run API)');
-  const deckApi = jiti('./lib/agent-deck-api.ts');
-  const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
-  const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
-  const fake = createFakeAgentDeck({ token: 'adg_NOT_509_fixture_bearer' });
-  process.env.AGENT_DECK_RUN_TOKEN = fake.token;
-  deckApi.setAgentDeckApiFetch(fake.fetch);
-  deckAttempt.setAgentDeckApiPollIntervalForTests(1);
-  const adapter = deckAttempt.createAgentDeckApiAttemptAdapter();
-  const agent = bots.create({ name: 'Decked', title: 'Implementer', description: 'Adapter cases', agent: 'claude', deck_id: 'deck-builder' });
-  async function launch(runtime, script) {
-    fake.onStart = () => ({ result: 'done', ...script });
+  console.log('\nDirect adapter: usage from provider turns (fake session provider)');
+  const spAttempt = jiti('./lib/session-provider-attempt.ts');
+  const contract = jiti('./lib/session-provider.ts');
+  const fake = require('./test-support/fake-session-provider');
+  const statePath = path.join(os.tmpdir(), `botmancers-session-usage-adapter-${process.pid}.json`);
+  fs.rmSync(statePath, { force: true });
+  const connection = dbModule.runtimeConnections.create({ provider: 'claude', label: 'Usage direct', host: 'This computer' });
+  contract.registerSessionProvider({ connectionId: connection.id }, () => fake.createFakeSessionProvider({ statePath }));
+  const adapter = spAttempt.createSessionProviderAttemptAdapter();
+  const agent = bots.create({
+    name: 'Direct', title: 'Implementer', description: 'Adapter cases', agent: 'claude', runtime_connection_id: connection.id,
+    session_scope_kind: 'workspaces', session_scope_items: JSON.stringify(['/tmp/usage-cwd']),
+    policy_mode: 'workspace_write', allow_new_sessions: 1, allow_resume_with_edits: 1,
+  });
+  async function launch(scriptedUsage) {
+    fake.mutateFakeProvider(statePath, state => { state.usageQueue = [scriptedUsage]; });
     const req = runningRequest(agent);
     const prepared = executor.beginAttempt(engine, req.id, {
-      agent: runtime, adapter,
+      agent: 'claude', adapter,
       input: {
-        target: { agentId: agent.id, agent: runtime }, prompt: { kind: 'text', text: 'work' }, cwd: '/tmp/usage-cwd', deck: 'deck-builder',
+        target: { agentId: agent.id, agent: 'claude' }, prompt: { kind: 'text', text: 'work' }, cwd: '/tmp/usage-cwd',
         toolProfile: 'edit', sessionBinding: null, correlation: {},
       },
     });
     const ran = await executor.runAttempt(engine, prepared, adapter);
     return { ran, rows: samplesOf(prepared.attempt.id) };
   }
-  const claudeRun = await launch('claude', { resultFields: { total_cost_usd: 0.0731, usage: { input_tokens: 2048, output_tokens: 512, cache_read_input_tokens: 4096 } } });
+  const claudeRun = await launch({ input_tokens: 2048, output_tokens: 512, total_cost_usd: 0.0731 });
   assert(claudeRun.ran.result.status === 'completed' && claudeRun.rows.length === 1 && claudeRun.rows[0].input_tokens === 2048
-    && claudeRun.rows[0].output_tokens === 512 && claudeRun.rows[0].cost_usd === 0.0731 && claudeRun.rows[0].source === 'result',
-  'Claude: result usage and total_cost_usd recorded as the Attempt\'s sample');
-  const codexRun = await launch('codex', { events: [
-    { type: 'turn.completed', usage: { input_tokens: 800, cached_input_tokens: 200, output_tokens: 90 } },
-  ] });
+    && claudeRun.rows[0].output_tokens === 512 && claudeRun.rows[0].cost_usd === 0.0731 && claudeRun.rows[0].source === 'normalized',
+  'Claude: reported usage and total_cost_usd recorded as the Attempt\'s sample');
+  const codexRun = await launch({ input_tokens: 800, output_tokens: 90 });
   assert(codexRun.ran.result.status === 'completed' && codexRun.rows.length === 1 && codexRun.rows[0].input_tokens === 800
-    && codexRun.rows[0].cost_usd === null && codexRun.rows[0].source === 'codex.turn_completed', 'Codex: turn.completed tokens, cost unknown');
-  const cursorRun = await launch('cursor', { resultFields: { totalCostUsd: 0, usage: { inputTokens: 64, outputTokens: 8 } } });
-  assert(cursorRun.rows[0].cost_usd === 0 && cursorRun.rows[0].input_tokens === 64, 'Cursor: camelCase usage and an explicit $0 cost');
-  const bad = await launch('claude', { resultFields: { total_cost_usd: 'lots', usage: { input_tokens: 'many', output_tokens: -4 } } });
-  assert(bad.ran.result.status === 'completed' && bad.ran.result.output === 'done' && bad.rows.length === 1 && bad.rows[0].source === 'none'
+    && codexRun.rows[0].cost_usd === null && codexRun.rows[0].source === 'normalized', 'Codex: reported tokens, cost unknown (null, never estimated)');
+  const cursorRun = await launch({ input_tokens: 64, output_tokens: 8, total_cost_usd: 0 });
+  assert(cursorRun.rows[0].cost_usd === 0 && cursorRun.rows[0].input_tokens === 64, 'an explicit $0 cost is stored as 0, not NULL');
+  const bad = await launch({ type: 'result', total_cost_usd: 'lots', usage: { input_tokens: 'many', output_tokens: -4 } });
+  assert(bad.ran.result.status === 'completed' && /work/.test(bad.ran.result.output) && bad.rows.length === 1 && bad.rows[0].source === 'none'
     && bad.rows[0].input_tokens === null && bad.rows[0].cost_usd === null, 'malformed usage fails soft: the result stands, usage unknown');
-  const none = await launch('claude', {});
-  assert(none.ran.result.status === 'completed' && none.rows.length === 1 && none.rows[0].source === 'none', 'no usage events: one unknown sample');
-  deckApi.setAgentDeckApiFetch(null);
-  deckAttempt.setAgentDeckApiPollIntervalForTests(null);
-  delete process.env.AGENT_DECK_RUN_TOKEN;
+  const none = await launch(null);
+  assert(none.ran.result.status === 'completed' && none.rows.length === 1 && none.rows[0].source === 'none', 'no usage reported: one unknown sample');
+  contract.clearSessionProviders({ builtins: true });
+  fs.rmSync(statePath, { force: true });
 }
 
 async function providerTurnFixtures() {

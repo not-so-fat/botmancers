@@ -41,7 +41,7 @@ import {
 import { abandonedLocally, beginAttempt, recordAbandonedResult, recordAttemptResult, recordLateResult, runAttempt, type LocallyAbandonedAttempt, type PreparedAttempt } from './attempt-executor';
 import { EngineStoreError, TERMINAL_STATES, type EngineEvent, type WorkAttempt, type WorkRequest, type WorkRequestState } from './engine-store';
 import { ControlError, type AbandonedAttempt, type CancelResult, type ControlActor, type ControlAuthorizer, type EnforcedRequest, type RetryResult } from './work-request-control';
-import type { AttemptEvent, AttemptResult, RunObservation } from './attempt-adapter';
+import type { AttemptResult, RunObservation } from './attempt-adapter';
 import {
   LeaseLostError,
   createDispatcher,
@@ -57,10 +57,9 @@ import {
 import { authorizeWorkRequest } from './execution-policy';
 import { IntakeError, acceptConversationMessage, type AcceptedIntake, type IntakeErrorCode } from './conversation-intake';
 import type { ConversationEventView } from './conversation-projection';
-import { continueAfterFinalization, continueAfterTerminal, pendingCoordinatorWork, resumeBindingFor, turnContext } from './coordinator-loop';
+import { continueAfterTerminal, pendingCoordinatorWork, resumeBindingFor, turnContext } from './coordinator-loop';
 import { decideWakeGrant, retryWake, type GrantDecisionResult, type RoutedWake } from './wake-router';
 import { revokeWakeGrant, type CallerCategory, type WakeGrant } from './wake-safety';
-import { openFinalizationIds, recordAttemptBaseline, recordPreparedEvidence, runFinalization } from './agent-deck-finalization';
 import { ExchangeError, createExchangeStore, hopOf, type CreateExchangeInput, type ExchangeView, type SessionExchange } from './session-exchanges';
 import { serviceRedactor } from './service-redaction';
 import { MESSAGE_KEY_PREFIX, loadServiceGrants } from './service-grants';
@@ -328,9 +327,9 @@ export function currentDispatcher(): Dispatcher {
 }
 
 // Thrown inside a commit transaction to roll it back when the run may
-// still be live: Agent Deck became unreachable while a known run was
-// observed (NOT-468 F7), or a launch POST failed without proving that no
-// run started. The Attempt stays open and reconciliation retries; with no
+// still be live: the runtime became unreachable while a known run was
+// observed (NOT-468 F7), or a launch failed without proving that no run
+// started. The Attempt stays open and reconciliation retries; with no
 // run id that is a same-key re-POST, which returns the run if it exists.
 class DeferCommit extends Error {
   readonly reason: string;
@@ -356,11 +355,6 @@ class DeferCommit extends Error {
 // Once the request is terminal, lib/coordinator-loop routes the reply's
 // Wakes and continues the coordinator; those requests dispatch here too.
 //
-// NOT-487: implementation and revision turns prepare Git finalization; the
-// Attempt's baseline and candidate manifest are persisted with it. A
-// coordinator's accepted finalization decision (recorded by the loop
-// follow-up) is submitted here, and its outcome returns to the coordinator.
-//
 // NOT-469: the claim is a lease (lib/dispatcher). The claim, the Attempt,
 // and its launch intent commit in one transaction before the adapter runs;
 // the terminal commit is fenced by the lease. A request refused for
@@ -375,7 +369,6 @@ async function runDispatch(requestId: string): Promise<void> {
 function afterRequest(requestId: string, released: boolean): void {
   for (const next of continueAfterTerminal(requestId)) void startAgentDispatch(next);
   advanceExchangeOf(requestId);
-  for (const id of openFinalizationIds()) if (!submittedThisProcess.has(id)) void startFinalization(id);
   if (released) drainDeferred();
 }
 
@@ -437,7 +430,6 @@ async function runTurn(requestId: string): Promise<boolean> {
       toolProfile: policy.tool_profile,
       sessionBinding: resume.binding ? { bindingId: resume.binding.id, externalSessionId: resume.binding.external_session_id } : null,
       ...('freshSession' in resume && resume.freshSession ? { freshSession: true } : {}),
-      prepareFinalization: policy.execution_kind === 'implementation' || policy.execution_kind === 'revision',
     });
   } catch (error) {
     unprepared = error instanceof DispatchFailure
@@ -511,7 +503,6 @@ async function runTurn(requestId: string): Promise<boolean> {
         onEvent: event => {
           // The executor has already persisted the run id for 'started'.
           if (event.type === 'started') dispatchFault('after_run_id_persisted', requestId);
-          recordBaselineEvent(lease, attemptId, event);
         },
         // An exchange hop's output is redacted and bounded before it is stored.
         sanitize: result => exchanges.sanitizeHopResult(request, result),
@@ -594,17 +585,6 @@ async function recordExternalCancel(
   });
 }
 
-// Fenced: dropped once the lease is no longer held.
-function recordBaselineEvent(lease: DispatchLease, attemptId: string, event: AttemptEvent): void {
-  if (event.type === 'progress' && event.detail.phase === 'finalization_prepared'
-    && typeof event.detail.baseline_ref === 'string' && typeof event.detail.baseline_digest === 'string') {
-    const baseline = { baselineRef: event.detail.baseline_ref, baselineDigest: event.detail.baseline_digest };
-    engine.transaction(() => {
-      if (dispatcher.holds(lease)) recordAttemptBaseline(attemptId, baseline, event.at);
-    });
-  }
-}
-
 async function withHeartbeat<T>(lease: DispatchLease, fn: () => Promise<T>, controller?: AbortController): Promise<T> {
   const timer = setInterval(() => {
     try {
@@ -651,15 +631,11 @@ function handleUncommitted(lease: DispatchLease, attemptId: string | null, error
 function commitTurn(lease: DispatchLease, request: WorkRequest, attempt: WorkAttempt, result: AttemptResult): { retryAt: number | null } {
   dispatchFault('before_terminal_commit', request.id);
   dispatcher.assertHeld(lease);
-  if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable' && attempt.external_run_id) {
-    throw new DeferCommit('unreachable');
-  }
   if (result.status === 'failed' && result.launchUnconfirmed && !attempt.external_run_id) {
     throw new DeferCommit('launch_unconfirmed');
   }
   const requestId = request.id;
   const now = dispatcher.now();
-  recordPreparedEvidence(request, attempt, result, now);
   const current = engine.getWorkRequest(requestId) ?? request;
   const cancelled = current.cancel_requested_at !== null;
   if (cancelled || (current.deadline_at !== null && now >= current.deadline_at)) {
@@ -830,7 +806,6 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
       if (!(await decided('run', decision, observation, runId))) return;
     }
 
-    const prepare = snapshot.prepare_finalization === true;
     switch (decision.action) {
       case 'defer':
         await controlled(() => dispatcher.defer(lease, decision.reason, attempt.id));
@@ -841,27 +816,21 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
         }));
         return;
       case 'interrupted_attention': {
-        // Keep what the dead run left for the operator, then end the
-        // Attempt interrupted and stop automation (never auto-retry).
-        const evidence = prepare && reconciler && runId ? await reconciler.evidence(runId) : null;
-        const keepEvidence = (finished: WorkAttempt | null | undefined) => {
-          if (evidence && finished) recordPreparedEvidence(request, finished, { finalization: evidence } as AttemptResult);
-        };
+        // End the Attempt interrupted and stop automation (never
+        // auto-retry).
         await controlled(() => {
           // NOT-509: the run existed, its usage is unknown (one sample).
           engine.recordAttemptUsage(attempt.id, { usage: null, observedAt: Date.now() });
-          keepEvidence(engine.finishAttempt(attempt.id, {
-            outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: `Agent Deck run ${runId} died.`,
-          }));
+          engine.finishAttempt(attempt.id, {
+            outcome: 'interrupted', errorCategory: 'interrupted', errorMessage: `The provider run ${runId} died.`,
+          });
           dispatcher.setAttention(lease, { attemptId: attempt.id, reason: decision.reason });
-        }, () => keepEvidence(engine.getAttempt(attempt.id)));
+        });
         return;
       }
       case 'fail':
         await controlled(() => {
-          // NOT-542: local turns refuse with the same decision but their own runtime name.
-          const refusedBy = adapter?.name === 'session-provider' ? 'The session provider' : 'Agent Deck';
-          engine.finishAttempt(attempt.id, { outcome: 'failed', errorCategory: decision.category, errorMessage: `${refusedBy} refused the launch (${decision.code}).` });
+          engine.finishAttempt(attempt.id, { outcome: 'failed', errorCategory: decision.category, errorMessage: `The session provider refused the launch (${decision.code}).` });
           engine.transitionWorkRequest(request.id, {
             from: 'running', to: 'failed', reason: 'retryable', errorCode: 'runtime_failed', errorMessage: 'The agent runtime did not start the turn.',
           });
@@ -898,10 +867,9 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
     await withHeartbeat(lease, async () => {
       const followed = await reconciler.follow(followRunId, {
         resumeSessionId: binding?.external_session_id ?? null,
-        prepareFinalization: prepare,
         deadlineAt: typeof snapshot.deadline_at === 'number' ? snapshot.deadline_at : null,
         signal: controller.signal,
-      }, event => recordBaselineEvent(lease, attempt.id, event));
+      });
       const result = exchanges.sanitizeHopResult(request, followed);
       let abandoned: LocallyAbandonedAttempt | null = null;
       const committed = engine.transaction(() => {
@@ -912,7 +880,6 @@ async function reconcileRequest(lease: DispatchLease): Promise<void> {
           return { retryAt: null };
         }
         dispatcher.assertHeld(lease);
-        if (result.status === 'failed' && result.failure?.code === 'agent_deck_unreachable') throw new DeferCommit('unreachable');
         // A followed run whose cancel the runtime did not accept was only
         // abandoned, exactly as in runAttempt.
         abandoned = adapter ? abandonedLocally(attempt, adapter, controller.signal, result) : null;
@@ -1100,32 +1067,6 @@ export function startAgentDispatch(requestId: string): Promise<void> {
   return promise;
 }
 
-// NOT-487: submits one open finalization (joined when already running),
-// then returns its outcome to the coordinator. A finalization left open by
-// a transport failure stays open for the next recovery pass.
-// Finalizations submitted since this process started. A new decision
-// starts only its own; recoverCoordinatorLoops retries every open one.
-const submittedThisProcess = new Set<string>();
-
-export function startFinalization(finalizationId: string): Promise<void> {
-  const key = `finalization:${finalizationId}`;
-  const running = inFlight.get(key);
-  if (running) return running;
-  submittedThisProcess.add(finalizationId);
-  const promise = runFinalization(finalizationId)
-    .then(row => {
-      if (row && row.state !== 'preparing') for (const next of continueAfterFinalization(row.id)) void startAgentDispatch(next);
-    })
-    .catch(error => {
-      console.error('Finalization failed unexpectedly:', error instanceof Error ? error.message : 'unknown error');
-    })
-    .finally(() => {
-      inFlight.delete(key);
-    });
-  inFlight.set(key, promise);
-  return promise;
-}
-
 // Resolves once no dispatch (including coordinator loop follow-ups it
 // started) is in flight.
 export async function waitForAgentDispatchIdle(): Promise<void> {
@@ -1139,7 +1080,6 @@ export function recoverCoordinatorLoops(): Promise<void> {
     // NOT-469: reconcile open Attempts before anything new is claimed.
     sweepDispatch(),
     ...pendingCoordinatorWork().map(startAgentDispatch),
-    ...openFinalizationIds().map(startFinalization),
     // NOT-497: advance every open exchange from its hops' durable state
     // and dispatch its queued hop (never a failed one again).
     ...recoverExchanges().map(startAgentDispatch),

@@ -203,7 +203,7 @@ export async function runScenario(scenario, { pkg, timeoutMs = 300_000 }) {
     let token = null;
     const stub = await stubServer(scenario, () => token);
     try {
-      const env = { PATH: process.env.PATH, HOME: user, BOTMANCERS_HOME: bmHome, BOTMANCERS_DISABLE_AUTOUPDATER: '1', BOTMANCERS_APP_DIR: join(pkg, 'app'), BOTMANCERS_MCP_PORT: String(stub.port), BOTMANCERS_UI_PORT: '9', BOTMANCERS_AGENT_DECK_URL: 'http://127.0.0.1:9' };
+      const env = { PATH: process.env.PATH, HOME: user, BOTMANCERS_HOME: bmHome, BOTMANCERS_DISABLE_AUTOUPDATER: '1', BOTMANCERS_APP_DIR: join(pkg, 'app'), BOTMANCERS_MCP_PORT: String(stub.port), BOTMANCERS_UI_PORT: '9' };
       const setup = await runProcess(process.execPath, [join(pkg, 'dist', 'cli.js'), 'setup', '--client', 'claude'], { env, cwd: root, timeoutMs: 60_000 });
       if (setup.code !== 0) throw new Error(`setup --client claude failed (${setup.code}): ${setup.stderr}`);
       token = /^BOTMANCERS_MCP_TOKEN=(\S+)$/m.exec(readFileSync(join(bmHome, 'config/bridge.env'), 'utf8'))[1];

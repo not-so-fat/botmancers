@@ -554,10 +554,9 @@ export function createExchangeStore(db: Db, engine: EngineStore) {
     if (!bot) throw new ExchangeError('agent_not_found', `No ${label} Agent ${agentId}.`);
     const resolved = resolveAgent(bot as Parameters<typeof resolveAgent>[0]);
     if (!resolved.launchable) {
-      const why = resolved.launch_blocker === 'launch_profile' ? 'has no launch profile chosen'
+      const why = resolved.launch_blocker === 'connection' ? 'has no runtime connection'
         : resolved.launch_blocker === 'session_scope' ? 'has no session scope'
-          : resolved.launch_blocker === 'direct_runtime' ? 'launches directly, which is not available yet'
-            : 'has no Agent Deck selected';
+          : 'has an unsupported Agent type';
       throw new ExchangeError('agent_unavailable', `The ${label} Agent ${bot.name} ${why}.`);
     }
     return { id: bot.id, name: bot.name, agent: resolved.agent };

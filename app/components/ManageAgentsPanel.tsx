@@ -3,16 +3,15 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import { blockedReasonCopy, type DeleteAgentRef, type DeleteBlocked } from '@/lib/bot-deletion';
-import { botAgentLabel, deckLabel, isMigratedPending, type DeckListState } from '@/lib/bot-runtime-ui';
+import { botAgentLabel, botConnectionLabel } from '@/lib/bot-runtime-ui';
 
 interface ManageRow {
   id: string;
   name: string;
   hidden: number;
   agent?: string | null;
-  deck_id?: string | null;
-  deck_name?: string | null;
-  needs_deck_selection?: boolean | number | null;
+  launchable?: boolean | null;
+  runtime_connection?: { id: string; provider: string; label: string; host: string } | null;
   source_provider: string | null;
   created_at: number;
   last_activity: number | null;
@@ -30,8 +29,7 @@ function formatDate(ts: number): string {
 
 // NOT-459: every agent (hidden included) in one filterable list with
 // bulk selection. Deletion goes through the shared DeleteAgentsDialog.
-export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
-  deckState: DeckListState;
+export default function ManageAgentsPanel({ onClose, onDeleted }: {
   onClose: () => void;
   onDeleted: (deleted: DeleteAgentRef[]) => void;
 }) {
@@ -137,7 +135,7 @@ export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
             {shown.length === 0 ? <li className="delete-copy">No agents match.</li> : null}
             {shown.map(row => {
               const checkboxId = `${titleId}-row-${row.id}`;
-              const deck = isMigratedPending(row) ? 'Not selected' : deckLabel(row.deck_id ?? '', deckState);
+              const connection = botConnectionLabel(row) ?? 'Not set';
               return (
                 <li key={row.id} className={row.blocked ? 'manage-row is-blocked' : 'manage-row'} data-agent-id={row.id}>
                   <input
@@ -155,7 +153,7 @@ export default function ManageAgentsPanel({ deckState, onClose, onDeleted }: {
                     </label>
                     <dl className="manage-meta">
                       <div><dt>Agent</dt><dd>{botAgentLabel(row)}</dd></div>
-                      <div><dt>Agent Deck</dt><dd>{deck}</dd></div>
+                      <div><dt>Connection</dt><dd>{connection}</dd></div>
                       <div><dt>Source</dt><dd>{row.source_provider || 'Created here'}</dd></div>
                       <div><dt>Created</dt><dd>{formatDate(row.created_at)}</dd></div>
                       {row.last_activity ? <div><dt>Last activity</dt><dd>{formatDate(row.last_activity)}</dd></div> : null}

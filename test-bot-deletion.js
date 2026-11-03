@@ -55,7 +55,7 @@ const json = async res => { try { return await res.json(); } catch { return null
 let clock = 1_700_000_000_000;
 function makeBot(name, extra = {}) {
   clock += 1000;
-  return bots.create({ deck_id: 'deck-test', name, title: '', description: '', ...extra }, { created_at: clock });
+  return bots.create({ name, title: '', description: '', ...extra }, { created_at: clock });
 }
 
 const count = (sql, ...args) => sqlite.prepare(sql).get(...args).n;
@@ -236,7 +236,7 @@ async function main() {
   assert(byName('PendingBot').blocked === 'active' && byName('ProcessingBot').blocked === 'active', 'management marks pending and processing agents blocked');
   assert(byName('Keeper').blocked === null, 'idle agent is deletable');
   assert(typeof byName('Survivor').last_activity === 'number' && byName('Keeper').last_activity === null, 'last activity present when available, null otherwise');
-  assert(['agent', 'deck_id', 'source_provider', 'created_at'].every(key => key in byName('Keeper')), 'rows carry Agent, Agent Deck, source, and created date');
+  assert(['agent', 'runtime_connection', 'source_provider', 'created_at'].every(key => key in byName('Keeper')), 'rows carry Agent, runtime connection, source, and created date');
 
   console.log('\nCase 8: no filesystem path is removed');
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-delete-sentinel-'));

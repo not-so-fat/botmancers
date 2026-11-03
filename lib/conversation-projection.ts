@@ -27,12 +27,14 @@
 // Requests backfilled from legacy agent_requests project nothing; their
 // messages remain the readable history.
 //
-// NOT-487: reviewed Git finalization projects from the implementation's
-// own event log (lib/agent-deck-finalization): its candidate manifest as an
-// artifact, then preparing, committed, blocked, failed, or canceled with
-// run/attempt/review linkage and public commit/tree/manifest identifiers.
-// A decision that authorizes nothing projects as finalization_rejected on
-// the coordinator request that carried it.
+// NOT-487/NOT-543: reviewed Git finalization is removed and no new
+// finalization events are written, but the finalization_* kinds still
+// project so pre-cutover history keeps rendering: the implementation's
+// candidate manifest as an artifact, then preparing, committed, blocked,
+// failed, or canceled with run/attempt/review linkage and public
+// commit/tree/manifest identifiers. A decision that authorized nothing
+// projects as finalization_rejected on the coordinator request that
+// carried it.
 //
 // NOT-473: request control projects as its own kinds: cancel requested
 // (the durable intent), cancelled, timed out (failed with reason

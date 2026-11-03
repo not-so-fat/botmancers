@@ -9,6 +9,13 @@
 // starting with `[hold]` stays running until cancelled (or until the
 // observer's signal/deadline ends the wait). Every provider call is logged
 // in state.calls so tests can count them.
+//
+// Acceptance script hooks (all default-off; the engine acceptance suite
+// seeds them through the state file): state.results (a queue of verbatim
+// turn outputs, used in order instead of the echo template),
+// state.holdNext (the next N begun turns stay running until released with
+// releaseFakeTurn or cancelled), state.failStarts + state.startError (the
+// next N startSessions fail with { code, message }).
 'use strict';
 
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS fixture consumed by standalone Node tests. */
@@ -94,7 +101,9 @@ function createFakeSessionProvider(options) {
     const session = state.sessions[turn.session];
     const at = tick(state);
     turn.state = 'completed';
-    turn.output = `fake reply #${state.counter}: ${turn.prompt}`;
+    turn.output = turn.output ?? (Array.isArray(state.results) && state.results.length > 0
+      ? state.results.shift()
+      : `fake reply #${state.counter}: ${turn.prompt}`);
     turn.finished_at = at;
     session.busy = false;
     session.updated_at = at;
@@ -111,6 +120,10 @@ function createFakeSessionProvider(options) {
     session.updated_at = at;
     session.transcript.push({ seq: session.transcript.length + 1, role: 'user', text: input.prompt, at });
     state.turns[id] = { id, session: sessionId, prompt: input.prompt, authority: input.authority, state: 'running', output: null, finished_at: null, correlation: input.correlation };
+    if (typeof state.holdNext === 'number' && state.holdNext > 0) {
+      state.holdNext -= 1;
+      state.turns[id].held = true;
+    }
     // NOT-509 usage hook: the next queued value is this turn's reported
     // usage verbatim (normalized, Codex/Claude event shapes, or malformed).
     if (Array.isArray(state.usageQueue) && state.usageQueue.length > 0) state.turns[id].usage = state.usageQueue.shift();
@@ -170,6 +183,11 @@ function createFakeSessionProvider(options) {
     async startSession(input) {
       return withState(state => {
         call(state, 'startSession', { authority: input.authority, workspace: input.workspace });
+        if (typeof state.failStarts === 'number' && state.failStarts > 0) {
+          state.failStarts -= 1;
+          const failure = state.startError ?? { code: 'unavailable', message: 'provider unavailable' };
+          return err(failure.code ?? 'unavailable', failure.message ?? 'provider unavailable');
+        }
         const existing = state.keys[input.idempotency_key];
         if (existing) return ok({ provider_turn_id: existing, provider_session_id: state.turns[existing].session });
         const at = tick(state);
@@ -208,7 +226,7 @@ function createFakeSessionProvider(options) {
       const step = () => withState(state => {
         const turn = state.turns[input.provider_turn_id];
         if (!turn) return err('not_found', 'no such turn');
-        if (turn.state === 'running' && !turn.prompt.startsWith('[hold]')) finishTurn(state, turn.id);
+        if (turn.state === 'running' && !turn.held && !turn.prompt.startsWith('[hold]')) finishTurn(state, turn.id);
         return turn.state === 'running' ? null : ok(view(turn));
       });
       mutateFakeProvider(statePath, state => call(state, 'observeTurn'));
@@ -241,4 +259,19 @@ function providerCalls(statePath, op) {
   return op ? calls.filter(entry => entry.op === op).length : calls.length;
 }
 
-module.exports = { BASE, FULL_CAPABILITIES, createFakeSessionProvider, seedFakeProvider, mutateFakeProvider, providerCalls, loadFakeState: load };
+// Releases one held turn: it finishes with the given verbatim output (or
+// the next queued result) on its next observe.
+function releaseFakeTurn(statePath, turnId, result = null) {
+  mutateFakeProvider(statePath, state => {
+    const turn = state.turns[turnId];
+    if (!turn || turn.state !== 'running') return;
+    turn.held = false;
+    if (result !== null) turn.output = result;
+  });
+}
+
+function fakeTurnIds(statePath) {
+  return Object.keys(load(statePath).turns);
+}
+
+module.exports = { BASE, FULL_CAPABILITIES, createFakeSessionProvider, fakeTurnIds, mutateFakeProvider, providerCalls, releaseFakeTurn, seedFakeProvider, loadFakeState: load };

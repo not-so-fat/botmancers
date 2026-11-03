@@ -1,9 +1,9 @@
 // NOT-476: one Botmancers worker process of the restart-recovery scenario.
 // Runs inside the scenario's harness root (inherited isolated environment)
-// against the scenario's fake Agent Deck over loopback HTTP.
+// against the scenario's scripted providers (shared state files).
 //
 //   ROLE=crash    accepts one message and exits abruptly right after the
-//                 Agent Deck run id is persisted (a crash mid-run)
+//                 provider turn id is persisted (a crash mid-turn)
 //   ROLE=recover  a fresh process: startup recovery, then idle
 'use strict';
 
@@ -14,7 +14,8 @@ const { createContext } = require('./engine-context.js');
 const CRASH_EXIT_CODE = 70; // checked by the restart-recovery scenario
 
 async function main() {
-  const ctx = createContext(`restart-${process.env.BOTMANCERS_RESTART_ROLE}`, { remoteDeck: true });
+  const ctx = createContext(`restart-${process.env.BOTMANCERS_RESTART_ROLE}`);
+  ctx.registerProvidersFromManifest(ctx.bots.getAll());
   if (process.env.BOTMANCERS_RESTART_ROLE === 'crash') {
     ctx.lib('dispatcher.ts').setDispatchFaultHook(point => {
       if (point === 'after_run_id_persisted') process.exit(CRASH_EXIT_CODE);

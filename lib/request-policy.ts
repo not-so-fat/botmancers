@@ -114,9 +114,10 @@ export function storedRetryPolicy(raw: string | null | undefined): RetryPolicy {
 
 export type FailureDisposition = 'retryable' | 'terminal' | 'manual_attention';
 
-// Agent Deck API codes that need an operator (token or grant), whatever
-// the adapter category.
-const MANUAL_CODES = ['agent_deck_token_missing', 'agent_deck_unauthorized', 'agent_deck_forbidden'];
+// Direct provider and registry codes that need an operator (install or
+// sign in the CLI, fix permissions, wait out a limit), whatever the
+// adapter category.
+const MANUAL_CODES = ['unavailable', 'provider_unavailable', 'agent_not_found', 'auth_required', 'permission_denied', 'incompatible_version', 'usage_limit'];
 
 const DISPOSITION: Record<AttemptFailureCategory, FailureDisposition> = {
   unavailable: 'retryable',
