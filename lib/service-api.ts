@@ -21,8 +21,8 @@
 // Every service here reads the canonical stores and writes only through
 // them; nothing is copied. A target outside the caller's grants is refused
 // with exactly the error (code and message) of a target that does not
-// exist. A view never carries a provider session or run id, a Deck
-// credential or selection, a working directory, or a tool profile choice.
+// exist. A view never carries a provider session or run id, a working
+// directory, or a tool profile choice.
 import { createHash, randomUUID } from 'crypto';
 import db, { bots, type Bot, type Principal, type PrincipalKind } from './db';
 import { resolveAgent } from './bot-definition';
@@ -386,7 +386,7 @@ export function getServiceAgent(ctx: ServiceContext, agentId: string): ServiceAg
 
 // ---------------------------------------------------------------------
 // Sessions (lib/session-catalog). The catalog already omits the provider
-// session id; the launch context (working directory, Deck) is dropped too.
+// session id; the launch context (working directory) is dropped too.
 
 export interface ServiceSessionView {
   ref: string;
@@ -474,8 +474,8 @@ export function getServiceSession(
 // participates, every Agent participant is granted conversations:read to
 // the caller, and no other service participates (one service never reads
 // another's conversation). Provider session and run ids, working
-// directories, Deck selections, and credentials the runtime may have
-// echoed into a message are redacted.
+// directories, and credentials the runtime may have echoed into a message
+// are redacted.
 
 export const MESSAGE_CONTENT_LIMIT = 16000;
 
@@ -617,9 +617,11 @@ function senderOf(row: MessageRow, conversation: { origin_kind: PrincipalKind | 
 
 // ---------------------------------------------------------------------
 // Input: only the documented fields. A field that asks for authority the
-// engine owns (runtime, Deck, model, tool profile, provider session,
-// grants, principal) is refused as authority_not_allowed; any other
-// unknown field is invalid_request. Both before anything is written.
+// engine owns (runtime, model, tool profile, provider session, grants,
+// principal) is refused as authority_not_allowed; any other unknown field
+// is invalid_request. Both before anything is written. The retired deck_*
+// keys stay refused here so an old caller fails closed instead of running
+// with a silently dropped selection.
 
 export const AUTHORITY_FIELDS = [
   'deck', 'deck_id', 'deckId', 'deck_name', 'runtime', 'agent', 'adapter', 'transport', 'model',
@@ -710,8 +712,8 @@ function createThroughStore(
 // ---------------------------------------------------------------------
 // Same-Agent session messaging: one read-only conversation turn on exactly
 // the referenced active binding, under its owning Agent, as an Ask exchange
-// (lib/session-exchanges). The Deck, runtime, and tool profile come from
-// the binding and the Agent's stored configuration; the caller sends only
+// (lib/session-exchanges). The runtime and tool profile come from the
+// binding and the Agent's stored configuration; the caller sends only
 // content and an idempotency key. The turn's question and answer appear in
 // one conversation the service owns per session (opened on the first
 // message), which the caller polls through /api/v0/conversations and

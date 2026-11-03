@@ -237,10 +237,12 @@ if (!botColumns.some(column => column.name === 'deck_name')) {
 if (!botColumns.some(column => column.name === 'working_directory')) {
   db.exec('ALTER TABLE bots ADD COLUMN working_directory TEXT');
 }
-// NOT-442 single-runtime columns. Since NOT-456, runtime/agent_client/
+// NOT-442 single-runtime columns. Since NOT-543, runtime/agent_client/
 // needs_deck_reselection are legacy migration inputs only (like
 // persistent_runtime/coding_runtime): nothing reads them for dispatch or
-// serialization and no new write sets them. deck_id stays live.
+// serialization and no new write sets them. The NOT-456 deck columns
+// (deck_id, deck_name, working_directory, needs_deck_selection) are
+// removed the same way; only the agent column stays live.
 if (!botColumns.some(column => column.name === 'runtime')) {
   db.exec('ALTER TABLE bots ADD COLUMN runtime TEXT');
 }

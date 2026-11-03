@@ -23,7 +23,7 @@
 //
 // The caller chooses no runtime authority. start_task takes only a
 // coordinator name from the operator's allowlist (BOTMANCERS_MCP_COORDINATORS),
-// an objective, and an idempotency key; any other field (runtime, deck,
+// an objective, and an idempotency key; any other field (runtime,
 // model, tool profile, grant, target, principal, ...) is refused before
 // anything is written. The accepted message is a direct read-only
 // conversation turn; implementation or review work exists only if the
