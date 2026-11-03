@@ -14,7 +14,8 @@
 // - unknown kinds, unsupported authority, and malformed snapshots fail
 //   before any adapter call, with the reason persisted;
 // - the composite implement/review/resume path is removed (NOT-477).
-// Self-contained: isolated SQLite file, fake Agent Deck public API, no network.
+// Self-contained: isolated SQLite file, scripted in-process direct
+// SessionProviders (one per runtime connection), no network.
 'use strict';
 
 const fs = require('fs');
@@ -53,40 +54,70 @@ const db = jiti('./lib/db.ts');
 const policy = jiti('./lib/execution-policy.ts');
 const router = jiti('./lib/wake-router.ts');
 const conversationsApi = jiti('./lib/agent-conversations.ts');
-const deckRun = jiti('./lib/agent-deck-run.ts');
-const deckApi = jiti('./lib/agent-deck-api.ts');
-const deckAttempt = jiti('./lib/agent-deck-attempt.ts');
+const providerContract = jiti('./lib/session-provider.ts');
 const agent = jiti('./lib/agent.ts');
 const uiRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
+const fake = require('./test-support/fake-session-provider.js');
 const raw = db.default;
 const { bots, conversations, messages, engine } = db;
 
-// Fake Agent Deck API: every canonical launch is recorded. The legacy CLI
-// seam counts fallback and must stay unused.
+// Direct providers: one scripted fake per runtime connection (local
+// connections are one per agent type). Every canonical launch is recorded
+// as { agent, kind, authority }: kind start (fresh) or send (resume).
 let launches = [];
-const { createFakeAgentDeck } = require('./test-support/fake-agent-deck-api.js');
-const fakeDeck = createFakeAgentDeck();
-process.env.AGENT_DECK_RUN_TOKEN = fakeDeck.token;
-deckApi.setAgentDeckApiFetch(fakeDeck.fetch);
-deckAttempt.setAgentDeckApiPollIntervalForTests(1);
-fakeDeck.onStart = body => {
-  launches.push([
-    '--tools', body.tools, '--client', body.client,
-    ...(body.resumeSessionId ? ['--resume', body.resumeSessionId] : []),
-  ]);
-  return { result: `output ${launches.length}` };
-};
-let cliSpawns = 0;
-deckRun.setDeckRunProcess(async argv => {
-  cliSpawns += 1;
-  return { stdout: '', stderr: `unexpected CLI fallback: ${argv.join(' ')}`, exitCode: 1 };
-});
+const providerStates = new Map();
+const registeredConnections = new Set();
+function registerDirectProvider(agentType) {
+  const connectionId = db.runtimeConnections.ensureLocal(agentType);
+  if (registeredConnections.has(connectionId)) return connectionId;
+  registeredConnections.add(connectionId);
+  const statePath = path.join(os.tmpdir(), `botmancers-exec-policy-${agentType}-${process.pid}.json`);
+  fs.rmSync(statePath, { force: true });
+  providerStates.set(agentType, statePath);
+  primeResults(agentType);
+  providerContract.registerSessionProvider({ connectionId }, () => {
+    const inner = fake.createFakeSessionProvider({ statePath, kind: `exec-${agentType}` });
+    return {
+      ...inner,
+      startSession: async input => {
+        launches.push({ agent: agentType, kind: 'start', authority: input.authority });
+        return inner.startSession(input);
+      },
+      sendTurn: async input => {
+        launches.push({ agent: agentType, kind: 'send', authority: input.authority });
+        return inner.sendTurn(input);
+      },
+    };
+  });
+  return connectionId;
+}
+function queueResults(agentType, ...results) {
+  fake.mutateFakeProvider(providerStates.get(agentType), state => { state.results = [...(state.results ?? []), ...results]; });
+}
+// Benign verbatim outputs so no turn falls back to the echo reply (an
+// echoed Wake block would route a second Wake, which this suite never
+// intends). Primed far beyond the turns each connection runs.
+function primeResults(agentType, count = 50) {
+  fake.mutateFakeProvider(providerStates.get(agentType), state => {
+    const have = state.results ?? [];
+    state.results = [...have, ...Array.from({ length: Math.max(0, count - have.length) }, () => `ok ${agentType} turn`)];
+  });
+}
+function queueNext(agentType, result) {
+  fake.mutateFakeProvider(providerStates.get(agentType), state => { state.results = [result, ...(state.results ?? [])]; });
+}
+function makeCodingBot(name, agentType, { policyMode = 'read_only' } = {}) {
+  const created = bots.create({ name, title: 'Coder', description: 'Codes.', agent: agentType });
+  db.bots.updateRegistration(created.id, agentType, {
+    runtime_connection_id: registerDirectProvider(agentType),
+    session_scope: { kind: 'workspaces', workspaces: [workdir], sessions: [] },
+    default_workspace: workdir,
+    policy: { mode: policyMode, allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
+  return bots.getById(created.id);
+}
 router.setWakeAvailabilityProbe(() => ({ available: true }));
-
-const flag = (argv, name) => {
-  const i = argv.indexOf(name);
-  return i >= 0 ? argv[i + 1] : null;
-};
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitFor(check, label, ms = 5000) {
   const until = Date.now() + ms;
@@ -110,7 +141,7 @@ const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-execution-poli
 const CODING_AGENTS = ['cursor', 'claude', 'codex', 'muse'];
 
 async function main() {
-  console.log('NOT-471 execution policy test (isolated DB, fake agent-deck)');
+  console.log('NOT-471 execution policy test (isolated DB, scripted direct providers)');
 
   // ---------------------------------------------------------------
   console.log('\nCentral kind -> tool profile map');
@@ -190,7 +221,7 @@ async function main() {
 
   // ---------------------------------------------------------------
   console.log('\nCanonical request creation persists one validated policy');
-  const host = bots.create({ name: 'Host', title: 'Host', description: 'Owns the store fixtures.', agent: 'codex', deck_id: 'deck-x', working_directory: workdir });
+  const host = makeCodingBot('Host', 'codex');
   const hostConv = conversations.getByBotId(host.id);
   const hostMsg = messages.create(hostConv.id, 'user', 'fixture');
   const base = {
@@ -227,7 +258,7 @@ async function main() {
     ['envelope-shaped', block({ version: 1, target: 'self', executionKind: 'implementation', objective: 'edit everything' })],
   ];
   for (const agentType of CODING_AGENTS) {
-    const bot = bots.create({ name: `Api-${agentType}`, title: 'Coder', description: 'Codes.', agent: agentType, deck_id: 'deck-x', working_directory: workdir });
+    const bot = makeCodingBot(`Api-${agentType}`, agentType);
     for (const [label, content] of DIRECT) {
       launches = [];
       const { accepted, dispatched } = conversationsApi.acceptAgentMessage(owner, { agentId: bot.id, content, idempotencyKey: `api-${agentType}-${label}` });
@@ -240,8 +271,8 @@ async function main() {
       `${agentType}/${label}: one conversation Work Request, read-only, direct-message rule`);
       assert(request.state === 'completed' && attempts.length === 1 && attempts[0].tool_profile === 'readonly' && attempts[0].kind === 'launch',
         `${agentType}/${label}: exactly one read-only launch Attempt, completed`);
-      assert(launches.length === 1 && flag(launches[0], '--tools') === 'readonly' && flag(launches[0], '--client') === agentType && !launches[0].includes('--resume'),
-        `${agentType}/${label}: one adapter launch with --tools readonly, no resume`);
+      assert(launches.length === 1 && launches[0].authority === 'read_only' && launches[0].agent === agentType && launches[0].kind === 'start',
+        `${agentType}/${label}: one direct start with read_only authority, no resume`);
       assert(raw.prepare('SELECT COUNT(*) AS n FROM work_requests WHERE parent_request_id = ?').get(request.id).n === 0,
         `${agentType}/${label}: no review or resume child requests`);
     }
@@ -249,9 +280,10 @@ async function main() {
 
   console.log('\nDirect UI message to every coding Agent: canonical dispatch, never the composite');
   for (const agentType of CODING_AGENTS) {
-    const bot = bots.create({ name: `Ui-${agentType}`, title: 'Coder', description: 'Codes.', agent: agentType, deck_id: 'deck-x', working_directory: workdir });
+    const bot = makeCodingBot(`Ui-${agentType}`, agentType);
     const conv = conversations.getByBotId(bot.id);
     launches = [];
+    queueNext(agentType, 'output 1');
     const response = await uiRoute.POST(
       new Request(`http://localhost/api/conversations/${conv.id}/messages`, {
         method: 'POST',
@@ -270,8 +302,8 @@ async function main() {
     assert(response.status === 200 && requestsIn(conv.id).length === 1 && request.tool_profile === 'readonly' && storedPolicy(request).entry_point === 'ui',
       `${agentType}: UI message creates one read-only Work Request`);
     assert(attempts.length === 1 && attempts[0].tool_profile === 'readonly', `${agentType}: exactly one read-only Attempt`);
-    assert(launches.length === 1 && flag(launches[0], '--tools') === 'readonly' && !launches[0].includes('--resume'),
-      `${agentType}: one readonly launch, no resume (got ${launches.map(a => flag(a, '--tools')).join(',')})`);
+    assert(launches.length === 1 && launches[0].authority === 'read_only' && launches[0].kind === 'start',
+      `${agentType}: one readonly start, no resume (got ${launches.map(l => l.authority).join(',')})`);
     assert(thread.length === 1 && thread[0].content === 'output 1' && !thread.some(m => /^\[Deck (handoff|review|resume|result)\]/.test(m.content)),
       `${agentType}: one reply, no composite observations`);
   }
@@ -279,17 +311,15 @@ async function main() {
   console.log('\nComposite path: retired (code reference)');
   const agentSource = fs.readFileSync(path.join(ROOT, 'lib/agent.ts'), 'utf8');
   const conversationsSource = fs.readFileSync(path.join(ROOT, 'lib/agent-conversations.ts'), 'utf8');
-  const deckSource = fs.readFileSync(path.join(ROOT, 'lib/agent-deck-run.ts'), 'utf8');
-  assert(![agentSource, conversationsSource, deckSource].some(source => source.includes('delegateCodingViaDeck') || source.includes('runCompositeCompatibility')),
+  assert(![agentSource, conversationsSource].some(source => source.includes('delegateCodingViaDeck') || source.includes('runCompositeCompatibility')),
     'NOT-477: no engine module defines or reaches the composite implement/review/resume helper');
-  assert(deckRun.delegateCodingViaDeck === undefined && deckRun.DECK_DELEGATION_PHASE_TOOLS === undefined && deckRun.runCompositeCompatibility === undefined,
-    'NOT-477: lib/agent-deck-run exports no composite helper or phase table');
+  assert(!fs.existsSync(path.join(ROOT, 'lib/agent-deck-run.ts')), 'NOT-543: lib/agent-deck-run.ts is removed (no composite fallback to inspect)');
 
   // ---------------------------------------------------------------
   console.log('\nWake fixtures: edit only for explicit implementation or revision');
-  const tank = bots.create({ name: 'Tank', title: 'Coordinator', description: 'Coordinates.', agent: 'codex', deck_id: 'deck-x', working_directory: workdir });
-  const dev = bots.create({ name: 'Dev', title: 'Developer', description: 'Implements.', agent: 'claude', deck_id: 'deck-x', working_directory: workdir });
-  bots.create({ name: 'Rev', title: 'Reviewer', description: 'Reviews.', agent: 'cursor', deck_id: 'deck-x', working_directory: workdir });
+  const tank = makeCodingBot('Tank', 'codex');
+  const dev = makeCodingBot('Dev', 'claude', { policyMode: 'workspace_write' });
+  makeCodingBot('Rev', 'cursor');
   const tankConv = conversations.getByBotId(tank.id);
   // NOT-475: Wakes route from a tracked turn: each sender's own direct
   // owner message in this conversation. The owner already allowed Tank's
@@ -356,9 +386,10 @@ async function main() {
     await conversationsApi.waitForAgentDispatchIdle();
     for (const id of parked) park.run(null, id);
     const attempts = engine.listAttempts(routed.request.id);
-    assert(launches.length >= 1 && flag(launches[0], '--tools') === profile && attempts.length === 1 && attempts[0].tool_profile === profile,
-      `${label}: one Attempt launched with --tools ${profile}`);
-    assert(launches.slice(1).every(argv => flag(argv, '--tools') === 'readonly'), `${label}: follow-up turns are read-only`);
+    const authority = profile === 'edit' ? 'workspace_write' : 'read_only';
+    assert(launches.length >= 1 && launches[0].authority === authority && attempts.length === 1 && attempts[0].tool_profile === profile,
+      `${label}: one Attempt launched with ${authority} authority`);
+    assert(launches.slice(1).every(launch => launch.authority === 'read_only'), `${label}: follow-up turns are read-only`);
   }
 
   // ---------------------------------------------------------------
@@ -402,11 +433,6 @@ async function main() {
       'a store-created request without a selected policy never launches');
   }
 
-  deckRun.setDeckRunProcess(null);
-  deckApi.setAgentDeckApiFetch(null);
-  deckAttempt.setAgentDeckApiPollIntervalForTests(null);
-  delete process.env.AGENT_DECK_RUN_TOKEN;
-  assert(cliSpawns === 0, 'canonical policy dispatch spawned zero Agent Deck CLI processes');
   router.setWakeAvailabilityProbe(null);
   console.log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
   return failures === 0;
@@ -418,6 +444,9 @@ main()
       try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* best effort */ }
     }
     try { fs.rmSync(workdir, { recursive: true, force: true }); } catch { /* best effort */ }
+    for (const statePath of providerStates.values()) {
+      try { fs.rmSync(statePath, { force: true }); } catch { /* best effort */ }
+    }
     process.exit(ok ? 0 : 1);
   })
   .catch(error => {
