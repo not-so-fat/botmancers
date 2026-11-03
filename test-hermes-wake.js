@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 // NOT-413 Hermes gateway wake path plus NOT-442 single runtime
 // (one gateway for Hermes bots; ordinary turns dispatch directly through
-// the bot's own stored runtime with no DECK directive).
+// the bot's own stored runtime connection with no DECK directive).
 //
-// Self-contained: isolated SQLite file, stub gateway HTTP server on an
-// ephemeral port, deterministic caller stub at the model-call boundary.
-// No dev server, no API key, no network beyond loopback.
+// Self-contained: isolated SQLite file, stub gateway fetch interceptor,
+// deterministic caller stub at the model-call boundary, and a scripted
+// in-process direct SessionProvider for the coding turn. No dev server,
+// no API key, no network.
 //
 // Covers: session header sent, two pokes overlap in time, failed poke marks
 // the queue row failed and logs wait_failed, Stop aborts, missing or
 // unreachable Hermes configuration posts a visible Hermes error with no
 // hidden fallback turn, a newly created bot defaults to Hermes for
 // its ordinary turn with a stable per-bot session id, a delegated coding
-// run stays a separate Agent Deck session, reply appears once per thread,
-// a paraphrased wake message also works, and an explicit per-bot profile
-// routes to /p/<profile>/.... Bots without an explicit profile use the
-// root chat path; profiles are never derived from name, title or role.
+// run stays a separate direct provider session, reply appears once per
+// thread, a paraphrased wake message also works, and an explicit per-bot
+// profile routes to /p/<profile>/.... Bots without an explicit profile use
+// the root chat path; profiles are never derived from name, title or role.
 'use strict';
 
 const fs = require('fs');
@@ -43,7 +44,9 @@ const hermes = jiti('./lib/hermes.ts');
 
 const { bots, conversations, messages, launchSnapshots } = db;
 const { uiTurns } = jiti('./lib/ui-turns.ts');
-const deckRun = jiti('./lib/agent-deck-run.ts');
+const providerContract = jiti('./lib/session-provider.ts');
+const fake = require('./test-support/fake-session-provider.js');
+const providerTurns = () => db.default.prepare('SELECT COUNT(*) AS n FROM provider_session_turns').get().n;
 
 let failures = 0;
 
@@ -189,10 +192,10 @@ async function main() {
   log(`Wait log: ${WAIT_LOG}`);
   agent.resetDelegationForTests();
 
-  const origin = bots.create({ deck_id: 'deck-test', name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
-  const botA = bots.create({ deck_id: 'deck-test', name: 'A', title: 'Drafter', description: 'Drafts.' });
-  const botB = bots.create({ deck_id: 'deck-test', name: 'B', title: 'Checker', description: 'Checks drafts.' });
-  const chief = bots.create({ deck_id: 'deck-test', name: 'Chief', title: 'Chief of staff', description: 'Coordinates.', hermes_profile: 'cos' });
+  const origin = bots.create({ name: 'Origin', title: 'Caller', description: 'Originates delegations.' });
+  const botA = bots.create({ name: 'A', title: 'Drafter', description: 'Drafts.' });
+  const botB = bots.create({ name: 'B', title: 'Checker', description: 'Checks drafts.' });
+  const chief = bots.create({ name: 'Chief', title: 'Chief of staff', description: 'Coordinates.', hermes_profile: 'cos' });
   const conv = conversations.getByBotId(origin.id);
   const convA = conversations.getByBotId(botA.id);
   const convB = conversations.getByBotId(botB.id);
@@ -361,7 +364,7 @@ async function main() {
   // error, with zero gateway requests.
   log('\nScenario 4: Hermes failure fixtures (absent and unreachable), no fallback');
   agent.setDelegationChatStub(null);
-  const failBot = bots.create({ deck_id: 'deck-test', name: 'FailBot', title: 'Failure probe', description: 'Probes Hermes failure behavior.' });
+  const failBot = bots.create({ name: 'FailBot', title: 'Failure probe', description: 'Probes Hermes failure behavior.' });
   const failConv = conversations.getByBotId(failBot.id);
   assert(!!failConv, 'failure-probe thread exists');
 
@@ -508,7 +511,7 @@ async function main() {
   agent.setDelegationChatStub(null);
   process.env.HERMES_API_SERVER_KEY = 'test-key';
   process.env.HERMES_BASE_URL = gateway.baseUrl;
-  const solo = bots.create({ deck_id: 'deck-test', name: 'Solo', title: 'Soloist', description: 'Answers directly.', agent: 'hermes' });
+  const solo = bots.create({ name: 'Solo', title: 'Soloist', description: 'Answers directly.', agent: 'hermes' });
   const soloReadBack = bots.getById(solo.id);
   assert(
     soloReadBack.agent === 'hermes' && agent.agentForBot(soloReadBack) === 'hermes',
@@ -602,20 +605,16 @@ async function main() {
 
   // Scenario 10 (NOT-442): direct dispatch. An ordinary message to a
   // Hermes bot uses the existing Hermes session, while an ordinary
-  // message to an Agent Deck bot launches the stored agent/deck/workdir
+  // message to a coding bot launches its stored runtime connection
   // directly without waiting for or parsing a DECK directive. Each case
   // proves the opposite adapter was not invoked.
   log('\nScenario 10: ordinary Hermes message uses the Hermes session directly');
   gateway.state.requests.length = 0;
-  let deckCallsDuringHermes = 0;
-  deckRun.setDeckRunProcess(async argv => {
-    deckCallsDuringHermes += 1;
-    return { stdout: '', stderr: 'must not launch deck for Hermes turn', exitCode: 1 };
-  });
+  const providerTurnsBeforeHermes = providerTurns();
   agent.setDelegationChatStub(null);
   process.env.HERMES_API_SERVER_KEY = 'test-key';
   process.env.HERMES_BASE_URL = gateway.baseUrl;
-  const hermesDirect = bots.create({ deck_id: 'deck-test',
+  const hermesDirect = bots.create({
     name: 'HermesDirect', title: 'HermesDirect', description: 'Answers directly.',
     agent: 'hermes',
   });
@@ -631,82 +630,70 @@ async function main() {
     'Hermes direct-dispatch assertion: ordinary Hermes message uses the existing Hermes session'
   );
   assert(
-    deckCallsDuringHermes === 0,
-    'Hermes direct-dispatch assertion: opposite adapter (agent-deck) was not invoked'
+    providerTurns() === providerTurnsBeforeHermes,
+    'Hermes direct-dispatch assertion: opposite adapter (session-provider) was not invoked'
   );
-  deckRun.setDeckRunProcess(null);
 
-  log('\nScenario 11: ordinary Agent Deck message launches the stored deck directly');
+  log('\nScenario 11: ordinary coding message launches the stored registration directly');
   agent.setDelegationChatStub(() => {
-    throw new Error('Hermes adapter must not run for an agent-deck turn');
+    throw new Error('Hermes adapter must not run for a direct coding turn');
   });
-  const deckWorkdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-hermes-deck-cwd-'));
-  let launchedArgv = null;
-  let deckRuns = 0;
-  deckRun.setDeckRunProcess(async argv => {
-    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'status') {
-      const runId = argv[3];
-      const sessionId = String(runId).endsWith('-2') ? `ses-for-${runId}` : 'ses-deck-impl';
-      return {
-        stdout: JSON.stringify({
-          runId, deck: 'stored-deck-id', client: 'codex', state: 'ended', sessionId,
-          startedAt: '2026-10-12T00:00:00.000Z', lastLogTs: '2026-10-12T00:01:00.000Z',
-          logPath: `/tmp/fake-deck/${runId}/run.jsonl`,
-        }),
-        stderr: '', exitCode: 0,
-      };
-    }
-    if (argv[0] === 'agent-deck' && argv[1] === 'run' && argv[2] === 'log') {
-      const runId = argv[3];
-      const lines = [
-        JSON.stringify({ t: 'text', ts: '2026-10-12T00:00:30.000Z', text: 'working' }),
-        JSON.stringify({ t: 'result', sessionId: `ses-for-${runId}`, subtype: 'success', result: `output of ${runId}` }),
-        JSON.stringify({ t: 'end', sessionId: `ses-for-${runId}` }),
-      ].join('\n') + '\n';
-      return { stdout: lines, stderr: '', exitCode: 0 };
-    }
-    if (argv[0] === 'agent-deck' && argv[1] === 'run') {
-      deckRuns += 1;
-      if (!launchedArgv) launchedArgv = argv.slice();
-      const runId = `run-hermes-${deckRuns}`;
-      return { stdout: `run ${runId} detached: pid 4242 log /tmp/fake-deck/${runId}/run.jsonl\n`, stderr: '', exitCode: 0 };
-    }
-    return { stdout: '', stderr: `unexpected command: ${argv.join(' ')}`, exitCode: 1 };
-  });
+  const coderWorkdir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-hermes-coder-cwd-'));
+  const coderState = path.join(os.tmpdir(), `botmancers-hermes-coder-provider-${process.pid}.json`);
+  fs.rmSync(coderState, { force: true });
+  const coderLaunches = [];
   const coder = bots.create({
     name: 'Coder', title: 'Coder', description: 'Launches directly.',
-    agent: 'codex', deck_id: 'stored-deck-id', working_directory: deckWorkdir,
+    agent: 'codex',
   });
+  const coderConnection = db.runtimeConnections.ensureLocal('codex');
+  db.bots.updateRegistration(coder.id, 'codex', {
+    runtime_connection_id: coderConnection,
+    session_scope: { kind: 'workspaces', workspaces: [coderWorkdir], sessions: [] },
+    default_workspace: coderWorkdir,
+    policy: { mode: 'read_only', allow_new_sessions: true, allow_resume_with_edits: false },
+    home_session_id: null,
+  });
+  providerContract.registerSessionProvider({ connectionId: coderConnection }, () => {
+    const inner = fake.createFakeSessionProvider({ statePath: coderState, kind: 'hermes-coder' });
+    return {
+      ...inner,
+      startSession: async input => {
+        coderLaunches.push({ kind: 'start', authority: input.authority, workspace: input.workspace });
+        return inner.startSession(input);
+      },
+      sendTurn: async input => {
+        coderLaunches.push({ kind: 'send', authority: input.authority });
+        return inner.sendTurn(input);
+      },
+    };
+  });
+  fake.mutateFakeProvider(coderState, state => { state.results = ['output of the direct turn']; });
   const coderConv = conversations.getByBotId(coder.id);
   assert(!!coderConv, 'coder thread exists');
   gateway.state.requests.length = 0;
-  const gatewayBeforeDeck = gateway.state.requests.length;
+  const gatewayBeforeDirect = gateway.state.requests.length;
   const user10 = messages.create(coderConv.id, 'user', 'Build the widget.');
   uiTurns.enqueue(coderConv.id, coder.id);
   await drain();
-  deckRun.setDeckRunProcess(null);
   agent.setDelegationChatStub(null);
   const thread10 = messages.getByConversation(coderConv.id);
-  assert(!!launchedArgv, 'Agent Deck direct-dispatch assertion: ordinary Agent Deck message launches the stored deck run');
-  const flag = (argv, name) => {
-    const i = argv.indexOf(name);
-    return i >= 0 ? argv[i + 1] : null;
-  };
+  assert(coderLaunches.length === 1, 'direct direct-dispatch assertion: ordinary coding message launches its provider turn');
   assert(
-    launchedArgv && flag(launchedArgv, '--client') === 'codex' && launchedArgv[2] === 'stored-deck-id' && flag(launchedArgv, '--cwd') === deckWorkdir,
-    'Agent Deck direct-dispatch assertion: launch uses the stored agent/deck/workdir without parsing a DECK directive'
+    coderLaunches.length === 1 && coderLaunches[0].kind === 'start' && coderLaunches[0].authority === 'read_only' && coderLaunches[0].workspace === coderWorkdir,
+    'direct direct-dispatch assertion: launch uses the stored connection/workspace without parsing a DECK directive'
   );
   assert(
-    gateway.state.requests.length === gatewayBeforeDeck,
-    'Agent Deck direct-dispatch assertion: opposite adapter (Hermes) was not invoked'
+    gateway.state.requests.length === gatewayBeforeDirect,
+    'direct direct-dispatch assertion: opposite adapter (Hermes) was not invoked'
   );
   assert(
-    deckRuns === 1 && flag(launchedArgv, '--tools') === 'readonly' &&
-      thread10.some(m => m.sender_type === 'bot' && m.content === 'output of run-hermes-1') &&
+    thread10.some(m => m.sender_type === 'bot' && m.content === 'output of the direct turn') &&
       !thread10.some(m => m.sender_type === 'bot' && m.content.startsWith('[Deck handoff]')),
-    'Agent Deck direct-dispatch assertion: one read-only run answers, no composite handoff'
+    'direct direct-dispatch assertion: one read-only turn answers, no composite handoff'
   );
-  try { fs.rmSync(deckWorkdir, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(coderWorkdir, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(coderState, { force: true }); } catch { /* best effort */ }
   try { gateway.restore(); } catch { /* best effort */ }
 
   log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
