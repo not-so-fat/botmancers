@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { randomUUID } from 'crypto';
 import db, { BotDeletionError, bots, conversations, messages, registrationContext, serializeAgent } from '@/lib/db';
 import { uiTurns } from '@/lib/ui-turns';
 import { blockedReasonCopy, parseDeleteIds, type DeletePreview } from '@/lib/bot-deletion';
