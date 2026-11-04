@@ -236,7 +236,7 @@ loaded" error status (no "Saved" claim).
   reference. Reason: main-only feature.
 - `Config` link in the chat header (`app/page.tsx`, next to the bot
   name when a bot conversation is open): main-only entry point to the
-  config page. Reason: required by `docs/design/bot-config-page.md`.
+  config page. Reason: required by the Agent configuration page (NOT-392).
 - `Stop` button in the chat header: stops delegated turns in the
   thread. Reason: main-only delegation feature (NOT-419); no reference
   equivalent.

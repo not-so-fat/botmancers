@@ -44,6 +44,9 @@ its own provider CLI through its registered runtime connection. There is no
 launch profile, deck, run token, or remote runner to configure. Hermes turns
 (optional) run on the persistent Hermes gateway.
 
+The UI shows agents only: create, open, mention, and delete individual
+agents. Legacy group data stays stored and reachable through `/api/groups`.
+
 ## Register your first Agent
 
 Open the UI and click **New Agent**:
