@@ -10,7 +10,10 @@
 // provider) is skipped the same way; a provider whose listing throws
 // reports outcome 'failed' while the Agent stays registered; a
 // `workspaces` scope imports only in-scope sessions and reports the rest
-// in rejected_out_of_scope. Discovery stays read-only.
+// in rejected_out_of_scope; a provider that reports list=false until
+// ready() resolves is probed first and still syncs (Codex-shaped); a
+// ready refusal of unsupported stays unsupported while any other ready
+// failure is failed with its error_code. Discovery stays read-only.
 // Self-contained: isolated SQLite and state files, no network.
 'use strict';
 
@@ -141,6 +144,74 @@ async function main() {
   assert(limitedResult.outcome === 'unsupported' && limitedResult.imported === 0 && limitedResult.rejected_out_of_scope === 0,
     `no-list provider returns outcome unsupported (${JSON.stringify(limitedResult)})`);
   assert(fake.providerCalls(limitedState) === 0, 'the no-list provider received no call at all');
+
+  console.log('\nA provider that learns list only once ready is probed first');
+  const lazyConn = runtimeConnections.create({ provider: 'codex', label: 'codex lazy-list', host: 'Test' }).id;
+  const lazyState = path.join(TMP, 'lazy.json');
+  fake.seedFakeProvider(lazyState, [
+    { id: 'lazy-s1-SECRET', title: 'One', workspace: '/work/alpha' },
+    { id: 'lazy-s2-SECRET', title: 'Two', workspace: '/work/alpha' },
+    { id: 'lazy-s3-SECRET', title: 'Three', workspace: '/work/alpha' },
+  ]);
+  // Codex-shaped: capabilities report list=false until ready() resolves.
+  const lazyInner = fake.createFakeSessionProvider({ statePath: lazyState, kind: 'fake-lazy-list' });
+  let lazyReadyCalls = 0;
+  let lazyProbed = false;
+  contract.registerSessionProvider({ connectionId: lazyConn }, () => ({
+    ...lazyInner,
+    capabilities: () => ({ ...lazyInner.capabilities(), list: lazyProbed }),
+    async ready() { lazyReadyCalls++; lazyProbed = true; return { ok: true, value: undefined }; },
+  }));
+  const lazy = await registerAgent({
+    name: 'RegSync lazy-list', runtime_connection_id: lazyConn,
+    session_scope: { kind: 'all_provider_sessions' }, policy: READ_ONLY,
+  });
+  assert(lazy.status === 200, 'registration on a lazy-list provider succeeds');
+  assert(lazyReadyCalls > 0, 'registration probed readiness before judging list');
+  assert(lazy.status === 200 && sessionRows(lazy.json.id) === 3, 'lazy-list provider imports 3 sessions after its probe');
+  if (lazy.status === 200) {
+    const lazyResult = await ps.syncHistoryAtRegistration(db, lazy.json.id);
+    assert(lazyResult.outcome === 'synced' && lazyResult.imported === 0,
+      `lazy-list provider reports synced on re-sync (${JSON.stringify(lazyResult)})`);
+  }
+
+  console.log('\nReady failures map to unsupported or failed');
+  const unsupportedReadyConn = runtimeConnections.create({ provider: 'codex', label: 'codex unsupported-ready', host: 'Test' }).id;
+  contract.registerSessionProvider({ connectionId: unsupportedReadyConn }, () => ({
+    kind: 'fake-unsupported-ready',
+    capabilities: () => ({ list: false, search: false, read: false, resume: false, start: false, cancel: false, usage: false, authorities: [], max_page_size: 25 }),
+    async ready() { return { ok: false, error: { code: 'unsupported', message: 'no thread/list' } }; },
+    async listSessions() { throw new Error('must not be called'); },
+  }));
+  const unsupportedReady = await registerAgent({
+    name: 'RegSync unsupported-ready', runtime_connection_id: unsupportedReadyConn,
+    session_scope: { kind: 'all_provider_sessions' }, policy: READ_ONLY,
+  });
+  assert(unsupportedReady.status === 200, 'registration succeeds when ready reports unsupported');
+  assert(unsupportedReady.status === 200 && sessionRows(unsupportedReady.json.id) === 0, 'unsupported ready leaves 0 rows');
+  if (unsupportedReady.status === 200) {
+    const unsupportedReadyResult = await ps.syncHistoryAtRegistration(db, unsupportedReady.json.id);
+    assert(unsupportedReadyResult.outcome === 'unsupported',
+      `unsupported ready returns outcome unsupported (${JSON.stringify(unsupportedReadyResult)})`);
+  }
+  const unavailableReadyConn = runtimeConnections.create({ provider: 'codex', label: 'codex unavailable-ready', host: 'Test' }).id;
+  contract.registerSessionProvider({ connectionId: unavailableReadyConn }, () => ({
+    kind: 'fake-unavailable-ready',
+    capabilities: () => ({ list: false, search: false, read: false, resume: false, start: false, cancel: false, usage: false, authorities: [], max_page_size: 25 }),
+    async ready() { return { ok: false, error: { code: 'unavailable', message: 'app-server down' } }; },
+    async listSessions() { throw new Error('must not be called'); },
+  }));
+  const unavailableReady = await registerAgent({
+    name: 'RegSync unavailable-ready', runtime_connection_id: unavailableReadyConn,
+    session_scope: { kind: 'all_provider_sessions' }, policy: READ_ONLY,
+  });
+  assert(unavailableReady.status === 200, 'registration succeeds when ready reports unavailable');
+  assert(unavailableReady.status === 200 && bots.getById(unavailableReady.json.id) !== undefined, 'the Agent stays registered after an unavailable ready');
+  if (unavailableReady.status === 200) {
+    const unavailableReadyResult = await ps.syncHistoryAtRegistration(db, unavailableReady.json.id);
+    assert(unavailableReadyResult.outcome === 'failed' && unavailableReadyResult.error_code === 'provider_unavailable',
+      `unavailable ready returns outcome failed with its error_code (${JSON.stringify(unavailableReadyResult)})`);
+  }
 
   console.log('\nHermes (no session provider) is skipped without error');
   const hermes = await registerAgent({

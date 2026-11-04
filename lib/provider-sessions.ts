@@ -551,6 +551,13 @@ export async function syncAgentSessionHistory(db: Db, agentId: string, input: Sy
 // session provider (Hermes) or the provider reports no `list` capability,
 // 'failed' when the listing itself broke (the registration still stands;
 // the caller logs error_code). Discovery stays read-only.
+//
+// Readiness is probed before the `list` check: a runtime may report its
+// real capabilities only once ready (Codex reports list=false until its
+// app-server probe). A ready refusal of 'unsupported' stays 'unsupported';
+// any other ready or listing failure is 'failed' with its error_code, so
+// a temporarily unavailable runtime is distinguishable from one that can
+// never list.
 export interface RegistrationHistorySyncResult {
   outcome: 'synced' | 'unsupported' | 'failed';
   imported: number;
@@ -560,15 +567,38 @@ export interface RegistrationHistorySyncResult {
 }
 
 export async function syncHistoryAtRegistration(db: Db, agentId: string, input: SyncInput = {}): Promise<RegistrationHistorySyncResult> {
-  const capabilities = agentProviderCapabilities(db, agentId);
-  if (!capabilities || !capabilities.list) {
+  // No session provider (Hermes): skip without probing.
+  try {
+    agentContext(db, agentId);
+  } catch (error) {
+    if (error instanceof ProviderSessionError && error.code === 'provider_unavailable') {
+      return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
+    }
+    return {
+      outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false,
+      error_code: error instanceof ProviderSessionError ? error.code : 'provider_failed',
+    };
+  }
+  let ctx: AgentContext;
+  try {
+    ctx = await readyContext(db, agentId, input);
+  } catch (error) {
+    if (error instanceof ProviderSessionError && error.code === 'unsupported') {
+      return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
+    }
+    return {
+      outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false,
+      error_code: error instanceof ProviderSessionError ? error.code : 'provider_failed',
+    };
+  }
+  if (!ctx.capabilities.list) {
     return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
   }
   try {
     const synced = await syncAgentSessionHistory(db, agentId, input);
     return { outcome: 'synced', imported: synced.imported.length, rejected_out_of_scope: synced.rejected_out_of_scope, complete: synced.complete };
   } catch (error) {
-    if (error instanceof ProviderSessionError && (error.code === 'unsupported' || error.code === 'provider_unavailable')) {
+    if (error instanceof ProviderSessionError && error.code === 'unsupported') {
       return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
     }
     return {
