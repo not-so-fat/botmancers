@@ -1,8 +1,11 @@
 import type Database from 'better-sqlite3';
+import { createHash } from 'crypto';
 import { resolveAgent } from './bot-definition';
 import type { ExecutionKind, SessionBinding, WorkRequestState } from './engine-store';
 import type { UsageSummary } from './usage';
 import { emptyUsage, agentSessionUsage, sessionUsageSamples, type SessionUsageSampleView } from './usage-samples';
+import { paginateRows } from './page-cursor';
+import { workspaceFolderName } from './session-view';
 
 // NOT-496: the Agent session catalog. A read model over the canonical
 // session_bindings table (lib/engine-store) joined with the Conversation,
@@ -281,16 +284,19 @@ function summarize(row: CatalogRow, usage: UsageSummary = emptyUsage()): Session
 
 // A native session: status follows the provider lifecycle (open is
 // active, archived is ended); it has no Conversation or Work Request
-// origin.
+// origin. NOT-548: a blank stored title falls back to the workspace
+// folder and date (<folder> · <date>), else the Agent name and date.
 function summarizeNative(row: NativeRow, usage: UsageSummary = emptyUsage()): SessionSummary {
   const created = row.provider_created_at ?? row.created_at;
   const resumable = row.resumable === null ? null : row.resumable === 1;
   const archivedAt = row.lifecycle === 'archived' ? (row.provider_updated_at ?? row.updated_at) : null;
+  const stored = (row.title ?? '').trim().length > 0 ? (row.title as string) : null;
+  const folder = workspaceFolderName(row.workspace);
   return {
     ref: row.id,
     source: 'native',
     agent: { id: row.agent_id, name: row.agent_name, adapter: row.provider_kind, transport: null },
-    title: row.title ?? `${row.agent_name} · ${formatSessionTime(created)}`,
+    title: stored ?? (folder ? `${folder} · ${formatSessionTime(created)}` : `${row.agent_name} · ${formatSessionTime(created)}`),
     status: row.lifecycle === 'open' ? 'active' : 'ended',
     resumable: false,
     state: {
@@ -329,6 +335,49 @@ export function listAgentSessions(db: Db, agentId: string, filter: SessionFilter
     ...rows.map(row => summarize(row, usage.get(row.id))),
     ...native.map(row => summarizeNative(row, usage.get(row.id))),
   ].sort(byActivity);
+}
+
+// NOT-548: the owner's paged session list (GET /api/bots/:id/sessions).
+// The same summaries and newest-activity order as listAgentSessions,
+// narrowed by an optional case-insensitive title substring (q) and an
+// optional exact workspace path, then cut into pages with the shared
+// cursor (lib/page-cursor). The cursor binds the Agent, status, and both
+// filters, so a cursor from another list is rejected.
+export const SESSION_LIST_LIMITS = Object.freeze({ default: 50, max: 200 });
+
+export function parseSessionListLimit(value: string | null): number {
+  if (value === null || value === '') return SESSION_LIST_LIMITS.default;
+  if (!/^\d+$/.test(value) || Number(value) < 1) throw new Error('limit must be a positive integer.');
+  return Math.min(Number(value), SESSION_LIST_LIMITS.max);
+}
+
+export interface SessionPageQuery {
+  status?: SessionFilter;
+  q?: string | null;
+  workspace?: string | null;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface SessionPage {
+  sessions: SessionSummary[];
+  next_cursor: string | null;
+}
+
+export function listAgentSessionPage(db: Db, agentId: string, query: SessionPageQuery = {}): SessionPage {
+  const status = query.status ?? 'all';
+  if (!isSessionFilter(status)) throw new Error('status must be active, ended, or all.');
+  const limit = query.limit ?? SESSION_LIST_LIMITS.default;
+  if (!Number.isInteger(limit) || limit < 1) throw new Error('limit must be a positive integer.');
+  const q = (query.q ?? '').trim().toLowerCase();
+  const workspace = query.workspace ?? '';
+  const filtered = listAgentSessions(db, agentId, status).filter(summary =>
+    (q === '' || summary.title.toLowerCase().includes(q)) &&
+    (workspace === '' || summary.context.workspace === workspace),
+  );
+  const scope = `owner-sessions:${agentId}:${status}:${createHash('sha256').update(JSON.stringify([q, workspace])).digest('hex')}`;
+  const page = paginateRows(scope, filtered, summary => ({ at: summary.last_activity_at, tie: summary.created_at, id: summary.ref }), query.cursor ?? null, limit);
+  return { sessions: page.items, next_cursor: page.next_cursor };
 }
 
 function nativeRow(db: Db, agentId: string, ref: string): NativeRow | undefined {

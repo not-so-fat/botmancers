@@ -24,6 +24,8 @@
 // exist. A view never carries a provider session or run id, a working
 // directory, or a tool profile choice.
 import { createHash, randomUUID } from 'crypto';
+import { InvalidPageCursorError, decodePageCursor, encodePageCursor, paginateRows, type Page, type PageKey } from './page-cursor';
+export type { Page };
 import db, { bots, type Bot, type Principal, type PrincipalKind } from './db';
 import { resolveAgent } from './bot-definition';
 import { readStoredPolicy } from './agent-registration';
@@ -259,32 +261,21 @@ function requireAgent(ctx: ServiceContext, agentId: string, capability: ServiceC
 // ---------------------------------------------------------------------
 // Pagination: newest activity first, ties by newer creation, then id
 // ascending; the cursor is the last row's key, bound to the list it came
-// from.
+// from (lib/page-cursor, shared with the owner's session list).
 
 export const PAGE_LIMITS = Object.freeze({ default: 20, max: 100, messagesDefault: 50, messagesMax: 200 });
 
-interface PageKey { at: number; tie: number; id: string }
-
-function compareKeys(a: PageKey, b: PageKey): number {
-  return b.at - a.at || b.tie - a.tie || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-}
-
 function encodeCursor(scope: string, key: PageKey): string {
-  return Buffer.from(JSON.stringify({ s: scope, a: key.at, t: key.tie, i: key.id }), 'utf8').toString('base64url');
+  return encodePageCursor(scope, key);
 }
 
 function decodeCursor(scope: string, cursor: string | null): PageKey | null {
-  if (cursor === null || cursor === '') return null;
-  const invalid = new ServiceApiError('invalid_request', 'cursor is not a cursor of this list.');
-  if (cursor.length > 1024) throw invalid;
-  let value: { s?: unknown; a?: unknown; t?: unknown; i?: unknown };
   try {
-    value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-  } catch {
-    throw invalid;
+    return decodePageCursor(scope, cursor);
+  } catch (error) {
+    if (error instanceof InvalidPageCursorError) throw new ServiceApiError('invalid_request', error.message);
+    throw error;
   }
-  if (!value || value.s !== scope || typeof value.a !== 'number' || typeof value.t !== 'number' || typeof value.i !== 'string') throw invalid;
-  return { at: value.a, tie: value.t, id: value.i };
 }
 
 export function parseLimit(value: string | null, fallback: number = PAGE_LIMITS.default, max: number = PAGE_LIMITS.max): number {
@@ -295,15 +286,13 @@ export function parseLimit(value: string | null, fallback: number = PAGE_LIMITS.
   return Number(value);
 }
 
-export interface Page<T> { items: T[]; next_cursor: string | null }
-
 function paginate<T>(scope: string, rows: T[], keyOf: (row: T) => PageKey, cursor: string | null, limit: number): Page<T> {
-  const after = decodeCursor(scope, cursor);
-  const sorted = [...rows].sort((a, b) => compareKeys(keyOf(a), keyOf(b)));
-  const remaining = after ? sorted.filter(row => compareKeys(keyOf(row), after) > 0) : sorted;
-  const items = remaining.slice(0, limit);
-  const next = remaining.length > limit ? encodeCursor(scope, keyOf(items[items.length - 1])) : null;
-  return { items, next_cursor: next };
+  try {
+    return paginateRows(scope, rows, keyOf, cursor, limit);
+  } catch (error) {
+    if (error instanceof InvalidPageCursorError) throw new ServiceApiError('invalid_request', error.message);
+    throw error;
+  }
 }
 
 export interface ListQuery { cursor: string | null; limit: number }
