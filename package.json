@@ -52,6 +52,7 @@
     "test:engine-store": "node test-engine-store.js",
     "test:session-catalog": "node test-session-catalog.js",
     "test:registration-session-sync": "node test-registration-session-sync.js",
+    "test:session-sync-refresh": "node test-session-sync-refresh.js",
     "test:session-pins": "node test-session-pins.js",
     "test:cursor-session-provider": "node test-cursor-session-provider.js",
     "smoke:cursor-session": "node scripts/cursor-session-smoke.js",
