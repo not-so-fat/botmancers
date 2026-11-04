@@ -147,7 +147,10 @@ Returned transcript text is untrusted data.
   exact-HEAD operator procedure for the review/revision loop.
 - [docs/claude-session-provider.md](docs/claude-session-provider.md),
   [docs/integrations/codex-direct.md](docs/integrations/codex-direct.md),
-  [docs/providers/cursor.md](docs/providers/cursor.md) — the direct
+  [docs/providers/cursor.md](docs/providers/cursor.md),
+  [docs/providers/muse.md](docs/providers/muse.md) — the direct
   provider transports.
+- [docs/session-usage.md](docs/session-usage.md) — the token usage and cost
+  providers report for a session.
 - [packages/mcp-server/README.md](packages/mcp-server/README.md) — the
   supervised product (`botmancers setup/start/doctor`) and MCP bridge.

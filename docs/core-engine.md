@@ -170,7 +170,7 @@ registry (`provider_sessions`).
   `resumable` stays the NOT-496 engine-resume answer and is always `false`.
   The service API (`/api/v0`) carries `source` and `state` additively; the MCP
   v2 session item omits them. Both carry the additive `usage` summary
-  (Session usage, below).
+  ([Session usage](#session-usage)).
 
 ### Provider sessions
 
@@ -187,7 +187,7 @@ scoped import (`importProviderSession`) for a version that cannot list. The
 direct Codex provider is installed by default for `codex` connections
 ([integrations/codex-direct.md](integrations/codex-direct.md)); explicit
 registrations win. Muse connections get the direct Muse MSP provider
-(Direct Muse Code sessions, below; NOT-508). `AttemptAdapter` remains the
+([providers/muse.md](providers/muse.md); NOT-508). `AttemptAdapter` remains the
 per-turn seam of the Work Request engine.
 
 - **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,
@@ -239,92 +239,12 @@ per-turn seam of the Work Request engine.
   `?debug=external_session_id` on the owner detail route remains the single
   exception, for native sessions too.
 
-#### Direct Muse Code sessions
-
-`lib/muse-session-provider.ts` is the provider for runtime connections whose
-provider is `muse` (kind `muse-msp`). It speaks the stable Muse Session
-Protocol (MSP v1) to `muse serve` over stdio.
-
-- **Probe.** The `initialize` handshake supplies the Muse version, the MSP
-  envelope schema version, and session durability. Muse older than 1.4.0 or
-  a schema other than 1 is `unsupported` and reports no capability; an
-  ephemeral host can start sessions but cannot list, read, or resume them;
-  a credential failure is `auth_required` and a missing binary
-  `binary_missing` (both `provider_unavailable` to callers).
-- **Operations.** `session/list` (host cursor, bounded limit, `sessionId`
-  filter for a selected-sessions scope, `name`/`title` text filter for
-  search, refused as `unsupported` when the host does not echo it),
-  `session/read` (metadata, inline history paged locally, `lastTurn`; it
-  never attaches), `session/start` + `turn/start` in the explicit workspace,
-  `session/resume` + `turn/start` on the exact session, `turn/completed` and
-  `session/tokenUsage` notifications for observation, and `turn/cancel`.
-  Every command carries a fresh UUIDv7 `commandId`; nothing else is sent.
-- **Authority.** `muse serve` fixes its sandbox at startup, so there is one
-  host per authority: `read_only` runs with `--disable-write
-  --disable-shell`, `workspace_write` with the default posture. Approval mode
-  is `denyUnmatched`. A busy session is refused, never queued or steered.
-- **Facts.** MSP v1 has no archive state, so lifecycle is `open`;
-  resumable means a durable host persisted the session; busy means
-  `running` or an active turn. Subagent children and malformed rows are
-  skipped. Usage is `turn/completed.usage`, else the sum of the turn's
-  `session/tokenUsage` records (a field any record omits is unknown), else
-  null. MSP reports no per-turn cost, so cost is never estimated.
-- **Restart.** Muse ids stay private (the turn id is
-  `<sessionId>:<turnId>`). After a Botmancers restart, observe reads the
-  durable session: its `lastTurn` gives the terminal; a turn that died with
-  its host is `failed` with `host_lost`, and no replacement session is
-  started. Resume reloads the same session in its own workspace.
-- **Configuration.** `BOTMANCERS_MUSE_BIN` (default `muse`) and
-  `BOTMANCERS_MUSE_SERVE_ARGS` (a JSON array of extra `muse serve` flags,
-  for example `["--provider","echo"]`).
-- **Smoke.** `node scripts/muse-msp-smoke.js` imports and resumes a real
-  past session through a real `muse serve` across a Botmancers restart
-  (transcript: [evidence/NOT-508/muse-msp-smoke.md](evidence/NOT-508/muse-msp-smoke.md)).
-
 ### Session usage
 
 Sessions show the token usage and cost their providers **reported**: never
-estimated from a pricing table, a model guess, or a subscription plan, and
-never 0 unless the provider said 0.
-
-- **Samples.** Engine migration 18 adds `usage_samples`: one row per Attempt
-  (`attempt:<id>`) or provider turn (`turn:<id>`) that reached a runtime,
-  under a unique `sample_key`, with nullable `input_tokens`, `output_tokens`,
-  and `cost_usd`, the provider (the Attempt's adapter or the registry
-  row's provider kind), the structured `source` it came from
-  (`result`, `codex.turn_completed`, `normalized`, or `none`), the observed
-  time, and a `breakdown` of whitelisted numeric counters only (cache reads
-  and writes, reasoning tokens). The executor writes the sample with the
-  Attempt's terminal record (`recordAttemptResult`), an abandoned Attempt's
-  record, and a late result; restart reconciliation writes an all-unknown
-  sample for a run that died. A later write for the same key only fills a
-  metric that was still unknown: replays, late results, and a reconciled
-  Attempt after a restart never add or overwrite. A launch refused before a
-  run existed writes no sample. Earlier Attempts have none.
-- **Parsing** (`lib/usage.ts`). Codex `turn.completed` usage (tokens, no
-  cost), Claude/Cursor `result` usage with `total_cost_usd` (snake_case or
-  camelCase), and Muse-compatible normalized usage (`input_tokens`,
-  `output_tokens`, `cost_usd`, bare or under `usage`). A `result` event is
-  cumulative and wins; Codex turns add up; an event replayed with the same
-  `seq` counts once. Malformed values become unknown and unsupported or
-  missing data yields no usage; the session result is never blocked. A
-  SessionProvider reports `ProviderTurnResult.usage`.
-- **Summary.** Each metric is aggregated on its own: `sum` (null when no
-  sample reported it), `known` and `total` sample counts, and `quality`
-  `complete` (all reported), `partial` (some; the sum is a lower bound), or
-  `unavailable` (none, or no samples). A Session Binding's samples are its
-  source Attempt's, every Attempt that resumed it, and provider turns on its
-  registry row; a native session's are its provider turns.
-- **Surfaces.** Catalog summaries, `GET /api/bots/:id/sessions`, the service
-  API list and detail, and the MCP v2 `botmancers_list_sessions` item carry
-  the additive `usage` summary (optional in the v2 schema, so a client or an
-  older server that omits it stays valid). Details add `usage_samples` (one
-  per run or turn: kind, attempt number, turn kind, provider, source, the
-  three values, observed time). The raw breakdown, sample keys, and
-  provider ids are never returned. The Sessions view shows a compact row
-  total (`1.2M in · 45.7k out · $3.34`), says "Not reported" or "cost not
-  reported" for unknown values, labels partial coverage Partial with how
-  many runs reported, and lists per-run usage in Details.
+estimated, and never 0 unless the provider said 0. Samples, parsing, the
+summary quality (`complete`, `partial`, `unavailable`), and the surfaces that
+carry the additive `usage` summary are in [session-usage.md](session-usage.md).
 
 ### Session pins
 

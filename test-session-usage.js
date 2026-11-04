@@ -447,8 +447,8 @@ function uiFixtures(fixture) {
   assert(!/toFixed\(|price|pricing|estimate/i.test(panelCode), 'the panel formats nothing itself and never estimates');
   assert(/\.session-usage-runs li \{[\s\S]*?flex-wrap: wrap/.test(css) && /\.session-usage-totals dd \{[\s\S]*?flex-wrap: wrap/.test(css),
     'usage rows wrap at narrow widths instead of overflowing');
-  const docs = read('docs/core-engine.md');
-  assert(/### Session usage/.test(docs) && /usage_samples/.test(docs) && /never\s+estimated/i.test(docs), 'docs/core-engine.md documents session usage');
+  const docs = read('docs/session-usage.md');
+  assert(/# Session usage/.test(docs) && /usage_samples/.test(docs) && /never\s+estimated/i.test(docs), 'docs/session-usage.md documents session usage');
 }
 
 async function main() {

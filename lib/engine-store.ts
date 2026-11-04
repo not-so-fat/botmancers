@@ -1752,7 +1752,7 @@ const MIGRATIONS: Migration[] = [
   },
   {
     // NOT-509: provider-reported usage samples (lib/usage-samples,
-    // docs/core-engine.md Session usage).
+    // docs/session-usage.md).
     version: 18,
     name: 'usage_samples',
     up: db => {
