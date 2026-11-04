@@ -69,6 +69,10 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-sync-refresh
+      - name: Focused session reconcile suite (NOT-546)
+        working-directory: .
+        run: |
+          npm run test:session-reconcile
       - name: Focused Claude provider and direct cutover suites (NOT-506, NOT-543)
         working-directory: .
         run: |
