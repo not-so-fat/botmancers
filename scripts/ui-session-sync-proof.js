@@ -10,9 +10,12 @@
 // - after Refresh on SyncEmpty: "Synced: 0 imported, 0 updated" and an updated time.
 // Every state checks the header (Last synced + Refresh), no horizontal
 // overflow or clipped drawer content (especially at 390 px), and captures
-// a screenshot. Writes screenshots, a trace, a receipt, and a summary
-// under --out (default docs/evidence/NOT-547). Refuses to run on a dirty
-// worktree so the receipt binds to exactly the committed HEAD. No mocks.
+// a screenshot. Keyboard: Refresh is Tab-reached and Enter-activated with
+// the result announced in role="status"; Retry is Tab-reached (not
+// activated, since it would fire a real provider sync). Writes screenshots,
+// a trace, a receipt, and a summary under --out (default
+// docs/evidence/NOT-547). Refuses to run on a dirty worktree so the receipt
+// binds to exactly the committed HEAD. No mocks.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/session-sync-fixture.db BOTMANCERS_NO_AUTOPROCESS=1 npx next dev -H 127.0.0.1 -p 43547   (other shell)
 //        node scripts/ui-session-sync-proof.js [--url http://127.0.0.1:43547] [--out docs/evidence/NOT-547] [--db .temporal/session-sync-fixture.db]
@@ -182,6 +185,18 @@ async function run() {
   };
   const click = selectorExpr => evaluate(`(() => { const el = ${selectorExpr}; if (!el) return false; el.click(); return true; })()`);
   const byText = (selector, text) => `[...document.querySelectorAll(${JSON.stringify(selector)})].find(el => el.textContent.trim() === ${JSON.stringify(text)})`;
+  // Real Tab travel from a deterministic start (the drawer's Close button):
+  // proves the control is Tab-reachable without depending on where focus
+  // landed when the drawer opened.
+  const tabTo = async text => {
+    await evaluate("document.querySelector('.sessions-drawer .cancel-btn').focus()");
+    for (let i = 0; i < 20; i++) {
+      await press('Tab');
+      const there = await evaluate(`document.activeElement?.textContent.trim() === ${JSON.stringify(text)} && document.activeElement?.closest('.sessions-drawer') !== null`);
+      if (there) return true;
+    }
+    return false;
+  };
   const screenshots = [];
   const shot = async (vp, state) => {
     await sleep(250);
@@ -223,6 +238,7 @@ async function run() {
       if (agent.key === 'failed') {
         check(await evaluate("[...document.querySelectorAll('.sessions-drawer .sessions-state button')].some(b => b.textContent.trim() === 'Retry')"),
           'failed: Retry is offered');
+        check(await tabTo('Retry'), 'failed: Retry is reachable by Tab');
       }
       if (agent.key === 'scoped') {
         const link = await evaluate("({ text: document.querySelector('.sessions-drawer .sessions-state a')?.textContent.trim() ?? '', href: document.querySelector('.sessions-drawer .sessions-state a')?.getAttribute('href') ?? '' })");
@@ -234,9 +250,11 @@ async function run() {
       check(await evaluate("!document.querySelector('.sessions-drawer')"), `${agent.key}: Escape closes the drawer`);
     }
 
-    // After Refresh on the empty Hermes Agent: deterministic empty success.
+    // After Refresh on the empty Hermes Agent: deterministic empty success,
+    // driven by keyboard (Tab to Refresh, Enter to activate).
     await openDrawer('SyncEmpty');
-    await click(byText('.sessions-filter-btn', 'Refresh'));
+    check(await tabTo('Refresh'), 'after Refresh: Refresh is reachable by Tab');
+    await press('Enter');
     await waitFor("document.querySelector('.sessions-drawer .exchange-started[role=\"status\"]')?.textContent.includes('Synced:')", 'sync result');
     const result = await evaluate("document.querySelector('.sessions-drawer .exchange-started[role=\"status\"]').textContent.trim()");
     check(/Synced: 0 imported, 0 updated/.test(result), `after Refresh: imported and updated counts announced (${result})`);
@@ -257,7 +275,7 @@ async function run() {
     states: [...AGENTS.map(a => a.key), 'after-refresh'],
     viewports: VIEWPORTS.map(v => `${v.width}x${v.height}`), screenshots, capturedAt: new Date().toISOString(),
   }, null, 2)}\n`);
-  fs.writeFileSync(path.join(OUT, 'SUMMARY.md'), `# NOT-547 session sync proof\n\n- HEAD: ${HEAD}\n- App: ${URL_BASE} (real Next.js app, no mocks)\n- Fixture: ${DB_PATH} (SyncNever, SyncFailed, SyncScoped, SyncEmpty)\n- States: never, failed with Retry, none in scope with count 3, none exist, after Refresh\n- Viewports: 1440x900, 390x800 (no text overflows at 390 px)\n- Result: ${failures === 0 ? 'pass' : `${failures} failure(s)`}\n`);
+  fs.writeFileSync(path.join(OUT, 'SUMMARY.md'), `# NOT-547 session sync proof\n\n- HEAD: ${HEAD}\n- App: ${URL_BASE} (real Next.js app, no mocks)\n- Fixture: ${DB_PATH} (SyncNever, SyncFailed, SyncScoped, SyncEmpty)\n- States: never, failed with Retry, none in scope with count 3, none exist, after Refresh\n- Viewports: 1440x900, 390x800 (no text overflows at 390 px)\n- Keyboard: Refresh Tab-reached and Enter-activated with the result in role="status"; Retry Tab-reached\n- Result: ${failures === 0 ? 'pass' : `${failures} failure(s)`}\n`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
