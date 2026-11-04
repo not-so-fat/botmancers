@@ -7,6 +7,32 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-03
+
+### Changed
+
+- Coding-agent Wakes now launch directly through the local Claude Code,
+  Codex, Cursor, or Muse session providers. Agent Deck is no longer part of
+  execution: its settings, deck list, launch profile, and Git finalization
+  are removed, and existing Agent registrations are migrated one way to the
+  direct contract (agent, runtime connection, and session scope). Wakes that
+  were mid-flight on a legacy transport are reconciled as interrupted. Dispatch
+  runs on a new direct session-provider adapter (fresh start, exact-ref
+  resume, observe, cancel, usage, restart-safe replay).
+- Configuration: `AGENT_DECK_RUN_TOKEN` is no longer read from `core.env` and
+  `BOTMANCERS_AGENT_DECK_URL` is gone. To run coding agents, install the
+  `claude`, `codex`, `cursor`, and `muse` CLIs you need, sign each one in, and
+  register Agents against their runtime connections in the UI.
+- `botmancers doctor` checks for the provider CLIs on `PATH` (a warning, not a
+  failure) instead of Agent Deck, and `botmancers setup` no longer prints
+  Agent Deck steps.
+- The UI follows: Settings shows local runtime status with no server URL,
+  Agent registration shows only connection, scope, workspace, and policy, the
+  roster shows Agent plus connection, and a failed turn is shown in the thread
+  as `[Agent failed]`.
+- `botmancers.mcp.v2` tool descriptions no longer mention a Deck. No tool,
+  input, or output changed.
+
 ## [0.6.1] - 2026-10-25
 
 ### Fixed
