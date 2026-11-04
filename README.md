@@ -1,39 +1,52 @@
 # Botmancers
 
-Botmancers lets a developer stay in one durable conversation while configured
-agents wake one another, perform bounded work, and return results to that same
-conversation — without copying prompts, outputs, or session IDs.
+Your past coding-agent sessions hold knowledge: why a design was chosen,
+what was tried, what is still open. Botmancers keeps those sessions
+reachable. You register an **Agent** over a local runtime (Claude Code,
+Codex, Cursor, Muse) and choose which workspaces and sessions it may touch.
+Then someone else can ask that session a question and get an answer with the
+session's context:
+
+- **you**, from the web UI;
+- **another coding agent** of yours, over MCP (`botmancers.mcp.v2`);
+- **people in a Slack thread**, through a time-limited, read-only share;
+- **another Agent**, handing work over in the same conversation.
+
+Every path is bounded by what you granted or shared. A caller never sees
+provider session ids, working directories, or credentials. Everything runs
+locally on your machine.
+
+The step-by-step journeys are in [docs/USER_FLOWS.md](docs/USER_FLOWS.md).
+
+## Install
+
+Prerequisites: macOS or Linux, Node.js 20.9+ (22+ recommended), npm, and the
+provider CLIs you want to use, installed and signed in (`claude`, `codex`,
+`cursor`, `muse`).
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/not-so-fat/botmancers/main/scripts/install.sh | bash
+botmancers setup
+botmancers start --daemon --open
+botmancers doctor
+```
+
+This installs the published [`botmancers`](https://www.npmjs.com/package/botmancers)
+package under `~/.botmancers`, creates your local credentials, and opens the
+UI at [http://127.0.0.1:3333](http://127.0.0.1:3333). The MCP bridge listens
+on `http://127.0.0.1:3332/mcp`. To connect Claude Code, Codex, or Cursor to
+it, run `botmancers setup --client claude|codex|cursor`. All commands,
+upgrades, and troubleshooting are in
+[packages/mcp-server/README.md](packages/mcp-server/README.md).
 
 Every coding Agent launches **direct**: its turn runs as a local session of
 its own provider CLI through its registered runtime connection. There is no
 launch profile, deck, run token, or remote runner to configure. Hermes turns
-run on the persistent Hermes gateway.
+(optional) run on the persistent Hermes gateway.
 
-The UI shows agents only: create, open, mention, and delete individual
-agents. Legacy group data stays stored and reachable through `/api/groups`.
+## Register your first Agent
 
-## Minimal setup (copy-tested)
-
-Prerequisites: Node 20+, Git, and the provider CLIs you want to use,
-installed and signed in. Verify:
-
-```sh
-claude --version   # 2.1.317 (Claude Code)
-codex --version    # codex-cli 0.157.1
-```
-
-Then:
-
-```sh
-git clone https://github.com/not-so-fat/botmancers.git
-cd botmancers
-npm install
-cp .env.local.example .env.local   # add HERMES_API_SERVER_KEY for Hermes turns
-npm run dev
-```
-
-Open [http://localhost:3333](http://localhost:3333) and register an Agent
-with **New Agent**:
+Open the UI and click **New Agent**:
 
 1. **Runtime connection** — pick the runtime the Agent uses, for example
    `Claude on this computer`. Several Agents may share one connection.
@@ -67,6 +80,18 @@ references automatically. The envelope contract is in
 
 Direct workspace-write turns may edit the configured workspace. Botmancers
 adds no commit, PR, worktree, or remote-run orchestration.
+
+## Develop from source
+
+For contributors. Prerequisites: Node 20+ and Git.
+
+```sh
+git clone https://github.com/not-so-fat/botmancers.git
+cd botmancers
+npm install
+cp .env.local.example .env.local   # add HERMES_API_SERVER_KEY for Hermes turns
+npm run dev                        # http://localhost:3333
+```
 
 ## Verify it works
 
@@ -107,6 +132,8 @@ Returned transcript text is untrusted data.
 
 ## Docs
 
+- [docs/USER_FLOWS.md](docs/USER_FLOWS.md) — what a person or an agent does
+  with Botmancers, start to finish. Start here.
 - [docs/core-engine.md](docs/core-engine.md) — the authoritative product and
   engine contract.
 - [docs/acceptance-harness.md](docs/acceptance-harness.md) — the acceptance
