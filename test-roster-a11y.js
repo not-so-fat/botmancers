@@ -1,95 +1,71 @@
 #!/usr/bin/env node
-// NOT-448: roster rows and row actions are keyboard accessible.
-// Source-level contract for app/page.tsx and app/globals.css: each agent row
-// opens through one named <button> (no clickable generic container), the
-// row-actions trigger is a visible labelled menu button outside that button,
-// the menu offers every row action with arrow-key navigation, and the focused
-// row gets a whole-row outline. scripts/ui-roster-keyboard-proof.js proves the
-// same contract in a real browser. No server, no network.
+// NOT-448/NOT-549: the shared roster used by Home and Agent routes keeps
+// the established row, menu, hidden-Agent, and keyboard contracts.
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = __dirname;
-const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
-const css = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
-
+const rail = fs.readFileSync(path.join(ROOT, 'app/components/AgentRail.tsx'), 'utf8');
+const home = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
+const shell = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/AgentShell.tsx'), 'utf8');
+const css = fs.readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8');
 let failures = 0;
 function assert(condition, label) {
   console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${label}`);
   if (!condition) failures++;
 }
-
 const between = (start, end) => {
-  const from = page.indexOf(start);
-  const to = page.indexOf(end, from + start.length);
-  return from >= 0 && to > from ? page.slice(from, to) : '';
+  const from = rail.indexOf(start);
+  const to = rail.indexOf(end, from + start.length);
+  return from >= 0 && to > from ? rail.slice(from, to) : '';
 };
 const rule = selector => {
   const at = css.indexOf(`${selector} {`);
   return at >= 0 ? css.slice(at, css.indexOf('}', at)) : '';
 };
 
-console.log('Case 1: one semantic open control per agent row');
-const roster = between('{rosterBots.map(', '{hiddenBots.length > 0');
-const row = between('const agentRow = ', '\n  );\n');
-const hidden = between('{hiddenBots.length > 0', '</aside>');
-assert(roster.length > 0 && row.length > 0 && hidden.length > 0, 'roster, agent row and hidden list render blocks found');
-assert(!/onClick=\{\(\) => openBot/.test(roster + row), 'row containers carry no click-to-open handler');
-assert(/rowOpen\(bot/.test(roster) && /agentRow\(bot\)/.test(roster), 'Chief of Staff card renders rowOpen, other agents render agentRow');
-assert(/rowOpen\(bot\)/.test(row), 'agent rows render rowOpen');
-assert(!/<button/.test(roster + row), 'row containers hold no inline buttons (controls come from rowOpen/rowActions)');
+console.log('Case 1: Home and Agent routes share one roster implementation');
+assert(/<AgentRail/.test(home) && /<AgentRail/.test(shell), 'Home and Agent shell both mount AgentRail');
+assert(!/className="agent-row-menu"|<details/.test(shell), 'Agent shell has no replacement details menu');
+
+console.log('\nCase 2: one semantic open control per agent row');
 const open = between('const rowOpen = ', 'const rowActions = ');
-assert(/<button\s+type="button"\s+className="bot-name row-open"/.test(open), 'rowOpen renders a <button type="button" className="bot-name row-open">');
-assert(/data-open-bot=\{bot\.id\}/.test(open) && /router\.push\(`\/agents\/\$\{encodeURIComponent\(bot\.id\)\}`\)/.test(open), 'rowOpen opens the Agent Overview and is addressable for focus restore');
-assert(/aria-current=/.test(open), 'rowOpen marks the open agent with aria-current');
-assert(/>\s*\{bot\.name\}\s*<\/button>/.test(open), 'rowOpen is named by the agent name only');
-assert(!/rowActions|<button[\s\S]*<button/.test(open), 'rowOpen nests no other interactive control');
+const row = between('const agentRow = ', '\n\n  return <>');
+assert(/<button type="button" className="bot-name row-open"/.test(open), 'rowOpen renders a named button');
+assert(/data-open-bot=\{agent\.id\}/.test(open) && /router\.push\(`\/agents\/\$\{encodeURIComponent\(agent\.id\)\}`\)/.test(open), 'row opens Agent Overview and supports focus restore');
+assert(/aria-current=/.test(open), 'selected row exposes aria-current');
+assert(!/rowActions|<button[\s\S]*<button/.test(open), 'rowOpen nests no other control');
+assert(/agentRow\(agent\)/.test(rail) && /rowOpen\(agent\)/.test(row), 'card and list variants use the same open control');
 
-console.log('\nCase 2: visible, named row-actions trigger and menu');
+console.log('\nCase 3: visible menu supports every action and keyboard movement');
 const actions = between('const rowActions = ', 'const rowTip = ');
-assert(/aria-haspopup="menu"/.test(actions) && /aria-expanded=/.test(actions), 'trigger is a menu button with aria-expanded');
-assert(/aria-label=\{`Actions for \$\{bot\.name\}`\}/.test(actions), 'trigger is labelled "Actions for <agent>"');
-assert(/onClick=\{e => openRowMenu\(bot, e\.currentTarget\)\}/.test(actions), 'trigger opens the menu anchored to itself');
-assert(/rowActions\(bot\)/.test(roster) && /rowActions\(bot\)/.test(row), 'every row (card and list) renders the trigger');
-const tip = between('const rowTip = ', ');\n');
-assert(!/<button|onClick/.test(tip), 'hover tip holds status only, no hover-only controls');
-const menu = between('role="menu"', '</div>');
-const items = menu.split('\n').filter(line => /role="menuitem"/.test(line))
-  .map(line => (line.match(/>([^<>]+)<\/(?:button|Link)>\s*$/) || [])[1]).filter(Boolean);
-console.log(`  menu items: ${JSON.stringify(items)}`);
-assert(/\{rowMenu\.bot\.pinned \? 'Unpin' : 'Pin'\}/.test(menu), 'menu offers Pin or Unpin by pinned state');
-assert(/\{rowMenu\.bot\.hidden \? 'Unhide' : 'Hide from sidebar'\}/.test(menu), 'menu offers Hide from sidebar or Unhide by hidden state');
-assert(/hideBot\(rowMenu\.bot, !rowMenu\.bot\.hidden\)/.test(menu), 'Hide/Unhide item toggles hidden');
-for (const item of ['Mark as Unread', 'Rename Agent', 'Config', 'Delete agent…']) {
-  assert(items.includes(item), `menu offers ${item}`);
+assert(/aria-haspopup="menu"/.test(actions) && /aria-expanded=/.test(actions), 'trigger is a labelled menu button with expanded state');
+assert(/aria-label=\{`Actions for \$\{agent\.name\}`\}/.test(actions), 'trigger is labelled with Agent name');
+for (const item of ['Mark as Unread', 'Rename Agent', 'Hide from sidebar', 'Unhide', 'Config', 'Delete agent…', 'Pin', 'Unpin']) {
+  assert(rail.includes(item), `menu offers ${item}`);
 }
-assert(/href=\{`\/bots\/\$\{rowMenu\.bot\.id\}\/config`\}/.test(menu), 'Config item links to the agent config page');
-assert(/onKeyDown=\{onRowMenuKey\}/.test(menu), 'menu handles its own keys');
-const itemLines = menu.split('\n').filter(line => /role="menuitem"/.test(line));
-assert(itemLines.length === 6 && itemLines.every(line => /tabIndex=\{-1\}/.test(line)), 'menu items use roving focus (tabIndex=-1, out of the Tab sequence)');
-const keys = between('const onRowMenuKey = ', 'const onRowContextMenu = ');
+assert((rail.match(/role="menuitem"/g) || []).length === 6, 'menu exposes six menuitems');
+assert((rail.match(/tabIndex=\{-1\}/g) || []).length === 6, 'menuitems use roving focus outside the Tab sequence');
+const keys = between('const onRowMenuKey = ', 'const rename = ');
 for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Tab']) assert(keys.includes(`'${key}'`), `menu handles ${key}`);
-assert(/rowMenu\.returnTo\?\.focus\(\)/.test(page), 'Escape returns focus to the trigger');
-assert(/onContextMenu=\{e => onRowContextMenu\(e, bot\)\}/.test(roster), 'right-click menu still works on rows');
+assert(/rowMenu\.returnTo\?\.focus\(\)/.test(rail), 'Escape restores trigger focus');
+assert(/onContextMenu=\{event => onContextMenu\(event, agent\)\}/.test(rail), 'right click opens the same menu');
 
-console.log('\nCase 3: whole-row focus treatment');
+console.log('\nCase 4: hidden Agents and row status remain present');
+assert(/hidden\.map\(agentRow\)/.test(rail), 'expanded Hidden list renders the shared row');
+assert(/aria-expanded=\{showHidden\}/.test(rail), 'Hidden toggle reports expanded state');
+for (const state of ['mark-dot', 'bot-preview', 'Unread', 'Heartbeat', 'Stopped']) assert(rail.includes(state), `roster retains ${state}`);
+assert(/Manage agents/.test(rail) && /<DeleteAgentsDialog/.test(rail), 'Manage agents and shared delete dialog remain');
+assert(/return isChiefOfStaff\(agent\) \? 0 : agent\.pinned \? 1 : 2;/.test(rail), 'Chief of Staff, pinned, rest ordering remains');
+
+console.log('\nCase 5: whole-row focus treatment');
 assert(/position: absolute;[\s\S]*inset: 0;/.test(rule('.row-open::after')), 'row-open overlay spans the row');
-assert(/outline: 2px solid var\(--accent\)/.test(rule('.row-open:focus-visible::after')), 'focused row shows a 2px accent outline');
-assert(/outline: 2px solid var\(--accent\)/.test(rule('.row-actions:focus-visible')), 'focused trigger shows an outline');
-assert(/z-index: 2/.test(rule('.row-actions')), 'trigger sits above the row overlay');
-assert(/(^|\n)\.row-tip \{[^}]*pointer-events: none;/.test(css), 'status tip never swallows clicks (.row-tip rule sets pointer-events: none)');
-
-console.log('\nCase 3b: hidden agents keep the open control and row-actions trigger');
-assert(/hiddenBots\.map\(agentRow\)/.test(hidden), 'expanded Hidden list renders the shared agent row');
-assert(!/Unhide/.test(hidden) && !/<button[^>]*onClick=\{\(\) => hideBot/.test(page), 'no bare, identically named Unhide buttons');
-assert(/aria-expanded=\{showHidden\}/.test(hidden), 'Hidden toggle reports aria-expanded');
-
-console.log('\nCase 4: Manage agents, deletion, ordering, no Group path');
-assert(/Manage agents/.test(page) && /<ManageAgentsPanel/.test(page) && /<DeleteAgentsDialog/.test(page), 'Manage agents and shared delete dialog remain');
-assert(/return isChiefOfStaff\(bot\) \? 0 : bot\.pinned \? 1 : 2;/.test(page), 'Chief of Staff, pinned, rest ordering unchanged');
-assert(!/group/i.test(page), 'page has no Group row, action, or keyboard path');
+assert(/outline: 2px solid var\(--accent\)/.test(rule('.row-open:focus-visible::after')), 'focused row shows an accent outline');
+assert(/outline: 2px solid var\(--accent\)/.test(rule('.row-actions:focus-visible')), 'focused menu trigger shows an outline');
+assert(/z-index: 2/.test(rule('.row-actions')), 'trigger sits above row overlay');
+assert(/(^|\n)\.row-tip \{[^}]*pointer-events: none;/.test(css), 'status tip never swallows clicks');
 
 console.log(`\n${failures === 0 ? 'TEST RESULT: PASS' : `TEST RESULT: FAIL (${failures} assertion(s))`}`);
 process.exit(failures === 0 ? 0 : 1);

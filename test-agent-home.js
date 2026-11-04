@@ -75,14 +75,17 @@ try {
 
   const home = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
   const shell = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/AgentShell.tsx'), 'utf8');
+  const rail = fs.readFileSync(path.join(ROOT, 'app/components/AgentRail.tsx'), 'utf8');
   const overviewPage = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/page.tsx'), 'utf8');
+  const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci-botmancers.yml'), 'utf8');
   const overviewDto = fs.readFileSync(path.join(ROOT, 'lib/agent-overview.ts'), 'utf8');
   const dtoShape = overviewDto.slice(overviewDto.indexOf('export interface AgentOverviewDto'), overviewDto.indexOf('export function summarizeInstruction'));
 
   test('populated startup and rail selection route to Agent Overview', () => {
-    assert.match(home, /router\.replace\(`\/agents\/\$\{encodeURIComponent\(first\.id\)\}`\)/);
-    assert.match(home, /router\.push\(`\/agents\/\$\{encodeURIComponent\(bot\.id\)\}`\)/);
-    assert.match(shell, /href=\{`\/agents\/\$\{encodeURIComponent\(agent\.id\)\}`\}/);
+    assert.match(home, /router\.replace\(`\/agents\/\$\{encodeURIComponent\(first\.id\)\}/);
+    assert.match(rail, /router\.push\(`\/agents\/\$\{encodeURIComponent\(agent\.id\)\}`\)/);
+    assert.match(home, /<AgentRail/);
+    assert.match(shell, /<AgentRail/);
   });
 
   test('zero-Agent and invalid-Agent states remain explicit', () => {
@@ -96,6 +99,22 @@ try {
     assert.match(shell, />Config<\/Link>/);
     assert.match(shell, /aria-current=\{selectedTab \? 'page'/);
     assert.match(shell, /Runtime and availability/);
+    for (const behavior of ['Hidden', 'Mark as Unread', 'Rename Agent', 'Hide from sidebar', 'Delete agent…', 'ArrowDown', 'onContextMenu']) {
+      assert.ok(rail.includes(behavior), behavior);
+    }
+  });
+
+  test('shell refreshes roster, runtime, availability, and work without navigation', () => {
+    assert.match(shell, /setInterval\(\(\) => \{ void load\(isCancelled\); \}, 2000\)/);
+    assert.match(shell, /fetch\('\/api\/bots'/);
+    assert.match(shell, /\/overview`/);
+  });
+
+  test('delete confirmation survives the Overview redirect', () => {
+    assert.match(home, /deletedCountRef\.current = deleted/);
+    assert.match(home, /\?deleted=\$\{deleted\}/);
+    assert.match(shell, /Number\(searchParams\.get\('deleted'\)\)/);
+    assert.match(shell, /deleted > 0 \? deletedStatusLine\(deleted\) : ''/);
   });
 
   test('legacy conversation, exchange, session, and Config deep links remain reachable', () => {
@@ -120,6 +139,12 @@ try {
     assert.equal(/token|grant_secret|provider_session_id|working_directory|model/i.test(dtoShape), false);
     assert.equal(overviewPage.includes('<select'), false);
     assert.equal(/label[^>]*>\s*(Runtime|Model|Provider session)/i.test(overviewPage), false);
+  });
+
+  test('release-check workflow runs the focused Agent-home and roster suites', () => {
+    assert.match(workflow, /npm run test:agent-home/);
+    assert.match(workflow, /npm run test:roster-a11y/);
+    assert.match(workflow, /npm run release:check/);
   });
 } finally {
   dbModule.default.close();

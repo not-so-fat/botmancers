@@ -1,28 +1,13 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import Image from 'next/image';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import { useParams, usePathname } from 'next/navigation';
+import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import BotAvatar from '@/app/components/BotAvatar';
+import AgentRail, { type RailAgent } from '@/app/components/AgentRail';
 import type { AgentOverviewDto } from '@/lib/agent-overview';
 import { agentLabel } from '@/lib/bot-definition';
-
-interface RailAgent {
-  id: string;
-  name: string;
-  title: string;
-  hidden?: number;
-  pinned?: number;
-  avatar?: string | null;
-  avatar_color?: string | null;
-  avatar_eyes?: string | null;
-  avatar_hands?: string | null;
-  avatar_accessory?: string | null;
-  launchable?: boolean | null;
-  runtime_connection?: { label: string } | null;
-  agent?: string | null;
-}
+import { deletedStatusLine } from '@/lib/bot-deletion';
 
 interface AgentContextValue {
   id: string;
@@ -52,91 +37,79 @@ export default function AgentShell({ children }: { children: ReactNode }) {
   const params = useParams<{ id: string }>();
   const id = String(params.id ?? '');
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [agents, setAgents] = useState<RailAgent[]>([]);
   const [overview, setOverview] = useState<AgentOverviewDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  const [rosterStatus, setRosterStatus] = useState(() => {
+    const deleted = Number(searchParams.get('deleted')) || 0;
+    return deleted > 0 ? deletedStatusLine(deleted) : '';
+  });
+  const [beatClock, setBeatClock] = useState({ serverNow: 0, fetchedAt: 0 });
+  const [now, setNow] = useState(() => Date.now());
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      fetch('/api/bots', { cache: 'no-store' }).then(response => response.ok ? response.json() : []),
-      fetch(`/api/bots/${encodeURIComponent(id)}/overview`, { cache: 'no-store' }),
-    ]).then(async ([agentRows, response]) => {
-      if (cancelled) return;
+  const load = useCallback(async (cancelled: () => boolean) => {
+    try {
+      const [agentsResponse, response] = await Promise.all([
+        fetch('/api/bots', { cache: 'no-store' }),
+        fetch(`/api/bots/${encodeURIComponent(id)}/overview`, { cache: 'no-store' }),
+      ]);
+      const agentRows = agentsResponse.ok ? await agentsResponse.json() : [];
+      if (cancelled()) return;
       setAgents(Array.isArray(agentRows) ? agentRows : []);
+      const headerNow = Date.parse(agentsResponse.headers.get('date') || '');
+      setBeatClock({ serverNow: Number.isNaN(headerNow) ? Date.now() : headerNow, fetchedAt: Date.now() });
       if (response.status === 404) {
         setNotFound(true);
         setOverview(null);
+        setError(false);
         return;
       }
       if (!response.ok) throw new Error('overview request failed');
-      setOverview(await response.json() as AgentOverviewDto);
+      const nextOverview = await response.json() as AgentOverviewDto;
+      if (cancelled()) return;
+      setOverview(nextOverview);
       setNotFound(false);
       setError(false);
-    }).catch(() => {
-      if (!cancelled) setError(true);
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
-    return () => { cancelled = true; };
+    } catch {
+      if (!cancelled()) setError(true);
+    } finally {
+      if (!cancelled()) setLoading(false);
+    }
   }, [id]);
 
-  const visibleAgents = agents
-    .filter(agent => !agent.hidden)
-    .sort((a, b) => {
-      const rank = (agent: RailAgent) => agent.name.toLowerCase() === 'chief-of-staff' ? 0 : agent.pinned ? 1 : 2;
-      return rank(a) - rank(b);
-    });
+  useEffect(() => {
+    let cancelled = false;
+    const isCancelled = () => cancelled;
+    const initialTimer = window.setTimeout(() => { void load(isCancelled); }, 0);
+    const refreshTimer = window.setInterval(() => { void load(isCancelled); }, 2000);
+    const clockTimer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => { cancelled = true; window.clearTimeout(initialTimer); window.clearInterval(refreshTimer); window.clearInterval(clockTimer); };
+  }, [load]);
+
   const selected = overview?.agent;
   const runtime = overview?.runtime;
 
   return (
     <AgentContext.Provider value={{ id, overview, loading, error, notFound }}>
       <div className="field agent-field">
-        <aside className="rail agent-rail">
-          <Link href="/" className="brand agent-brand" aria-label="Botmancers home">
-            <span className="logo-shape"><Image src="/brand/botmancers-logo-filled-256.png" alt="" width={40} height={40} /></span>
-            <span className="logo-word">botmancers</span>
-          </Link>
-          <div className="bar">
-            <Link className="add-btn" href="/?new=1">New</Link>
-            {visibleAgents.length ? <Link className="add-btn" href="/?manage=1">Manage agents</Link> : null}
-            <Link className="add-btn settings-link" href="/settings">Settings</Link>
-          </div>
-          <nav className="rail-nav" aria-label="Workspace">
-            <Link href="/exchanges" className="add-btn rail-nav-link">Exchanges</Link>
-          </nav>
-          <div className="roster" aria-label="Agents">
-            {visibleAgents.map(agent => (
-              <div className={agent.id === id ? 'bot-row is-open' : 'bot-row'} key={agent.id}>
-                <span className="mark-avatar mark-avatar-sm"><BotAvatar bot={agent} size={36} title={`${agent.name} avatar`} /></span>
-                <div className="bot-copy">
-                  <Link
-                    href={`/agents/${encodeURIComponent(agent.id)}`}
-                    className="bot-name row-open agent-row-link"
-                    data-open-agent={agent.id}
-                    aria-current={agent.id === id ? 'page' : undefined}
-                  >
-                    {agent.name}
-                  </Link>
-                  <div className="bot-runtime">
-                    Agent: {agentLabel(agent.agent)} · {agent.runtime_connection?.label || 'No connection'}
-                  </div>
-                </div>
-                <details className="agent-row-menu">
-                  <summary className="row-actions" aria-label={`Actions for ${agent.name}`}>⋯</summary>
-                  <div className="agent-row-menu-popover">
-                    <Link href={`/?agent=${encodeURIComponent(agent.id)}`}>Message</Link>
-                    <Link href={`/bots/${encodeURIComponent(agent.id)}/config`}>Config</Link>
-                    <Link href="/?manage=1">Manage agent</Link>
-                  </div>
-                </details>
-              </div>
-            ))}
-          </div>
-        </aside>
+        <AgentRail
+          agents={agents}
+          activeAgentId={id}
+          beatClock={beatClock}
+          now={now}
+          status={rosterStatus}
+          onAgentsChange={setAgents}
+          onNew={() => router.push('/?new=1')}
+          onManage={() => router.push('/?manage=1')}
+          onDeleted={deleted => {
+            setRosterStatus(deletedStatusLine(deleted.length));
+            if (deleted.some(agent => agent.id === id)) router.replace(`/?deleted=${deleted.length}`);
+          }}
+        />
 
         <section className="pane agent-pane">
           <header className="agent-shell-header">

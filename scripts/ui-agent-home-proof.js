@@ -54,8 +54,18 @@ async function main() {
     check(!state.composer, `${viewport.name}: no ambient composer`);
     check(state.selected === 'Overview' && ['Overview','Sessions','Conversations','Slack','Activity','Config'].every(label => state.tabs.includes(label)), `${viewport.name}: complete nav with selected-tab semantics`);
     check(!state.overflow, `${viewport.name}: no horizontal viewport overflow`);
-    const focus = await evaluate(`(() => { const a = document.querySelector('.agent-tabs a'); a.focus(); const s = getComputedStyle(a); return { visible: a.matches(':focus-visible'), outline: s.outlineStyle, label: a.textContent.trim() }; })()`);
-    check(focus.label === 'Overview' && focus.visible && focus.outline !== 'none', `${viewport.name}: keyboard focus is visible`);
+    await evaluate(`document.activeElement instanceof HTMLElement && document.activeElement.blur()`);
+    let reachedNav = false; let reachedUseAction = false; let visibleFocus = false;
+    for (let tab = 0; tab < 80 && !(reachedNav && reachedUseAction); tab++) {
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+      const focus = await evaluate(`(() => { const a = document.activeElement; if (!(a instanceof HTMLElement)) return {}; const s = getComputedStyle(a); return { nav: a.matches('.agent-tabs a'), use: a.matches('.agent-primary-action'), visible: a.matches(':focus-visible') && s.outlineStyle !== 'none' }; })()`);
+      if (focus.nav) reachedNav = true;
+      if (focus.use) reachedUseAction = true;
+      if ((focus.nav || focus.use) && focus.visible) visibleFocus = true;
+    }
+    check(reachedNav && reachedUseAction, `${viewport.name}: Tab traversal reaches Agent nav and use-path action`);
+    check(visibleFocus, `${viewport.name}: keyboard focus is visible during Tab traversal`);
     const png = Buffer.from((await cdp.send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
     const file = path.join(OUT, `${viewport.name}.png`); fs.writeFileSync(file, png);
     screenshots.push({ file, viewport: `${viewport.width}x${viewport.height}`, sha256: crypto.createHash('sha256').update(png).digest('hex') });

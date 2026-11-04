@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useAgentOverview } from './AgentShell';
+import { agentLabel } from '@/lib/bot-definition';
 
 const CAPABILITY_LABELS: Record<string, string> = {
   'agents:read': 'Discoverable to connected coding agents',
@@ -44,7 +45,6 @@ export default function AgentOverviewPage() {
       <section className="agent-hero">
         <p className="agent-eyebrow">Overview</p>
         <h2>{overview.agent.role}</h2>
-        <p>{overview.instructions.rules}</p>
         <ul className="agent-capabilities" aria-label="Capabilities">
           {overview.capabilities.map(capability => <li key={capability}>{CAPABILITY_LABELS[capability] || capability}</li>)}
         </ul>
@@ -62,7 +62,7 @@ export default function AgentOverviewPage() {
         <section className="agent-panel">
           <div className="agent-panel-head"><div><p className="agent-eyebrow">Runtime</p><h2>{overview.runtime.available ? 'Ready to work' : 'Setup required'}</h2></div><Link href={configHref}>Config</Link></div>
           <p>{overview.runtime.available
-            ? `${overview.runtime.agent} is connected through ${overview.runtime.connection || 'the configured runtime'}.`
+            ? `${agentLabel(overview.runtime.agent)} is connected through ${overview.runtime.connection || 'the configured runtime'}.`
             : 'This Agent cannot launch with its current registration. Open Config to resolve the connection or session scope.'}</p>
           <dl className="agent-runtime-facts">
             <div><dt>Heartbeat</dt><dd>{overview.runtime.last_seen ? new Date(overview.runtime.last_seen).toLocaleString() : 'Not reported'}</dd></div>
