@@ -234,6 +234,57 @@ async function main() {
   assert(typeof afterRefresh.json.sync.synced_at === 'number' && afterRefresh.json.sync.synced_at > before,
     'Refresh updates the last-synced time');
 
+  console.log('\nRetry with an unavailable CLI keeps the failure state');
+  const missingCliConn = runtimeConnections.create({ provider: 'codex', label: 'codex missing cli', host: 'Test' }).id;
+  contract.registerSessionProvider({ connectionId: missingCliConn }, () => ({
+    kind: 'fake-missing-cli',
+    capabilities: () => ({ list: true, search: false, read: false, resume: false, start: false, cancel: false, usage: false, authorities: [], max_page_size: 25 }),
+    async ready() { return { ok: false, error: { code: 'unavailable', message: 'codex is not installed' } }; },
+    async listSessions() { throw new Error('must not list when the CLI is missing'); },
+  }));
+  const missingCliReg = await registerAgent({
+    name: 'SyncUI missing CLI', runtime_connection_id: missingCliConn,
+    session_scope: { kind: 'all_provider_sessions' }, policy: READ_ONLY,
+  });
+  const missingCliId = missingCliReg.json && missingCliReg.json.id;
+  assert(missingCliReg.status === 200 && missingCliReg.json.session_sync
+    && missingCliReg.json.session_sync.outcome === 'failed' && missingCliReg.json.session_sync.error_code === 'provider_unavailable',
+    `missing CLI registers failed with provider_unavailable (${JSON.stringify(missingCliReg.json.session_sync)})`);
+  const missingCliList = await listSessions(missingCliId);
+  assert(missingCliList.status === 200 && missingCliList.json.sync.last_error_code === 'provider_unavailable'
+    && missingCliList.json.sessions.length === 0,
+    `missing CLI lists empty with its error (${JSON.stringify(missingCliList.json.sync)})`);
+  const retry = await postSync(missingCliId);
+  assert(retry.status === 500, `Retry answers 500, not an empty success (${retry.status} ${JSON.stringify(retry.json)})`);
+  const afterRetry = await listSessions(missingCliId);
+  assert(afterRetry.json.sync.last_error_code === 'provider_unavailable' && afterRetry.json.sync.synced_at === null
+    && afterRetry.json.sync.out_of_scope_count === null && afterRetry.json.sessions.length === 0,
+    `Retry preserves the failure state (${JSON.stringify(afterRetry.json.sync)})`);
+  const retryCopy = view.emptySessionsCopy('all', 'SyncUI missing CLI', afterRetry.json.sync, 'Codex');
+  assert(/Could not read Codex sessions/.test(retryCopy) && /codex is not installed/.test(retryCopy),
+    `the drawer still shows the reason after Retry (${retryCopy})`);
+
+  console.log('\nA missing scope is a failure, never an empty success');
+  const unscoped = bots.create({
+    name: 'SyncUI unscoped', title: '', description: '', agent: 'codex', runtime_connection_id: scopedConn,
+    session_scope_kind: 'all_provider_sessions', session_scope_items: JSON.stringify([]),
+    policy_mode: 'read_only', allow_new_sessions: 1, allow_resume_with_edits: 0,
+  });
+  db.prepare('UPDATE bots SET session_scope_kind = NULL, session_scope_items = NULL WHERE id = ?').run(unscoped.id);
+  const unscopedSync = await postSync(unscoped.id);
+  assert(unscopedSync.status === 500, `unscoped Refresh answers 500 (${unscopedSync.status})`);
+  const unscopedList = await listSessions(unscoped.id);
+  assert(unscopedList.json.sync.last_error_code === 'scope_missing' && unscopedList.json.sessions.length === 0,
+    `unscoped Agent reports scope_missing (${JSON.stringify(unscopedList.json.sync)})`);
+  assert(/no session scope is set/.test(view.emptySessionsCopy('all', 'SyncUI unscoped', unscopedList.json.sync)),
+    'the drawer keeps its no-scope copy after Refresh');
+
+  console.log('\nAn Agent with no session provider still syncs empty');
+  const hermesSync = await postSync(emptyReg.json.id);
+  assert(hermesSync.status === 200 && Array.isArray(hermesSync.json.imported) && hermesSync.json.imported.length === 0
+    && Array.isArray(hermesSync.json.updated) && hermesSync.json.updated.length === 0,
+    `Hermes Refresh is an empty success (${hermesSync.status} ${JSON.stringify({ imported: hermesSync.json.imported, updated: hermesSync.json.updated })})`);
+
   console.log('\nKeyboard and announcement contract (source)');
   const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
   const panel = read('app/components/SessionsPanel.tsx');
