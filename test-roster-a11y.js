@@ -42,7 +42,7 @@ assert(/rowOpen\(bot\)/.test(row), 'agent rows render rowOpen');
 assert(!/<button/.test(roster + row), 'row containers hold no inline buttons (controls come from rowOpen/rowActions)');
 const open = between('const rowOpen = ', 'const rowActions = ');
 assert(/<button\s+type="button"\s+className="bot-name row-open"/.test(open), 'rowOpen renders a <button type="button" className="bot-name row-open">');
-assert(/data-open-bot=\{bot\.id\}/.test(open) && /onClick=\{\(\) => openBot\(bot\.id\)\}/.test(open), 'rowOpen opens the agent and is addressable for focus restore');
+assert(/data-open-bot=\{bot\.id\}/.test(open) && /router\.push\(`\/agents\/\$\{encodeURIComponent\(bot\.id\)\}`\)/.test(open), 'rowOpen opens the Agent Overview and is addressable for focus restore');
 assert(/aria-current=/.test(open), 'rowOpen marks the open agent with aria-current');
 assert(/>\s*\{bot\.name\}\s*<\/button>/.test(open), 'rowOpen is named by the agent name only');
 assert(!/rowActions|<button[\s\S]*<button/.test(open), 'rowOpen nests no other interactive control');

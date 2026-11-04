@@ -3,6 +3,7 @@
 import { Fragment, useState, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
+import { useRouter } from 'next/navigation';
 import { parseRun, runLine } from '@/lib/run';
 import BotAvatar from '@/app/components/BotAvatar';
 import type { AvatarConfig } from '@/lib/avatar';
@@ -182,11 +183,13 @@ function messagePicture(content: string) {
 }
 
 export default function Home() {
+  const router = useRouter();
   const [bots, setBots] = useState<Bot[]>([]);
   const [botsLoaded, setBotsLoaded] = useState(false);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
   const linkedAgentRef = useRef<string | null>(null);
+  const linkedSessionsRef = useRef(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [notices, setNotices] = useState<WakeNoticeItem[]>([]);
   const [exchangeCards, setExchangeCards] = useState<ExchangeSummary[]>([]);
@@ -246,6 +249,15 @@ export default function Home() {
       return;
     }
     const query = new URLSearchParams(window.location.search);
+    if (query.get('new') === '1') {
+      defaulted.current = true;
+      window.setTimeout(() => setShowBotModal(true), 0);
+      window.history.replaceState(null, '', '/');
+    } else if (query.get('manage') === '1') {
+      defaulted.current = true;
+      window.setTimeout(() => setManageOpen(true), 0);
+      window.history.replaceState(null, '', '/');
+    }
     const deleted = Number(query.get('deleted'));
     if (deleted > 0) window.history.replaceState(null, '', '/');
     // NOT-498: an Agent Exchanges backlink opens that Agent's thread and
@@ -253,6 +265,7 @@ export default function Home() {
     const linkedAgent = query.get('agent');
     if (linkedAgent) {
       linkedAgentRef.current = linkedAgent;
+      linkedSessionsRef.current = query.get('sessions') === '1';
       focusExchange.current = query.get('exchange');
       window.history.replaceState(null, '', '/');
     }
@@ -272,8 +285,18 @@ export default function Home() {
     const linked = bots.find(bot => bot.id === linkedAgentRef.current);
     const first = linked || [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b))[0] || bots[0];
     defaulted.current = true;
-    void openBot(first.id);
+    if (linked) {
+      void openBot(first.id);
+    } else {
+      router.replace(`/agents/${encodeURIComponent(first.id)}`);
+    }
   }, [bots, activeConversation]);
+
+  useEffect(() => {
+    if (!activeConversation || !linkedSessionsRef.current) return;
+    linkedSessionsRef.current = false;
+    setSessionsOpen(true);
+  }, [activeConversation]);
 
 
   useEffect(() => {
@@ -708,7 +731,7 @@ export default function Home() {
       className="bot-name row-open"
       data-open-bot={bot.id}
       aria-current={activeConversation?.details.id === bot.id ? 'true' : undefined}
-      onClick={() => openBot(bot.id)}
+      onClick={() => router.push(`/agents/${encodeURIComponent(bot.id)}`)}
       style={style}
     >
       {bot.name}
