@@ -8,7 +8,8 @@
 //   last activity, and origin; the Active/Ended filters narrow the list;
 // - no drawer content is clipped or overflows horizontally, the drawer fits
 //   the viewport, and no external provider session id is anywhere in the
-//   default page (text or DOM); the drawer has no text input;
+//   default page (text or DOM); the drawer's only text input is the title
+//   search box (NOT-548), never a raw ID entry;
 // - Details lists the runs in the session; Escape closes and focus returns
 //   to Sessions;
 // - the origin link opens the source thread (Tank), whose own Sessions view
@@ -218,7 +219,7 @@ async function run() {
       'a request-only binding shows its Work Request\'s source thread');
     check(!!convOnly && convOnly.meta.Origin === 'Tank thread' && convOnly.meta['Work request'] === 'Review · completed' && convOnly.meta.Workspace === '/Users/owner/work/botmancers',
       'a conversation-only binding shows its source Attempt\'s Work Request and workspace');
-    check(await evaluate("document.querySelectorAll('.sessions-drawer input, .sessions-drawer textarea, .sessions-drawer [contenteditable]').length === 0"), 'no raw ID entry in the drawer');
+    check(await evaluate("document.querySelectorAll('.sessions-drawer textarea, .sessions-drawer [contenteditable]').length === 0 && Array.from(document.querySelectorAll('.sessions-drawer input')).every(el => el.type === 'search' && el.getAttribute('aria-label') === 'Search sessions by title')"), 'no raw ID entry in the drawer (only the title search box)');
     await noSecrets('All');
     await layout(vp, 'All');
     await shot(vp, 'sessions-all');
