@@ -7,6 +7,30 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-04
+
+### Added
+
+- Past-session history is synced when an Agent is registered, for every
+  provider that can list sessions (not only Claude Code). A listing failure
+  is logged and never rolls back the registration.
+- The session catalog stays fresh: a scheduled sync runs at startup and then
+  every `BOTMANCERS_SESSION_SYNC_INTERVAL_MS` (default 900000, `0` disables),
+  and `POST /api/bots/:id/sessions/sync` runs one guarded manual sync (409
+  `sync_in_progress` when one is already running).
+- Sessions the provider no longer reports are marked as missing instead of
+  being left looking live.
+- The Sessions drawer shows the last sync time with a Refresh button, and its
+  empty states say why it is empty: never synced, sync failed (with Retry),
+  none in scope, or none exist.
+- The Sessions drawer is paged (50 rows by default, Load more) and has a title
+  search and a workspace filter, with a readable title on every row.
+
+### Changed
+
+- Documentation: user flows and the README install section were rewritten and
+  outdated docs removed.
+
 ## [0.7.0] - 2026-11-03
 
 ### Changed
