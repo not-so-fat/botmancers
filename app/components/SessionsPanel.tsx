@@ -94,6 +94,7 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const listSeqRef = useRef(0);
+  const [cursorScope, setCursorScope] = useState('');
   const lastQueryRef = useRef('');
   const workspaceKeyRef = useRef('');
   const providerLabel = agentProvider ? agentLabel(agentProvider) || undefined : undefined;
@@ -149,6 +150,11 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
           setRows(page);
           setSync(body?.sync && typeof body.sync === 'object' ? body.sync as SessionSyncState : null);
           setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
+          // The cursor belongs to this fetch's filters. Load more only
+          // fires while the live filters still match, so a click inside
+          // the search debounce window cannot pair a new query with the
+          // previous filter set's cursor.
+          setCursorScope(`${agentId}\n${filter}\n${query.trim()}\n${workspaceFilter}`);
           setLoadError('');
           // The workspace options accumulate every workspace seen under
           // this Agent and status filter, so narrowing by search or
@@ -169,20 +175,23 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
 
   // NOT-548: Load more appends the next page. A page that arrives after
   // the filters changed is dropped: the fresh first page already replaced
-  // the list it would have extended.
+  // the list it would have extended. A stale failure (for example a
+  // cursor from the previous filter set) never surfaces an error.
+  const listScope = `${agentId}\n${filter}\n${query.trim()}\n${workspaceFilter}`;
+  const cursorLive = nextCursor !== null && cursorScope === listScope;
   const doLoadMore = useCallback(async () => {
-    if (loadingMore || !rows || !nextCursor) return;
+    if (loadingMore || !rows || !nextCursor || cursorScope !== listScope) return;
     setLoadingMore(true);
     const base = rows;
     const seq = listSeqRef.current;
     try {
       const res = await fetch(sessionsListUrl(agentId, filter, query, workspaceFilter, nextCursor), { cache: 'no-store' });
       const body = await res.json().catch(() => null);
+      if (listSeqRef.current !== seq) return;
       if (!res.ok || !Array.isArray(body?.sessions)) {
         setLoadError('Could not load more sessions.');
         return;
       }
-      if (listSeqRef.current !== seq) return;
       const page = body.sessions as SessionRow[];
       setRows([...base, ...page]);
       setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
@@ -190,11 +199,11 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
       const seen = page.map(row => row.context.workspace).filter((w): w is string => !!w);
       if (seen.length > 0) setWorkspaceOpts(prev => [...new Set([...prev, ...seen])]);
     } catch {
-      setLoadError('Could not load more sessions.');
+      if (listSeqRef.current === seq) setLoadError('Could not load more sessions.');
     } finally {
       setLoadingMore(false);
     }
-  }, [agentId, filter, query, workspaceFilter, loadingMore, rows, nextCursor]);
+  }, [agentId, filter, query, workspaceFilter, loadingMore, rows, nextCursor, listScope, cursorScope]);
 
   // NOT-547: manual refresh. Disabled while a sync runs; the imported
   // and updated counts are announced, then the list and sync state reload.
@@ -389,7 +398,7 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
             ))}
           </ul>
         ) : null}
-        {rows && rows.length > 0 && nextCursor ? (
+        {rows && rows.length > 0 && cursorLive ? (
           <div className="sessions-more">
             <button type="button" className="sessions-filter-btn" onClick={() => { void doLoadMore(); }} disabled={loadingMore}>
               {loadingMore ? 'Loading…' : 'Load more'}
