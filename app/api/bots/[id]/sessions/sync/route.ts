@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { agentExists } from '@/lib/session-catalog';
-import { ProviderSessionError, syncAgentSessionHistory } from '@/lib/provider-sessions';
+import { ProviderSessionError, recordSyncCompleted, recordSyncFailed, syncAgentSessionHistory } from '@/lib/provider-sessions';
 import { agentSessionsSyncedAt, endAgentSync, tryBeginAgentSync } from '@/lib/session-sync-refresh';
 
 // NOT-545: the owner's manual refresh of one Agent's session catalog. Runs
@@ -26,6 +26,13 @@ export async function POST(
     }
     try {
       const synced = await syncAgentSessionHistory(db, id);
+      // NOT-547: the drawer reads the last outcome from GET .../sessions.
+      recordSyncCompleted(db, id, {
+        imported: synced.imported.length,
+        rejected_out_of_scope: synced.rejected_out_of_scope,
+        complete: synced.complete,
+        now: Date.now(),
+      });
       return NextResponse.json({
         imported: synced.imported,
         updated: synced.updated,
@@ -44,6 +51,7 @@ export async function POST(
         // Nothing to sync from: the Agent has no session provider, the
         // provider cannot list, or no scope selects anything. An empty
         // sync, not a failure.
+        recordSyncCompleted(db, id, { imported: 0, rejected_out_of_scope: 0, complete: true, now: Date.now() });
         return NextResponse.json({
           imported: [],
           updated: [],
@@ -52,6 +60,12 @@ export async function POST(
           synced_at: agentSessionsSyncedAt(db, id),
         });
       }
+      try {
+        recordSyncFailed(db, id, {
+          error_code: error instanceof ProviderSessionError ? error.code : 'provider_failed',
+          now: Date.now(),
+        });
+      } catch { /* the sync error itself is the response; a broken audit must not mask it */ }
       throw error;
     } finally {
       endAgentSync(id);

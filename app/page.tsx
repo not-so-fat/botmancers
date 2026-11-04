@@ -37,6 +37,8 @@ import WakeNotice from '@/app/components/WakeNotice';
 import { wakeNotices, type WakeEventView, type WakeNotice as WakeNoticeItem } from '@/lib/wake-notice';
 import ExchangeCard from '@/app/components/ExchangeCard';
 import type { ExchangeSummary } from '@/lib/exchange-view';
+import { registrationSessionSyncCopy, type RegistrationSessionSync } from '@/lib/session-view';
+import { agentLabel } from '@/lib/bot-definition';
 
 interface Bot {
   id: string;
@@ -1286,6 +1288,7 @@ export default function Home() {
           key={activeConversation.details.id}
           agentId={activeConversation.details.id}
           agentName={activeConversation.details.name}
+          agentProvider={activeConversation.details.agent ?? undefined}
           agents={bots.map(bot => ({ id: bot.id, name: bot.name }))}
           origin={{ conversationId: activeConversation.id, label: `${activeConversation.details.name} thread` }}
           onExchangeStarted={() => { void loadMessages(); }}
@@ -1514,10 +1517,12 @@ function BotModal({ anchorRef, onClose, onCreated }: {
   const [botError, setBotError] = useState('');
   const [showErrors, setShowErrors] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [createdSync, setCreatedSync] = useState<{ line: string; agentName: string } | null>(null);
   const connections = useRuntimeConnections();
   const [placement, setPlacement] = useState<DialogPlacement | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const doneRef = useRef<HTMLButtonElement>(null);
 
   // Anchor under New; re-place when the viewport changes.
   useLayoutEffect(() => {
@@ -1536,6 +1541,10 @@ function BotModal({ anchorRef, onClose, onCreated }: {
   useEffect(() => {
     nameRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (createdSync) doneRef.current?.focus();
+  }, [createdSync]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1573,17 +1582,30 @@ function BotModal({ anchorRef, onClose, onCreated }: {
     }
     setBotError('');
     setSubmitting(true);
-    const res = await fetch('/api/bots', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registrationCreateBody(name, form)),
-    }).finally(() => setSubmitting(false));
+    let res: Response;
+    try {
+      res = await fetch('/api/bots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registrationCreateBody(name, form)),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+    const body = await res.json().catch(() => null);
     if (!res.ok) {
-      const body = await res.json().catch(() => null);
       setBotError(typeof body?.error === 'string' && body.error ? body.error : 'Failed to create agent');
       return;
     }
-    onCreated();
+    // NOT-547: one line with the registration sync result. An older
+    // server without session_sync keeps the old immediate close.
+    const sync = body?.session_sync as RegistrationSessionSync | undefined;
+    if (!sync || typeof sync.outcome !== 'string') {
+      onCreated();
+      return;
+    }
+    const provider = typeof body?.agent === 'string' ? agentLabel(body.agent) : 'Sessions';
+    setCreatedSync({ line: registrationSessionSyncCopy(sync, provider), agentName: typeof body?.name === 'string' ? body.name : name });
   };
 
   return (
@@ -1599,6 +1621,18 @@ function BotModal({ anchorRef, onClose, onCreated }: {
         <div className="kind-row">
           <h2 id="new-agent-title" className="kind-word new-agent-title">New Agent</h2>
         </div>
+        {createdSync ? (
+          <div className="bot-form">
+            <div className="new-agent-body">
+              <p role="status">{createdSync.agentName} created. {createdSync.line}</p>
+            </div>
+            <div className="form-actions">
+              <button ref={doneRef} type="button" className="create-btn" onClick={onCreated}>
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleBot} className="bot-form">
           <div className="new-agent-body">
           <label htmlFor="bot-name">Name</label>
@@ -1627,6 +1661,7 @@ function BotModal({ anchorRef, onClose, onCreated }: {
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   );
