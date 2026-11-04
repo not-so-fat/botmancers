@@ -61,6 +61,10 @@ jobs:
           npm run test:engine-store
           npm run test:service-grants
           npm run test:mcp-bridge
+      - name: Focused registration session sync suite (NOT-544)
+        working-directory: .
+        run: |
+          npm run test:registration-session-sync
       - name: Focused Claude provider and direct cutover suites (NOT-506, NOT-543)
         working-directory: .
         run: |

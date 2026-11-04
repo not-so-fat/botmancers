@@ -11,7 +11,7 @@ import {
 } from '@/lib/agent-registration';
 import { validateAvatarInput } from '@/lib/avatar';
 import { AgentNameConflictError, agentNameConflictBody } from '@/lib/agent-names';
-import { syncAgentSessionHistory } from '@/lib/provider-sessions';
+import { syncHistoryAtRegistration } from '@/lib/provider-sessions';
 
 export async function GET() {
   try {
@@ -93,17 +93,21 @@ export async function POST(request: Request) {
       avatar_accessory: avatarConfig.fields.avatar_accessory ?? null,
     });
 
-    // Claude Code keeps past conversations in its local session store. Load
-    // every in-scope page as part of registration so the new Agent's Sessions
-    // drawer and message routing can use that history immediately. Discovery
-    // is read-only and never starts Claude; a missing/unavailable store must
-    // not roll back an otherwise valid Agent registration.
-    if (selection.provider === 'claude') {
-      try {
-        await syncAgentSessionHistory(db, bot.id);
-      } catch (error) {
-        console.warn('Claude session history was not available during Agent registration.', error);
+    // NOT-544: past conversations live in the runtime's local session
+    // store. Load every in-scope page as part of registration so the new
+    // Agent's Sessions drawer and message routing can use that history
+    // immediately, for every provider that can list. Discovery is read-only
+    // and never starts the provider; a missing/unavailable store must not
+    // roll back an otherwise valid Agent registration. Providers without
+    // the list capability (and Hermes, which has no session provider) are
+    // skipped.
+    try {
+      const history = await syncHistoryAtRegistration(db, bot.id);
+      if (history.outcome === 'failed') {
+        console.warn('Session history was not available during Agent registration.', history.error_code);
       }
+    } catch (error) {
+      console.warn('Session history was not available during Agent registration.', error);
     }
     const conversation = conversations.getByBotId(bot.id);
     if (conversation) {
