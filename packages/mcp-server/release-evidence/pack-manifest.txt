@@ -1,15 +1,15 @@
-commit 5060c5bb85fddeb5ea255b36228d888aa652908e
-botmancers@0.6.1  botmancers-0.6.1.tgz
-size 19832911 B, unpacked 59172929 B, 2442 files
-shasum 61f0f74010243db094c3b90c11e3491c9b231b23
-integrity sha512-K8JZY3mQBDa7dc6VpRRKJCbjqcypFXhVpeGHAv4xJ8Xh2yNs7Grzky2i8Hrjzfl38F2XeoEZmnX8zyrfjH/eLg==
-app build 0.6.1 commit 5060c5bb85fddeb5ea255b36228d888aa652908e, next 16.3.8
+commit 8d954a598c7e0287853fa9ade1d32239ca6a0b36
+botmancers@0.7.0  botmancers-0.7.0.tgz
+size 19879721 B, unpacked 59234879 B, 2426 files
+shasum ae18317dcc46a94046f20025942dd4c0545ebb17
+integrity sha512-77NSEsApvEXxhv+2NEP3QITQIxPV6hQqc99QIIJ9TWKjaT8U8OxoaBcq9HhDRTVOtV4XX80BKgfpnw2LwL9YBw==
+app build 0.7.0 commit 8d954a598c7e0287853fa9ade1d32239ca6a0b36, next 16.3.8
      143  app/BUILD_INFO.json
       94  app/package.json
     7520  app/server.js
-   12004  CHANGELOG.md
-    3136  dist/cli.d.ts
-   11862  dist/cli.js
+   13450  CHANGELOG.md
+    3137  dist/cli.d.ts
+   11863  dist/cli.js
     3248  dist/clients.d.ts
    30465  dist/clients.js
     1120  dist/config.d.ts
@@ -22,35 +22,35 @@ app build 0.6.1 commit 5060c5bb85fddeb5ea255b36228d888aa652908e, next 16.3.8
      870  dist/index.js
     6308  dist/managed.d.ts
    34597  dist/managed.js
-    4584  dist/product.d.ts
-   54987  dist/product.js
+    4513  dist/product.d.ts
+   54566  dist/product.js
      181  dist/redact.d.ts
      762  dist/redact.js
     1003  dist/server.d.ts
    11630  dist/server.js
      687  dist/setup.d.ts
-    7246  dist/setup.js
+    7207  dist/setup.js
     2092  dist/upgrade.d.ts
    13974  dist/upgrade.js
     1018  dist/upstream.d.ts
     6906  dist/upstream.js
     1071  LICENSE
-    2311  package.json
-   28561  README.md
+    2248  package.json
+   28575  README.md
    14714  schemas/botmancers.mcp.v1.tools.json
-  177252  schemas/botmancers.mcp.v2.tools.json
+  177234  schemas/botmancers.mcp.v2.tools.json
    15297  skills/botmancers-collaboration/references/workflows.md
     7296  skills/botmancers-collaboration/SKILL.md
-    4556  app/.next/app-path-routes-manifest.json  (1 files)
+    4434  app/.next/app-path-routes-manifest.json  (1 files)
       21  app/.next/BUILD_ID  (1 files)
      645  app/.next/build-manifest.json  (1 files)
      354  app/.next/node_modules/  (6 files)
       20  app/.next/package.json  (1 files)
     3969  app/.next/prerender-manifest.json  (1 files)
    10253  app/.next/required-server-files.json  (1 files)
-   17186  app/.next/routes-manifest.json  (1 files)
-22584444  app/.next/server/  (711 files)
- 1072377  app/.next/static/  (30 files)
+   16819  app/.next/routes-manifest.json  (1 files)
+22676793  app/.next/server/  (696 files)
+ 1041617  app/.next/static/  (29 files)
    11000  app/node_modules/@next/env@16.3.8  (2 files)
     4253  app/node_modules/@slack/logger@4.0.1  (2 files)
    38324  app/node_modules/@slack/socket-mode@2.0.7  (8 files)
