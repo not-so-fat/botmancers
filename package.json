@@ -47,6 +47,8 @@
     "proof:new-agent-dialog": "node scripts/new-agent-dialog-proof.js",
     "proof:agent-registration": "node scripts/agent-registration-proof.js",
     "proof:session-sync-ui": "node scripts/ui-session-sync-proof.js",
+    "proof:session-list": "node scripts/ui-session-list-proof.js",
+    "seed:session-list-fixture": "node scripts/seed-session-list-fixture.js",
     "test:brand-hierarchy": "node test-brand-hierarchy.js",
     "test:text-contrast": "node test-text-contrast.js",
     "test:config-layout": "node test-config-layout.js",
