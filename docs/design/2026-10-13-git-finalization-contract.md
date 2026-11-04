@@ -1,6 +1,10 @@
 # Git finalization for sandboxed coding-agent runs
 
-Status: accepted
+Status: **retired in 0.7.0.** Kept as the record of a removed feature: the
+direct cutover (NOT-543) deleted reviewed Git finalization, and Botmancers now
+adds no commit, PR, or worktree orchestration. Pre-cutover history still
+projects. See [core-engine.md](../core-engine.md). Do not implement from this
+document.
 
 Date: October 13, 2026
 

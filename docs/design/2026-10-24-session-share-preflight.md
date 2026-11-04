@@ -1,6 +1,6 @@
 # Session shares: exact-session self-identification and the Slack relay seam
 
-Status: **proposed — decision record for NOT-514** (investigation). Merging the PR that introduces this document is the accepted revision. Nothing here is implemented except the probes, the offline reference model, and the focused test.
+Status: **accepted decision record for NOT-514** (investigation), now implemented by NOT-515 to NOT-519. The current behavior is owned by [service-grants.md](../service-grants.md), [slack-relay.md](../slack-relay.md), [slack-transport.md](../slack-transport.md), and [session-shares.md](../session-shares.md); read this record for why, not for what ships. The probes, the offline reference model, and the focused test remain.
 
 - **HEAD:** `8e19aa24e51aeb4a26bf4d9a057ae2012daadc3b`. The ticket's `2bcf469` is not in this clone.
 - **Evidence:** [identity matrix](../evidence/NOT-514/identity-matrix.json), [probe results](../evidence/NOT-514/probe-results.md), [contract sketch](../contracts/session-share-v0.sketch.json), [Slack fixtures](../contracts/slack-relay-v0.fixtures.json).

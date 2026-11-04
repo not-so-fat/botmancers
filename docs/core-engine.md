@@ -2,22 +2,33 @@
 
 Status: **authoritative product and architecture contract**
 
-Effective: October 13, 2026
+Effective: October 13, 2026 · Last aligned: November 4, 2026 (botmancers 0.7.0)
 
 Owner: Botmancers
 
-This document supersedes the earlier dual-runtime and single-runtime design
-experiments. When code, tickets, or older documents disagree with this document,
-this document is the intended product and the disagreement is migration work.
+This is the engine contract: conversations, Wakes, Work Requests, sessions,
+and their safety rules. The end-to-end journeys are in
+[USER_FLOWS.md](USER_FLOWS.md). When code, tickets, or older documents disagree
+with this document, this document is the intended product and the disagreement
+is migration work.
 
 ## Product promise
 
-Botmancers lets a developer stay in one durable conversation while configured
-agents can wake one another, perform bounded work, and return results to that same
-conversation without the developer copying prompts, outputs, or session IDs.
+Botmancers keeps a developer's coding-agent sessions reachable. Two things
+follow from that:
 
-The conversation and its wake history are the product. Runtimes, queues,
-and review loops are implementation machinery that serve that experience.
+- A person can stay in one durable conversation while configured agents wake
+  one another, perform bounded work, and return results to that same
+  conversation, without copying prompts, outputs, or session IDs.
+- A past session can be asked a question, by the owner, by another coding agent
+  over MCP, or by people in a shared Slack thread, and answers with its own
+  context ([Session catalog](#session-catalog), [Session pins](#session-pins),
+  [Session exchanges](#session-exchanges), and the sharing docs linked from
+  [USER_FLOWS.md](USER_FLOWS.md)).
+
+The conversation and its wake history are the durable record. Runtimes,
+queues, and review loops are implementation machinery that serve these two
+uses.
 
 ## Product model
 
@@ -131,8 +142,8 @@ registry (`provider_sessions`).
   Request together with that request's source conversation, and bound under
   the adapter the Agent dispatches today; a sparse request-only or
   conversation-only binding, or one left by an earlier runtime, is not
-  resumable). Workspace
-  and deck appear only when the stored launch snapshot recorded them; nothing is
+  resumable). The workspace
+  appears only when the stored launch snapshot recorded it; nothing is
   probed live.
 - **Routes.** `GET /api/bots/:id/sessions?status=active|ended|all` (newest
   activity first, then newest binding, then reference) and
@@ -159,7 +170,7 @@ registry (`provider_sessions`).
   `resumable` stays the NOT-496 engine-resume answer and is always `false`.
   The service API (`/api/v0`) carries `source` and `state` additively; the MCP
   v2 session item omits them. Both carry the additive `usage` summary
-  (Session usage, below).
+  ([Session usage](#session-usage)).
 
 ### Provider sessions
 
@@ -176,7 +187,7 @@ scoped import (`importProviderSession`) for a version that cannot list. The
 direct Codex provider is installed by default for `codex` connections
 ([integrations/codex-direct.md](integrations/codex-direct.md)); explicit
 registrations win. Muse connections get the direct Muse MSP provider
-(Direct Muse Code sessions, below; NOT-508). `AttemptAdapter` remains the
+([providers/muse.md](providers/muse.md); NOT-508). `AttemptAdapter` remains the
 per-turn seam of the Work Request engine.
 
 - **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,
@@ -228,92 +239,12 @@ per-turn seam of the Work Request engine.
   `?debug=external_session_id` on the owner detail route remains the single
   exception, for native sessions too.
 
-#### Direct Muse Code sessions
-
-`lib/muse-session-provider.ts` is the provider for runtime connections whose
-provider is `muse` (kind `muse-msp`). It speaks the stable Muse Session
-Protocol (MSP v1) to `muse serve` over stdio.
-
-- **Probe.** The `initialize` handshake supplies the Muse version, the MSP
-  envelope schema version, and session durability. Muse older than 1.4.0 or
-  a schema other than 1 is `unsupported` and reports no capability; an
-  ephemeral host can start sessions but cannot list, read, or resume them;
-  a credential failure is `auth_required` and a missing binary
-  `binary_missing` (both `provider_unavailable` to callers).
-- **Operations.** `session/list` (host cursor, bounded limit, `sessionId`
-  filter for a selected-sessions scope, `name`/`title` text filter for
-  search, refused as `unsupported` when the host does not echo it),
-  `session/read` (metadata, inline history paged locally, `lastTurn`; it
-  never attaches), `session/start` + `turn/start` in the explicit workspace,
-  `session/resume` + `turn/start` on the exact session, `turn/completed` and
-  `session/tokenUsage` notifications for observation, and `turn/cancel`.
-  Every command carries a fresh UUIDv7 `commandId`; nothing else is sent.
-- **Authority.** `muse serve` fixes its sandbox at startup, so there is one
-  host per authority: `read_only` runs with `--disable-write
-  --disable-shell`, `workspace_write` with the default posture. Approval mode
-  is `denyUnmatched`. A busy session is refused, never queued or steered.
-- **Facts.** MSP v1 has no archive state, so lifecycle is `open`;
-  resumable means a durable host persisted the session; busy means
-  `running` or an active turn. Subagent children and malformed rows are
-  skipped. Usage is `turn/completed.usage`, else the sum of the turn's
-  `session/tokenUsage` records (a field any record omits is unknown), else
-  null. MSP reports no per-turn cost, so cost is never estimated.
-- **Restart.** Muse ids stay private (the turn id is
-  `<sessionId>:<turnId>`). After a Botmancers restart, observe reads the
-  durable session: its `lastTurn` gives the terminal; a turn that died with
-  its host is `failed` with `host_lost`, and no replacement session is
-  started. Resume reloads the same session in its own workspace.
-- **Configuration.** `BOTMANCERS_MUSE_BIN` (default `muse`) and
-  `BOTMANCERS_MUSE_SERVE_ARGS` (a JSON array of extra `muse serve` flags,
-  for example `["--provider","echo"]`).
-- **Smoke.** `node scripts/muse-msp-smoke.js` imports and resumes a real
-  past session through a real `muse serve` across a Botmancers restart
-  (transcript: [evidence/NOT-508/muse-msp-smoke.md](evidence/NOT-508/muse-msp-smoke.md)).
-
 ### Session usage
 
 Sessions show the token usage and cost their providers **reported**: never
-estimated from a pricing table, a model guess, or a subscription plan, and
-never 0 unless the provider said 0.
-
-- **Samples.** Engine migration 18 adds `usage_samples`: one row per Attempt
-  (`attempt:<id>`) or provider turn (`turn:<id>`) that reached a runtime,
-  under a unique `sample_key`, with nullable `input_tokens`, `output_tokens`,
-  and `cost_usd`, the provider (the Attempt's adapter or the registry
-  row's provider kind), the structured `source` it came from
-  (`result`, `codex.turn_completed`, `normalized`, or `none`), the observed
-  time, and a `breakdown` of whitelisted numeric counters only (cache reads
-  and writes, reasoning tokens). The executor writes the sample with the
-  Attempt's terminal record (`recordAttemptResult`), an abandoned Attempt's
-  record, and a late result; restart reconciliation writes an all-unknown
-  sample for a run that died. A later write for the same key only fills a
-  metric that was still unknown: replays, late results, and a reconciled
-  Attempt after a restart never add or overwrite. A launch refused before a
-  run existed writes no sample. Earlier Attempts have none.
-- **Parsing** (`lib/usage.ts`). Codex `turn.completed` usage (tokens, no
-  cost), Claude/Cursor `result` usage with `total_cost_usd` (snake_case or
-  camelCase), and Muse-compatible normalized usage (`input_tokens`,
-  `output_tokens`, `cost_usd`, bare or under `usage`). A `result` event is
-  cumulative and wins; Codex turns add up; an event replayed with the same
-  `seq` counts once. Malformed values become unknown and unsupported or
-  missing data yields no usage; the session result is never blocked. A
-  SessionProvider reports `ProviderTurnResult.usage`.
-- **Summary.** Each metric is aggregated on its own: `sum` (null when no
-  sample reported it), `known` and `total` sample counts, and `quality`
-  `complete` (all reported), `partial` (some; the sum is a lower bound), or
-  `unavailable` (none, or no samples). A Session Binding's samples are its
-  source Attempt's, every Attempt that resumed it, and provider turns on its
-  registry row; a native session's are its provider turns.
-- **Surfaces.** Catalog summaries, `GET /api/bots/:id/sessions`, the service
-  API list and detail, and the MCP v2 `botmancers_list_sessions` item carry
-  the additive `usage` summary (optional in the v2 schema, so a client or an
-  older server that omits it stays valid). Details add `usage_samples` (one
-  per run or turn: kind, attempt number, turn kind, provider, source, the
-  three values, observed time). The raw breakdown, sample keys, and
-  provider ids are never returned. The Sessions view shows a compact row
-  total (`1.2M in · 45.7k out · $3.34`), says "Not reported" or "cost not
-  reported" for unknown values, labels partial coverage Partial with how
-  many runs reported, and lists per-run usage in Details.
+estimated, and never 0 unless the provider said 0. Samples, parsing, the
+summary quality (`complete`, `partial`, `unavailable`), and the surfaces that
+carry the additive `usage` summary are in [session-usage.md](session-usage.md).
 
 ### Session pins
 
@@ -476,12 +407,11 @@ the target is a coding Agent.
 ## Workspace writes (no Git orchestration)
 
 Direct workspace-write turns may edit the configured workspace. Botmancers
-adds no commit, PR, worktree, or remote-run orchestration: a reviewed Git
-finalization flow existed before the direct cutover and was removed with
-it. Pre-cutover finalization history still projects (see the
-`finalization_*` projection kinds), but no new finalization is written and
-no `botmancers-finalize` block is honored. The retired contract and its PoC
-evidence are in
+adds no commit, PR, worktree, or remote-run orchestration. The reviewed Git
+finalization flow was removed with the direct cutover (0.7.0): no new
+finalization is written and no `botmancers-finalize` block is honored, while
+pre-cutover history still projects (`finalization_*` kinds). The retired
+contract is kept as a record in
 [the October 13 Git-finalization decision](design/2026-10-13-git-finalization-contract.md).
 
 ## Delegation and review policy
@@ -588,7 +518,7 @@ rejected (`untracked_lineage`). Every Work Request records its root principal.
   and re-checks availability: the request is queued only if the target can launch,
   otherwise it stays blocked on availability and `retryWake` queues it later. Deny
   cancels regardless of availability. Retries re-check the grant.
-- A grant never expands the target's own Deck, working directory, or the tool
+- A grant never expands the target's own working directory or the tool
   profile of the execution kind. Revocation affects every Wake not yet accepted. The owner
   can Stop a lineage at any time, cancelling its open requests and pending
   approvals.
@@ -664,28 +594,24 @@ accounting in `delegation_chains`, one durable row per user message, so a
 restart keeps all of it. There is no separate queue table and no delegation
 state in process memory.
 
-Resolved since this contract was written:
+Already converged:
 
-- NOT-465: UI and `/api/v0` messages share one conversation intake, and the
-  pre-NOT-465 `agent_requests` dispatcher is gone.
-- NOT-469: one leased dispatcher with restart reconciliation, and global and
+- UI and `/api/v0` messages share one conversation intake; one leased
+  dispatcher runs canonical requests with restart reconciliation and global and
   per-target concurrency bounds.
-- NOT-471: implementation and revision Wakes launch with edit authority, and
-  everything else stays read-only.
-- NOT-472: canonical requests no longer reach the composite review path.
-  Wake-created requests return to their coordinator through one read-only
-  continuation turn (`lib/coordinator-loop.ts`), reviews must target an Agent
-  other than the developer, and revisions resume the implementation's Session
-  Binding.
-- NOT-475: Wake grants, depth, root budget, and the loopback owner boundary are
-  enforced.
-- NOT-477: the composite implement/review/resume helper is deleted. The
-  `agent_requests` lifecycle and the UI loop's `processing_queue` are migrated
-  into the canonical tables and archived, and the in-memory delegation-chain map
-  is replaced by `delegation_chains` (see [Persistent schema](#persistent-schema)).
-- NOT-491: `/api/v0` ships a service-token authenticator, and an MCP bridge at
-  `/api/v0/mcp` lets an external agent start a read-only task with an
-  allowlisted coordinator and poll it ([MCP bridge](mcp-bridge.md)).
+- Implementation and revision Wakes launch with edit authority; everything else
+  is read-only. Wake-created requests return to their coordinator through one
+  read-only continuation turn (`lib/coordinator-loop.ts`), reviews must target
+  an Agent other than the developer, and revisions resume the implementation's
+  Session Binding.
+- Wake grants, depth, root budget, and the loopback owner boundary are enforced
+  ([Wake safety policy](#wake-safety-policy)).
+- The composite implement/review/resume helper is gone. The old
+  `agent_requests` lifecycle and the UI loop's `processing_queue` live in the
+  canonical tables (and archives); delegation accounting is `delegation_chains`
+  (see [Persistent schema](#persistent-schema)).
+- `/api/v0` has a service-token authenticator and an MCP bridge at
+  `/api/v0/mcp` ([MCP bridge](mcp-bridge.md)).
 
 Since NOT-473, Work Requests carry a durable cancellation intent, an absolute
 deadline, and a bounded retry policy fixed at intake (`lib/request-policy.ts`,
@@ -719,7 +645,7 @@ All tables are SQLite tables in one database. The engine's tables are versioned 
 | `conversation_intakes` | One row per accepted message, keyed by the requester's idempotency key |
 | `wakes`, `wake_grants`, `wake_safety_decisions`, `terminal_followups` | Wakes, owner grants, safety decisions, and coordinator follow-ups. A follow-up is written only with the terminal transition of a dispatcher-owned request; UI turn executor requests (`ui_message`, `ui_continuation`) never get one, because the executor routes its own replies |
 | `dispatch_leases`, `dispatch_attention`, `attempt_launch_intents` | Leased dispatch and restart reconciliation |
-| `attempt_finalization_baselines`, `candidate_manifests`, `finalizations` | Reviewed Git finalization |
+| `attempt_finalization_baselines`, `candidate_manifests`, `finalizations` | Retired Git finalization (migration 10). History only; nothing new is written |
 | `conversation_events`, `conversation_projection_cursors` | Typed projection of engine events into conversations |
 | `conversations`, `messages`, `conversation_participants` | Conversations and their ordered history |
 | `delegation_chains` | Delegation accounting for UI thread turns: handoffs, delegated turns, Stop, and caller frames per user message |
@@ -728,52 +654,30 @@ All tables are SQLite tables in one database. The engine's tables are versioned 
 | `legacy_agent_requests_archive`, `legacy_agent_request_events_archive` | Evidence only. Every pre-NOT-465 `agent_requests` row and its events, verbatim. Nothing reads them except conversation deletion, which removes the conversation's rows (and their events). They exist only in databases that had the legacy tables |
 | `legacy_processing_queue_archive` | Evidence only. Every `processing_queue` row, verbatim. Nothing reads it except conversation and Agent deletion, which remove their rows. It exists only in databases that had the queue |
 
-Migration 14 (`retire_legacy_agent_requests`) copies each mappable legacy
-request into `work_requests` and keeps its original id in
-`legacy_agent_request_id`, so `/api/v0` still serves that id:
+Two older migrations moved legacy data into the canonical tables:
 
-- Completed and failed requests keep their outcome.
-- Accepted or dispatched requests that could never finish become `failed` with
-  `legacy_interrupted`.
-- Old idempotency keys replay through `conversation_intakes` when the stored
-  payload hash verifies.
+- Migration 14 (`retire_legacy_agent_requests`) copies each mappable legacy
+  request into `work_requests` and keeps its original id in
+  `legacy_agent_request_id`, so `/api/v0` still serves that id. Completed and
+  failed requests keep their outcome; ones that could never finish become
+  `failed` with `legacy_interrupted`; old idempotency keys replay through
+  `conversation_intakes` when the stored payload hash verifies. Rows that
+  cannot be mapped without guessing stay in the archive only.
+- Migration 15 (`ui_turns_on_work_requests`) adds `work_requests.executor` and
+  `delegation_chains`, hands each still-queued `processing_queue` Work Request
+  to the UI turn executor with the row's outcome (a `processing` row becomes
+  `failed` with `ui_turn_interrupted`), turns a `pending` row without a request
+  into one queued `ui_continuation`, and renames the table to
+  `legacy_processing_queue_archive`. Other rows stay in the archive only.
 
-Rows that cannot be mapped without guessing stay in the archive only: a missing
-conversation, Agent, or accepted message, or a key already held elsewhere.
+## Non-goals
 
-Migration 15 (`ui_turns_on_work_requests`) adds `work_requests.executor` and
-`delegation_chains`, then reconciles each `processing_queue` row:
-
-- A row naming a Work Request that is still `queued` gives it to the UI turn
-  executor. Its outcome becomes the request's: `pending` stays `queued`,
-  `completed` and `failed` become `completed` and `failed` at the row's times,
-  and `processing` becomes `failed` with `ui_turn_interrupted`. A request the
-  dispatcher already ran keeps its own outcome.
-- A `pending` row without a Work Request becomes one queued `ui_continuation`
-  request for the same Agent and conversation.
-- Any other row (finished loop bookkeeping, or a missing conversation or
-  Agent) stays in the archive only.
-
-Then the table is renamed to `legacy_processing_queue_archive`.
-
-## Scope now
-
-Build the smallest reliable local slice that proves:
-
-- a durable conversation can create and display a wake;
-- the wake becomes a durable Work Request;
-- a supported local Agent runs with explicit tool authority;
-- its result returns to the source conversation;
-- restart, failure, and retry preserve understandable state.
-
-Implementation/review/resume is an important composed flow, but it uses these same
-primitives and coordinator Wakes rather than defining a separate engine-owned
-workflow.
-
-## Non-goals for the core slice
+Implementation/review/resume is an important composed flow, but it uses the
+same primitives and coordinator Wakes rather than defining a separate
+engine-owned workflow.
 
 - a workflow builder, graph editor, or per-message mode picker;
-- cloud runners or a general provider abstraction;
+- cloud or remote runners (everything runs on the owner's machine);
 - separate Chat and Code identities on one Agent;
 - automatic three-stage review for every coding-Agent message;
 - an engine-owned fixed developer/reviewer loop that bypasses the coordinator;
@@ -783,15 +687,18 @@ workflow.
 
 ## Documentation policy
 
-This file is the single current core-engine authority. Product-facing README text
-should link here. Superseded design documents must carry a dated historical banner
-and point here; they may remain as decision history but must not be used as current
-requirements. Empirical proof documents may remain when clearly labeled as evidence
-from a particular date and commit.
+This file is the single current core-engine authority; [USER_FLOWS.md](USER_FLOWS.md)
+owns the end-to-end journeys, and each other doc owns its own facts (link, never
+copy). The README links to both.
 
-Delete a historical document only after confirming it contains no unique evidence
-or migration context. New core behavior belongs here first, then in execution
-tickets derived from this contract.
+A document that no longer describes shipped behavior is either deleted or
+carries a dated status line that says so ("retired", "historical", "accepted
+and implemented") and points to its owner. Do not leave a stale document
+unlabeled: it will be mistaken for current. Empirical proof may stay under
+`docs/evidence/` when it is labeled with its date and commit. Delete a
+historical document only after confirming it contains no unique evidence or
+migration context; git history keeps the rest. New core behavior belongs here
+first, then in execution tickets derived from this contract.
 
 ## Decision rule
 

@@ -8,8 +8,9 @@
 > [core-engine design](../core-engine.md#current-code-and-convergence). The
 > policy itself is unchanged.
 
-Status: **proposed — awaiting product-owner approval** (see [Approval](#approval)).
-Merging the PR that introduces this document is the accepted revision.
+Status: **accepted and implemented** (NOT-475, `lib/wake-safety.ts`; the
+[Approval](#approval) values below are the ones that shipped). Merging the PR
+that introduced this document was the accepted revision.
 
 Date: October 14, 2026
 

@@ -406,8 +406,8 @@ async function main() {
   assert(leaks('home', views).length === 0, 'no Muse session or turn id in turn views or events');
 
   console.log('\nDocumentation contract');
-  const core = fs.readFileSync(path.join(ROOT, 'docs/core-engine.md'), 'utf8');
-  assert(/Muse/.test(core) && /session\/resume/.test(core) && /host_lost/.test(core), 'docs/core-engine.md documents the Muse provider');
+  const core = fs.readFileSync(path.join(ROOT, 'docs/providers/muse.md'), 'utf8');
+  assert(/Muse/.test(core) && /session\/resume/.test(core) && /host_lost/.test(core), 'docs/providers/muse.md documents the Muse provider');
 
   muse.shutdownMuseSessionProviders();
   fs.rmSync(TMP, { recursive: true, force: true });
