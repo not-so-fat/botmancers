@@ -6,6 +6,7 @@ import {
   attemptLabel,
   emptySessionsCopy,
   formatSessionDate,
+  formatSyncRelativeTime,
   runtimeLabel,
   sessionStateTags,
   sessionUsageLine,
@@ -17,9 +18,11 @@ import {
   type SessionAttemptRow,
   type SessionFilter,
   type SessionRow,
+  type SessionSyncState,
   type SessionUsageRow,
   type SessionUsageSampleRow,
 } from '@/lib/session-view';
+import { agentLabel } from '@/lib/bot-definition';
 import Link from 'next/link';
 import ExchangeDialog, { type ExchangeAgentOption } from '@/app/components/ExchangeDialog';
 import { detailsHref, sessionDialogMode, sessionRowActions, type SessionDialogMode } from '@/lib/exchange-view';
@@ -47,9 +50,10 @@ import type { OwnerShare, SharePolicy } from '@/lib/share-view';
 // every 15 seconds while it is open.
 const SHARE_REFRESH_MS = 15_000;
 
-export default function SessionsPanel({ agentId, agentName, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
+export default function SessionsPanel({ agentId, agentName, agentProvider, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
   agentId: string;
   agentName: string;
+  agentProvider?: string;
   agents: ExchangeAgentOption[];
   origin: { conversationId: string; label: string };
   onClose: () => void;
@@ -59,8 +63,12 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
   const titleId = useId();
   const [filter, setFilter] = useState<SessionFilter>('all');
   const [rows, setRows] = useState<SessionRow[] | null>(null);
+  const [sync, setSync] = useState<SessionSyncState | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState('');
   const [loadError, setLoadError] = useState('');
   const [attempt, setAttempt] = useState(0);
+  const providerLabel = agentProvider ? agentLabel(agentProvider) || undefined : undefined;
   const [openRef, setOpenRef] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -100,6 +108,7 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
           return;
         }
         setRows(body.sessions as SessionRow[]);
+        setSync(body?.sync && typeof body.sync === 'object' ? body.sync as SessionSyncState : null);
       })
       .catch(() => {
         if (!cancelled) setLoadError('Could not load sessions.');
@@ -108,6 +117,32 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
       cancelled = true;
     };
   }, [agentId, filter, attempt]);
+
+  // NOT-547: manual refresh. Disabled while a sync runs; the imported
+  // and updated counts are announced, then the list and sync state reload.
+  const doRefresh = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncResult('');
+    try {
+      const res = await fetch(`/api/bots/${encodeURIComponent(agentId)}/sessions/sync`, { method: 'POST' });
+      const body = await res.json().catch(() => null);
+      if (res.status === 409) {
+        setSyncResult('A sync is already running.');
+      } else if (!res.ok) {
+        setSyncResult('Could not sync sessions.');
+      } else {
+        const imported = Array.isArray(body?.imported) ? body.imported.length : 0;
+        const updated = Array.isArray(body?.updated) ? body.updated.length : 0;
+        setSyncResult(`Synced: ${imported} imported, ${updated} updated.`);
+      }
+    } catch {
+      setSyncResult('Could not sync sessions.');
+    } finally {
+      setSyncing(false);
+      setAttempt(n => n + 1);
+    }
+  }, [agentId, syncing]);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,6 +218,15 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
           <span className="manage-count" aria-live="polite">
             {rows ? `${rows.length} shown` : ''}
           </span>
+          <span className="manage-count">
+            Last synced {formatSyncRelativeTime(sync?.synced_at ?? null)}
+          </span>
+          <button type="button" className="sessions-filter-btn" onClick={() => { void doRefresh(); }} disabled={syncing}>
+            {syncing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+        <div className="exchange-started" role="status">
+          {syncResult}
         </div>
         <div className="exchange-started" role="status">
           {started ? (
@@ -201,7 +245,21 @@ export default function SessionsPanel({ agentId, agentName, agents, origin, onCl
         {!rows && !loadError ? <p className="delete-copy sessions-state" role="status">Loading sessions…</p> : null}
         {rows ? (
           <ul className="manage-list sessions-list" aria-label={`Sessions for ${agentName}`}>
-            {rows.length === 0 ? <li className="delete-copy sessions-state">{emptySessionsCopy(filter, agentName)}</li> : null}
+            {rows.length === 0 ? (
+              <li className="delete-copy sessions-state">
+                <p>{emptySessionsCopy(filter, agentName, sync, providerLabel)}</p>
+                {filter === 'all' && sync?.last_error_code ? (
+                  <button type="button" className="pin-word" onClick={() => { void doRefresh(); }} disabled={syncing}>
+                    {syncing ? 'Retrying…' : 'Retry'}
+                  </button>
+                ) : null}
+                {filter === 'all' && !sync?.last_error_code && (sync?.out_of_scope_count ?? 0) > 0 ? (
+                  <Link className="session-link" href={`/bots/${encodeURIComponent(agentId)}/config`}>
+                    Widen the scope in Config
+                  </Link>
+                ) : null}
+              </li>
+            ) : null}
             {rows.map(row => (
               <SessionItem
                 key={row.ref}

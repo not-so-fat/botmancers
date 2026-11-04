@@ -165,7 +165,11 @@ async function main() {
   await scrollDialogToEnd();
   await shot('desktop-1440x900-new-agent-direct-policy');
   await evaluate('document.querySelector(".new-agent-dialog button[type=submit]").click(), true');
-  await waitFor('!document.querySelector(".new-agent-dialog")', 'dialog closes after Create');
+  // NOT-547: Create shows the one-line session sync result; Done closes.
+  await waitFor('!![...document.querySelectorAll(".new-agent-dialog button")].find(b => b.textContent.trim() === "Done")', 'Done after the sync line');
+  await shot('desktop-1440x900-new-agent-sync-line');
+  await evaluate('[...document.querySelectorAll(".new-agent-dialog button")].find(b => b.textContent.trim() === "Done").click(), true');
+  await waitFor('!document.querySelector(".new-agent-dialog")', 'dialog closes after Done');
   check(deckRequests().length === 0, `no Agent Deck request while registering the Agent (browser=${deckRequests().length})`);
 
   const agents = await (await fetch(`${URL_BASE}/api/bots`)).json();

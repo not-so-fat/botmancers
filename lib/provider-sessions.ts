@@ -641,6 +641,73 @@ function reconcileMissingSessions(
   }).immediate();
 }
 
+// NOT-547: one durable fact per full-history sync, read by GET
+// /api/bots/:id/sessions as `sync`. A completed sync (including
+// 'unsupported': nothing to list is a success, not a failure) writes
+// sync_completed with counts only; a broken listing writes sync_failed
+// with its error_code. Counts and codes only: never a provider id.
+export function recordSyncCompleted(
+  db: Db, agentId: string, detail: { imported: number; rejected_out_of_scope: number; complete: boolean; now: number },
+): void {
+  appendEvent(db, {
+    agentId, type: 'sync_completed',
+    detail: { imported: detail.imported, rejected_out_of_scope: detail.rejected_out_of_scope, complete: detail.complete },
+    now: detail.now,
+  });
+}
+
+export function recordSyncFailed(db: Db, agentId: string, detail: { error_code: string; now: number }): void {
+  appendEvent(db, { agentId, type: 'sync_failed', detail: { error_code: detail.error_code }, now: detail.now });
+}
+
+export interface AgentSyncState {
+  synced_at: number | null;
+  last_error_code: string | null;
+  out_of_scope_count: number | null;
+}
+
+// The drawer's truth: when the last completed sync ran, whether the last
+// attempt failed, and how many provider-reported sessions the scope
+// excluded at the last completed sync. Agents synced before outcome
+// events existed fall back to the newest row time (with unknown error
+// and out-of-scope counts); agents never synced are all null.
+export function getAgentSyncState(db: Db, agentId: string): AgentSyncState {
+  const latest = db.prepare(`
+    SELECT type, detail FROM provider_session_events
+    WHERE agent_id = ? AND type IN ('sync_completed', 'sync_failed')
+    ORDER BY created_at DESC, rowid DESC LIMIT 1
+  `).get(agentId) as { type: string; detail: string } | undefined;
+  const completed = db.prepare(`
+    SELECT detail, created_at FROM provider_session_events
+    WHERE agent_id = ? AND type = 'sync_completed'
+    ORDER BY created_at DESC, rowid DESC LIMIT 1
+  `).get(agentId) as { detail: string; created_at: number } | undefined;
+  let synced_at: number | null = null;
+  let out_of_scope_count: number | null = null;
+  if (completed) {
+    synced_at = completed.created_at;
+    try {
+      const parsed = JSON.parse(completed.detail) as { rejected_out_of_scope?: unknown };
+      if (typeof parsed.rejected_out_of_scope === 'number') out_of_scope_count = parsed.rejected_out_of_scope;
+    } catch { /* a corrupt detail leaves the count unknown */ }
+  } else {
+    const row = db.prepare(
+      'SELECT MAX(last_synced_at) AS synced_at FROM provider_sessions WHERE agent_id = ?'
+    ).get(agentId) as { synced_at: number | null } | undefined;
+    synced_at = row?.synced_at ?? null;
+  }
+  let last_error_code: string | null = null;
+  if (latest?.type === 'sync_failed') {
+    try {
+      const parsed = JSON.parse(latest.detail) as { error_code?: unknown };
+      last_error_code = typeof parsed.error_code === 'string' ? parsed.error_code : 'provider_failed';
+    } catch {
+      last_error_code = 'provider_failed';
+    }
+  }
+  return { synced_at, last_error_code, out_of_scope_count };
+}
+
 // NOT-544: registration-time history sync for every provider that can
 // list. A small outcome instead of a throw: 'synced' once the full
 // in-scope history was imported, 'unsupported' when the Agent has no
@@ -654,6 +721,10 @@ function reconcileMissingSessions(
 // any other ready or listing failure is 'failed' with its error_code, so
 // a temporarily unavailable runtime is distinguishable from one that can
 // never list.
+//
+// NOT-547: every outcome is recorded (sync_completed / sync_failed) so
+// the Sessions drawer can tell never synced, failed, and out-of-scope
+// apart. Only a missing Agent records nothing.
 export interface RegistrationHistorySyncResult {
   outcome: 'synced' | 'unsupported' | 'failed';
   imported: number;
@@ -663,11 +734,13 @@ export interface RegistrationHistorySyncResult {
 }
 
 export async function syncHistoryAtRegistration(db: Db, agentId: string, input: SyncInput = {}): Promise<RegistrationHistorySyncResult> {
+  const now = input.now ?? Date.now();
   // No session provider (Hermes): skip without probing.
   try {
     agentContext(db, agentId);
   } catch (error) {
     if (error instanceof ProviderSessionError && error.code === 'provider_unavailable') {
+      recordSyncCompleted(db, agentId, { imported: 0, rejected_out_of_scope: 0, complete: true, now });
       return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
     }
     return {
@@ -680,27 +753,31 @@ export async function syncHistoryAtRegistration(db: Db, agentId: string, input: 
     ctx = await readyContext(db, agentId, input);
   } catch (error) {
     if (error instanceof ProviderSessionError && error.code === 'unsupported') {
+      recordSyncCompleted(db, agentId, { imported: 0, rejected_out_of_scope: 0, complete: true, now });
       return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
     }
-    return {
-      outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false,
-      error_code: error instanceof ProviderSessionError ? error.code : 'provider_failed',
-    };
+    const error_code = error instanceof ProviderSessionError ? error.code : 'provider_failed';
+    recordSyncFailed(db, agentId, { error_code, now });
+    return { outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false, error_code };
   }
   if (!ctx.capabilities.list) {
+    recordSyncCompleted(db, agentId, { imported: 0, rejected_out_of_scope: 0, complete: true, now });
     return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
   }
   try {
     const synced = await syncAgentSessionHistory(db, agentId, input);
+    recordSyncCompleted(db, agentId, {
+      imported: synced.imported.length, rejected_out_of_scope: synced.rejected_out_of_scope, complete: synced.complete, now,
+    });
     return { outcome: 'synced', imported: synced.imported.length, rejected_out_of_scope: synced.rejected_out_of_scope, complete: synced.complete };
   } catch (error) {
     if (error instanceof ProviderSessionError && error.code === 'unsupported') {
+      recordSyncCompleted(db, agentId, { imported: 0, rejected_out_of_scope: 0, complete: true, now });
       return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
     }
-    return {
-      outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false,
-      error_code: error instanceof ProviderSessionError ? error.code : 'provider_failed',
-    };
+    const error_code = error instanceof ProviderSessionError ? error.code : 'provider_failed';
+    recordSyncFailed(db, agentId, { error_code, now });
+    return { outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false, error_code };
   }
 }
 

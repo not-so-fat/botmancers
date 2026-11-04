@@ -117,10 +117,110 @@ export function attemptLabel(attempt: SessionAttemptRow): string {
   return `${what} · ${attempt.outcome ?? 'running'}`;
 }
 
-export function emptySessionsCopy(filter: SessionFilter, agentName: string): string {
+// NOT-547: the drawer's sync truth (GET /api/bots/:id/sessions `sync`).
+// synced_at is the last completed sync (null when none ever completed);
+// last_error_code is the last attempt's failure (null when the last
+// attempt succeeded); out_of_scope_count is how many provider-reported
+// sessions the scope excluded at the last completed sync (null when no
+// completed sync is known).
+export interface SessionSyncState {
+  synced_at: number | null;
+  last_error_code: string | null;
+  out_of_scope_count: number | null;
+}
+
+export function emptySessionsCopy(
+  filter: SessionFilter,
+  agentName: string,
+  sync?: SessionSyncState | null,
+  providerLabel?: string,
+): string {
   if (filter === 'active') return `${agentName} has no active sessions.`;
   if (filter === 'ended') return `${agentName} has no ended sessions.`;
+  if (sync?.last_error_code) {
+    const { reason, fix } = sessionSyncErrorCopy(sync.last_error_code, providerLabel);
+    const what = providerLabel ? `${providerLabel} sessions` : 'sessions';
+    return `Could not read ${what}: ${reason}. ${fix}`;
+  }
+  if (sync && sync.synced_at === null) {
+    return `${agentName} has not synced sessions yet. Refresh to load past sessions.`;
+  }
+  const outOfScope = sync?.out_of_scope_count ?? 0;
+  if (outOfScope > 0) {
+    const sessions = outOfScope === 1 ? 'session exists' : 'sessions exist';
+    return `${outOfScope} ${sessions} outside ${agentName}'s scope. Widen the scope to see them.`;
+  }
   return `${agentName} has no sessions yet. One appears after a coding run keeps its runtime context.`;
+}
+
+// The CLI name behind a provider display label, for "not installed" copy.
+function providerCli(providerLabel?: string): string | null {
+  if (!providerLabel) return null;
+  const lower = providerLabel.toLowerCase();
+  if (lower === 'muse code') return 'muse';
+  if (['codex', 'claude', 'cursor', 'hermes', 'muse'].includes(lower)) return lower;
+  return lower;
+}
+
+export function sessionSyncErrorCopy(error_code: string, providerLabel?: string): { reason: string; fix: string } {
+  const cli = providerCli(providerLabel);
+  switch (error_code) {
+    case 'provider_unavailable':
+      return cli
+        ? { reason: `${cli} is not installed or did not start`, fix: `Install ${cli} and Retry.` }
+        : { reason: 'the runtime is not installed or did not start', fix: 'Install the runtime and Retry.' };
+    case 'auth_required':
+      return { reason: 'not signed in', fix: 'Sign in and Retry.' };
+    case 'permission_denied':
+      return { reason: 'permission denied', fix: 'Check permissions and Retry.' };
+    case 'incompatible_version':
+      return { reason: 'incompatible version', fix: 'Update the runtime and Retry.' };
+    case 'usage_limit':
+      return { reason: 'usage limit reached', fix: 'Wait or upgrade and Retry.' };
+    case 'scope_missing':
+      return { reason: 'no session scope is set', fix: 'Choose a scope in Config.' };
+    case 'provider_failed':
+      return { reason: 'the listing failed', fix: 'Retry.' };
+    default:
+      return { reason: error_code, fix: 'Retry.' };
+  }
+}
+
+export interface RegistrationSessionSync {
+  outcome: 'synced' | 'unsupported' | 'failed';
+  imported: number;
+  rejected_out_of_scope: number;
+  complete: boolean;
+  error_code?: string;
+}
+
+// The New Agent flow's one line with the registration sync result.
+export function registrationSessionSyncCopy(sync: RegistrationSessionSync, providerLabel: string): string {
+  if (sync.outcome === 'failed') {
+    const { reason, fix } = sessionSyncErrorCopy(sync.error_code ?? 'provider_failed', providerLabel);
+    return `Could not read ${providerLabel} sessions: ${reason}. ${fix}`;
+  }
+  if (sync.outcome === 'unsupported') {
+    return `Past sessions are not available for ${providerLabel}.`;
+  }
+  const sessions = sync.imported === 1 ? 'session' : 'sessions';
+  let line = `Loaded ${sync.imported} ${sessions}`;
+  if (sync.rejected_out_of_scope > 0) line += `, ${sync.rejected_out_of_scope} outside the scope`;
+  if (!sync.complete) line += ', more remain';
+  return `${line}.`;
+}
+
+// "Last synced <relative>": just now, N minutes/hours/days ago, or never.
+export function formatSyncRelativeTime(synced_at: number | null, now: number = Date.now()): string {
+  if (synced_at === null) return 'never';
+  const diff = Math.max(0, now - synced_at);
+  if (diff < 60_000) return 'just now';
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
 // ---- NOT-509: reported usage ----

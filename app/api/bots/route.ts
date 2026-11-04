@@ -101,13 +101,18 @@ export async function POST(request: Request) {
     // roll back an otherwise valid Agent registration. Providers without
     // the list capability (and Hermes, which has no session provider) are
     // skipped.
+    // NOT-547: the outcome is returned (session_sync) so the New Agent
+    // flow can say what happened instead of swallowing it.
+    let session_sync: Record<string, unknown>;
     try {
       const history = await syncHistoryAtRegistration(db, bot.id);
       if (history.outcome === 'failed') {
         console.warn('Session history was not available during Agent registration.', history.error_code);
       }
+      session_sync = { ...history };
     } catch (error) {
       console.warn('Session history was not available during Agent registration.', error);
+      session_sync = { outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false, error_code: 'provider_failed' };
     }
     const conversation = conversations.getByBotId(bot.id);
     if (conversation) {
@@ -115,7 +120,7 @@ export async function POST(request: Request) {
       processUiTurns().catch(console.error);
     }
     const created = bots.getById(bot.id);
-    return NextResponse.json(created ? serializeAgent(created) : null);
+    return NextResponse.json(created ? { ...serializeAgent(created), session_sync } : null);
   } catch (error) {
     if (error instanceof AgentNameConflictError) return NextResponse.json(agentNameConflictBody(error), { status: 409 });
     console.error('Error creating bot:', error);

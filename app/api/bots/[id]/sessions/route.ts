@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { agentExists, isSessionFilter, listAgentSessions } from '@/lib/session-catalog';
 import { sessionsWithActions } from '@/lib/session-pins';
-import { warmAgentProvider } from '@/lib/provider-sessions';
+import { getAgentSyncState, warmAgentProvider } from '@/lib/provider-sessions';
 import { agentSessionsSyncedAt } from '@/lib/session-sync-refresh';
 
 // NOT-496: the selected Agent's session catalog (lib/session-catalog).
@@ -11,6 +11,10 @@ import { agentSessionsSyncedAt } from '@/lib/session-sync-refresh';
 // NOT-507: each row adds home and what each session action can do now.
 // NOT-545: a top-level synced_at (the newest last_synced_at of the Agent's
 // rows, or null when the Agent has none yet).
+// NOT-547: a sync object so the drawer can tell empty apart: the last
+// completed sync time, the last failure code (or null), and how many
+// provider-reported sessions the scope excluded at the last completed
+// sync (or null when no completed sync is known).
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -23,7 +27,12 @@ export async function GET(
       return NextResponse.json({ error: 'status must be active, ended, or all' }, { status: 400 });
     }
     await warmAgentProvider(db, id, { onlyWithSessions: true });
-    return NextResponse.json({ status, synced_at: agentSessionsSyncedAt(db, id), sessions: sessionsWithActions(id, listAgentSessions(db, id, status)) });
+    return NextResponse.json({
+      status,
+      synced_at: agentSessionsSyncedAt(db, id),
+      sync: getAgentSyncState(db, id),
+      sessions: sessionsWithActions(id, listAgentSessions(db, id, status)),
+    });
   } catch (error) {
     console.error('Error listing agent sessions:', error);
     return NextResponse.json({ error: 'Failed to list sessions' }, { status: 500 });
