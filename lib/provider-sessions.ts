@@ -511,10 +511,11 @@ export async function syncAgentSessions(db: Db, agentId: string, input: SyncInpu
   }).immediate();
 }
 
-// Imports every page the provider exposes. Registration uses this for Claude
-// Code so an Agent begins with its in-scope local history instead of an empty
-// catalog. A cursor loop or an implausibly large provider listing is stopped
-// without turning registration into an unbounded operation.
+// Imports every page the provider exposes. Registration (through
+// syncHistoryAtRegistration) uses this so an Agent begins with its in-scope
+// local history instead of an empty catalog. A cursor loop or an
+// implausibly large provider listing is stopped without turning
+// registration into an unbounded operation.
 export async function syncAgentSessionHistory(db: Db, agentId: string, input: SyncInput = {}): Promise<SessionHistorySyncResult> {
   const imported: string[] = [];
   const updated: string[] = [];
@@ -542,6 +543,39 @@ export async function syncAgentSessionHistory(db: Db, agentId: string, input: Sy
   }
 
   return { imported, updated, rejected_out_of_scope: rejected, next_cursor: cursor, pages, complete: false };
+}
+
+// NOT-544: registration-time history sync for every provider that can
+// list. A small outcome instead of a throw: 'synced' once the full
+// in-scope history was imported, 'unsupported' when the Agent has no
+// session provider (Hermes) or the provider reports no `list` capability,
+// 'failed' when the listing itself broke (the registration still stands;
+// the caller logs error_code). Discovery stays read-only.
+export interface RegistrationHistorySyncResult {
+  outcome: 'synced' | 'unsupported' | 'failed';
+  imported: number;
+  rejected_out_of_scope: number;
+  complete: boolean;
+  error_code?: ProviderSessionErrorCode;
+}
+
+export async function syncHistoryAtRegistration(db: Db, agentId: string, input: SyncInput = {}): Promise<RegistrationHistorySyncResult> {
+  const capabilities = agentProviderCapabilities(db, agentId);
+  if (!capabilities || !capabilities.list) {
+    return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
+  }
+  try {
+    const synced = await syncAgentSessionHistory(db, agentId, input);
+    return { outcome: 'synced', imported: synced.imported.length, rejected_out_of_scope: synced.rejected_out_of_scope, complete: synced.complete };
+  } catch (error) {
+    if (error instanceof ProviderSessionError && (error.code === 'unsupported' || error.code === 'provider_unavailable')) {
+      return { outcome: 'unsupported', imported: 0, rejected_out_of_scope: 0, complete: true };
+    }
+    return {
+      outcome: 'failed', imported: 0, rejected_out_of_scope: 0, complete: false,
+      error_code: error instanceof ProviderSessionError ? error.code : 'provider_failed',
+    };
+  }
 }
 
 // Re-reads one session's metadata from the provider. A session the provider
