@@ -415,6 +415,7 @@ async function main() {
   const dialogSrc = read('app/components/ExchangeDialog.tsx');
   const panelSrc = read('app/components/SessionsPanel.tsx');
   const pageSrc = read('app/page.tsx');
+  const railSrc = read('app/components/AgentRail.tsx');
   const ledgerSrc = read('app/exchanges/page.tsx');
   const css = read('app/globals.css');
   assert(/e\.key !== 'Escape'[\s\S]*?e\.stopPropagation\(\);\s*onClose\(\)/.test(dialogSrc) && dialogSrc.includes("addEventListener('keydown', onKey, true)"), 'Escape closes only the dialog (capture + stopPropagation)');
@@ -428,7 +429,7 @@ async function main() {
   assert(/sessions\/\$\{encodeURIComponent\(session\.ref\)\}\/pins/.test(dialogSrc) && /approvalRef\.current\?\.focus\(\)/.test(dialogSrc), 'Resume posts to the owner pin route and focuses the missing approval');
   assert(/@media \(max-width: 799px\) \{\s*\.session-actions \{\s*flex-direction: column;/.test(css) && /\.exchange-approval input:focus-visible/.test(css), 'narrow screens stack the session actions; the approval has a focus ring');
   assert(/\.sessions-drawer \{[^}]*max-width: 520px;/.test(css), 'wide screens keep the side drawer');
-  assert(/<nav className="rail-nav" aria-label="Workspace">/.test(pageSrc) && /href="\/exchanges"[^>]*>Exchanges</.test(pageSrc), 'the rail exposes an Exchanges destination');
+  assert(/<nav className="rail-nav" aria-label="Workspace">/.test(railSrc) && /href="\/exchanges"[^>]*>Exchanges</.test(railSrc), 'the shared rail exposes an Exchanges destination');
   assert(/\/api\/exchanges\?conversation=/.test(pageSrc) && /<ExchangeCard summary=\{summary\}/.test(pageSrc) && /shownExchanges\.has\(summary\.id\)/.test(pageSrc), 'threads render one card per linked exchange id from the API');
   assert(/aria-current=\{selected === summary\.id/.test(ledgerSrc) && /headingRef\.current\?\.focus\(\)/.test(ledgerSrc), 'ledger marks the selected row and moves focus to the detail heading');
   assert(/@media \(max-width: 799px\)\s*\{\s*\.ledger-page\.has-detail \.ledger-list-pane/.test(css), 'narrow ledger shows list or detail full-height, not squeezed columns');
