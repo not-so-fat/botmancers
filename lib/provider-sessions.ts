@@ -467,6 +467,10 @@ export interface SyncInput {
   signal?: AbortSignal | null;
   deadlineAt?: number | null;
   now?: number;
+  // Internal: syncAgentSessionHistory passes a collector so the full-history
+  // sync can reconcile sessions the provider no longer reports. Provider ids
+  // stay in this set (server memory only); they never enter SyncResult.
+  seenCollector?: Set<string>;
 }
 
 export interface SessionHistorySyncResult extends SyncResult {
@@ -499,6 +503,10 @@ export async function syncAgentSessions(db: Db, agentId: string, input: SyncInpu
     const out: SyncResult = { imported: [], updated: [], rejected_out_of_scope: 0, next_cursor: result.value.next_cursor ?? null };
     for (const record of records) {
       if (!record || typeof record.provider_session_id !== 'string' || !record.provider_session_id) continue;
+      // Tracked before the scope check: a stored row whose provider id was
+      // reported (even out of scope by its reported workspace) is still
+      // reported, not missing. The empty-listing guard also counts these.
+      if (input.seenCollector) input.seenCollector.add(record.provider_session_id);
       if (!inScope(scope, record, selected)) { out.rejected_out_of_scope++; continue; }
       const { ref, created } = upsertRecord(db, ctx, record, 'discovered', now);
       (created ? out.imported : out.updated).push(ref);
@@ -516,33 +524,121 @@ export async function syncAgentSessions(db: Db, agentId: string, input: SyncInpu
 // local history instead of an empty catalog. A cursor loop or an
 // implausibly large provider listing is stopped without turning
 // registration into an unbounded operation.
+//
+// NOT-546: after a complete full-history sync, stored discovered sessions
+// the provider no longer reports are marked missing (never deleted), one
+// session_missing event per row. A session the provider reports again
+// returns to available through the normal upsert (updateRow). Binding and
+// started rows are never touched, and sessions-scope Agents are not
+// reconciled (they fetch by id). Three guards skip the marking with an
+// event and no state change: an incomplete sync (sync_incomplete_guarded),
+// a listing error (sync_error_guarded), and an empty listing while stored
+// rows exist (sync_empty_guarded).
 export async function syncAgentSessionHistory(db: Db, agentId: string, input: SyncInput = {}): Promise<SessionHistorySyncResult> {
   const imported: string[] = [];
   const updated: string[] = [];
   let rejected = 0;
   let cursor = input.cursor ?? null;
+  const initialCursor = cursor;
+  const hasQuery = typeof input.query === 'string' && input.query.trim().length > 0;
   let pages = 0;
   const seen = new Set<string>();
+  const seenProviderIds = new Set<string>();
+  const now = input.now ?? Date.now();
 
   while (pages < MAX_HISTORY_SYNC_PAGES) {
     if (cursor !== null) {
       if (seen.has(cursor)) {
+        appendEvent(db, { agentId, type: 'sync_incomplete_guarded', detail: { pages, reason: 'cursor_loop' }, now });
         return { imported, updated, rejected_out_of_scope: rejected, next_cursor: cursor, pages, complete: false };
       }
       seen.add(cursor);
     }
-    const page = await syncAgentSessions(db, agentId, { ...input, cursor });
+    let page: SyncResult;
+    try {
+      page = await syncAgentSessions(db, agentId, { ...input, cursor, seenCollector: seenProviderIds });
+    } catch (error) {
+      // Configuration failures never listed anything: no guard event, the
+      // caller's outcome (unsupported/empty) stands. Any other failure
+      // means the listing broke: record the guard, then rethrow so the
+      // caller still reports the failure. provider_unavailable and
+      // invalid_input come from both sides, so they are disambiguated: no
+      // provider (or a bad caller limit) is configuration, otherwise the
+      // provider's listing (or readiness probe) failed.
+      if (error instanceof ProviderSessionError) {
+        if (error.code === 'agent_not_found' || error.code === 'scope_missing' || error.code === 'unsupported') {
+          throw error;
+        }
+        if (error.code === 'provider_unavailable') {
+          try {
+            agentContext(db, agentId);
+          } catch {
+            throw error;
+          }
+        } else if (error.code === 'invalid_input' && input.limit !== undefined && input.limit !== null) {
+          const n = Number(input.limit);
+          if (!Number.isInteger(n) || n < 1) throw error;
+        }
+      }
+      const errorCode = error instanceof ProviderSessionError ? error.code : 'provider_failed';
+      appendEvent(db, { agentId, type: 'sync_error_guarded', detail: { error_code: errorCode, pages }, now });
+      throw error;
+    }
     imported.push(...page.imported);
     updated.push(...page.updated);
     rejected += page.rejected_out_of_scope;
     pages++;
     cursor = page.next_cursor;
     if (cursor === null) {
+      reconcileMissingSessions(db, agentId, { seenProviderIds, hasQuery, initialCursor, now });
       return { imported, updated, rejected_out_of_scope: rejected, next_cursor: null, pages, complete: true };
     }
   }
 
+  appendEvent(db, { agentId, type: 'sync_incomplete_guarded', detail: { pages, reason: 'page_cap' }, now });
   return { imported, updated, rejected_out_of_scope: rejected, next_cursor: cursor, pages, complete: false };
+}
+
+// NOT-546: marks the Agent's discovered rows the completed sync did not
+// report as missing. No-op (no event, no state change) for a filtered sync
+// (query or resumed cursor), for a sessions scope, and when the listing
+// returned nothing while stored rows exist (sync_empty_guarded).
+function reconcileMissingSessions(
+  db: Db, agentId: string,
+  tracking: { seenProviderIds: Set<string>; hasQuery: boolean; initialCursor: string | null; now: number },
+): void {
+  if (tracking.hasQuery || tracking.initialCursor !== null) return;
+  let ctx: AgentContext;
+  try {
+    ctx = agentContext(db, agentId);
+  } catch {
+    return;
+  }
+  const scope = ctx.scope;
+  if (!scope || scope.kind === 'sessions') return;
+  const stored = (db.prepare(`
+    SELECT COUNT(*) AS n FROM provider_sessions
+    WHERE agent_id = ? AND runtime_connection_id = ? AND origin = 'discovered' AND binding_id IS NULL AND availability = 'available'
+  `).get(agentId, ctx.connection.id) as { n: number }).n;
+  if (tracking.seenProviderIds.size === 0) {
+    if (stored > 0) {
+      appendEvent(db, { agentId, type: 'sync_empty_guarded', detail: { stored }, now: tracking.now });
+    }
+    return;
+  }
+  if (stored === 0) return;
+  const selected = selectedProviderIds(db, ctx, scope);
+  const candidates = db.prepare(`
+    SELECT * FROM provider_sessions
+    WHERE agent_id = ? AND runtime_connection_id = ? AND origin = 'discovered' AND binding_id IS NULL AND availability = 'available'
+  `).all(agentId, ctx.connection.id) as ProviderSessionRow[];
+  db.transaction(() => {
+    for (const row of candidates) {
+      if (!inScope(scope, { workspace: row.workspace, provider_session_id: row.provider_session_id }, selected)) continue;
+      if (tracking.seenProviderIds.has(row.provider_session_id)) continue;
+      markMissing(db, row, tracking.now);
+    }
+  }).immediate();
 }
 
 // NOT-547: one durable fact per full-history sync, read by GET

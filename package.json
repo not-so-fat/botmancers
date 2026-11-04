@@ -53,6 +53,7 @@
     "test:session-catalog": "node test-session-catalog.js",
     "test:registration-session-sync": "node test-registration-session-sync.js",
     "test:session-sync-refresh": "node test-session-sync-refresh.js",
+    "test:session-reconcile": "node test-session-reconcile.js",
     "test:session-sync-ui": "node test-session-sync-ui.js",
     "test:session-pins": "node test-session-pins.js",
     "test:cursor-session-provider": "node test-cursor-session-provider.js",
