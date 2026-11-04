@@ -250,11 +250,10 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
 
   const clearSearch = () => {
     setQuery('');
-    setDebouncedQuery('');
     setWorkspaceFilter('');
   };
 
-  const searchActive = debouncedQuery.trim() !== '' || workspaceFilter !== '';
+  const searchActive = query.trim() !== '' || workspaceFilter !== '';
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -354,7 +353,7 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
               <li className="delete-copy sessions-state">
                 {searchActive ? (
                   <>
-                    <p>{noMatchingSessionsCopy(debouncedQuery, workspaceFilter || null)}</p>
+                    <p>{noMatchingSessionsCopy(query, workspaceFilter || null)}</p>
                     <button type="button" className="pin-word" onClick={clearSearch}>Clear search</button>
                   </>
                 ) : (
