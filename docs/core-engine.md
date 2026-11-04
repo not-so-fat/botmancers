@@ -149,7 +149,12 @@ registry (`provider_sessions`).
   activity first, then newest binding, then reference) and
   `GET /api/bots/:id/sessions/:ref`. Both sit behind the owner boundary
   (`proxy.ts`). An unknown Agent or reference is 404; a reference belonging to
-  another Agent is the same 404.
+  another Agent is the same 404. The list is paged and searchable (NOT-548):
+  `limit` (default 50, maximum 200), `cursor` (the previous page's
+  `next_cursor`), `q` (a case-insensitive title substring), and `workspace`
+  (an exact workspace path); the response adds `next_cursor`, null on the
+  last page. A blank stored title is presented as
+  `<workspace folder> · <date>`, else `<Agent name> · <date>`.
 - **External session IDs.** The opaque provider session ID is never part of a
   summary, a detail, or the default UI. The single exception is the explicitly
   labeled local debug disclosure ("Local debug: provider session ID", with a

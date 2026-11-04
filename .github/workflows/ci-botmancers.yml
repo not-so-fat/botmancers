@@ -77,6 +77,10 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-sync-ui
+      - name: Focused session list paging suite (NOT-548)
+        working-directory: .
+        run: |
+          npm run test:session-list-paging
       - name: Focused Claude provider and direct cutover suites (NOT-506, NOT-543)
         working-directory: .
         run: |

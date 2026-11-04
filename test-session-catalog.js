@@ -282,7 +282,12 @@ async function main() {
   assert(/Loading sessions…/.test(panel) && /role="alert"/.test(panel) && /Retry/.test(panel) && /emptySessionsCopy\(/.test(panel), 'loading, error (with retry), and empty states');
   assert(/statusLabel\(row\)/.test(panel) && /is-\$\{row\.status\}/.test(panel) && /aria-pressed=\{filter === option\.value\}/.test(panel), 'active/ended state per row and an active|ended|all filter');
   assert(/onOpenThread\(conversation\.thread_agent_id/.test(panel) && /Last activity/.test(panel) && /Origin/.test(panel), 'rows show last activity and origin, with a link back to the origin thread');
-  assert(!/<input|<textarea|contentEditable/i.test(panel), 'no raw ID entry: the drawer has no text input');
+  // NOT-548: the drawer gained a title search box. It stays the only
+  // text input: nothing here takes a raw session id.
+  const drawerInputTags = panel.match(/<input\b[\s\S]*?\/>/gi) ?? [];
+  assert(!/<textarea|contentEditable/i.test(panel) && drawerInputTags.length === 1
+    && /type="search"/.test(drawerInputTags[0]) && /aria-label="Search sessions by title"/.test(drawerInputTags[0]),
+    'no raw ID entry: the drawer\'s only text input is the title search box');
   const externalMentions = panel.split('\n').filter(line => /external_session_id/.test(line));
   assert(externalMentions.length === 2 && externalMentions.every(line => /debug/.test(line)), 'the provider session id is read only by the debug disclosure');
   assert(/<summary>Local debug: provider session ID<\/summary>/.test(panel) && /navigator\.clipboard\.writeText/.test(panel), 'the debug disclosure is explicitly labeled and has a Copy action');

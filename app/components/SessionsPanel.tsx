@@ -7,6 +7,7 @@ import {
   emptySessionsCopy,
   formatSessionDate,
   formatSyncRelativeTime,
+  noMatchingSessionsCopy,
   runtimeLabel,
   sessionStateTags,
   sessionUsageLine,
@@ -15,6 +16,8 @@ import {
   usageSampleLabel,
   usageSampleValues,
   workRequestLabel,
+  workspaceFolderName,
+  workspaceOptions,
   type SessionAttemptRow,
   type SessionFilter,
   type SessionRow,
@@ -48,7 +51,24 @@ import type { OwnerShare, SharePolicy } from '@/lib/share-view';
 // to Slack when the session can take an Ask and a channel is allowlisted.
 // The Agent's shares and share policy load once per drawer and refresh
 // every 15 seconds while it is open.
+// NOT-548: the list is paged (50 rows first, Load more appends the next
+// page), searchable by title, and filterable by workspace; each row head
+// names the title, workspace folder, and last activity, and a blank title
+// falls back to <workspace folder> · <date>.
 const SHARE_REFRESH_MS = 15_000;
+
+// NOT-548: the paged list. The first page loads 50 rows; Load more appends
+// the next page under the same status, search, and workspace filters.
+const SEARCH_DEBOUNCE_MS = 250;
+
+function sessionsListUrl(agentId: string, filter: SessionFilter, query: string, workspace: string, cursor: string | null): string {
+  const params = new URLSearchParams({ status: filter });
+  const q = query.trim();
+  if (q) params.set('q', q);
+  if (workspace) params.set('workspace', workspace);
+  if (cursor) params.set('cursor', cursor);
+  return `/api/bots/${encodeURIComponent(agentId)}/sessions?${params.toString()}`;
+}
 
 export default function SessionsPanel({ agentId, agentName, agentProvider, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
   agentId: string;
@@ -68,6 +88,15 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
   const [syncResult, setSyncResult] = useState('');
   const [loadError, setLoadError] = useState('');
   const [attempt, setAttempt] = useState(0);
+  const [query, setQuery] = useState('');
+  const [workspaceFilter, setWorkspaceFilter] = useState('');
+  const [workspaceOpts, setWorkspaceOpts] = useState<string[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const listSeqRef = useRef(0);
+  const [cursorScope, setCursorScope] = useState('');
+  const lastQueryRef = useRef('');
+  const workspaceKeyRef = useRef('');
   const providerLabel = agentProvider ? agentLabel(agentProvider) || undefined : undefined;
   const [openRef, setOpenRef] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -98,25 +127,83 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
   }, []);
 
   useEffect(() => {
+    // A fresh first page for these filters. Only keystrokes wait out the
+    // debounce; status, workspace, Agent, and refresh fetch at once. The
+    // previous rows stay up until the new page arrives.
+    listSeqRef.current += 1;
+    const key = `${agentId}\n${filter}`;
+    const resetWorkspaces = workspaceKeyRef.current !== key;
+    workspaceKeyRef.current = key;
+    const delay = query === lastQueryRef.current ? 0 : SEARCH_DEBOUNCE_MS;
+    lastQueryRef.current = query;
     let cancelled = false;
-    fetch(`/api/bots/${encodeURIComponent(agentId)}/sessions?status=${filter}`, { cache: 'no-store' })
-      .then(async res => {
-        const body = await res.json().catch(() => null);
-        if (cancelled) return;
-        if (!res.ok || !Array.isArray(body?.sessions)) {
-          setLoadError(typeof body?.error === 'string' ? body.error : 'Could not load sessions.');
-          return;
-        }
-        setRows(body.sessions as SessionRow[]);
-        setSync(body?.sync && typeof body.sync === 'object' ? body.sync as SessionSyncState : null);
-      })
-      .catch(() => {
-        if (!cancelled) setLoadError('Could not load sessions.');
-      });
+    const timer = setTimeout(() => {
+      fetch(sessionsListUrl(agentId, filter, query, workspaceFilter, null), { cache: 'no-store' })
+        .then(async res => {
+          const body = await res.json().catch(() => null);
+          if (cancelled) return;
+          if (!res.ok || !Array.isArray(body?.sessions)) {
+            setLoadError(typeof body?.error === 'string' ? body.error : 'Could not load sessions.');
+            return;
+          }
+          const page = body.sessions as SessionRow[];
+          setRows(page);
+          setSync(body?.sync && typeof body.sync === 'object' ? body.sync as SessionSyncState : null);
+          setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
+          // The cursor belongs to this fetch's filters. Load more only
+          // fires while the live filters still match, so a click inside
+          // the search debounce window cannot pair a new query with the
+          // previous filter set's cursor.
+          setCursorScope(`${agentId}\n${filter}\n${query.trim()}\n${workspaceFilter}`);
+          setLoadError('');
+          // The workspace options accumulate every workspace seen under
+          // this Agent and status filter, so narrowing by search or
+          // workspace never drops an option the first page has not shown
+          // yet.
+          const seen = page.map(row => row.context.workspace).filter((w): w is string => !!w);
+          setWorkspaceOpts(prev => [...new Set([...(resetWorkspaces ? [] : prev), ...seen])]);
+        })
+        .catch(() => {
+          if (!cancelled) setLoadError('Could not load sessions.');
+        });
+    }, delay);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
-  }, [agentId, filter, attempt]);
+  }, [agentId, filter, query, workspaceFilter, attempt]);
+
+  // NOT-548: Load more appends the next page. A page that arrives after
+  // the filters changed is dropped: the fresh first page already replaced
+  // the list it would have extended. A stale failure (for example a
+  // cursor from the previous filter set) never surfaces an error.
+  const listScope = `${agentId}\n${filter}\n${query.trim()}\n${workspaceFilter}`;
+  const cursorLive = nextCursor !== null && cursorScope === listScope;
+  const doLoadMore = useCallback(async () => {
+    if (loadingMore || !rows || !nextCursor || cursorScope !== listScope) return;
+    setLoadingMore(true);
+    const base = rows;
+    const seq = listSeqRef.current;
+    try {
+      const res = await fetch(sessionsListUrl(agentId, filter, query, workspaceFilter, nextCursor), { cache: 'no-store' });
+      const body = await res.json().catch(() => null);
+      if (listSeqRef.current !== seq) return;
+      if (!res.ok || !Array.isArray(body?.sessions)) {
+        setLoadError('Could not load more sessions.');
+        return;
+      }
+      const page = body.sessions as SessionRow[];
+      setRows([...base, ...page]);
+      setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
+      setLoadError('');
+      const seen = page.map(row => row.context.workspace).filter((w): w is string => !!w);
+      if (seen.length > 0) setWorkspaceOpts(prev => [...new Set([...prev, ...seen])]);
+    } catch {
+      if (listSeqRef.current === seq) setLoadError('Could not load more sessions.');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [agentId, filter, query, workspaceFilter, loadingMore, rows, nextCursor, listScope, cursorScope]);
 
   // NOT-547: manual refresh. Disabled while a sync runs; the imported
   // and updated counts are announced, then the list and sync state reload.
@@ -170,6 +257,13 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
     setAttempt(n => n + 1);
   };
 
+  const clearSearch = () => {
+    setQuery('');
+    setWorkspaceFilter('');
+  };
+
+  const searchActive = query.trim() !== '' || workspaceFilter !== '';
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -215,6 +309,25 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
               {option.label}
             </button>
           ))}
+          <input
+            type="search"
+            className="sessions-search"
+            aria-label="Search sessions by title"
+            placeholder="Search by title"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          <select
+            className="sessions-workspace"
+            aria-label="Filter sessions by workspace"
+            value={workspaceFilter}
+            onChange={e => setWorkspaceFilter(e.target.value)}
+          >
+            <option value="">All workspaces</option>
+            {workspaceOptions(workspaceOpts).map(option => (
+              <option key={option.value} value={option.value} title={option.value}>{option.label}</option>
+            ))}
+          </select>
           <span className="manage-count" aria-live="polite">
             {rows ? `${rows.length} shown` : ''}
           </span>
@@ -247,17 +360,26 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
           <ul className="manage-list sessions-list" aria-label={`Sessions for ${agentName}`}>
             {rows.length === 0 ? (
               <li className="delete-copy sessions-state">
-                <p>{emptySessionsCopy(filter, agentName, sync, providerLabel)}</p>
-                {filter === 'all' && sync?.last_error_code ? (
-                  <button type="button" className="pin-word" onClick={() => { void doRefresh(); }} disabled={syncing}>
-                    {syncing ? 'Retrying…' : 'Retry'}
-                  </button>
-                ) : null}
-                {filter === 'all' && !sync?.last_error_code && (sync?.out_of_scope_count ?? 0) > 0 ? (
-                  <Link className="session-link" href={`/bots/${encodeURIComponent(agentId)}/config`}>
-                    Widen the scope in Config
-                  </Link>
-                ) : null}
+                {searchActive ? (
+                  <>
+                    <p>{noMatchingSessionsCopy(query, workspaceFilter || null)}</p>
+                    <button type="button" className="pin-word" onClick={clearSearch}>Clear search</button>
+                  </>
+                ) : (
+                  <>
+                    <p>{emptySessionsCopy(filter, agentName, sync, providerLabel)}</p>
+                    {filter === 'all' && sync?.last_error_code ? (
+                      <button type="button" className="pin-word" onClick={() => { void doRefresh(); }} disabled={syncing}>
+                        {syncing ? 'Retrying…' : 'Retry'}
+                      </button>
+                    ) : null}
+                    {filter === 'all' && !sync?.last_error_code && (sync?.out_of_scope_count ?? 0) > 0 ? (
+                      <Link className="session-link" href={`/bots/${encodeURIComponent(agentId)}/config`}>
+                        Widen the scope in Config
+                      </Link>
+                    ) : null}
+                  </>
+                )}
               </li>
             ) : null}
             {rows.map(row => (
@@ -275,6 +397,13 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
               />
             ))}
           </ul>
+        ) : null}
+        {rows && rows.length > 0 && cursorLive ? (
+          <div className="sessions-more">
+            <button type="button" className="sessions-filter-btn" onClick={() => { void doLoadMore(); }} disabled={loadingMore}>
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          </div>
         ) : null}
       </div>
       {action ? (
@@ -318,11 +447,14 @@ function SessionItem({ agentId, row, open, onToggle, onOpenThread, onAction, sha
   const conversation = row.origin.conversation;
   const request = workRequestLabel(row);
   const usage = sessionUsageLine(row.usage);
+  const folder = workspaceFolderName(row.context.workspace);
   return (
     <li className={`manage-row session-row is-${row.status}`} data-session-ref={row.ref}>
       <div className="manage-copy">
         <div className="session-head">
           <span className="session-title">{row.title}</span>
+          {folder ? <span className="session-workspace" title={row.context.workspace ?? undefined}>{folder}</span> : null}
+          <span className="session-activity">{formatSessionDate(row.last_activity_at)}</span>
           <span className={`manage-tag session-status is-${row.status}`}>{statusLabel(row)}</span>
           {sessionStateTags(row).map(tag => <span key={tag} className={`manage-tag session-state-tag is-${tag.toLowerCase()}`}>{tag}</span>)}
         </div>

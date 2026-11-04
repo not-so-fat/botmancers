@@ -81,6 +81,37 @@ export function formatSessionDate(ts: number): string {
   return `${new Date(ts).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
+// ---- NOT-548: recognizable rows ----
+
+// The workspace folder name beside a row's title:
+// /Users/owner/work/botmancers -> botmancers. Null when there is no
+// workspace to name. The catalog (lib/session-catalog) uses it for the
+// blank-title fallback, so this module stays free of store imports.
+export function workspaceFolderName(workspace: string | null | undefined): string | null {
+  if (!workspace) return null;
+  return workspace.split('/').filter(part => part.length > 0).pop() ?? null;
+}
+
+// The workspace filter's options from the loaded rows' workspaces:
+// folder-name labels, alphabetical; a folder name two paths share keeps
+// its full path, so the exact filter stays unambiguous.
+export function workspaceOptions(workspaces: Array<string | null | undefined>): { value: string; label: string }[] {
+  const unique = [...new Set(workspaces.filter((w): w is string => typeof w === 'string' && w.length > 0))];
+  const folders = unique.map(w => workspaceFolderName(w) ?? w);
+  return unique
+    .map((value, i) => ({ value, label: folders.filter(f => f === folders[i]).length > 1 ? value : folders[i] }))
+    .sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+}
+
+// The truthful empty state when a title search or workspace filter
+// matches nothing (instead of the unfiltered emptySessionsCopy).
+export function noMatchingSessionsCopy(query: string, workspace: string | null): string {
+  const q = query.trim();
+  if (q) return `No sessions match “${q}”.`;
+  const folder = workspaceFolderName(workspace);
+  return folder ? `No sessions in ${folder}.` : 'No sessions match the current filters.';
+}
+
 function capitalize(word: string): string {
   return word ? word[0].toUpperCase() + word.slice(1) : word;
 }
