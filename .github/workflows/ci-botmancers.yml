@@ -65,6 +65,10 @@ jobs:
         working-directory: .
         run: |
           npm run test:registration-session-sync
+      - name: Focused session sync refresh suite (NOT-545)
+        working-directory: .
+        run: |
+          npm run test:session-sync-refresh
       - name: Focused Claude provider and direct cutover suites (NOT-506, NOT-543)
         working-directory: .
         run: |
