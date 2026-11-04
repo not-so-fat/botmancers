@@ -3,11 +3,14 @@ import db from '@/lib/db';
 import { agentExists, isSessionFilter, listAgentSessions } from '@/lib/session-catalog';
 import { sessionsWithActions } from '@/lib/session-pins';
 import { warmAgentProvider } from '@/lib/provider-sessions';
+import { agentSessionsSyncedAt } from '@/lib/session-sync-refresh';
 
 // NOT-496: the selected Agent's session catalog (lib/session-catalog).
 // ?status=active|ended|all (default all), newest activity first. External
 // provider session ids are never part of the response.
 // NOT-507: each row adds home and what each session action can do now.
+// NOT-545: a top-level synced_at (the newest last_synced_at of the Agent's
+// rows, or null when the Agent has none yet).
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -20,7 +23,7 @@ export async function GET(
       return NextResponse.json({ error: 'status must be active, ended, or all' }, { status: 400 });
     }
     await warmAgentProvider(db, id, { onlyWithSessions: true });
-    return NextResponse.json({ status, sessions: sessionsWithActions(id, listAgentSessions(db, id, status)) });
+    return NextResponse.json({ status, synced_at: agentSessionsSyncedAt(db, id), sessions: sessionsWithActions(id, listAgentSessions(db, id, status)) });
   } catch (error) {
     console.error('Error listing agent sessions:', error);
     return NextResponse.json({ error: 'Failed to list sessions' }, { status: 500 });
