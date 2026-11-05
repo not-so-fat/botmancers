@@ -13,7 +13,7 @@ import type {
   RuntimeCapacityEntry,
   RuntimeCapacityResponse,
 } from './types';
-import { isCapacityRuntime } from './types';
+import { CAPACITY_RUNTIMES, isCapacityRuntime } from './types';
 
 const CACHE_TTL_MS = 60_000;
 let cached: { at: number; value: RuntimeCapacityResponse } | null = null;
@@ -24,7 +24,7 @@ function configuredCapacityRuntimes(): CapacityRuntime[] {
     const agent = String(bot.agent ?? '') as BotAgent;
     if (isCapacityRuntime(agent)) seen.add(agent);
   }
-  return ['claude', 'codex', 'cursor', 'muse'].filter(id => seen.has(id));
+  return CAPACITY_RUNTIMES.filter(id => seen.has(id));
 }
 
 function entryFor(
