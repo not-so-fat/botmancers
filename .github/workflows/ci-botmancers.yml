@@ -148,6 +148,14 @@ jobs:
       - name: Agent conversation history and owner routes (NOT-551)
         working-directory: .
         run: npm run test:agent-conversations-ui-api
+      - name: Agent Slack relay health and shared-session deployments (NOT-552)
+        working-directory: .
+        run: |
+          npm run test:slack-transport
+          npm run test:slack-relay
+          npm run test:session-share-owner
+          npm run test:session-share-ui
+          npm run test:agent-slack-page
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

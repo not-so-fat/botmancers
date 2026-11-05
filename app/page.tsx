@@ -188,6 +188,7 @@ export default function Home() {
   const defaulted = useRef(false);
   const linkedAgentRef = useRef<string | null>(null);
   const linkedSessionsRef = useRef(false);
+  const linkedSessionRef = useRef<string | null>(null);
   const deletedCountRef = useRef(0);
   const [messages, setMessages] = useState<Message[]>([]);
   const [notices, setNotices] = useState<WakeNoticeItem[]>([]);
@@ -260,6 +261,8 @@ export default function Home() {
     // resolves the canonical direct conversation before moving to detail.
     const linkedAgent = query.get('agent');
     if (linkedAgent) {
+      // NOT-551: old `/?agent=` chat links resolve to durable Conversations
+      // detail (or Sessions). Do not restore ambient home chat.
       defaulted.current = true;
       if (query.get('sessions') === '1') {
         window.location.replace(`/agents/${encodeURIComponent(linkedAgent)}/sessions`);
@@ -1046,6 +1049,7 @@ export default function Home() {
           agentId={activeConversation.details.id}
           agentName={activeConversation.details.name}
           agentProvider={activeConversation.details.agent ?? undefined}
+          initialSessionRef={linkedSessionRef.current}
           agents={bots.map(bot => ({ id: bot.id, name: bot.name }))}
           origin={{ conversationId: activeConversation.id, label: `${activeConversation.details.name} thread` }}
           onExchangeStarted={() => { void loadMessages(); }}
