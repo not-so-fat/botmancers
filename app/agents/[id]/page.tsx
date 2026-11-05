@@ -1,17 +1,33 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { useAgentOverview } from './AgentShell';
 import { agentLabel } from '@/lib/bot-definition';
 import { ActivityList } from './activity/AgentActivityPage';
 
-const CAPABILITY_LABELS: Record<string, string> = {
-  'agents:read': 'Discoverable to connected coding agents',
-  'sessions:read': 'Session history',
-  'conversations:read': 'Conversation history',
-  'sessions:message': 'Session messaging',
-  'shares:create': 'Slack session sharing',
-};
+const BRIDGE_SETUP_COMMAND = 'botmancers setup --client cursor';
+
+function CopyBridgeSetup() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="agent-primary-action"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(BRIDGE_SETUP_COMMAND);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1600);
+        } catch {
+          setCopied(false);
+        }
+      }}
+    >
+      {copied ? 'Copied' : 'Copy setup command'}
+    </button>
+  );
+}
 
 function WorkList({ rows, empty }: { rows: Array<{ ref: string; title: string; status: string; last_activity_at: number }>; empty: string }) {
   if (!rows.length) return <p className="agent-empty">{empty}</p>;
@@ -45,17 +61,9 @@ export default function AgentOverviewPage() {
         : 'No ready session is known';
   return (
     <div className="agent-overview" data-agent-overview>
-      <section className="agent-hero">
-        <p className="agent-eyebrow">Overview</p>
-        <h2>{overview.agent.role}</h2>
-        <ul className="agent-capabilities" aria-label="Capabilities">
-          {overview.capabilities.map(capability => <li key={capability}>{CAPABILITY_LABELS[capability] || capability}</li>)}
-        </ul>
-      </section>
-
       <div className="agent-overview-grid">
         <section className="agent-panel agent-instructions">
-          <div className="agent-panel-head"><div><p className="agent-eyebrow">Standing instructions</p><h2>How this Agent works</h2></div><Link href={configHref}>Full Config</Link></div>
+          <div className="agent-panel-head"><div><p className="agent-eyebrow">Standing instructions</p><h2>How this Agent works</h2></div><Link href={configHref}>Config</Link></div>
           <dl>
             <div><dt>Rules</dt><dd>{overview.instructions.rules}</dd></div>
             <div><dt>Skill</dt><dd>{overview.instructions.skill}</dd></div>
@@ -75,13 +83,31 @@ export default function AgentOverviewPage() {
         </section>
       </div>
 
-      <section className="agent-use" aria-labelledby="use-this-agent">
-        <p className="agent-eyebrow">Start here</p>
-        <h2 id="use-this-agent">Use this Agent</h2>
+      <section className="agent-use" aria-labelledby="open-this-agent">
+        <p className="agent-eyebrow">Open this Agent</p>
+        <h2 id="open-this-agent">Make it reachable</h2>
         <div className="agent-use-grid">
-          <article><span className="agent-use-number">01</span><h3>Message in Botmancers</h3><p>Open a focused conversation when you want to talk directly with {overview.agent.name}.</p><Link className="agent-primary-action" href={messageHref}>Open conversation</Link></article>
-          <article><span className="agent-use-number">02</span><h3>Use from a coding agent</h3><p>Connect your coding agent to <code>POST /api/v0/mcp</code>, then call <code>botmancers_capabilities</code> and <code>botmancers_list_agents</code> before messaging.</p><a href="https://github.com/not-so-fat/botmancers/blob/main/packages/mcp-server/README.md#client-setup-and-the-collaboration-skill" target="_blank" rel="noreferrer">Open bridge setup guidance</a></article>
-          <article><span className="agent-use-number">03</span><h3>Share a session to Slack</h3><p>Choose one of this Agent’s sessions and create a time-limited, read-only Slack share.</p><Link href={`/agents/${encodeURIComponent(id)}/slack`}>Share through Slack</Link></article>
+          <article>
+            <span className="agent-use-number">01</span>
+            <h3>Use from a coding agent</h3>
+            <p>Let another coding agent discover {overview.agent.name} and ask its sessions — so work learned here can travel between agents.</p>
+            <p className="agent-muted">One command connects the client to the bridge and installs the collaboration skill:</p>
+            <pre className="agent-setup-command"><code>{BRIDGE_SETUP_COMMAND}</code></pre>
+            <CopyBridgeSetup />
+            <p className="agent-muted">Swap <code>cursor</code> for <code>codex</code> or <code>claude</code>.</p>
+          </article>
+          <article>
+            <span className="agent-use-number">02</span>
+            <h3>Share a session to Slack</h3>
+            <p>Open one of this Agent’s sessions to people in Slack — a time-limited, read-only share so others can ask what the session already knows.</p>
+            <Link href={`/agents/${encodeURIComponent(id)}/slack`}>Share through Slack</Link>
+          </article>
+          <article>
+            <span className="agent-use-number">03</span>
+            <h3>Message in Botmancers</h3>
+            <p>Talk directly with {overview.agent.name} in a focused conversation when you are the one asking.</p>
+            <Link href={messageHref}>Open conversation</Link>
+          </article>
         </div>
       </section>
 

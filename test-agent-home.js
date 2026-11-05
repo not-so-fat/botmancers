@@ -131,11 +131,19 @@ try {
     assert.match(overviewPage, /Open conversation/);
   });
 
-  test('Use this Agent names three real paths and the MCP discovery flow', () => {
-    for (const text of ['Message in Botmancers', 'Use from a coding agent', 'Share a session to Slack', 'POST /api/v0/mcp', 'botmancers_capabilities', 'botmancers_list_agents']) {
+  test('Overview opens reachability paths before direct chat, with the local setup command', () => {
+    assert.equal(overviewPage.includes('agent-hero'), false);
+    assert.equal(overviewPage.includes('agent-capabilities'), false);
+    assert.equal(overviewPage.includes('Full Config'), false);
+    assert.equal(overviewPage.includes('github.com/not-so-fat/botmancers'), false);
+    assert.equal((overviewPage.match(/>Config</g) || []).length >= 2, true);
+    for (const text of ['Make it reachable', 'Use from a coding agent', 'Share a session to Slack', 'Message in Botmancers', 'botmancers setup --client cursor', 'Copy setup command']) {
       assert.ok(overviewPage.includes(text), text);
     }
-    assert.match(overviewPage, /packages\/mcp-server\/README\.md#client-setup-and-the-collaboration-skill/);
+    const coding = overviewPage.indexOf('Use from a coding agent');
+    const slack = overviewPage.indexOf('Share a session to Slack');
+    const direct = overviewPage.indexOf('Message in Botmancers');
+    assert.ok(coding < slack && slack < direct, 'coding agent and Slack precede direct Botmancers chat');
     assert.equal(/token|grant_secret|provider_session_id|working_directory|model/i.test(dtoShape), false);
     assert.equal(overviewPage.includes('<select'), false);
     assert.equal(/label[^>]*>\s*(Runtime|Model|Provider session)/i.test(overviewPage), false);
