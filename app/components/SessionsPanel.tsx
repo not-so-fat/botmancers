@@ -390,7 +390,7 @@ export function SessionDetail({ row, agentId, headingRef, origin, agents, shares
   onSharesChanged: () => void;
 }) {
   const [attempts, setAttempts] = useState<SessionAttemptRow[] | null>(null);
-  const [usage, setUsage] = useState<{ totals: SessionUsageRow | undefined; samples: SessionUsageSampleRow[] } | null>(null);
+  const [usageDetail, setUsageDetail] = useState<{ totals: SessionUsageRow | undefined; samples: SessionUsageSampleRow[] } | null>(null);
   const [error, setError] = useState('');
   const [debugId, setDebugId] = useState<string | null>(null);
   const [debugError, setDebugError] = useState('');
@@ -402,7 +402,7 @@ export function SessionDetail({ row, agentId, headingRef, origin, agents, shares
   const conversation = row.origin.conversation;
   const originLink = conversationHref(row);
   const request = workRequestLabel(row);
-  const reportedUsage = sessionUsageLine(row.usage);
+  const usage = sessionUsageLine(row.usage);
 
   useEffect(() => {
     let cancelled = false;
@@ -413,7 +413,7 @@ export function SessionDetail({ row, agentId, headingRef, origin, agents, shares
         if (!res.ok || !Array.isArray(body?.session?.attempts)) setError('Could not load session details.');
         else {
           setAttempts(body.session.attempts as SessionAttemptRow[]);
-          setUsage({ totals: body.session.usage as SessionUsageRow | undefined, samples: Array.isArray(body.session.usage_samples) ? body.session.usage_samples as SessionUsageSampleRow[] : [] });
+          setUsageDetail({ totals: body.session.usage as SessionUsageRow | undefined, samples: Array.isArray(body.session.usage_samples) ? body.session.usage_samples as SessionUsageSampleRow[] : [] });
         }
       })
       .catch(() => { if (!cancelled) setError('Could not load session details.'); });
@@ -448,7 +448,7 @@ export function SessionDetail({ row, agentId, headingRef, origin, agents, shares
         <div><dt>Started</dt><dd>{formatSessionDate(row.created_at)}</dd></div>
         {row.ended_at !== null ? <div><dt>Ended</dt><dd>{formatSessionDate(row.ended_at)}</dd></div> : null}
         <div><dt>Runtime</dt><dd>{runtimeLabel(row)}</dd></div>
-        <div><dt>Reported usage</dt><dd><span className={`session-usage is-${reportedUsage.quality}`} aria-hidden="true">{reportedUsage.text}</span><span className="session-sr">{reportedUsage.label}</span>{reportedUsage.partial ? <span className="manage-tag session-usage-tag">Partial</span> : null}</dd></div>
+        <div><dt>Reported usage</dt><dd><span className={`session-usage is-${usage.quality}`} aria-hidden="true">{usage.text}</span><span className="session-sr">{usage.label}</span>{usage.partial ? <span className="manage-tag session-usage-tag">Partial</span> : null}</dd></div>
         {row.context.workspace ? <div className="is-wide"><dt>Workspace</dt><dd>{row.context.workspace}</dd></div> : null}
         <div className="is-wide"><dt>Origin</dt><dd>{originLink && conversation ? <Link className="session-link" href={originLink}>{conversation.label}</Link> : (conversation?.label ?? 'Not recorded')}</dd></div>
         {request ? <div className="is-wide"><dt>Work request</dt><dd>{request}</dd></div> : null}
@@ -469,7 +469,7 @@ export function SessionDetail({ row, agentId, headingRef, origin, agents, shares
         {error ? <p className="delete-error" role="alert">{error}</p> : null}
         {!attempts && !error ? <p className="delete-copy" role="status">Loading details…</p> : null}
         {attempts ? <ol className="session-attempts" aria-label="Runs in this session">{attempts.length === 0 ? <li>No recorded runs.</li> : null}{attempts.map(item => <li key={`${item.request_id}-${item.attempt_number}`}>{formatSessionDate(item.started_at)} · {attemptLabel(item)}</li>)}</ol> : null}
-        {usage ? <SessionUsageDetail totals={usage.totals} samples={usage.samples} /> : null}
+        {usageDetail ? <SessionUsageDetail totals={usageDetail.totals} samples={usageDetail.samples} /> : null}
       </section>
 
       <details className="session-debug session-detail-section" onToggle={e => { if (e.currentTarget.open) void loadDebug(); }}>
