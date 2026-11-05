@@ -149,6 +149,14 @@ jobs:
         run: |
           npm run test:agent-home
           npm run test:roster-a11y
+      - name: Agent Slack relay health and shared-session deployments (NOT-552)
+        working-directory: .
+        run: |
+          npm run test:slack-transport
+          npm run test:slack-relay
+          npm run test:session-share-owner
+          npm run test:session-share-ui
+          npm run test:agent-slack-page
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

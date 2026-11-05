@@ -78,7 +78,7 @@ export default function AgentOverviewPage() {
         <div className="agent-use-grid">
           <article><span className="agent-use-number">01</span><h3>Message in Botmancers</h3><p>Open a focused conversation when you want to talk directly with {overview.agent.name}.</p><Link className="agent-primary-action" href={messageHref}>Open conversation</Link></article>
           <article><span className="agent-use-number">02</span><h3>Use from a coding agent</h3><p>Connect your coding agent to <code>POST /api/v0/mcp</code>, then call <code>botmancers_capabilities</code> and <code>botmancers_list_agents</code> before messaging.</p><a href="https://github.com/not-so-fat/botmancers/blob/main/packages/mcp-server/README.md#client-setup-and-the-collaboration-skill" target="_blank" rel="noreferrer">Open bridge setup guidance</a></article>
-          <article><span className="agent-use-number">03</span><h3>Share a session to Slack</h3><p>Choose one of this Agent’s sessions and create a time-limited, read-only Slack share.</p><Link href={`/agents/${encodeURIComponent(id)}/sessions`}>Review sessions</Link></article>
+          <article><span className="agent-use-number">03</span><h3>Share a session to Slack</h3><p>Choose one of this Agent’s sessions and create a time-limited, read-only Slack share.</p><Link href={`/agents/${encodeURIComponent(id)}/slack`}>Share through Slack</Link></article>
         </div>
       </section>
 

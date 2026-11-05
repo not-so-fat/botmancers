@@ -1,6 +1,6 @@
 # Typical user flows
 
-**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-04 (botmancers 0.7.0)
+**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-04 (NOT-552)
 
 This file answers one question: *what do people actually do with Botmancers, start to finish?* Other docs own the details of each step ([core-engine.md](core-engine.md) for the engine contract, [mcp-bridge.md](mcp-bridge.md) and [service-grants.md](service-grants.md) for the MCP tools and grants, [session-shares.md](session-shares.md) and [slack-transport.md](slack-transport.md) for sharing and Slack, [packages/mcp-server/README.md](../packages/mcp-server/README.md) for install and commands). This file owns the **sequence**.
 
@@ -27,7 +27,7 @@ A coding agent's past sessions hold knowledge: why a design was chosen, what was
 | [F2](#f2-register-an-agent-over-your-local-sessions) | Register an Agent over your local sessions | Shipped | `npm run test:acceptance` |
 | [F3](#f3-ask-or-continue-a-past-session-from-the-ui) | Ask or Continue a past session from the UI | Shipped | `npm run smoke:direct` |
 | [F4](#f4-let-another-coding-agent-ask-a-past-session) | Let another coding agent ask a past session | Shipped | `npm run test:mcp-bridge`, `test:service-grants` |
-| [F5](#f5-share-a-session-to-a-slack-thread) | Share a session to a Slack thread | Shipped (operator smoke) | `npm run test:slack-relay`, `smoke:slack-relay` |
+| [F5](#f5-share-a-session-to-a-slack-thread) | Share a session to a Slack thread | Shipped (operator smoke) | `npm run test:agent-slack-page`, `test:slack-relay`, `smoke:slack-relay` |
 | [F6](#f6-let-a-running-agent-share-its-own-session) | Let a running Agent share its own session | Shipped (Claude Code, Codex) | `smoke:not-517-share-current` |
 | [F7](#f7-hand-work-from-one-agent-to-another) | Hand work from one Agent to another | Shipped | `npm run smoke:direct` |
 
@@ -110,10 +110,11 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 
 | # | Owner or asker does | Observable result |
 |---|---------------------|-------------------|
-| 1 | Owner: add the Slack channel to the allowlist in **Agent Config** | The channel is available to shares; `botmancers doctor` shows the Slack line |
-| 2 | Owner: in the Sessions drawer, **Share to Slack**: choose channel, duration, question limit | A share appears with its status, expiry, and `shr_…` reference; a thread is posted |
-| 3 | Asker: reply in that thread | The question goes to exactly that session; the answer is posted back in the thread |
-| 4 | Owner: **Revoke**, or wait for expiry or the question limit | The next question gets the fixed revoked, expired, or limit notice |
+| 1 | Owner: open an Agent’s **Slack** page | The one Botmancers relay status is separate from that Agent’s shared session threads; no per-Agent Slack app is implied |
+| 2 | Owner: add the Slack channel to the allowlist in **Agent Config** | The channel is available to shares; `botmancers doctor` shows the Slack line |
+| 3 | Owner: choose **Share a session**, then in Sessions choose a session, channel, duration, and question limit | A share appears with its status, expiry, and `shr_…` reference; a thread is posted |
+| 4 | Asker: reply in that thread | The question goes to exactly that session; the answer is posted back in the thread |
+| 5 | Owner: review or **Revoke** the share on the Agent’s Slack page, or wait for expiry or the question limit | The lifecycle remains visible; the next question gets the fixed revoked, expired, or limit notice |
 
 - **Success:** answers appear only in the shared thread, the share's history stays listed, and nothing exposes a provider session id, working directory, or transcript.
 - **Common failures:** channel not on the allowlist (`403 audience_not_allowed`); session not askable right now; Slack not connected (Slack line in `doctor`).

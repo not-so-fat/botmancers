@@ -257,8 +257,14 @@ export default function Home() {
     if (linkedAgent) {
       // NOT-550 compatibility: old drawer links now land on the Agent's
       // first-class Sessions page instead of opening chat underneath it.
+      // NOT-552 deep links preserve ?session= so an owning-session share
+      // opens that exact catalog row on the Agent Sessions page.
       if (query.get('sessions') === '1') {
-        window.location.replace(`/agents/${encodeURIComponent(linkedAgent)}/sessions`);
+        const session = query.get('session');
+        const dest = session
+          ? `/agents/${encodeURIComponent(linkedAgent)}/sessions?session=${encodeURIComponent(session)}`
+          : `/agents/${encodeURIComponent(linkedAgent)}/sessions`;
+        window.location.replace(dest);
         return;
       }
       linkedAgentRef.current = linkedAgent;

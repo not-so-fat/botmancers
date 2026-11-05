@@ -116,12 +116,14 @@ try {
     const panel = read('app/components/SessionsPanel.tsx');
     const css = read('app/globals.css');
     assert.match(route, /<SessionsPanel/);
-    assert.match(home, /window\.location\.replace\(\`\/agents\/\$\{encodeURIComponent\(linkedAgent\)\}\/sessions\`\)/);
+    assert.match(home, /sessions\?session=\$\{encodeURIComponent\(session\)\}/);
+    assert.match(home, /window\.location\.replace\(dest\)/);
     assert.match(home, /href=\{\`\/agents\/\$\{encodeURIComponent\(activeConversation\.details\.id\)\}\/sessions\`\}/);
     assert.match(overview, /All sessions/);
     assert.equal(/sessionsOpen|sessions-drawer|onCardKeyDown/.test(panel + home), false);
     assert.equal(/aria-modal="true"/.test(panel), false);
     assert.match(panel, /router\.replace\(\`\/agents\/\$\{encodeURIComponent\(agentId\)\}\/sessions\?session=/);
+    assert.match(panel, /sessions\/\$\{encodeURIComponent\(requestedRef\)\}/);
     assert.match(panel, /returnTo\.focus\(\)/);
     assert.match(css, /grid-template-columns: minmax\(18rem, 20rem\) minmax\(0, 1fr\)/);
     assert.match(css, /\.sessions-review\.has-detail \.sessions-list-pane/);

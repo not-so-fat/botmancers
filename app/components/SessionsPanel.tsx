@@ -94,6 +94,7 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
   const selectedFromRef = useRef<HTMLElement | null>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const pendingDetailFocus = useRef(false);
+  const scrolledDeepLinkRef = useRef<string | null>(null);
   const providerLabel = agentProvider ? agentLabel(agentProvider) || undefined : undefined;
 
   useEffect(() => {
@@ -113,8 +114,24 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
             setLoadError(typeof body?.error === 'string' ? body.error : 'Could not load sessions.');
             return;
           }
-          const page = body.sessions as SessionRow[];
+          let page = body.sessions as SessionRow[];
+          // NOT-552: an owning-session link (?session=) opens that exact
+          // Botmancers session even when it is older than the first catalog
+          // page. Unknown or cross-Agent refs stay indistinguishable (404).
+          if (requestedRef && !page.some(row => row.ref === requestedRef) && filter === 'all' && !query.trim() && !workspaceFilter) {
+            const exactResponse = await fetch(`/api/bots/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(requestedRef)}`, { cache: 'no-store' });
+            const exactBody = await exactResponse.json().catch(() => null);
+            if (exactResponse.ok && exactBody?.session) page = [exactBody.session as SessionRow, ...page];
+          }
+          if (cancelled) return;
           setRows(page);
+          if (requestedRef && page.some(row => row.ref === requestedRef) && scrolledDeepLinkRef.current !== requestedRef) {
+            scrolledDeepLinkRef.current = requestedRef;
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              document.querySelector<HTMLElement>(`[data-session-ref="${CSS.escape(requestedRef)}"]`)
+                ?.scrollIntoView({ block: 'nearest' });
+            }));
+          }
           setSync(body?.sync && typeof body.sync === 'object' ? body.sync as SessionSyncState : null);
           setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
           setCursorScope(`${agentId}\n${filter}\n${query.trim()}\n${workspaceFilter}`);
@@ -125,7 +142,7 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
         .catch(() => { if (!cancelled) setLoadError('Could not load sessions.'); });
     }, delay);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [agentId, filter, query, workspaceFilter, attempt]);
+  }, [agentId, filter, query, workspaceFilter, attempt, requestedRef]);
 
   // The ?session= query is the source of truth for selection. Closing detail
   // clears the query; do not re-select from a stale param while navigation
