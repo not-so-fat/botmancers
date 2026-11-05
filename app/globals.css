@@ -2787,7 +2787,6 @@ button.avatar-pic {
 }
 
 .agent-shell-identity h1,
-.agent-hero h2,
 .agent-panel h2,
 .agent-use h2,
 .agent-section-page h2,
@@ -2886,42 +2885,6 @@ button.avatar-pic {
   margin: 0 auto;
   box-sizing: border-box;
   padding: clamp(28px, 5vw, 64px) clamp(18px, 5vw, 64px) 72px;
-}
-
-.agent-hero {
-  max-width: 780px;
-  margin-bottom: 36px;
-}
-
-.agent-hero h2 {
-  font-size: clamp(30px, 4vw, 52px);
-  line-height: 1.06;
-}
-
-.agent-hero > p:not(.agent-eyebrow) {
-  max-width: 720px;
-  margin: 18px 0 0;
-  color: var(--ink-muted);
-  font-size: 17px;
-  line-height: 1.65;
-}
-
-.agent-capabilities {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 22px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.agent-capabilities li {
-  padding: 6px 9px;
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  color: var(--ink-muted);
-  font-family: var(--mono);
-  font-size: 11px;
 }
 
 .agent-overview-grid {
@@ -3067,12 +3030,36 @@ button.avatar-pic {
   font-size: 12px;
 }
 
+.agent-setup-command {
+  margin: 12px 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--composer);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.agent-setup-command code {
+  color: inherit;
+  font: inherit;
+}
+
 .agent-primary-action {
   display: inline-block;
+  margin-top: 4px;
   padding: 8px 12px;
   border: 1px solid var(--accent);
   border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .agent-work-grid {
