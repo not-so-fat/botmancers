@@ -7,6 +7,17 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-05
+
+### Changed
+
+- The Agent Overview leads with how to reach the Agent instead of describing
+  the product. The hero and capability tags are gone, and the instructions
+  panel links to "Config". The start guide is now "Make it reachable": use it
+  from a coding agent (a copyable `botmancers setup --client cursor` command,
+  with `codex` and `claude` as alternatives), share a session to Slack, then
+  message it in Botmancers.
+
 ## [0.9.1] - 2026-11-04
 
 ### Fixed
