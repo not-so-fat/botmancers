@@ -3982,7 +3982,7 @@ button.avatar-pic {
 
 .session-share-form select:focus-visible,
 .session-share-form input:focus-visible,
-.sessions-drawer a:focus-visible {
+.agent-sessions-page a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

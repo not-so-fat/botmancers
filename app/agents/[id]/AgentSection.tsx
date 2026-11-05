@@ -28,7 +28,7 @@ export default function AgentSection({ section }: { section: AgentSectionName })
       <p>{copy.body}</p>
       {(section === 'sessions' || section === 'slack') ? <Link className="agent-primary-action" href={sessionHref}>Open Agent sessions</Link> : null}
       {section === 'conversations' ? <Link className="agent-primary-action" href={conversationHref}>Open conversation</Link> : null}
-      {section === 'slack' ? <p className="agent-muted">In Sessions, expand a session and choose Share to Slack. Slack policy remains editable in <Link href={`/bots/${encodeURIComponent(id)}/config`}>Config</Link>.</p> : null}
+      {section === 'slack' ? <p className="agent-muted">In Sessions, open a session and choose Share to Slack. Slack policy remains editable in <Link href={`/bots/${encodeURIComponent(id)}/config`}>Config</Link>.</p> : null}
       {section === 'activity' ? (
         rows.length ? <ul className="agent-work-list">{rows.map(row => <li key={row.ref}><span><strong>{row.title}</strong><small>{row.status} · {new Date(row.last_activity_at).toLocaleString()}</small></span></li>)}</ul> : <p className="agent-empty">No activity yet.</p>
       ) : null}

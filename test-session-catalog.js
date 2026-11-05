@@ -275,7 +275,7 @@ async function main() {
   const panel = read('app/components/SessionsPanel.tsx');
   const sessionsPage = read('app/agents/[id]/sessions/page.tsx');
   const bar = page.slice(page.indexOf('className="thread-bar"'), page.indexOf('{avatarStep ?'));
-  assert(/<Link[\s\S]*?href=\{\`\/agents\/\$\\{encodeURIComponent\(activeConversation\.details\.id\)\}\/sessions\`\\}[\s\S]*?>\s*Sessions\s*<\/Link>/.test(bar),
+  assert(/href=\{\`\/agents\/\$\{encodeURIComponent\(activeConversation\.details\.id\)\}\/sessions\`\}[\s\S]*?>\s*Sessions\s*<\/Link>/.test(bar),
     'the selected-Agent thread header links to the full Sessions page');
   assert(/<SessionsPanel/.test(sessionsPage) && /agentId=\{id\}/.test(sessionsPage), 'the Sessions route is scoped to the selected Agent under the shared shell');
   assert(!/sessions-drawer|sessionsOpen|onCardKeyDown/.test(panel + page) && !/role="dialog"|aria-modal="true"/.test(panel),

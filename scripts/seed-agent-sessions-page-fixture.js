@@ -100,11 +100,14 @@ async function main() {
   await provider.refreshProviderSession(db, reviewer.id, refOf('thr-review-missing-SECRET')).catch(() => undefined);
   codex.shutdownDefaultCodexRuntime();
 
-  console.log(JSON.stringify({
+  const meta = {
     db: DB_PATH, agent: { id: reviewer.id, name: reviewer.name }, sessions: 5,
     shared_session_ref: openRef, share_ref: shared.share.id, codex_bin: BIN,
     fake_codex_state: STATE, shares_path: SHARES,
-  }));
+  };
+  const metaPath = path.join(DIR, 'agent-sessions-page-fixture.meta.json');
+  fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`);
+  console.log(JSON.stringify({ ...meta, meta: metaPath }));
 }
 
 main().catch(error => { console.error(error); process.exit(1); });
