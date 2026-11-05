@@ -56,6 +56,9 @@ export interface SessionOriginWorkRequest {
   id: string;
   execution_kind: ExecutionKind;
   state: WorkRequestState;
+  // Canonical request provenance. The UI may label a human or Agent
+  // origin from this stored principal, never from transcript prose.
+  requester: { kind: 'person' | 'bot' | 'service'; name: string | null };
 }
 
 export interface SessionState {
@@ -124,6 +127,8 @@ interface CatalogRow extends SessionBinding {
   request_state: WorkRequestState | null;
   request_conversation_id: string | null;
   request_target_agent_id: string | null;
+  request_requester_kind: 'person' | 'bot' | 'service' | null;
+  requester_agent_name: string | null;
   source_snapshot: string | null;
   source_finished_at: number | null;
   resumed_last_at: number | null;
@@ -188,6 +193,7 @@ const SELECT = `
     c.type AS conversation_type, c.bot_id AS conversation_bot_id, tb.name AS thread_agent_name, g.name AS group_name,
     r.intent AS request_intent, r.execution_kind AS request_kind, r.state AS request_state,
     r.source_conversation_id AS request_conversation_id, r.target_agent_id AS request_target_agent_id,
+    r.requester_kind AS request_requester_kind, rb.name AS requester_agent_name,
     sa.launch_snapshot AS source_snapshot, sa.finished_at AS source_finished_at,
     (SELECT MAX(COALESCE(ra.finished_at, ra.started_at)) FROM work_attempts ra WHERE ra.resumed_session_binding_id = b.id) AS resumed_last_at,
     EXISTS (SELECT 1 FROM work_attempts oa WHERE oa.resumed_session_binding_id = b.id AND oa.finished_at IS NULL) AS attempt_running,
@@ -199,6 +205,7 @@ const SELECT = `
   LEFT JOIN provider_sessions ps ON ps.binding_id = b.id
   LEFT JOIN work_attempts sa ON sa.id = b.source_attempt_id
   LEFT JOIN work_requests r ON r.id = COALESCE(b.request_id, sa.request_id)
+  LEFT JOIN bots rb ON r.requester_kind = 'bot' AND rb.id = r.requester_id
   LEFT JOIN conversations c ON c.id = COALESCE(b.conversation_id, r.source_conversation_id)
   LEFT JOIN bots tb ON tb.id = c.bot_id
   LEFT JOIN groups g ON g.id = c.group_id
@@ -274,7 +281,15 @@ function summarize(row: CatalogRow, usage: UsageSummary = emptyUsage()): Session
     origin: {
       conversation,
       work_request: row.origin_request_id && row.request_kind && row.request_state
-        ? { id: row.origin_request_id, execution_kind: row.request_kind, state: row.request_state }
+        ? {
+            id: row.origin_request_id,
+            execution_kind: row.request_kind,
+            state: row.request_state,
+            requester: {
+              kind: row.request_requester_kind ?? 'service',
+              name: row.request_requester_kind === 'bot' ? row.requester_agent_name : null,
+            },
+          }
         : null,
     },
     context: { workspace: snapshotField(snapshot, 'cwd') ?? row.ps_workspace ?? null },

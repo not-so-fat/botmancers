@@ -273,21 +273,24 @@ async function main() {
   const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
   const page = read('app/page.tsx');
   const panel = read('app/components/SessionsPanel.tsx');
+  const sessionsPage = read('app/agents/[id]/sessions/page.tsx');
   const bar = page.slice(page.indexOf('className="thread-bar"'), page.indexOf('{avatarStep ?'));
-  assert(/<button[\s\S]*?ref=\{sessionsRef\}[\s\S]*?type="button"[\s\S]*?aria-haspopup="dialog"[\s\S]*?aria-expanded=\{sessionsOpen\}[\s\S]*?>\s*Sessions\s*<\/button>/.test(bar),
-    'the selected-Agent thread header has a native Sessions button (keyboard reachable, dialog semantics)');
-  assert(/agentId=\{activeConversation\.details\.id\}/.test(page) && /sessionsRef\.current\?\.focus\(\)/.test(page), 'the drawer is scoped to the selected Agent and returns focus to Sessions on close');
-  assert(/role="dialog"/.test(panel) && /aria-modal="true"/.test(panel) && /e\.key === 'Escape'/.test(panel) && /closeRef\.current\?\.focus\(\)/.test(panel),
-    'the drawer is a labeled modal dialog: focus moves in, Escape closes, Tab is contained');
+  assert(/<Link[\s\S]*?href=\{\`\/agents\/\$\\{encodeURIComponent\(activeConversation\.details\.id\)\}\/sessions\`\\}[\s\S]*?>\s*Sessions\s*<\/Link>/.test(bar),
+    'the selected-Agent thread header links to the full Sessions page');
+  assert(/<SessionsPanel/.test(sessionsPage) && /agentId=\{id\}/.test(sessionsPage), 'the Sessions route is scoped to the selected Agent under the shared shell');
+  assert(!/sessions-drawer|sessionsOpen|onCardKeyDown/.test(panel + page) && !/role="dialog"|aria-modal="true"/.test(panel),
+    'the normal Sessions flow has no modal drawer or drawer focus trap');
   assert(/Loading sessions…/.test(panel) && /role="alert"/.test(panel) && /Retry/.test(panel) && /emptySessionsCopy\(/.test(panel), 'loading, error (with retry), and empty states');
   assert(/statusLabel\(row\)/.test(panel) && /is-\$\{row\.status\}/.test(panel) && /aria-pressed=\{filter === option\.value\}/.test(panel), 'active/ended state per row and an active|ended|all filter');
-  assert(/onOpenThread\(conversation\.thread_agent_id/.test(panel) && /Last activity/.test(panel) && /Origin/.test(panel), 'rows show last activity and origin, with a link back to the origin thread');
+  assert(/conversation\.thread_agent_id[\s\S]*?\/conversations/.test(panel) && /Last activity/.test(panel) && /Origin/.test(panel),
+    'detail shows last activity and an Agent-scoped Conversations origin link');
+  assert(/sessionOriginChips\(row\)/.test(panel), 'collapsed provenance chips come from canonical metadata');
   // NOT-548: the drawer gained a title search box. It stays the only
   // text input: nothing here takes a raw session id.
-  const drawerInputTags = panel.match(/<input\b[\s\S]*?\/>/gi) ?? [];
-  assert(!/<textarea|contentEditable/i.test(panel) && drawerInputTags.length === 1
-    && /type="search"/.test(drawerInputTags[0]) && /aria-label="Search sessions by title"/.test(drawerInputTags[0]),
-    'no raw ID entry: the drawer\'s only text input is the title search box');
+  const pageInputTags = panel.match(/<input\b[\s\S]*?\/>/gi) ?? [];
+  assert(!/<textarea|contentEditable/i.test(panel) && pageInputTags.length === 1
+    && /type="search"/.test(pageInputTags[0]) && /aria-label="Search sessions by title"/.test(pageInputTags[0]),
+    'no raw ID entry: the Sessions page\'s only text input is the title search box');
   const externalMentions = panel.split('\n').filter(line => /external_session_id/.test(line));
   assert(externalMentions.length === 2 && externalMentions.every(line => /debug/.test(line)), 'the provider session id is read only by the debug disclosure');
   assert(/<summary>Local debug: provider session ID<\/summary>/.test(panel) && /navigator\.clipboard\.writeText/.test(panel), 'the debug disclosure is explicitly labeled and has a Copy action');
@@ -296,7 +299,7 @@ async function main() {
   assert(view.runtimeLabel(sample) === 'codex · agent-deck' && view.workRequestLabel(sample) === 'Implementation · completed'
     && view.statusLabel(byRef[replaced.id]) === 'Ended', 'row labels for runtime, origin request, and state');
   assert(view.formatSessionDate(BASE + 5 * MIN) === '2026-10-15 09:05 UTC' && byRef[direct.id].title.endsWith(view.formatSessionDate(direct.created_at)),
-    'drawer times use the same UTC clock as the fallback title');
+    'page times use the same UTC clock as the fallback title');
   assert(/no active sessions/.test(view.emptySessionsCopy('active', 'Dev')) && /no ended sessions/.test(view.emptySessionsCopy('ended', 'Dev')), 'empty copy follows the filter');
 
   console.log('\nDocumentation contract');

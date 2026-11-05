@@ -161,5 +161,5 @@ export function shareFromTurnNote(policy: SharePolicy): string {
   if (!policy.agent.share_current.supported) return policy.agent.share_current.reason ?? 'This runtime cannot share its own session from a turn.';
   return policy.agent.share_from_turn
     ? 'On: a turn Botmancers launches for this Agent can share its own session to an allowlisted channel. Turning it off revokes every live turn context at once.'
-    : 'Off: no turn of this Agent can share its own session. Sessions can still be shared from the Sessions drawer.';
+    : 'Off: no turn of this Agent can share its own session. Sessions can still be shared from the Agent Sessions page.';
 }

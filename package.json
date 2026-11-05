@@ -59,6 +59,7 @@
     "test:session-reconcile": "node test-session-reconcile.js",
     "test:session-sync-ui": "node test-session-sync-ui.js",
     "test:session-list-paging": "node test-session-list-paging.js",
+    "test:agent-sessions-page": "node test-agent-sessions-page.js",
     "test:session-pins": "node test-session-pins.js",
     "test:cursor-session-provider": "node test-cursor-session-provider.js",
     "smoke:cursor-session": "node scripts/cursor-session-smoke.js",

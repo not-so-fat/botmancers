@@ -18,7 +18,7 @@ export default function AgentSection({ section }: { section: AgentSectionName })
   if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an Agent</Link></div>;
   if (error || !overview) return <div className="agent-state" role="alert">This Agent section is unavailable.</div>;
   const copy = COPY[section];
-  const sessionHref = `/?agent=${encodeURIComponent(id)}&sessions=1`;
+  const sessionHref = `/agents/${encodeURIComponent(id)}/sessions`;
   const conversationHref = `/?agent=${encodeURIComponent(id)}`;
   const rows = section === 'activity' ? overview.recent_work : overview.current_work;
   return (
