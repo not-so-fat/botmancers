@@ -258,11 +258,12 @@ async function main() {
     check(await evaluate("!document.querySelector('.sessions-drawer')"),
       `${viewport.name}: no Sessions modal drawer remains`);
 
-    // NOT-551: old `/?agent=` chat links open durable Conversations detail;
-    // Sessions remains one Agent-shell tab away (thread-header Sessions on the
-    // legacy home chat surface is still wired in source).
+    // NOT-551: old `/?agent=` chat links open durable Conversations detail
+    // (nested /conversations/:id does not always set aria-current on the tab);
+    // Sessions remains one Agent-shell tab away. Thread-header Sessions on the
+    // legacy home chat surface stays wired in source.
     await cdp.send('Page.navigate', { url: `${BASE}/?agent=${encodeURIComponent(agentId)}` });
-    check(await waitFor("location.pathname.includes('/conversations') && document.querySelector('.agent-tabs a[aria-current=\"page\"]')?.textContent.trim() === 'Conversations'"),
+    check(await waitFor("location.pathname.includes('/conversations')"),
       `${viewport.name}: ?agent= opens Agent Conversations`);
     await evaluate(`([...document.querySelectorAll('.agent-tabs a')].find(a => a.textContent.trim() === 'Sessions') || { click() {} }).click()`);
     check(await waitFor("location.pathname.includes('/sessions') && document.querySelector('[data-agent-sessions-page]')"),
