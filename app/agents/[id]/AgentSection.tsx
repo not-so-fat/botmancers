@@ -7,7 +7,7 @@ export type AgentSectionName = 'sessions' | 'conversations' | 'slack' | 'activit
 
 const COPY: Record<AgentSectionName, { eyebrow: string; title: string; body: string }> = {
   sessions: { eyebrow: 'Sessions', title: 'Work attached to this Agent', body: 'Review active and previous runtime sessions in the existing Agent-scoped session catalog.' },
-  conversations: { eyebrow: 'Conversations', title: 'Talk with this Agent', body: 'Conversation history remains in the established Botmancers thread while the dedicated Conversations page is built.' },
+  conversations: { eyebrow: 'Conversations', title: 'Talk with this Agent', body: 'Review durable direct, group, Agent-to-Agent, and connected-service histories for this Agent, and message where owner authority permits.' },
   slack: { eyebrow: 'Slack', title: 'Share one session to Slack', body: 'Slack shares are created from a specific session and stay read-only, time-limited, and revocable.' },
   activity: { eyebrow: 'Activity', title: 'Recent Agent work', body: 'This summary uses the Agent’s existing session activity; the full Activity destination will replace it in its follow-on ticket.' },
 };
@@ -19,7 +19,7 @@ export default function AgentSection({ section }: { section: AgentSectionName })
   if (error || !overview) return <div className="agent-state" role="alert">This Agent section is unavailable.</div>;
   const copy = COPY[section];
   const sessionHref = `/agents/${encodeURIComponent(id)}/sessions`;
-  const conversationHref = `/?agent=${encodeURIComponent(id)}`;
+  const conversationHref = `/agents/${encodeURIComponent(id)}/conversations`;
   const rows = section === 'activity' ? overview.recent_work : overview.current_work;
   return (
     <div className="agent-section-page">

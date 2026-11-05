@@ -149,6 +149,9 @@ jobs:
         run: |
           npm run test:agent-home
           npm run test:roster-a11y
+      - name: Agent conversation history and owner routes (NOT-551)
+        working-directory: .
+        run: npm run test:agent-conversations-ui-api
       - name: Agent Slack relay health and shared-session deployments (NOT-552)
         working-directory: .
         run: |

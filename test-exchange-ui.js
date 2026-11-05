@@ -414,7 +414,7 @@ async function main() {
   const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
   const dialogSrc = read('app/components/ExchangeDialog.tsx');
   const panelSrc = read('app/components/SessionsPanel.tsx');
-  const pageSrc = read('app/page.tsx');
+  const pageSrc = read('app/agents/[id]/conversations/[conversationId]/ConversationDetail.tsx');
   const railSrc = read('app/components/AgentRail.tsx');
   const ledgerSrc = read('app/exchanges/page.tsx');
   const css = read('app/globals.css');
@@ -430,16 +430,16 @@ async function main() {
   assert(/@media \(max-width: 799px\) \{\s*\.session-actions \{\s*flex-direction: column;/.test(css) && /\.exchange-approval input:focus-visible/.test(css), 'narrow screens stack the session actions; the approval has a focus ring');
   assert(/grid-template-columns: minmax\(18rem, 20rem\) minmax\(0, 1fr\)/.test(css), 'wide screens keep a narrow scan list and wide detail');
   assert(/<nav className="rail-nav" aria-label="Workspace">/.test(railSrc) && /href="\/exchanges"[^>]*>Exchanges</.test(railSrc), 'the shared rail exposes an Exchanges destination');
-  assert(/\/api\/exchanges\?conversation=/.test(pageSrc) && /<ExchangeCard summary=\{summary\}/.test(pageSrc) && /shownExchanges\.has\(summary\.id\)/.test(pageSrc), 'threads render one card per linked exchange id from the API');
+  assert(/\/api\/exchanges\?conversation=/.test(pageSrc) && /<ExchangeCard summary=\{exchange\}/.test(pageSrc) && /shownExchanges\.has\(exchange\.id\)/.test(pageSrc), 'threads render one card per linked exchange id from the API');
   assert(/aria-current=\{selected === summary\.id/.test(ledgerSrc) && /headingRef\.current\?\.focus\(\)/.test(ledgerSrc), 'ledger marks the selected row and moves focus to the detail heading');
   assert(/@media \(max-width: 799px\)\s*\{\s*\.ledger-page\.has-detail \.ledger-list-pane/.test(css), 'narrow ledger shows list or detail full-height, not squeezed columns');
   assert(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.exchange-card,/.test(css), 'reduced motion is honoured for the new surfaces');
   assert(/\.exchange-card a:focus-visible,[\s\S]*?outline: 2px solid var\(--accent\)/.test(css) && /\.session-action:focus-visible/.test(css), 'new controls get the accent focus ring');
   assert(/if \(selected \|\| !previous\) return;/.test(ledgerSrc) && /\.ledger-row\[data-exchange-id=/.test(ledgerSrc) && /\(row \?\? listTitleRef\.current\)\?\.focus\(\)/.test(ledgerSrc)
     && /ref=\{listTitleRef\} tabIndex=\{-1\}/.test(ledgerSrc), 'leaving a detail returns focus to its row, or to the list heading');
-  const groupSrc = read('app/threads/[id]/page.tsx');
-  assert(/\/api\/exchanges\?conversation=/.test(groupSrc) && /<ExchangeCard summary=\{summary\}/.test(groupSrc) && /card\.focus\(/.test(groupSrc) && /<main /.test(groupSrc),
-    'the group thread page renders its linked exchange cards from the API and focuses the linked card');
+  const groupSrc = read('app/threads/[id]/route.ts');
+  assert(/conversation_participants/.test(groupSrc) && /participant_kind = 'bot'/.test(groupSrc) && /\?exchange=/.test(groupSrc) && /redirect\(`\/agents\//.test(groupSrc),
+    'the old group thread route resolves an Agent-scoped detail and preserves the focused exchange');
 
   console.log('Case 7: group-origin exchange backlinks');
   const room = groups.create('Design review', [rose.id, tank.id]);
