@@ -334,6 +334,17 @@ export interface ServiceAgentView {
   last_activity_at: number;
 }
 
+// The owner UI and the granted service API describe the same registered-Agent
+// messaging policy. Keep this projection here so Overview cannot drift into a
+// second authority (or expose the configured workspace/provider session).
+export function agentMessagingReadiness(bot: Bot): ServiceAgentView['messaging'] {
+  return {
+    home_session_ref: bot.home_session_id ?? null,
+    new_sessions_allowed: readStoredPolicy(bot)?.allow_new_sessions === true,
+    default_workspace_set: !!bot.default_workspace,
+  };
+}
+
 function agentActivity(bot: Bot): number {
   const row = db.prepare(`
     SELECT MAX(m.created_at) AS at FROM messages m
@@ -352,11 +363,7 @@ function agentView(ctx: ServiceContext, bot: Bot): ServiceAgentView {
     runtime: resolved.agent,
     available: resolved.launchable,
     capabilities: SERVICE_CAPABILITIES.filter(cap => caps.has(cap)),
-    messaging: {
-      home_session_ref: bot.home_session_id ?? null,
-      new_sessions_allowed: readStoredPolicy(bot)?.allow_new_sessions === true,
-      default_workspace_set: !!bot.default_workspace,
-    },
+    messaging: agentMessagingReadiness(bot),
     created_at: bot.created_at,
     last_activity_at: agentActivity(bot),
   };

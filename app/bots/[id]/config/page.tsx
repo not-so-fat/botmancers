@@ -474,8 +474,8 @@ export default function BotConfigPage() {
       <div className="cfg-page flex items-center justify-center">
         <div className="text-center">
           <p className="mb-4">Agent not found.</p>
-          <Link href="/" className="cfg-link">
-            ← Back to chat
+          <Link href={`/agents/${encodeURIComponent(id)}`} className="cfg-link">
+            ← Back to Overview
           </Link>
         </div>
       </div>
@@ -509,8 +509,8 @@ export default function BotConfigPage() {
     return (
       <div className="cfg-page">
         <div className="max-w-6xl mx-auto">
-          <Link href="/" className="cfg-link cfg-back text-sm">
-            ← Back to chat
+          <Link href={`/agents/${encodeURIComponent(id)}`} className="cfg-link cfg-back text-sm">
+            ← Back to Overview
           </Link>
           <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">
             <div className="min-w-0">
@@ -614,8 +614,8 @@ export default function BotConfigPage() {
   return (
     <div className="cfg-page">
       <div className="max-w-6xl mx-auto">
-        <Link href="/" onClick={confirmLeave} className="cfg-link cfg-back text-sm">
-          ← Back to chat
+        <Link href={`/agents/${encodeURIComponent(id)}`} onClick={confirmLeave} className="cfg-link cfg-back text-sm">
+          ← Back to Overview
         </Link>
 
         <header className="mt-3 mb-6 flex flex-wrap items-center gap-4">

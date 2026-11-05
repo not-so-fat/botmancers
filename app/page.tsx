@@ -3,15 +3,16 @@
 import { Fragment, useState, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
+import { useRouter } from 'next/navigation';
 import { parseRun, runLine } from '@/lib/run';
 import BotAvatar from '@/app/components/BotAvatar';
+import AgentRail from '@/app/components/AgentRail';
 import type { AvatarConfig } from '@/lib/avatar';
 import { parseDraft, draftTitle, parseApprovalCode, parseFileNames, parseHandoff } from '@/lib/draft';
 import {
   NEW_AGENT_WORKSPACE_HINT,
   WORKSPACE_TEMPLATE,
   agentEventDisplay,
-  rosterRuntimeLine,
 } from '@/lib/bot-runtime-ui';
 import {
   DEFAULT_REGISTRATION_FORM,
@@ -23,7 +24,6 @@ import {
 import { RegistrationFields } from '@/app/components/AgentRegistration';
 import { useRuntimeConnections } from '@/app/components/useRuntimeConnections';
 import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
-import DeleteAgentsDialog from '@/app/components/DeleteAgentsDialog';
 import ManageAgentsPanel from '@/app/components/ManageAgentsPanel';
 import SessionsPanel from '@/app/components/SessionsPanel';
 import { deletedStatusLine, type DeleteAgentRef } from '@/lib/bot-deletion';
@@ -32,7 +32,6 @@ import ThreadState from '@/app/components/ThreadState';
 import { threadView, type ThreadLoad } from '@/lib/thread-state';
 import RuntimeFailureNotice from '@/app/components/RuntimeFailureNotice';
 import { classifyRuntimeFailure } from '@/lib/runtime-failure';
-import { latestLine } from '@/lib/message-preview';
 import WakeNotice from '@/app/components/WakeNotice';
 import { wakeNotices, type WakeEventView, type WakeNotice as WakeNoticeItem } from '@/lib/wake-notice';
 import ExchangeCard from '@/app/components/ExchangeCard';
@@ -182,11 +181,14 @@ function messagePicture(content: string) {
 }
 
 export default function Home() {
+  const router = useRouter();
   const [bots, setBots] = useState<Bot[]>([]);
   const [botsLoaded, setBotsLoaded] = useState(false);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
   const linkedAgentRef = useRef<string | null>(null);
+  const linkedSessionsRef = useRef(false);
+  const deletedCountRef = useRef(0);
   const [messages, setMessages] = useState<Message[]>([]);
   const [notices, setNotices] = useState<WakeNoticeItem[]>([]);
   const [exchangeCards, setExchangeCards] = useState<ExchangeSummary[]>([]);
@@ -204,20 +206,13 @@ export default function Home() {
   const newRef = useRef<HTMLButtonElement>(null);
   const [pictureOpen, setPictureOpen] = useState(false);
   const [avatarStep, setAvatarStep] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [rowName, setRowName] = useState('');
   const [revealed, setRevealed] = useState<Record<string, Message[]>>({});
   const revealing = useRef<Record<string, boolean>>({});
-  const [deleteAsk, setDeleteAsk] = useState<Bot | null>(null);
-  const [rowMenu, setRowMenu] = useState<{ bot: Bot; x: number; y: number; returnTo: HTMLElement | null } | null>(null);
-  const rowMenuRef = useRef<HTMLDivElement>(null);
-  const hiddenToggleRef = useRef<HTMLButtonElement>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const manageRef = useRef<HTMLButtonElement>(null);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const sessionsRef = useRef<HTMLButtonElement>(null);
   const [rosterStatus, setRosterStatus] = useState('');
-  const [showHidden, setShowHidden] = useState(false);
   const avatarFileRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -246,13 +241,26 @@ export default function Home() {
       return;
     }
     const query = new URLSearchParams(window.location.search);
+    if (query.get('new') === '1') {
+      defaulted.current = true;
+      window.setTimeout(() => setShowBotModal(true), 0);
+      window.history.replaceState(null, '', '/');
+    } else if (query.get('manage') === '1') {
+      defaulted.current = true;
+      window.setTimeout(() => setManageOpen(true), 0);
+      window.history.replaceState(null, '', '/');
+    }
     const deleted = Number(query.get('deleted'));
-    if (deleted > 0) window.history.replaceState(null, '', '/');
+    if (deleted > 0) {
+      deletedCountRef.current = deleted;
+      window.history.replaceState(null, '', '/');
+    }
     // NOT-498: an Agent Exchanges backlink opens that Agent's thread and
     // brings the exchange's card into view.
     const linkedAgent = query.get('agent');
     if (linkedAgent) {
       linkedAgentRef.current = linkedAgent;
+      linkedSessionsRef.current = query.get('sessions') === '1';
       focusExchange.current = query.get('exchange');
       window.history.replaceState(null, '', '/');
     }
@@ -272,8 +280,19 @@ export default function Home() {
     const linked = bots.find(bot => bot.id === linkedAgentRef.current);
     const first = linked || [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b))[0] || bots[0];
     defaulted.current = true;
-    void openBot(first.id);
+    if (linked) {
+      void openBot(first.id);
+    } else {
+      const deleted = deletedCountRef.current;
+      router.replace(`/agents/${encodeURIComponent(first.id)}${deleted > 0 ? `?deleted=${deleted}` : ''}`);
+    }
   }, [bots, activeConversation]);
+
+  useEffect(() => {
+    if (!activeConversation || !linkedSessionsRef.current) return;
+    linkedSessionsRef.current = false;
+    setSessionsOpen(true);
+  }, [activeConversation]);
 
 
   useEffect(() => {
@@ -542,83 +561,8 @@ export default function Home() {
   // True zero-bot roster only once /api/bots has answered, so a populated
   // workspace never flashes the welcome state on cold load.
   const noBots = botsLoaded && bots.length === 0;
-  const rosterBots = [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b));
-  const hiddenBots = bots.filter(bot => bot.hidden);
-
-  const pinBot = async (bot: Bot) => {
-    const res = await fetch('/api/bots', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: bot.id, pinned: bot.pinned ? 0 : 1 }),
-    });
-    if (!res.ok) return;
-    const saved = await res.json();
-    setBots(current => current.map(item => item.id === saved.id ? { ...item, ...saved } : item));
-  };
-
-  const hideBot = async (bot: Bot, hidden: boolean) => {
-    const res = await fetch('/api/bots', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: bot.id, hidden: hidden ? 1 : 0 }),
-    });
-    if (!res.ok) return;
-    const saved = await res.json();
-    setBots(current => current.map(item => item.id === saved.id ? { ...item, ...saved, hidden: saved.hidden ? 1 : 0 } : item));
-    // Keep keyboard focus visible once the row it sat on moves lists.
-    if (hidden) requestAnimationFrame(() => hiddenToggleRef.current?.focus());
-    else focusRow(bot.id);
-  };
-
-  const markBotUnread = async (bot: Bot) => {
-    const res = await fetch('/api/bots', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: bot.id, unread: 1 }),
-    });
-    if (!res.ok) return;
-    setBots(current => current.map(item => item.id === bot.id ? { ...item, unread: 1 } : item));
-  };
-
-  useEffect(() => {
-    if (!rowMenu) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      setRowMenu(null);
-      rowMenu.returnTo?.focus();
-    };
-    const onPointer = (e: PointerEvent) => {
-      if (rowMenuRef.current && rowMenuRef.current.contains(e.target as Node)) return;
-      setRowMenu(null);
-    };
-    document.addEventListener('keydown', onKey);
-    document.addEventListener('pointerdown', onPointer);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.removeEventListener('pointerdown', onPointer);
-    };
-  }, [rowMenu]);
-
-  const renameFromRow = async (bot: Bot) => {
-    const name = rowName.trim();
-    setEditingId(null);
-    if (!name || name === bot.name) return;
-    const res = await fetch('/api/bots', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: bot.id, name }),
-    });
-    if (!res.ok) return;
-    const saved = await res.json();
-    setBots(current => current.map(item => item.id === saved.id ? { ...item, ...saved } : item));
-    if (activeConversation && activeConversation.details.id === saved.id) {
-      setActiveConversation({ ...activeConversation, details: { ...activeConversation.details, ...saved } });
-    }
-  };
-
   const afterDelete = async (deleted: DeleteAgentRef[]) => {
     const ids = deleted.map(item => item.id);
-    setDeleteAsk(null);
     setManageOpen(false);
     setRosterStatus(deletedStatusLine(ids.length));
     requestAnimationFrame(() => manageRef.current?.focus());
@@ -630,135 +574,6 @@ export default function Home() {
     }
     await loadBots();
   };
-
-  const openRowMenu = (bot: Bot, anchor: HTMLElement) => {
-    const rect = anchor.getBoundingClientRect();
-    setRowMenu({ bot, x: rect.left, y: rect.bottom + 4, returnTo: anchor });
-  };
-
-  // The row may not be rendered yet (rename input still mounted, unhide not
-  // committed), so retry for a few frames until its open button exists.
-  const focusRow = (id: string, frames = 30) => {
-    requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>(`[data-open-bot="${id}"]`);
-      if (row) row.focus();
-      else if (frames > 0) focusRow(id, frames - 1);
-    });
-  };
-
-  // Close the row menu from one of its items; focus goes back to the trigger
-  // unless the action moves it somewhere else (rename input, delete dialog).
-  const closeRowMenu = (restore = true) => {
-    const returnTo = rowMenu?.returnTo;
-    setRowMenu(null);
-    if (restore && returnTo) requestAnimationFrame(() => { if (returnTo.isConnected) returnTo.focus(); });
-  };
-
-  const onRowMenuKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role=menuitem]'));
-    const at = items.indexOf(document.activeElement as HTMLElement);
-    const move = (index: number) => {
-      e.preventDefault();
-      items[(index + items.length) % items.length]?.focus();
-    };
-    if (e.key === 'ArrowDown') move(at + 1);
-    else if (e.key === 'ArrowUp') move(at - 1);
-    else if (e.key === 'Home') move(0);
-    else if (e.key === 'End') move(items.length - 1);
-    else if (e.key === 'Tab') {
-      e.preventDefault();
-      closeRowMenu();
-    }
-  };
-
-  const onRowContextMenu = (e: React.MouseEvent<HTMLElement>, bot: Bot) => {
-    e.preventDefault();
-    setRowMenu({ bot, x: e.clientX, y: e.clientY, returnTo: e.currentTarget.querySelector<HTMLElement>('[data-open-bot]') });
-  };
-
-  const rowRename = (bot: Bot, style?: React.CSSProperties) => (
-    <input
-      className="bot-name"
-      aria-label={`Rename ${bot.name}`}
-      value={rowName}
-      autoFocus
-      onChange={e => setRowName(e.target.value)}
-      onBlur={() => renameFromRow(bot)}
-      onKeyDown={e => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          (e.target as HTMLInputElement).blur();
-          focusRow(bot.id);
-        }
-        if (e.key === 'Escape') {
-          setEditingId(null);
-          focusRow(bot.id);
-        }
-      }}
-      style={style}
-    />
-  );
-
-  // One semantic control per row: the name button opens the agent, and its
-  // ::after overlay stretches over the whole row so pointer selection and the
-  // focus ring cover the row without nesting the row actions inside it.
-  const rowOpen = (bot: Bot, style?: React.CSSProperties) => (
-    <button
-      type="button"
-      className="bot-name row-open"
-      data-open-bot={bot.id}
-      aria-current={activeConversation?.details.id === bot.id ? 'true' : undefined}
-      onClick={() => openBot(bot.id)}
-      style={style}
-    >
-      {bot.name}
-    </button>
-  );
-
-  const rowActions = (bot: Bot) => (
-    <button
-      type="button"
-      className="row-actions"
-      aria-haspopup="menu"
-      aria-expanded={rowMenu?.bot.id === bot.id}
-      aria-label={`Actions for ${bot.name}`}
-      title={`Actions for ${bot.name}`}
-      onClick={e => openRowMenu(bot, e.currentTarget)}
-    >
-      ⋯
-    </button>
-  );
-
-  const rowTip = (bot: Bot) => (
-    <div className="row-tip">
-      {bot.unread && !(activeConversation?.details.id === bot.id) ? (
-        <div className="card-role">Unread</div>
-      ) : null}
-      <div className="card-role">{lifeWord(bot.last_seen, beatClock.serverNow, beatClock.fetchedAt, now)}</div>
-    </div>
-  );
-
-  // Agent list row, shared by the roster and the expanded Hidden list so hidden
-  // agents keep the same open control and row-actions trigger (with Unhide).
-  const agentRow = (bot: Bot) => (
-    <div
-      key={bot.id}
-      className={activeConversation?.details.id === bot.id ? 'bot-row is-open' : 'bot-row'}
-      onContextMenu={e => onRowContextMenu(e, bot)}
-    >
-      <span className="mark-avatar mark-avatar-sm">
-        <BotAvatar bot={bot} size={36} title={`${bot.name} avatar`} />
-        {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
-      </span>
-      <div className="bot-copy">
-        {editingId === bot.id ? rowRename(bot) : rowOpen(bot)}
-        {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-        <div className="bot-runtime" title={rosterRuntimeLine(bot)}>{rosterRuntimeLine(bot)}</div>
-      </div>
-      {rowActions(bot)}
-      {rowTip(bot)}
-    </div>
-  );
 
   const mentionItems = mentionOpen
     ? bots.filter(bot => bot.name.toLowerCase().includes(mentionQuery.toLowerCase()))
@@ -895,83 +710,21 @@ export default function Home() {
   return (
     <>
     <div className="field" inert={showBotModal}>
-      <aside className="rail">
-        <div className="brand">
-          <div className={logoDrop ? 'logo-shape is-settling' : 'logo-shape'}>
-            <Image
-              src="/brand/botmancers-logo-filled-256.png"
-              alt=""
-              width={40}
-              height={40}
-            />
-          </div>
-          <div className="logo-word">botmancers</div>
-        </div>
-        <div className="bar">
-          <button
-            ref={newRef}
-            type="button"
-            className="add-btn"
-            aria-haspopup="dialog"
-            onClick={() => setShowBotModal(true)}
-          >
-            New
-          </button>
-          {noBots ? null : (
-            <button
-              ref={manageRef}
-              type="button"
-              className="add-btn"
-              aria-haspopup="dialog"
-              onClick={() => { setRosterStatus(''); setManageOpen(true); }}
-            >
-              Manage agents
-            </button>
-          )}
-          <Link href="/settings" className="add-btn settings-link">
-            Settings
-          </Link>
-        </div>
-        {noBots ? null : (
-          <nav className="rail-nav" aria-label="Workspace">
-            <Link href="/exchanges" className="add-btn rail-nav-link">Exchanges</Link>
-          </nav>
-        )}
-        <p className="roster-status" role="status">{rosterStatus}</p>
-        {noBots ? null : (
-          <div className={rowMenu ? 'roster menu-open' : 'roster'}>
-            {rosterBots.map(bot => isChiefOfStaff(bot) ? (
-              <div
-                key={bot.id}
-                className="card"
-                onContextMenu={e => onRowContextMenu(e, bot)}
-              >
-                <div className="row-head">
-                  <span className="mark-avatar">
-                    <BotAvatar bot={bot} size={44} title={`${bot.name} avatar`} />
-                    {workingIds.includes(bot.id) ? <span className="mark-dot" /> : null}
-                  </span>
-                  {editingId === bot.id
-                    ? rowRename(bot, { color: '#D5D0C3', fontSize: 26 })
-                    : rowOpen(bot, { fontSize: 26 })}
-                  {rowActions(bot)}
-                </div>
-                {latestLine(bot.latest) ? <div className="bot-preview">{latestLine(bot.latest)}</div> : null}
-                <div className="bot-runtime" title={rosterRuntimeLine(bot)}>{rosterRuntimeLine(bot)}</div>
-                {rowTip(bot)}
-              </div>
-            ) : agentRow(bot))}
-          </div>
-        )}
-        {hiddenBots.length > 0 ? (
-          <div className={rowMenu ? 'roster menu-open' : 'roster'}>
-            <button ref={hiddenToggleRef} type="button" className="pin-word" aria-expanded={showHidden} onClick={() => setShowHidden(open => !open)}>
-              Hidden
-            </button>
-            {showHidden ? hiddenBots.map(agentRow) : null}
-          </div>
-        ) : null}
-      </aside>
+      <AgentRail
+        agents={bots}
+        activeAgentId={activeConversation?.details.id}
+        workingIds={workingIds}
+        beatClock={beatClock}
+        now={now}
+        status={rosterStatus}
+        logoDrop={logoDrop}
+        onAgentsChange={next => setBots(next as Bot[])}
+        onNew={() => setShowBotModal(true)}
+        onManage={() => { setRosterStatus(''); setManageOpen(true); }}
+        onDeleted={deleted => { void afterDelete(deleted); }}
+        newButtonRef={newRef}
+        manageButtonRef={manageRef}
+      />
 
       <section className="pane">
         {activeConversation ? (
@@ -1275,14 +1028,6 @@ export default function Home() {
         )}
       </section>
 
-      {deleteAsk ? (
-        <DeleteAgentsDialog
-          ids={[deleteAsk.id]}
-          onCancel={() => { focusRow(deleteAsk.id); setDeleteAsk(null); }}
-          onDeleted={deleted => { void afterDelete(deleted); }}
-        />
-      ) : null}
-
       {sessionsOpen && activeConversation ? (
         <SessionsPanel
           key={activeConversation.details.id}
@@ -1312,26 +1057,6 @@ export default function Home() {
         />
       ) : null}
 
-      {rowMenu ? (
-        <div
-          ref={rowMenuRef}
-          className="row-menu"
-          role="menu"
-          aria-label={`Actions for ${rowMenu.bot.name}`}
-          style={{ left: rowMenu.x, top: rowMenu.y }}
-          onPointerDown={e => e.stopPropagation()}
-          onClick={e => e.stopPropagation()}
-          onContextMenu={e => e.preventDefault()}
-          onKeyDown={onRowMenuKey}
-        >
-          <button type="button" role="menuitem" tabIndex={-1} autoFocus onClick={e => { e.stopPropagation(); closeRowMenu(); pinBot(rowMenu.bot); }}>{rowMenu.bot.pinned ? 'Unpin' : 'Pin'}</button>
-          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(); markBotUnread(rowMenu.bot); }}>Mark as Unread</button>
-          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(false); setEditingId(rowMenu.bot.id); setRowName(rowMenu.bot.name); }}>Rename Agent</button>
-          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(false); hideBot(rowMenu.bot, !rowMenu.bot.hidden); }}>{rowMenu.bot.hidden ? 'Unhide' : 'Hide from sidebar'}</button>
-          <Link role="menuitem" tabIndex={-1} href={`/bots/${rowMenu.bot.id}/config`} onClick={() => setRowMenu(null)}>Config</Link>
-          <button type="button" role="menuitem" tabIndex={-1} onClick={e => { e.stopPropagation(); closeRowMenu(false); setDeleteAsk(rowMenu.bot); }}>Delete agent…</button>
-        </div>
-      ) : null}
     </div>
 
     {/* NOT-447: the dialog sits outside the inert page so only it stays
