@@ -126,13 +126,34 @@ function request(pathname) { return new Request(`http://127.0.0.1:3333${pathname
       }
       assert.match(redirected, new RegExp(`/agents/${ada.id}/conversations/${groupConversation.id}\\?exchange=exchange-1`));
       assert.equal(exchangeView.threadHref({ id: direct.id, kind: 'direct', thread_agent_id: ada.id }, 'exchange-2'), `/agents/${ada.id}/conversations/${direct.id}?exchange=exchange-2`);
+      const refused = await json(await legacyThreadRoute.GET(
+        new Request(`http://example.test/threads/${groupConversation.id}`, { headers: { host: 'example.test' } }),
+        { params: Promise.resolve({ id: groupConversation.id }) },
+      ));
+      assert.equal(refused.status, 403);
+      assert.equal(refused.body.error.code, 'owner_origin_required');
+    });
+
+    await test('old /?agent= chat links resolve to detail or Conversations fallback', () => {
+      assert.equal(
+        projection.legacyAgentChatHref(ada.id, direct.id, 'exchange-legacy'),
+        `/agents/${ada.id}/conversations/${direct.id}?exchange=exchange-legacy`,
+      );
+      assert.equal(
+        projection.legacyAgentChatHref(ada.id, null, 'exchange-missing'),
+        `/agents/${ada.id}/conversations?exchange=exchange-missing`,
+      );
+      assert.equal(projection.legacyAgentChatHref(ada.id, null), `/agents/${ada.id}/conversations`);
+      const home = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
+      assert.match(home, /legacyAgentChatHref\(linkedAgent,\s*conversation\?\.id \?\? null,\s*exchange\)/);
+      assert.match(home, /legacyAgentChatHref\(linkedAgent,\s*null,\s*exchange\)/);
+      assert.equal(home.includes('linkedAgentRef'), false);
     });
 
     await test('list/detail source has deterministic states and preserves the direct-chat capability set', () => {
       const list = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/conversations/page.tsx'), 'utf8');
       const detail = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/conversations/[conversationId]/ConversationDetail.tsx'), 'utf8');
       const overview = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/page.tsx'), 'utf8');
-      const home = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
       const css = fs.readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8');
       for (const state of ['loading', 'error', 'empty']) assert.ok(list.includes(`data-conversation-state="${state}"`), state);
       for (const text of ['Search conversations', 'Load older conversations', 'Origin:', 'messages']) assert.ok(list.includes(text), text);
@@ -144,7 +165,6 @@ function request(pathname) { return new Request(`http://127.0.0.1:3333${pathname
       assert.match(css, /\.conversation-message-list[\s\S]*?overflow-y: auto/);
       assert.match(css, /@media \(max-width: 799px\)[\s\S]*?\.conversation-index/);
       assert.match(overview, /overview\.conversation\.id/);
-      assert.match(home, /compatibility for old direct-thread\/session\/exchange URLs/);
     });
   } finally {
     db.close();

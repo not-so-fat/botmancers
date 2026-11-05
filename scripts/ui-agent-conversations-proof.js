@@ -45,6 +45,10 @@ async function main() {
   const evaluate = async expression => (await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result.value;
   const waitFor = async expression => { for (let index = 0; index < 150; index++) { if (await evaluate(`!!(${expression})`)) return true; await sleep(100); } return false; };
   const shot = async (viewport, state) => { const data = (await cdp.send('Page.captureScreenshot', { format: 'png' })).data; const png = Buffer.from(data, 'base64'); const file = path.join(OUT, `${viewport.name}-${state}.png`); fs.writeFileSync(file, png); screenshots.push({ file, viewport: `${viewport.width}x${viewport.height}`, sha256: crypto.createHash('sha256').update(png).digest('hex') }); };
+  const pressTab = async () => {
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+  };
 
   for (const viewport of VIEWPORTS) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.mobile });
@@ -53,6 +57,21 @@ async function main() {
     const list = await evaluate(`({ text: document.body.innerText, overflow: document.documentElement.scrollWidth > innerWidth + 1 })`);
     check(['Ada conversation','Group Release room','Agent conversation','Service slack:C_RELEASES','Origin:','87 messages'].every(value => list.text.includes(value)), `${viewport.name}: participant, origin, type, and count hierarchy is recognizable`);
     check(!list.overflow, `${viewport.name}: list has no viewport overflow`);
+    const tabOrder = await evaluate(`(() => {
+      const links = [...document.querySelectorAll('.conversation-list a')];
+      if (links.length < 2) return { ok: false, reason: 'need two rows' };
+      links[0].focus();
+      return { started: document.activeElement === links[0], count: links.length };
+    })()`);
+    check(tabOrder?.started && tabOrder.count >= 2, `${viewport.name}: first conversation row accepts keyboard focus`);
+    await pressTab();
+    const afterTab = await evaluate(`(() => {
+      const links = [...document.querySelectorAll('.conversation-list a')];
+      const active = document.activeElement;
+      const index = links.indexOf(active);
+      return { moved: index >= 1, href: active && active.getAttribute ? active.getAttribute('href') : null };
+    })()`);
+    check(afterTab?.moved && typeof afterTab.href === 'string' && afterTab.href.includes('/conversations/'), `${viewport.name}: Tab moves focus across conversation list rows`);
     await shot(viewport, 'list');
 
     await cdp.send('Page.navigate', { url: `${BASE}/agents/${FIXTURE.agentId}/conversations/${FIXTURE.directId}` });
@@ -61,6 +80,10 @@ async function main() {
     check(writable.long && writable.composer && writable.cards, `${viewport.name}: long scrolling history keeps drafts, approvals, artifacts, and composer`);
     check(writable.focus, `${viewport.name}: writable composer receives keyboard focus`);
     await shot(viewport, 'writable-detail');
+
+    await cdp.send('Page.navigate', { url: `${BASE}/agents/${FIXTURE.agentId}/conversations/${FIXTURE.directId}?exchange=${encodeURIComponent(FIXTURE.exchangeId)}` });
+    check(await waitFor(`document.activeElement && document.activeElement.id === 'exchange-${FIXTURE.exchangeId}'`), `${viewport.name}: ?exchange= focuses the exchange card`);
+    await shot(viewport, 'exchange-focus');
 
     await cdp.send('Page.navigate', { url: `${BASE}/agents/${FIXTURE.agentId}/conversations/${FIXTURE.externalId}` });
     check(await waitFor("document.querySelector('[data-conversation-writable=\"false\"]')"), `${viewport.name}: external history loads read-only`);

@@ -133,6 +133,19 @@ export function parseOwnerConversationLimit(value: string | null): number {
   return Math.min(limit, 100);
 }
 
+// NOT-551: old `/?agent=` chat links resolve here. Missing direct conversation
+// falls back to the Agent Conversations index; an exchange focus is preserved.
+export function legacyAgentChatHref(
+  agentId: string,
+  conversationId: string | null | undefined,
+  exchange?: string | null,
+): string {
+  const base = conversationId
+    ? `/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}`
+    : `/agents/${encodeURIComponent(agentId)}/conversations`;
+  return exchange ? `${base}?exchange=${encodeURIComponent(exchange)}` : base;
+}
+
 export function listOwnerConversations(agentId: string, input: { q: string | null; cursor: string | null; limit: number }): Page<OwnerConversationSummary> | null {
   if (!bots.getById(agentId)) return null;
   const query = input.q?.trim().toLocaleLowerCase() ?? '';

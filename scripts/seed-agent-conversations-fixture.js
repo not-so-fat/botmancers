@@ -41,8 +41,29 @@ message.run('agent-row', 'proof-agent-to-agent', 'bot', bo.id, 'bot', 'Review ha
 conversation('proof-slack-origin', 'service', 'slack:C_RELEASES', [{ kind: 'service', id: 'slack:C_RELEASES' }, { kind: 'bot', id: ada.id }], base + 4);
 message.run('slack-row', 'proof-slack-origin', 'user', 'slack:C_RELEASES', 'service', 'Slack asked for release status.', base + 195);
 
-const fixture = { agentId: ada.id, directId: direct.id, groupId: room.id, agentConversationId: 'proof-agent-to-agent', externalId: 'proof-slack-origin' };
+const bindingId = 'proof-session-binding';
+db.prepare(`
+  INSERT INTO session_bindings (id, agent_id, adapter, conversation_id, request_id, external_session_id, source_attempt_id, created_at, released_at)
+  VALUES (?, ?, 'codex', ?, NULL, 'proof-external-session', NULL, ?, NULL)
+`).run(bindingId, ada.id, direct.id, base + 5);
+const exchangeId = 'proof-exchange-focus';
+db.prepare(`
+  INSERT INTO session_exchanges (
+    id, requester_kind, requester_id, idempotency_key, request_hash, mode, origin_conversation_id,
+    source_agent_id, source_binding_id, destination_agent_id, destination_conversation_id, instruction,
+    state, created_at, updated_at, terminal_at
+  ) VALUES (?, 'person', 'owner', 'proof-exchange-focus', 'proof-hash', 'ask', ?, ?, ?, NULL, NULL, 'Confirm the release packet.', 'queued', ?, ?, NULL)
+`).run(exchangeId, direct.id, ada.id, bindingId, base + 196, base + 196);
+
+const fixture = {
+  agentId: ada.id,
+  directId: direct.id,
+  groupId: room.id,
+  agentConversationId: 'proof-agent-to-agent',
+  externalId: 'proof-slack-origin',
+  exchangeId,
+};
 const fixturePath = path.join(path.dirname(dbPath), 'agent-conversations-fixture.json');
 fs.writeFileSync(fixturePath, JSON.stringify(fixture, null, 2));
 db.close();
-console.log(`Seeded ${dbPath}: agent=${ada.id}, direct=${direct.id}, fixture=${fixturePath}`);
+console.log(`Seeded ${dbPath}: agent=${ada.id}, direct=${direct.id}, exchange=${exchangeId}, fixture=${fixturePath}`);
