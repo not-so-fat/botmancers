@@ -14,10 +14,13 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 - Opening Botmancers no longer drops you into a chat: `/` now goes to the
   first Agent's Overview. Each Agent has its own area with an Agent rail and
   an Overview home, with Conversations, Sessions, Activity and Slack pages
-  under it. The Agent config page's "Back to chat" link is now "Back to
-  Overview".
-- Chat moved into Conversations: a durable history list and a detail page for
-  each conversation. Old `/threads/:id` links and bare `/?agent=` links
+  under it. Overview shows the Agent's capabilities, standing instructions,
+  runtime and messaging status, active sessions, recent activity and a "Use
+  this Agent" start guide. Slack shows relay health and sharing readiness, and
+  lists the Agent's shared sessions with details and Revoke. The Agent config
+  page's "Back to chat" link is now "Back to Overview".
+- Chat moved into Conversations: a durable history list (with search and
+  Load older conversations) and a detail page for each conversation. Old `/threads/:id` links and bare `/?agent=` links
   redirect to the matching Conversations page, and an exchange's thread link
   opens the Agent's conversation detail.
 - Sessions is now a full page for scanning and reviewing an Agent's sessions,
