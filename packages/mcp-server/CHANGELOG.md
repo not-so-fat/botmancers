@@ -7,6 +7,13 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-04
+
+### Fixed
+
+- The Agent header and tabs no longer collapse in short browser windows: the
+  header and tab bar keep their size so the tab labels stay readable.
+
 ## [0.9.0] - 2026-11-04
 
 ### Changed

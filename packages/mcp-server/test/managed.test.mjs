@@ -14,9 +14,12 @@ import { cli, freePort, run, waitFor, pidAlive } from '../scripts/product-harnes
 import { MANAGED_ENTRIES, hashTree, makePackage, pack, seedRelease, startRegistry } from '../scripts/managed-harness.mjs';
 
 const managed = await import('../dist/managed.js');
-const N = '0.9.0';
-const N1 = '0.9.1';
-const N2 = '0.9.2';
+// Fixture versions sit far above any real release so a package version bump
+// never catches up with them (a dev checkout at N1 looked up to date and broke
+// the upgrade tests when 0.9.1 was released).
+const N = '99.0.0';
+const N1 = '99.0.1';
+const N2 = '99.0.2';
 const OLD = '0.8.0';
 const NATIVE = `app/node_modules/better-sqlite3/prebuilds/${process.platform}-${process.arch}.node`;
 
@@ -270,7 +273,7 @@ test('integrity failures and interrupted downloads leave no release, no pending 
     // A fresh npm cache: the case above already cached the intact tarball.
     const outcome = await managed.runUpdateCheck(s.env({ ...on, npm_config_cache: join(s.root, 'cold-cache'), npm_config_fetch_retries: '0' }), { clock, latest: async () => N1 }, cliPath);
     assert.equal(outcome.result, 'error');
-    assert.match(s.state().lastError, /npm install botmancers@0\.9\.1 failed/);
+    assert.match(s.state().lastError, new RegExp(`npm install botmancers@${N1.replace(/\./g, '\\.')} failed`));
   } finally {
     registry.mode = 'ok';
   }
