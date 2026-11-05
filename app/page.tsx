@@ -188,6 +188,7 @@ export default function Home() {
   const defaulted = useRef(false);
   const linkedAgentRef = useRef<string | null>(null);
   const linkedSessionsRef = useRef(false);
+  const linkedSessionRef = useRef<string | null>(null);
   const deletedCountRef = useRef(0);
   const [messages, setMessages] = useState<Message[]>([]);
   const [notices, setNotices] = useState<WakeNoticeItem[]>([]);
@@ -261,6 +262,7 @@ export default function Home() {
     if (linkedAgent) {
       linkedAgentRef.current = linkedAgent;
       linkedSessionsRef.current = query.get('sessions') === '1';
+      linkedSessionRef.current = query.get('session');
       focusExchange.current = query.get('exchange');
       window.history.replaceState(null, '', '/');
     }
@@ -1034,6 +1036,7 @@ export default function Home() {
           agentId={activeConversation.details.id}
           agentName={activeConversation.details.name}
           agentProvider={activeConversation.details.agent ?? undefined}
+          initialSessionRef={linkedSessionRef.current}
           agents={bots.map(bot => ({ id: bot.id, name: bot.name }))}
           origin={{ conversationId: activeConversation.id, label: `${activeConversation.details.name} thread` }}
           onExchangeStarted={() => { void loadMessages(); }}
