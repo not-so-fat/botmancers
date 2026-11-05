@@ -242,7 +242,7 @@ async function run() {
       }
       if (agent.key === 'scoped') {
         const link = await evaluate("({ text: document.querySelector('.sessions-drawer .sessions-state a')?.textContent.trim() ?? '', href: document.querySelector('.sessions-drawer .sessions-state a')?.getAttribute('href') ?? '' })");
-        check(/Widen the scope/.test(link.text) && /\/bots\/.+\/config/.test(link.href), `scoped: Config link to widen the scope (${link.text} ${link.href})`);
+        check(/Widen the scope/.test(link.text) && /\/agents\/.+\/config/.test(link.href), `scoped: Config link to widen the scope (${link.text} ${link.href})`);
       }
       await layout(vp, agent.key);
       await shot(vp, agent.key);

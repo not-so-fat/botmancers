@@ -298,7 +298,7 @@ async function main() {
   assert(/sync\?\.last_error_code \? <button/.test(panel) && /disabled=\{syncing\}>\{syncing \? 'Retrying/.test(panel),
     'the failed empty state offers a native Retry, disabled while syncing');
   assert(/out_of_scope_count \?\? 0\) > 0/.test(panel) && /Widen the scope in Config/.test(panel)
-    && /href=\{`\/bots\/\$\{encodeURIComponent\(agentId\)\}\/config`\}/.test(panel),
+    && /href=\{`\/agents\/\$\{encodeURIComponent\(agentId\)\}\/config`\}/.test(panel),
     'the none-in-scope empty state links to widening the scope in Config');
   assert(/onClick=\{\(\) => \{ void doRefresh\(\); \}\} disabled=\{syncing\}/.test(panel),
     'Refresh and Retry share one refresh path that cannot double-fire');

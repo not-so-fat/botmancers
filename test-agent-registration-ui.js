@@ -118,7 +118,7 @@ async function main() {
   assert(!fs.existsSync(path.join(ROOT, 'app/components/useDeckList.ts')), 'useDeckList is deleted');
   const pageSource = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
   assert(!/useDeckList|launch_profile|launchProfile|agent-deck|Agent Deck/.test(pageSource), 'New Agent/roster source requests no deck list and names no profile');
-  const configSource = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
+  const configSource = fs.readFileSync(path.join(ROOT, 'app', 'agents', '[id]', 'config', 'page.tsx'), 'utf8');
   assert(!/useDeckList|launch_profile|launchProfile|agent-deck|Agent Deck/.test(configSource), 'Config source requests no deck list and names no profile');
   const componentSource = fs.readFileSync(path.join(ROOT, 'app', 'components', 'AgentRegistration.tsx'), 'utf8');
   assert(!/deck|Deck|launch_profile|launchProfile/.test(componentSource.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')), 'registration component code has no deck or profile reference outside comments');
