@@ -69,8 +69,10 @@ async function main() {
     check(!readonly.overflow, `${viewport.name}: read-only detail has no viewport overflow`);
     await shot(viewport, 'readonly-detail');
   }
-  cdp.close(); browser.proc.kill(); fs.rmSync(browser.profile, { recursive: true, force: true });
   fs.writeFileSync(path.join(OUT, 'agent-conversations-proof-receipt.json'), JSON.stringify({ head: HEAD, app: `${BASE} real Next.js app, seeded canonical DB, no mocks`, checks, screenshots }, null, 2));
+  try { cdp.close(); } catch {}
+  try { browser.proc.kill(); } catch {}
+  try { fs.rmSync(browser.profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); } catch {}
   if (failures) process.exitCode = 1;
 }
 main().catch(error => { console.error(error); process.exit(1); });
