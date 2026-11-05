@@ -258,13 +258,15 @@ async function main() {
     check(await evaluate("!document.querySelector('.sessions-drawer')"),
       `${viewport.name}: no Sessions modal drawer remains`);
 
-    // Thread-header Sessions link from the chat surface.
+    // NOT-551: old `/?agent=` chat links open durable Conversations detail;
+    // Sessions remains one Agent-shell tab away (thread-header Sessions on the
+    // legacy home chat surface is still wired in source).
     await cdp.send('Page.navigate', { url: `${BASE}/?agent=${encodeURIComponent(agentId)}` });
-    check(await waitFor(`document.querySelector('.thread-name')?.textContent.trim() === ${JSON.stringify(agentName)}`),
-      `${viewport.name}: ?agent= opens the Agent conversation`);
-    await evaluate(`document.querySelector('.thread-bar a.attach-word[href*="/sessions"]')?.click()`);
+    check(await waitFor("location.pathname.includes('/conversations') && document.querySelector('.agent-tabs a[aria-current=\"page\"]')?.textContent.trim() === 'Conversations'"),
+      `${viewport.name}: ?agent= opens Agent Conversations`);
+    await evaluate(`([...document.querySelectorAll('.agent-tabs a')].find(a => a.textContent.trim() === 'Sessions') || { click() {} }).click()`);
     check(await waitFor("location.pathname.includes('/sessions') && document.querySelector('[data-agent-sessions-page]')"),
-      `${viewport.name}: thread header Sessions navigates to the full page`);
+      `${viewport.name}: Conversations shell Sessions tab opens the full page`);
   }
 
   cdp.close();
