@@ -423,12 +423,12 @@ async function main() {
   assert(/if \(submittingRef\.current\) return;/.test(dialogSrc) && /disabled=\{submitting\}/.test(dialogSrc), 'a pending submission blocks a second one');
   assert(/keyRef\.current\.payload !== payload/.test(dialogSrc), 'a retry of the unchanged draft reuses its idempotency key');
   assert(/aria-invalid=\{errors\.instruction/.test(dialogSrc) && /aria-describedby/.test(dialogSrc) && /role="alert">\{serverError\}/.test(dialogSrc), 'field errors are associated; server errors are alerts');
-  assert(/returnTo\.focus\(\)/.test(panelSrc) && /if \(action \|\| !returnToRef\.current\) return;/.test(panelSrc) && /inert=\{!!action\}/.test(panelSrc), 'focus returns to the opening action; the drawer is inert under the dialog');
-  assert(/sessionRowActions\(row\)/.test(panelSrc) && /onAction\(sessionDialogMode\(item\.action\)/.test(panelSrc) && /className="session-unavailable"/.test(panelSrc) && !panelSrc.includes('Ask this session'), 'rows render the three actions from the server answer and every unavailable reason');
+  assert(/returnTo\.focus\(\)/.test(panelSrc) && /if \(action \|\| !returnToRef\.current\) return;/.test(panelSrc) && /inert=\{!!action\}/.test(panelSrc), 'focus returns to the opening action; the review page is inert under the dialog');
+  assert(/sessionRowActions\(row\)/.test(panelSrc) && /onAction\(sessionDialogMode\(item\.action\)/.test(panelSrc) && /className="session-unavailable"/.test(panelSrc) && !panelSrc.includes('Ask this session'), 'detail renders the three actions from the server answer and every unavailable reason');
   assert(/<button key=\{item\.action\} type="button"/.test(panelSrc) && !/disabled=\{!item/.test(panelSrc), 'only available actions are buttons, so keyboard focus never lands on a dead control');
   assert(/sessions\/\$\{encodeURIComponent\(session\.ref\)\}\/pins/.test(dialogSrc) && /approvalRef\.current\?\.focus\(\)/.test(dialogSrc), 'Resume posts to the owner pin route and focuses the missing approval');
   assert(/@media \(max-width: 799px\) \{\s*\.session-actions \{\s*flex-direction: column;/.test(css) && /\.exchange-approval input:focus-visible/.test(css), 'narrow screens stack the session actions; the approval has a focus ring');
-  assert(/\.sessions-drawer \{[^}]*max-width: 520px;/.test(css), 'wide screens keep the side drawer');
+  assert(/grid-template-columns: minmax\(18rem, 20rem\) minmax\(0, 1fr\)/.test(css), 'wide screens keep a narrow scan list and wide detail');
   assert(/<nav className="rail-nav" aria-label="Workspace">/.test(railSrc) && /href="\/exchanges"[^>]*>Exchanges</.test(railSrc), 'the shared rail exposes an Exchanges destination');
   assert(/\/api\/exchanges\?conversation=/.test(pageSrc) && /<ExchangeCard summary=\{exchange\}/.test(pageSrc) && /shownExchanges\.has\(exchange\.id\)/.test(pageSrc), 'threads render one card per linked exchange id from the API');
   assert(/aria-current=\{selected === summary\.id/.test(ledgerSrc) && /headingRef\.current\?\.focus\(\)/.test(ledgerSrc), 'ledger marks the selected row and moves focus to the detail heading');

@@ -214,7 +214,7 @@ function ShareRow({ share, agentId, onChanged }: { share: OwnerShare; agentId: s
   const [error, setError] = useState('');
   const revokeButton = useRef<HTMLButtonElement>(null);
   const live = shareIsLive(share);
-  const sessionHref = `/?agent=${encodeURIComponent(agentId)}&sessions=1&session=${encodeURIComponent(share.session_ref)}`;
+  const sessionHref = `/agents/${encodeURIComponent(agentId)}/sessions?session=${encodeURIComponent(share.session_ref)}`;
   const revoke = async () => {
     setBusy(true); setError('');
     try {

@@ -18,7 +18,7 @@ export default function AgentSection({ section }: { section: AgentSectionName })
   if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an Agent</Link></div>;
   if (error || !overview) return <div className="agent-state" role="alert">This Agent section is unavailable.</div>;
   const copy = COPY[section];
-  const sessionHref = `/?agent=${encodeURIComponent(id)}&sessions=1`;
+  const sessionHref = `/agents/${encodeURIComponent(id)}/sessions`;
   const conversationHref = `/agents/${encodeURIComponent(id)}/conversations`;
   const rows = section === 'activity' ? overview.recent_work : overview.current_work;
   return (
@@ -28,7 +28,7 @@ export default function AgentSection({ section }: { section: AgentSectionName })
       <p>{copy.body}</p>
       {(section === 'sessions' || section === 'slack') ? <Link className="agent-primary-action" href={sessionHref}>Open Agent sessions</Link> : null}
       {section === 'conversations' ? <Link className="agent-primary-action" href={conversationHref}>Open conversation</Link> : null}
-      {section === 'slack' ? <p className="agent-muted">In Sessions, expand a session and choose Share to Slack. Slack policy remains editable in <Link href={`/bots/${encodeURIComponent(id)}/config`}>Config</Link>.</p> : null}
+      {section === 'slack' ? <p className="agent-muted">In Sessions, open a session and choose Share to Slack. Slack policy remains editable in <Link href={`/bots/${encodeURIComponent(id)}/config`}>Config</Link>.</p> : null}
       {section === 'activity' ? (
         rows.length ? <ul className="agent-work-list">{rows.map(row => <li key={row.ref}><span><strong>{row.title}</strong><small>{row.status} · {new Date(row.last_activity_at).toLocaleString()}</small></span></li>)}</ul> : <p className="agent-empty">No activity yet.</p>
       ) : null}

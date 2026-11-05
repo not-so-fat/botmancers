@@ -81,6 +81,10 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-list-paging
+      - name: Agent Sessions review page (NOT-550)
+        working-directory: .
+        run: |
+          npm run test:agent-sessions-page
       - name: Focused Claude provider and direct cutover suites (NOT-506, NOT-543)
         working-directory: .
         run: |

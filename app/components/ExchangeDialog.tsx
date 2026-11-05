@@ -66,7 +66,7 @@ export default function ExchangeDialog({ mode, session, agents, origin, onClose,
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      // Closes only this dialog, not the Sessions drawer under it.
+      // Closes only this dialog; the Sessions review page remains mounted.
       e.stopPropagation();
       onClose();
     };

@@ -128,14 +128,17 @@ try {
     assert.match(source, /Creation path/);
     assert.match(source, /Posted thread/);
     assert.match(source, /Open owning session/);
-    assert.match(source, /&session=\$\{encodeURIComponent\(share\.session_ref\)\}/);
+    assert.match(source, /\?session=\$\{encodeURIComponent\(share\.session_ref\)\}/);
     assert.match(source, /data-share-action="confirm-revoke"/);
     assert.match(source, /requestAnimationFrame\(\(\) => revokeButton\.current\?\.focus\(\)\)/);
     assert.match(source, /method: 'POST'/);
     const sessions = fs.readFileSync(path.join(ROOT, 'app/components/SessionsPanel.tsx'), 'utf8');
-    assert.match(sessions, /initialSessionRef/);
-    assert.match(sessions, /sessions\/\$\{encodeURIComponent\(initialSessionRef\)\}/);
-    assert.match(sessions, /setOpenRef\(initialSessionRef\)/);
+    const home = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
+    // NOT-550: Slack owning-session links land on the Agent Sessions page;
+    // ?session= still forces that exact catalog row onto the first page.
+    assert.match(sessions, /requestedRef/);
+    assert.match(sessions, /sessions\/\$\{encodeURIComponent\(requestedRef\)\}/);
+    assert.match(home, /sessions\?session=\$\{encodeURIComponent\(session\)\}/);
   });
 
   test('Overview entry and release check include the Agent Slack page', () => {

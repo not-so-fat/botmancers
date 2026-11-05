@@ -11,6 +11,7 @@ import { deletedStatusLine } from '@/lib/bot-deletion';
 
 interface AgentContextValue {
   id: string;
+  agents: RailAgent[];
   overview: AgentOverviewDto | null;
   loading: boolean;
   error: boolean;
@@ -94,7 +95,7 @@ export default function AgentShell({ children }: { children: ReactNode }) {
   const runtime = overview?.runtime;
 
   return (
-    <AgentContext.Provider value={{ id, overview, loading, error, notFound }}>
+    <AgentContext.Provider value={{ id, agents, overview, loading, error, notFound }}>
       <div className="field agent-field">
         <AgentRail
           agents={agents}

@@ -2151,38 +2151,43 @@ button.avatar-pic {
   border-color: var(--danger);
 }
 
-/* NOT-496: selected-Agent Sessions drawer. Right-hand drawer on wide
-   screens, full width on narrow ones; rows reuse the manage-* list. */
-.sessions-scrim {
-  z-index: 25;
-  justify-content: flex-end;
-  padding: 0;
-  overflow: hidden;
-}
-
-.sessions-drawer {
-  width: 100%;
-  max-width: 520px;
-  height: 100%;
+/* NOT-550: Agent-scoped Sessions review page. The scan list stays narrow
+   while operational detail earns the reading width. */
+.agent-sessions-page {
+  width: min(1280px, 100%);
+  margin: 0 auto;
   box-sizing: border-box;
+  padding: clamp(24px, 4vw, 52px) clamp(18px, 4vw, 52px) 72px;
+}
+
+.agent-sessions-head {
   display: flex;
-  flex-direction: column;
-  background: var(--card);
-  border-left: 1px solid var(--hairline);
-  padding: 16px;
-  color: var(--ink);
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
 }
 
-.sessions-title {
+.agent-sessions-head h2 {
   margin: 0;
+  font-size: clamp(26px, 3vw, 38px);
+  font-weight: 500;
+  letter-spacing: -.02em;
 }
 
-.sessions-sub {
-  margin: 4px 0 0;
-  font-family: var(--mono);
-  font-size: 12px;
+.agent-sessions-head > div > p:last-child {
+  margin: 10px 0 0;
   color: var(--ink-muted);
-  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.agent-sessions-sync {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .sessions-filter {
@@ -2190,7 +2195,15 @@ button.avatar-pic {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 16px 0 8px;
+  margin: 24px 0 12px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--card) 68%, transparent);
+}
+
+.sessions-status-filter {
+  display: flex;
+  gap: 6px;
 }
 
 .sessions-filter-btn {
@@ -2245,7 +2258,8 @@ button.avatar-pic {
 .sessions-more {
   display: flex;
   justify-content: center;
-  padding: 8px 0 0;
+  padding: 12px;
+  border-top: 1px solid var(--hairline);
 }
 
 .session-workspace,
@@ -2256,8 +2270,7 @@ button.avatar-pic {
   overflow-wrap: anywhere;
 }
 
-.session-workspace::before,
-.session-activity::before {
+.session-workspace::before {
   content: "·";
   margin: 0 4px;
 }
@@ -2267,21 +2280,77 @@ button.avatar-pic {
 }
 
 .sessions-list {
-  margin-bottom: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.session-head {
+.sessions-review {
+  display: grid;
+  grid-template-columns: minmax(18rem, 20rem) minmax(0, 1fr);
+  align-items: start;
+  border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+}
+
+.sessions-list-pane {
+  min-width: 0;
+  border-right: 1px solid var(--hairline);
+}
+
+.session-scan-row + .session-scan-row {
+  border-top: 1px solid var(--hairline);
+}
+
+.session-scan-button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 15px 16px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-scan-button:hover {
+  background: color-mix(in srgb, var(--composer) 65%, transparent);
+}
+
+.session-scan-row.is-selected .session-scan-button {
+  border-left-color: var(--accent);
+  background: var(--composer);
+}
+
+.session-scan-title-line,
+.session-scan-context,
+.session-scan-chips {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 0;
+  align-items: center;
+}
+
+.session-scan-title-line {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.session-scan-context {
+  margin-top: 6px;
+}
+
+.session-scan-chips {
+  gap: 5px;
+  margin-top: 9px;
 }
 
 .session-title {
   font-family: var(--mono);
   font-size: 14px;
+  font-weight: 500;
   overflow-wrap: anywhere;
-  margin-right: 4px;
 }
 
 .session-status.is-active {
@@ -2289,8 +2358,35 @@ button.avatar-pic {
   border-color: var(--accent);
 }
 
-.session-row.is-ended .session-title {
+.session-scan-row.is-ended .session-title {
   color: var(--ink-muted);
+}
+
+.session-origin-chip {
+  padding: 2px 5px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.session-scan-chips .manage-tag,
+.session-detail-tags .manage-tag,
+.session-scan-title-line .manage-tag {
+  margin-left: 0;
+}
+
+.session-attention {
+  display: block;
+  margin-top: 10px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.session-attention.is-actionable {
+  color: var(--accent);
 }
 
 .session-link {
@@ -2305,14 +2401,107 @@ button.avatar-pic {
   text-align: left;
 }
 
-.session-toggle {
-  margin-top: 6px;
+.sessions-detail-pane {
+  min-width: 0;
+}
+
+.sessions-detail-empty {
+  min-height: 50vh;
+  display: grid;
+  place-content: center;
+  padding: 32px;
+  text-align: center;
+}
+
+.sessions-detail-empty h3 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.sessions-detail-empty p:last-child {
+  max-width: 380px;
+  color: var(--ink-muted);
 }
 
 .session-detail {
-  margin-top: 8px;
+  min-height: 50vh;
+  padding: clamp(22px, 4vw, 44px);
   font-family: var(--mono);
+  font-size: 12px;
+}
+
+.session-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.session-detail-head h3 {
+  max-width: 760px;
+  margin: 0;
+  font-family: var(--chrome);
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 500;
+  letter-spacing: -.02em;
+  overflow-wrap: anywhere;
+}
+
+.session-detail-head h3:focus {
+  outline: none;
+}
+
+.session-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.session-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 24px 0 0;
+  border-top: 1px solid var(--hairline);
+  border-left: 1px solid var(--hairline);
+}
+
+.session-detail-meta > div {
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.session-detail-meta .is-wide {
+  grid-column: 1 / -1;
+}
+
+.session-detail-meta dt {
+  color: var(--ink-faint);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.session-detail-meta dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.session-detail-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+.session-detail-section > h4 {
+  margin: 0 0 10px;
+  color: var(--ink-muted);
   font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .session-attempts {
@@ -2430,11 +2619,78 @@ button.avatar-pic {
   margin-top: 0;
 }
 
-.sessions-drawer button:focus-visible,
-.sessions-drawer summary:focus-visible,
+.agent-sessions-page button:focus-visible,
+.agent-sessions-page summary:focus-visible,
+.session-scan-button:focus-visible,
 .thread-bar .attach-word:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+@media (max-width: 799px) {
+  .agent-sessions-page {
+    padding: 22px 14px 48px;
+  }
+
+  .agent-sessions-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .agent-sessions-sync {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .sessions-filter {
+    align-items: stretch;
+  }
+
+  .sessions-status-filter,
+  .sessions-search,
+  .sessions-workspace {
+    flex: 1 1 100%;
+  }
+
+  .sessions-status-filter .sessions-filter-btn {
+    flex: 1 1 0;
+  }
+
+  .sessions-review {
+    display: block;
+  }
+
+  .sessions-list-pane {
+    border-right: 0;
+  }
+
+  .sessions-detail-pane {
+    display: none;
+  }
+
+  .sessions-review.has-detail .sessions-list-pane {
+    display: none;
+  }
+
+  .sessions-review.has-detail .sessions-detail-pane {
+    display: block;
+  }
+
+  .session-detail {
+    padding: 20px 16px 28px;
+  }
+
+  .session-detail-head {
+    flex-direction: column-reverse;
+  }
+
+  .session-detail-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .session-detail-meta .is-wide {
+    grid-column: auto;
+  }
 }
 
 /* NOT-498: session-targeted Ask and Continue. Session-row actions, the
@@ -4388,7 +4644,7 @@ button.avatar-pic {
 
 .session-share-form select:focus-visible,
 .session-share-form input:focus-visible,
-.sessions-drawer a:focus-visible {
+.agent-sessions-page a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

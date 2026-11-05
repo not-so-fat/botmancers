@@ -295,7 +295,7 @@ async function main() {
   assert(/<div className="exchange-started" role="status">\s*\{syncResult\}/.test(panel),
     'the imported and updated counts are announced via role="status"');
   assert(/emptySessionsCopy\(filter, agentName, sync, providerLabel\)/.test(panel), 'the empty state reads the sync truth');
-  assert(/sync\?\.last_error_code \? \(/.test(panel) && /disabled=\{syncing\}[^]*\{\s*syncing \? 'Retrying/.test(panel),
+  assert(/sync\?\.last_error_code \? <button/.test(panel) && /disabled=\{syncing\}>\{syncing \? 'Retrying/.test(panel),
     'the failed empty state offers a native Retry, disabled while syncing');
   assert(/out_of_scope_count \?\? 0\) > 0/.test(panel) && /Widen the scope in Config/.test(panel)
     && /href=\{`\/bots\/\$\{encodeURIComponent\(agentId\)\}\/config`\}/.test(panel),

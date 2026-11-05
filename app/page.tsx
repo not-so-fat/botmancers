@@ -25,7 +25,6 @@ import { RegistrationFields } from '@/app/components/AgentRegistration';
 import { useRuntimeConnections } from '@/app/components/useRuntimeConnections';
 import { importedBotId, importedConfigPath } from '@/lib/market-handoff';
 import ManageAgentsPanel from '@/app/components/ManageAgentsPanel';
-import SessionsPanel from '@/app/components/SessionsPanel';
 import { deletedStatusLine, type DeleteAgentRef } from '@/lib/bot-deletion';
 import { DIALOG_FOCUSABLE, newAgentDialogPlacement, wrapFocusTarget, type DialogPlacement } from '@/lib/new-agent-dialog';
 import ThreadState from '@/app/components/ThreadState';
@@ -187,8 +186,6 @@ export default function Home() {
   const [botsLoaded, setBotsLoaded] = useState(false);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
-  const linkedSessionsRef = useRef(false);
-  const linkedSessionRef = useRef<string | null>(null);
   const deletedCountRef = useRef(0);
   const [messages, setMessages] = useState<Message[]>([]);
   const [notices, setNotices] = useState<WakeNoticeItem[]>([]);
@@ -211,8 +208,6 @@ export default function Home() {
   const revealing = useRef<Record<string, boolean>>({});
   const [manageOpen, setManageOpen] = useState(false);
   const manageRef = useRef<HTMLButtonElement>(null);
-  const [sessionsOpen, setSessionsOpen] = useState(false);
-  const sessionsRef = useRef<HTMLButtonElement>(null);
   const [rosterStatus, setRosterStatus] = useState('');
   const avatarFileRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -263,18 +258,24 @@ export default function Home() {
     if (linkedAgent) {
       // NOT-551: old `/?agent=` chat links resolve to durable Conversations
       // detail (or Sessions). Do not restore ambient home chat.
+      // NOT-550/552: old drawer links land on the Agent Sessions page and
+      // preserve ?session= so an owning-session share opens that exact row.
       defaulted.current = true;
       if (query.get('sessions') === '1') {
-        window.location.replace(`/agents/${encodeURIComponent(linkedAgent)}/sessions`);
-      } else {
-        const exchange = query.get('exchange');
-        void fetch(`/api/conversations?botId=${encodeURIComponent(linkedAgent)}`, { cache: 'no-store' })
-          .then(async response => response.ok ? response.json() : null)
-          .then(conversation => {
-            window.location.replace(legacyAgentChatHref(linkedAgent, conversation?.id ?? null, exchange));
-          })
-          .catch(() => window.location.replace(legacyAgentChatHref(linkedAgent, null, exchange)));
+        const session = query.get('session');
+        const dest = session
+          ? `/agents/${encodeURIComponent(linkedAgent)}/sessions?session=${encodeURIComponent(session)}`
+          : `/agents/${encodeURIComponent(linkedAgent)}/sessions`;
+        window.location.replace(dest);
+        return;
       }
+      const exchange = query.get('exchange');
+      void fetch(`/api/conversations?botId=${encodeURIComponent(linkedAgent)}`, { cache: 'no-store' })
+        .then(async response => response.ok ? response.json() : null)
+        .then(conversation => {
+          window.location.replace(legacyAgentChatHref(linkedAgent, conversation?.id ?? null, exchange));
+        })
+        .catch(() => window.location.replace(legacyAgentChatHref(linkedAgent, null, exchange)));
     }
     void loadBots().then(() => {
       if (deleted > 0) setRosterStatus(deletedStatusLine(deleted));
@@ -294,13 +295,6 @@ export default function Home() {
     const deleted = deletedCountRef.current;
     router.replace(`/agents/${encodeURIComponent(first.id)}${deleted > 0 ? `?deleted=${deleted}` : ''}`);
   }, [bots, activeConversation]);
-
-  useEffect(() => {
-    if (!activeConversation || !linkedSessionsRef.current) return;
-    linkedSessionsRef.current = false;
-    setSessionsOpen(true);
-  }, [activeConversation]);
-
 
   useEffect(() => {
     activeIdRef.current = activeConversation?.id ?? null;
@@ -765,16 +759,13 @@ export default function Home() {
                 >
                   Config
                 </Link>
-                <button
-                  ref={sessionsRef}
-                  type="button"
+                <Link
+                  href={`/agents/${encodeURIComponent(activeConversation.details.id)}/sessions`}
                   className="attach-word"
-                  aria-haspopup="dialog"
-                  aria-expanded={sessionsOpen}
-                  onClick={() => setSessionsOpen(true)}
+                  style={{ textDecoration: 'none' }}
                 >
                   Sessions
-                </button>
+                </Link>
                 <button
                   type="button"
                   className="attach-word"
@@ -1035,26 +1026,6 @@ export default function Home() {
         )}
       </section>
 
-      {sessionsOpen && activeConversation ? (
-        <SessionsPanel
-          key={activeConversation.details.id}
-          agentId={activeConversation.details.id}
-          agentName={activeConversation.details.name}
-          agentProvider={activeConversation.details.agent ?? undefined}
-          initialSessionRef={linkedSessionRef.current}
-          agents={bots.map(bot => ({ id: bot.id, name: bot.name }))}
-          origin={{ conversationId: activeConversation.id, label: `${activeConversation.details.name} thread` }}
-          onExchangeStarted={() => { void loadMessages(); }}
-          onClose={() => {
-            setSessionsOpen(false);
-            requestAnimationFrame(() => sessionsRef.current?.focus());
-          }}
-          onOpenThread={id => {
-            setSessionsOpen(false);
-            void openBot(id).then(() => requestAnimationFrame(() => sessionsRef.current?.focus()));
-          }}
-        />
-      ) : null}
       {manageOpen ? (
         <ManageAgentsPanel
           onClose={() => {

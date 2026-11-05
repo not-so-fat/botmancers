@@ -12,7 +12,7 @@
 //     and no provider id, workspace, Deck, runtime, or token is rendered;
 //   - helpers: labels, ordering, the request body (accepted by the owner
 //     create route's parser), client-side allowlist validation;
-//   - source contracts: Sessions drawer wiring, Agent Config placement,
+//   - source contracts: Agent Sessions page wiring, Agent Config placement,
 //     the revision on every policy write, the revoke confirmation.
 // Self-contained: no database, no network.
 'use strict';
@@ -131,7 +131,7 @@ console.log('\nHelpers: ordering, labels, request body, allowlist validation');
   assert(/Workspace ID/.test(view.audienceInputError('*', 'C0NEW0001', existing)) && /Channel ID/.test(view.audienceInputError('T0OWNER01', 'general', existing))
     && /already/.test(view.audienceInputError('T0OWNER01', 'C0OWNER01', existing)), 'wildcard / malformed / duplicate entries are refused before sending');
   assert(view.SHARE_DURATIONS.every(d => d.seconds >= 300 && d.seconds <= 86400), 'every offered duration is inside the 300 s - 86 400 s TTL bounds');
-  assert(/revokes every live turn context/.test(view.shareFromTurnNote(policy())) && /Sessions drawer/.test(view.shareFromTurnNote(policy({ agent: { ...policy().agent, share_from_turn: false } }))),
+  assert(/revokes every live turn context/.test(view.shareFromTurnNote(policy())) && /Agent Sessions page/.test(view.shareFromTurnNote(policy({ agent: { ...policy().agent, share_from_turn: false } }))),
     'share_from_turn notes: on explains the revocation, off points to Sessions');
   const cursor = policy({ agent: { ...policy().agent, share_current: { supported: false, reason: 'Cursor has no per-launch MCP configuration.' } } });
   assert(view.shareFromTurnNote(cursor) === 'Cursor has no per-launch MCP configuration.', 'an unsupported runtime: the server\'s reason');
@@ -144,7 +144,7 @@ console.log('\nSource contracts');
   const card = fs.readFileSync(path.join(ROOT, 'app/components/SharePolicyCard.tsx'), 'utf8');
   const config = fs.readFileSync(path.join(ROOT, 'app/bots/[id]/config/page.tsx'), 'utf8');
   assert(panel.includes('<SessionShares row={row}') && panel.includes('/api/shares?agent_id=') && panel.includes('/share-policy'),
-    'the Sessions drawer renders a share section per row from the owner share list and policy');
+    'the Agent Sessions detail renders shares from the owner share list and policy');
   assert(shares.includes("`/api/shares/${encodeURIComponent(share.share_ref)}/revoke`") && shares.includes('data-share-action="confirm-revoke"'),
     'revoke goes through the owner revoke route after an explicit confirmation');
   assert(!shares.includes('row.context') && !/provider_session|external_session/.test(shares), 'the share section never reads the row\'s workspace, Deck, or a provider id');

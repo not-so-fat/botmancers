@@ -1,4 +1,4 @@
-// NOT-496: pure presentation helpers for the Sessions drawer
+// NOT-496/NOT-550: pure presentation helpers for the Agent Sessions page
 // (app/components/SessionsPanel). The shapes mirror lib/session-catalog's
 // JSON; this module never sees an external provider session id.
 
@@ -23,7 +23,12 @@ export interface SessionRow {
   last_activity_at: number;
   origin: {
     conversation: { id: string; kind: 'direct' | 'group' | 'agent_api'; label: string; thread_agent_id: string | null } | null;
-    work_request: { id: string; execution_kind: string; state: string } | null;
+    work_request: {
+      id: string;
+      execution_kind: string;
+      state: string;
+      requester?: { kind: 'person' | 'bot' | 'service'; name: string | null };
+    } | null;
   };
   context: { workspace: string | null; deck: string | null };
   // NOT-509: provider-reported usage (lib/usage UsageSummary). Optional so
@@ -125,6 +130,19 @@ export function workRequestLabel(row: SessionRow): string | null {
   return request ? `${capitalize(request.execution_kind)} · ${request.state}` : null;
 }
 
+// Compact provenance chips are emitted only from canonical Conversation or
+// Work Request fields. In particular, no transcript text is inspected to
+// guess who participated in a session.
+export function sessionOriginChips(row: Pick<SessionRow, 'origin'>): string[] {
+  const chips: string[] = [];
+  const requester = row.origin.work_request?.requester;
+  if (requester?.kind === 'person') chips.push('Human origin');
+  else if (requester?.kind === 'bot') chips.push(requester.name ? `${requester.name} Agent` : 'Agent origin');
+  else if (requester?.kind === 'service') chips.push('Service origin');
+  if (row.origin.conversation) chips.push(row.origin.conversation.label);
+  return [...new Set(chips)];
+}
+
 export function statusLabel(row: SessionRow): string {
   return row.status === 'active' ? 'Active' : 'Ended';
 }
@@ -148,7 +166,7 @@ export function attemptLabel(attempt: SessionAttemptRow): string {
   return `${what} · ${attempt.outcome ?? 'running'}`;
 }
 
-// NOT-547: the drawer's sync truth (GET /api/bots/:id/sessions `sync`).
+// NOT-547: the page's sync truth (GET /api/bots/:id/sessions `sync`).
 // synced_at is the last completed sync (null when none ever completed);
 // last_error_code is the last attempt's failure (null when the last
 // attempt succeeded); out_of_scope_count is how many provider-reported

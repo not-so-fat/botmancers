@@ -398,7 +398,9 @@ export interface ServiceSessionView {
   last_activity_at: number;
   origin: {
     conversation: { id: string; kind: 'direct' | 'group' | 'agent_api'; label: string } | null;
-    work_request: SessionSummary['origin']['work_request'];
+    // MCP v2 freezes work_request to id/execution_kind/state. Catalog
+    // requester provenance stays on the owner Sessions API for UI chips.
+    work_request: { id: string; execution_kind: string; state: string } | null;
   };
   // NOT-509: additive. Normalized provider-reported usage only (sums,
   // known/total coverage, quality); never a raw provider breakdown.
@@ -424,7 +426,13 @@ function sessionView(summary: SessionWithActions): ServiceSessionView {
     last_activity_at: summary.last_activity_at,
     origin: {
       conversation: conversation ? { id: conversation.id, kind: conversation.kind, label: conversation.label } : null,
-      work_request: summary.origin.work_request,
+      work_request: summary.origin.work_request
+        ? {
+            id: summary.origin.work_request.id,
+            execution_kind: summary.origin.work_request.execution_kind,
+            state: summary.origin.work_request.state,
+          }
+        : null,
     },
     usage: {
       input_tokens: { ...summary.usage.input_tokens },
