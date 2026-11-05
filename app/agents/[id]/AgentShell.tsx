@@ -32,6 +32,7 @@ const TABS = [
   { label: 'Conversations', segment: 'conversations' },
   { label: 'Slack', segment: 'slack' },
   { label: 'Activity', segment: 'activity' },
+  { label: 'Config', segment: 'config' },
 ] as const;
 
 export default function AgentShell({ children }: { children: ReactNode }) {
@@ -137,7 +138,6 @@ export default function AgentShell({ children }: { children: ReactNode }) {
               const selectedTab = pathname === href;
               return <Link key={tab.label} href={href} aria-current={selectedTab ? 'page' : undefined}>{tab.label}</Link>;
             })}
-            <Link href={`/bots/${encodeURIComponent(id)}/config`}>Config</Link>
           </nav>
           <main className="agent-content">{children}</main>
         </section>

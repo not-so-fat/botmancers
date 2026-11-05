@@ -238,7 +238,7 @@ function availabilityEvent(database: Database.Database, agentId: string, items: 
     category: 'sessions',
     occurred_at: bot.last_seen ?? bot.created_at,
     summary: runtime.launchable ? 'Agent runtime is available' : 'Agent runtime needs setup',
-    target: { href: `/bots/${enc(agentId)}/config`, label: 'Open Config' },
+    target: { href: `/agents/${enc(agentId)}/config`, label: 'Open Config' },
     severity: runtime.launchable ? 'info' : 'error',
     attention: !runtime.launchable,
     details: runtime.launchable ? { availability: 'available' } : { availability: 'unavailable', blocker },

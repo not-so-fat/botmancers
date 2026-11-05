@@ -277,7 +277,7 @@ async function testImportReturnWithValidBotId() {
     console.log('✓ Bot found in list after creation');
     console.log(`  Name: ${foundBot.name}`);
     console.log(`  ID: ${foundBot.id}`);
-    console.log(`  Return opens: ${BASE_URL}/bots/${botId}/config\n`);
+    console.log(`  Return opens: ${BASE_URL}/agents/${botId}/config\n`);
     console.log('✅ Import return with valid bot ID test PASSED\n');
     return { pass: true, botId };
   } else {

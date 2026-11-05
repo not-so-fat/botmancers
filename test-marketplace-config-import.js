@@ -10,7 +10,7 @@
 //     CLONE_MARKET_URL and rejects unsafe / cross-origin return paths,
 //     including returns to a Config page.
 // (4) End to end with two distinct bot IDs: a handoff started from bot A's
-//     Config imports bot B and returns to /bots/B/config; A is unchanged.
+//     Config imports bot B and returns to /agents/B/config; A is unchanged.
 // (5) Repeating the import callback is idempotent and creates no duplicate.
 // Self-contained: isolated SQLite file, real route handlers via jiti.
 'use strict';
@@ -95,7 +95,7 @@ function placementSection() {
   const css = source('app/globals.css');
   assert(!css.includes('.import-btn') && !css.includes('.import-note'), 'rail import styles are removed');
 
-  const config = source('app/bots/[id]/config/page.tsx');
+  const config = source('app/agents/[id]/config/page.tsx');
   const start = config.indexOf('<h2 className="cfg-title mb-3">Template source</h2>');
   const end = config.indexOf('Launch snapshots</h2>', start);
   const control = config.indexOf('<MarketplaceImportControl', start);
@@ -131,7 +131,7 @@ function statesSection() {
 
 async function securitySection() {
   console.log('\n(3) Handoff security');
-  const configReturn = `${ORIGIN}/bots/agent-a/config`;
+  const configReturn = `${ORIGIN}/agents/agent-a/config`;
 
   delete process.env.CLONE_MARKET_URL;
   let res = await statusRoute.GET();
@@ -143,7 +143,7 @@ async function securitySection() {
   res = await statusRoute.GET();
   assert((await res.json()).configured === true, 'status: configured with CLONE_MARKET_URL');
 
-  const start = handoff.handoffStartPath(ORIGIN, '/bots/agent-a/config');
+  const start = handoff.handoffStartPath(ORIGIN, '/agents/agent-a/config');
   assert(start === `/api/marketplace-handoff?return=${encodeURIComponent(configReturn)}`, 'Config starts the handoff with only a return parameter');
   res = await handoffGet(start.slice('/api/marketplace-handoff'.length));
   assert(res.status === 307, `same-origin Config return redirects (got ${res.status})`);
@@ -154,11 +154,11 @@ async function securitySection() {
   assert(location.searchParams.get('return') === configReturn, 'return points back at the launching Config page');
 
   const rejected = [
-    ['cross-origin return', `?return=${encodeURIComponent('https://evil.example/bots/a/config')}`],
-    ['other-port return', `?return=${encodeURIComponent('http://localhost:9999/bots/a/config')}`],
+    ['cross-origin return', `?return=${encodeURIComponent('https://evil.example/agents/a/config')}`],
+    ['other-port return', `?return=${encodeURIComponent('http://localhost:9999/agents/a/config')}`],
     ['javascript: return', `?return=${encodeURIComponent('javascript:alert(1)')}`],
-    ['relative return', `?return=${encodeURIComponent('/bots/a/config')}`],
-    ['protocol-relative return', `?return=${encodeURIComponent('//evil.example/bots/a/config')}`],
+    ['relative return', `?return=${encodeURIComponent('/agents/a/config')}`],
+    ['protocol-relative return', `?return=${encodeURIComponent('//evil.example/agents/a/config')}`],
     ['missing return', ''],
     ['client marketplace override', `?return=${encodeURIComponent(configReturn)}&marketplace=https://evil.example`],
     ['client destination override', `?return=${encodeURIComponent(configReturn)}&destination=https://evil.example`],
@@ -169,14 +169,14 @@ async function securitySection() {
     assert(res.status === 400 && !res.headers.get('location'), `${label} is rejected with 400 (got ${res.status})`);
   }
 
-  const dirty = await handoffGet(`?return=${encodeURIComponent(`http://u:p@localhost:43123/bots/agent-a/config#x`)}`);
+  const dirty = await handoffGet(`?return=${encodeURIComponent(`http://u:p@localhost:43123/agents/agent-a/config#x`)}`);
   const cleaned = new URL(new URL(dirty.headers.get('location')).searchParams.get('return'));
   assert(cleaned.username === '' && cleaned.password === '' && cleaned.hash === '', 'return userinfo and fragment are stripped');
 
   assert(handoff.importedBotId('') === null, 'no imported parameter: not a return');
   assert(handoff.importedBotId('?imported=../../settings') === '', 'path-traversal imported ID is malformed');
   assert(handoff.importedBotId('?imported=https%3A%2F%2Fevil.example') === '', 'URL imported ID is malformed');
-  assert(handoff.importedConfigPath('abc-123') === '/bots/abc-123/config', 'return opens /bots/<id>/config');
+  assert(handoff.importedConfigPath('abc-123') === '/agents/abc-123/config', 'return opens /agents/<id>/config');
   delete process.env.CLONE_MARKET_URL;
 }
 
@@ -186,9 +186,9 @@ async function endToEndSection() {
   const before = JSON.stringify(bots.getById(a.id));
 
   process.env.CLONE_MARKET_URL = MARKET;
-  const startRes = await handoffGet(handoff.handoffStartPath(ORIGIN, `/bots/${a.id}/config`).slice('/api/marketplace-handoff'.length));
+  const startRes = await handoffGet(handoff.handoffStartPath(ORIGIN, `/agents/${a.id}/config`).slice('/api/marketplace-handoff'.length));
   const returnUrl = new URL(startRes.headers.get('location')).searchParams.get('return');
-  assert(returnUrl === `${ORIGIN}/bots/${a.id}/config`, 'handoff from A returns to A\'s Config page');
+  assert(returnUrl === `${ORIGIN}/agents/${a.id}/config`, 'handoff from A returns to A\'s Config page');
   delete process.env.CLONE_MARKET_URL;
 
   // The Marketplace calls the import endpoint, then sends the browser back.
@@ -199,7 +199,7 @@ async function endToEndSection() {
   back.searchParams.set(handoff.IMPORT_RETURN_QUERY, b.id);
 
   const result = await handoff.resolveImportReturn(back.search, a.id, configExists);
-  assert(result.kind === 'open' && result.path === `/bots/${b.id}/config`, `return on A's Config opens B's Config (got ${JSON.stringify(result)})`);
+  assert(result.kind === 'open' && result.path === `/agents/${b.id}/config`, `return on A's Config opens B's Config (got ${JSON.stringify(result)})`);
   assert(JSON.stringify(bots.getById(a.id)) === before, 'bot A is unchanged by the import');
 
   const configRes = await configRoute.GET(new Request(`${ORIGIN}${result.path}`), { params: Promise.resolve({ id: b.id }) });
@@ -228,7 +228,7 @@ async function idempotencySection(b) {
   assert(conflict.status === 409, `same operation + different body is a 409 (got ${conflict.status})`);
   assert(bots.getAll().length === count, 'no duplicate bot is created');
   const ids = await handoff.resolveImportReturn(`?imported=${body.bot.id}`, 'other-agent', configExists);
-  assert(ids.kind === 'open' && ids.path === `/bots/${b.id}/config`, 'repeated return opens the same imported Config');
+  assert(ids.kind === 'open' && ids.path === `/agents/${b.id}/config`, 'repeated return opens the same imported Config');
 }
 
 async function main() {

@@ -181,7 +181,7 @@ async function main() {
   await waitFor(`document.body.innerText.includes('Agent: Codex')`, 'roster line for the Agent');
   await shot('desktop-1440x900-roster-reloaded');
   reset();
-  await navigate(`${URL_BASE}/bots/${direct.id}/config`);
+  await navigate(`${URL_BASE}/agents/${direct.id}/config`);
   await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'Config read view');
   await showAgentCard();
   await shot('desktop-1440x900-config-direct');
@@ -191,7 +191,7 @@ async function main() {
   await sleep(500);
   await showAgentCard('.registration-fields');
   await shot('desktop-1440x900-config-direct-edit');
-  await navigate(`${URL_BASE}/bots/${direct.id}/config`);
+  await navigate(`${URL_BASE}/agents/${direct.id}/config`);
   await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'Config after reload');
   await sleep(500);
   check(deckRequests().length === 0, `Config (read, Edit, reload) requested no deck (browser=${deckRequests().length})`);
@@ -199,7 +199,7 @@ async function main() {
   console.log('\n(3) Mobile 390x800');
   await viewport(MOBILE);
   reset();
-  await navigate(`${URL_BASE}/bots/${direct.id}/config`);
+  await navigate(`${URL_BASE}/agents/${direct.id}/config`);
   await waitFor('!!document.querySelector("[data-field=runtime-read]")', 'Config (mobile)');
   await evaluate(`document.querySelector('[data-field=runtime-read]').scrollIntoView({ block: 'start' }), true`);
   await sleep(300);

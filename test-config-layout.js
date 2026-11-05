@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // NOT-450: per-agent config page layout regression.
 //
-// Deterministic source checks against app/bots/[id]/config/page.tsx:
+// Deterministic source checks against app/agents/[id]/config/page.tsx:
 // (1) the loaded page renders two equal desktop columns that collapse to one
 //     column below lg, so neither side is left empty beside a long stack;
 // (2) the cards keep a fixed DOM (= keyboard) order: Skills, Rules, Agent,
@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = __dirname;
-const src = fs.readFileSync(path.join(ROOT, 'app/bots/[id]/config/page.tsx'), 'utf8');
+const src = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/config/page.tsx'), 'utf8');
 
 let failures = 0;
 function check(label, ok, detail) {

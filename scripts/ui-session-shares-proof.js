@@ -238,7 +238,7 @@ async function run() {
     await shot(vp, 'share-revoked', `${sharesOf(TITLES.open)}.querySelector('[data-share-ref="${ref}"]')`);
 
     log('Agent Config: Session sharing');
-    await cdp.send('Page.navigate', { url: `${URL_BASE}/bots/${forge.id}/config` });
+    await cdp.send('Page.navigate', { url: `${URL_BASE}/agents/${forge.id}/config` });
     await waitFor("document.querySelector('#session-sharing [data-share-policy=\"share_from_turn\"]')", 'Session sharing card', 120000);
     const card = '#session-sharing';
     const cardEl = `document.querySelector('${card}')`;

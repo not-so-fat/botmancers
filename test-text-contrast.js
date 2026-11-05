@@ -154,7 +154,7 @@ for (const sel of ['.bot-form .create-btn:disabled', '.cfg-btn-primary:disabled'
 
 // Page sources: no inline opacity dims text, except the group member picker
 // whose names are avatar-colored (out of scope for NOT-453).
-for (const file of ['app/page.tsx', 'app/settings/page.tsx', 'app/bots/[id]/config/page.tsx']) {
+for (const file of ['app/page.tsx', 'app/settings/page.tsx', 'app/agents/[id]/config/page.tsx']) {
   const src = fs.readFileSync(path.join(ROOT, file), 'utf8');
   const inline = [...src.matchAll(/style=\{\{[^}]*opacity[^}]*\}\}/g)].map(m => m[0]);
   const unexpected = inline.filter(s => !/opacity: on \? 1 : 0\.45/.test(s));

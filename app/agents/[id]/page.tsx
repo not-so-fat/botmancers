@@ -48,7 +48,7 @@ export default function AgentOverviewPage() {
   if (notFound) return <div className="agent-state"><h2>Agent not found</h2><p>This Agent does not exist or was removed.</p><Link href="/">Choose an Agent</Link></div>;
   if (error || !overview) return <div className="agent-state" role="alert"><h2>Overview unavailable</h2><p>Botmancers could not load this Agent. Refresh to try again.</p></div>;
 
-  const configHref = `/bots/${encodeURIComponent(id)}/config`;
+  const configHref = `/agents/${encodeURIComponent(id)}/config`;
   const messageHref = overview.conversation
     ? `/agents/${encodeURIComponent(id)}/conversations/${encodeURIComponent(overview.conversation.id)}`
     : `/agents/${encodeURIComponent(id)}/conversations`;

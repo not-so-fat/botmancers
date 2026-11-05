@@ -353,7 +353,7 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
                   {searchActive ? <><p>{noMatchingSessionsCopy(query, workspaceFilter || null)}</p><button type="button" className="pin-word" onClick={clearSearch}>Clear search</button></> : <>
                     <p>{emptySessionsCopy(filter, agentName, sync, providerLabel)}</p>
                     {filter === 'all' && sync?.last_error_code ? <button type="button" className="pin-word" onClick={() => { void doRefresh(); }} disabled={syncing}>{syncing ? 'Retrying…' : 'Retry'}</button> : null}
-                    {filter === 'all' && !sync?.last_error_code && (sync?.out_of_scope_count ?? 0) > 0 ? <Link className="session-link" href={`/bots/${encodeURIComponent(agentId)}/config`}>Widen the scope in Config</Link> : null}
+                    {filter === 'all' && !sync?.last_error_code && (sync?.out_of_scope_count ?? 0) > 0 ? <Link className="session-link" href={`/agents/${encodeURIComponent(agentId)}/config`}>Widen the scope in Config</Link> : null}
                   </>}
                 </li>
               ) : null}
