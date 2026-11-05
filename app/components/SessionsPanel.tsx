@@ -212,7 +212,11 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
         return;
       }
       const page = body.sessions as SessionRow[];
-      setRows([...base, ...page]);
+      // Exact ?session= rows are prepended onto page 1; a later page can
+      // repeat that ref. Drop already-present refs so Load more never
+      // duplicates a deep-linked row (or React key).
+      const present = new Set(base.map(row => row.ref));
+      setRows([...base, ...page.filter(row => !present.has(row.ref))]);
       setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
       setLoadError('');
       const seen = page.map(row => row.context.workspace).filter((w): w is string => !!w);

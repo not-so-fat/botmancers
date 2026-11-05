@@ -162,6 +162,22 @@ try {
     // Filter changes that drop the row clear the stale query param.
     assert.match(panel, /later matching filter does not silently reopen detail/);
     assert.match(panel, /if \(filter === 'all' && !query\.trim\(\) && !workspaceFilter\) return; \/\/ exact fetch may still land it/);
+    assert.match(panel, /router\.replace\(`\/agents\/\$\{encodeURIComponent\(agentId\)\}\/sessions`, \{ scroll: false \}\)/);
+    // Load more must drop refs already present (exact ?session= prepend onto page 1).
+    assert.match(panel, /Drop already-present refs so Load more never/);
+    assert.match(panel, /page\.filter\(row => !present\.has\(row\.ref\)\)/);
+    const unfiltered1 = catalog.listAgentSessionPage(dbModule.default, paging.agent.id, {});
+    assert.equal(typeof unfiltered1.next_cursor, 'string');
+    const unfiltered2 = catalog.listAgentSessionPage(dbModule.default, paging.agent.id, {
+      cursor: unfiltered1.next_cursor,
+    });
+    assert.ok(unfiltered2.sessions.length > 0);
+    const deep = unfiltered2.sessions[0];
+    const base = [deep, ...unfiltered1.sessions.filter(row => row.ref !== deep.ref)];
+    const present = new Set(base.map(row => row.ref));
+    const appended = [...base, ...unfiltered2.sessions.filter(row => !present.has(row.ref))];
+    assert.equal(appended.filter(row => row.ref === deep.ref).length, 1,
+      'deep-linked row appears once after Load more appends a page that includes it');
   });
 } finally {
   dbModule.default.close();
