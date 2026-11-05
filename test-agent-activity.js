@@ -19,10 +19,17 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const dbModule = jiti('./lib/db.ts');
 jiti('./lib/session-shares.ts'); // install the canonical share tables
+jiti('./lib/slack-relay.ts'); // install the canonical Slack thread ledger
 const raw = dbModule.default;
 const { bots, conversations, engine } = dbModule;
 const activity = jiti('./lib/agent-activity.ts');
-const { ActivityList } = jiti('./app/agents/[id]/activity/AgentActivityPage.tsx');
+const {
+  ActivityList,
+  ActivityResults,
+  activityPageReducer,
+  agentActivityUrl,
+  initialActivityPageState,
+} = jiti('./app/agents/[id]/activity/AgentActivityPage.tsx');
 
 const SECRET = {
   provider: 'provider-session-SENTINEL-553',
@@ -50,13 +57,33 @@ try {
   engine.bindSession({ agentId: ada.id, adapter: 'codex', externalSessionId: `${SECRET.provider}-replacement`, conversationId: adaConversation.id, now: BASE + 20 });
   const boBinding = engine.bindSession({ agentId: bo.id, adapter: 'codex', externalSessionId: 'bo-private-provider-id', conversationId: boConversation.id, now: BASE + 15 });
 
-  providerEvent('pse-ada-start', ada.id, first.id, 'session_started', BASE + 30, { authority: 'read_only', token: SECRET.token, path: SECRET.path });
-  providerEvent('pse-ada-fail', ada.id, first.id, 'turn_failed', BASE + 60, { payload: SECRET.payload });
+  // A provider registry row can be linked to a binding while retaining its
+  // own internal row id. Activity links must use the Session catalog ref.
+  const registered = raw.prepare('SELECT * FROM provider_sessions WHERE id = ?').get(first.id);
+  raw.prepare('DELETE FROM provider_sessions WHERE id = ?').run(first.id);
+  raw.prepare(`INSERT INTO provider_sessions (
+    id, agent_id, runtime_connection_id, provider_kind, provider_session_id, binding_id, origin,
+    availability, lifecycle, resumable, busy, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, 'started', 'available', 'open', 1, 0, ?, ?)`)
+    .run('provider-registry-ada', ada.id, registered.runtime_connection_id, registered.provider_kind, SECRET.provider, first.id, BASE + 10, BASE + 10);
+
+  providerEvent('pse-ada-start', ada.id, 'provider-registry-ada', 'session_started', BASE + 30, { authority: 'read_only', token: SECRET.token, path: SECRET.path });
+  providerEvent('pse-ada-fail', ada.id, 'provider-registry-ada', 'turn_failed', BASE + 60, { payload: SECRET.payload });
+  for (let i = 0; i < 24; i++) providerEvent(`pse-sync-${i}`, ada.id, 'provider-registry-ada', 'session_synced', BASE + 100 + i, { transcript: SECRET.transcript });
   providerEvent('pse-bo', bo.id, boBinding.id, 'session_missing', BASE + 70, { transcript: SECRET.transcript });
 
   // Arbitrary prose is durable message content, but never an Activity
   // lifecycle authority.
   dbModule.messages.create(adaConversation.id, 'user', `Session failed and Slack share revoked. ${SECRET.transcript}`);
+
+  raw.pragma('foreign_keys = OFF');
+  const insertConversationEvent = raw.prepare(`INSERT INTO conversation_events (
+    id, conversation_id, engine_event_id, part, request_id, request_sequence, attempt_id, wake_id,
+    kind, state, text, data, sort_at, request_created_at, created_at
+  ) VALUES (?, ?, NULL, 0, NULL, ?, NULL, ?, ?, ?, ?, '{}', ?, ?, ?)`);
+  insertConversationEvent.run('conversation-event-queued', adaConversation.id, 1, 'fixture-wake-queued', 'request_queued', 'queued', `Queued ${SECRET.transcript}`, BASE + 42, BASE + 42, BASE + 42);
+  insertConversationEvent.run('conversation-event-finalization', adaConversation.id, 2, 'fixture-wake-finalization', 'finalization_failed', 'failed', `Failed ${SECRET.transcript}`, BASE + 57, BASE + 42, BASE + 57);
+  raw.pragma('foreign_keys = ON');
 
   raw.prepare(`INSERT INTO session_exchanges (
     id, requester_kind, requester_id, idempotency_key, request_hash, mode, origin_conversation_id,
@@ -76,6 +103,9 @@ try {
     .run('shr_ada_activity', 'share-key', ada.id, first.id, 'pin-ada-activity', BASE + 40, BASE + 50, BASE + 40);
   raw.prepare("INSERT INTO session_share_events (share_ref, sequence, type, at) VALUES ('shr_ada_activity', 1, 'created', ?)").run(BASE + 40);
   raw.prepare("INSERT INTO session_share_events (share_ref, sequence, type, code, at) VALUES ('shr_ada_activity', 2, 'turn_refused', 'expired', ?)").run(BASE + 58);
+  raw.prepare(`INSERT INTO slack_share_threads (share_ref, session_ref, team_id, channel_id, thread_ts, created_at)
+    VALUES ('shr_ada_activity', ?, 'TSAFE', 'CSAFE', '1800000000.000100', ?)`)
+    .run(first.id, BASE + 45);
 
   test('Agent scope, stable kinds, newest-first order, targets, severity, and safe details', () => {
     const page = activity.listAgentActivity(ada.id, { filter: 'all', cursor: null, limit: 100 });
@@ -88,6 +118,12 @@ try {
     assert.ok(page.items.some(row => row.kind === 'slack.share_created' && row.target.href.endsWith('/slack')));
     assert.ok(page.items.some(row => row.kind.startsWith('availability.') && row.target.href === `/bots/${ada.id}/config`));
     assert.ok(page.items.some(row => row.kind === 'session.turn_failed' && row.severity === 'error' && row.attention));
+    assert.ok(page.items.some(row => row.kind === 'conversation.request_queued'));
+    assert.ok(page.items.some(row => row.kind === 'conversation.finalization_failed'));
+    assert.ok(page.items.some(row => row.kind === 'slack.thread_posted'));
+    const linked = page.items.find(row => row.id === 'provider-session-event:pse-ada-start');
+    assert.equal(linked.target.href, `/agents/${ada.id}/sessions?session=${first.id}`);
+    assert.equal(linked.target.href.includes('provider-registry-ada'), false);
     assert.ok(page.items.every(row => !row.id.includes('pse-bo') && !row.target.href.includes(bo.id)));
     assert.equal(activity.listAgentActivity('missing-agent', { filter: 'all', cursor: null, limit: 20 }), null);
   });
@@ -100,6 +136,9 @@ try {
     assert.ok(list('errors').every(row => row.severity === 'error'));
     assert.equal(list('all').some(row => row.summary.includes('Slack share revoked')), false);
     assert.equal(list('all').some(row => row.kind === 'slack.share_revoked'), false);
+    assert.equal(list('all').some(row => row.id.startsWith('provider-session-event:pse-sync-')), false);
+    const preview = activity.listAgentActivity(ada.id, { filter: 'all', cursor: null, limit: 4 }).items;
+    assert.ok(preview.some(row => row.kind === 'session.turn_failed'), 'sync heartbeats do not displace lifecycle events');
   });
 
   test('cursor pagination is stable, filter- and Agent-bound', () => {
@@ -128,17 +167,49 @@ try {
     for (const forbidden of Object.values(SECRET)) assert.equal(html.includes(forbidden), false);
   });
 
-  test('page source has truthful loading, empty, error, pagination, and keyboard controls', () => {
-    const page = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/activity/AgentActivityPage.tsx'), 'utf8');
-    const overview = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/page.tsx'), 'utf8');
-    assert.match(page, /Loading activity…/);
-    assert.match(page, /Activity unavailable/);
-    assert.match(page, /No operational activity has been recorded/);
-    assert.match(page, /Load older activity/);
-    assert.match(page, /type="button"/);
-    assert.match(page, /aria-pressed/);
-    assert.match(overview, /overview\.recent_activity/);
-    assert.match(overview, /<ActivityList items=\{overview\.recent_activity\} compact/);
+  test('UI state model drives filter, pagination, empty, and error behavior', () => {
+    const all = activity.listAgentActivity(ada.id, { filter: 'all', cursor: null, limit: 8 }).items;
+    let state = activityPageReducer(initialActivityPageState, { type: 'select_filter', filter: 'errors' });
+    assert.equal(state.filter, 'errors');
+    assert.equal(state.activity.state, 'loading');
+    state = activityPageReducer(state, { type: 'request_started', key: 'ada:errors:1' });
+    state = activityPageReducer(state, { type: 'request_succeeded', key: 'ada:errors:1', items: all.slice(0, 2), nextCursor: 'older-page' });
+    let html = renderToStaticMarkup(React.createElement(ActivityResults, {
+      activity: state.activity, filter: state.filter, nextCursor: state.nextCursor, loadingMore: state.loadingMore, onLoadMore() {},
+    }));
+    assert.match(html, /Load older activity/);
+    assert.match(html, /Raw details/);
+
+    state = activityPageReducer(state, { type: 'load_started', key: 'ada:errors:1' });
+    assert.equal(state.loadingMore, true);
+    state = activityPageReducer(state, { type: 'load_succeeded', key: 'ada:errors:1', items: all.slice(2, 4), nextCursor: null });
+    assert.equal(state.activity.items.length, 4);
+    assert.equal(state.loadingMore, false);
+    assert.equal(state.nextCursor, null);
+
+    state = activityPageReducer(state, { type: 'select_filter', filter: 'slack' });
+    state = activityPageReducer(state, { type: 'request_started', key: 'ada:slack:2' });
+    state = activityPageReducer(state, { type: 'request_succeeded', key: 'ada:slack:2', items: [], nextCursor: null });
+    html = renderToStaticMarkup(React.createElement(ActivityResults, {
+      activity: state.activity, filter: state.filter, nextCursor: null, loadingMore: false, onLoadMore() {},
+    }));
+    assert.match(html, /No slack activity matches this filter/);
+
+    state = activityPageReducer(state, { type: 'request_started', key: 'ada:slack:3' });
+    state = activityPageReducer(state, { type: 'request_failed', key: 'ada:slack:3' });
+    html = renderToStaticMarkup(React.createElement(ActivityResults, {
+      activity: state.activity, filter: state.filter, nextCursor: null, loadingMore: false, onLoadMore() {},
+    }));
+    assert.match(html, /role="alert"/);
+    assert.match(html, /Activity unavailable/);
+    assert.equal(agentActivityUrl('agent / one', 'conversations', 'cursor+/='), '/api/bots/agent%20%2F%20one/activity?filter=conversations&limit=20&cursor=cursor%2B%2F%3D');
+  });
+
+  test('Overview compact list renders the full four-item projection bound', () => {
+    const items = activity.listAgentActivity(ada.id, { filter: 'all', cursor: null, limit: 4 }).items;
+    const html = renderToStaticMarkup(React.createElement(ActivityList, { items, compact: true }));
+    assert.equal((html.match(/class="agent-activity-item /g) || []).length, 4);
+    assert.doesNotMatch(html, /Raw details/);
   });
 
   console.log(`\n${passed} passed`);

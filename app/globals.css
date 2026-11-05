@@ -4845,7 +4845,6 @@ button.avatar-pic {
 .agent-activity-list.is-compact .agent-activity-card { padding: 11px 12px; }
 .agent-activity-list.is-compact .agent-activity-summary { display: block; }
 .agent-activity-list.is-compact .agent-activity-actions { margin-top: 6px; }
-.agent-activity-list.is-compact .agent-activity-item:nth-child(n+4) { display: none; }
 
 .agent-activity a:focus-visible,
 .agent-activity button:focus-visible,
