@@ -70,10 +70,11 @@ function sessionsListUrl(agentId: string, filter: SessionFilter, query: string, 
   return `/api/bots/${encodeURIComponent(agentId)}/sessions?${params.toString()}`;
 }
 
-export default function SessionsPanel({ agentId, agentName, agentProvider, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
+export default function SessionsPanel({ agentId, agentName, agentProvider, initialSessionRef = null, agents, origin, onClose, onOpenThread, onExchangeStarted }: {
   agentId: string;
   agentName: string;
   agentProvider?: string;
+  initialSessionRef?: string | null;
   agents: ExchangeAgentOption[];
   origin: { conversationId: string; label: string };
   onClose: () => void;
@@ -146,8 +147,26 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
             setLoadError(typeof body?.error === 'string' ? body.error : 'Could not load sessions.');
             return;
           }
-          const page = body.sessions as SessionRow[];
+          let page = body.sessions as SessionRow[];
+          // NOT-552: an owning-session link from the Agent Slack page opens
+          // that exact Botmancers session even when it is older than the
+          // first catalog page. The Agent-bound detail route keeps an
+          // unknown or cross-Agent reference indistinguishable (404).
+          if (initialSessionRef && !page.some(row => row.ref === initialSessionRef) && filter === 'all' && !query.trim() && !workspaceFilter) {
+            const exactResponse = await fetch(`/api/bots/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(initialSessionRef)}`, { cache: 'no-store' });
+            const exactBody = await exactResponse.json().catch(() => null);
+            if (exactResponse.ok && exactBody?.session) page = [exactBody.session as SessionRow, ...page];
+          }
+          if (cancelled) return;
           setRows(page);
+          if (initialSessionRef && page.some(row => row.ref === initialSessionRef)) {
+            setOpenRef(initialSessionRef);
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              const row = document.querySelector<HTMLElement>(`[data-session-ref="${CSS.escape(initialSessionRef)}"]`);
+              row?.scrollIntoView({ block: 'nearest' });
+              row?.querySelector<HTMLButtonElement>('.session-toggle')?.focus();
+            }));
+          }
           setSync(body?.sync && typeof body.sync === 'object' ? body.sync as SessionSyncState : null);
           setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
           // The cursor belongs to this fetch's filters. Load more only
@@ -171,7 +190,7 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [agentId, filter, query, workspaceFilter, attempt]);
+  }, [agentId, filter, query, workspaceFilter, attempt, initialSessionRef]);
 
   // NOT-548: Load more appends the next page. A page that arrives after
   // the filters changed is dropped: the fresh first page already replaced

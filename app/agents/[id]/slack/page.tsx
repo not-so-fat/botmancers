@@ -1,2 +1,3 @@
-import AgentSection from '../AgentSection';
-export default function SlackPage() { return <AgentSection section="slack" />; }
+import AgentSlackPage from './AgentSlackPage';
+
+export default function SlackPage() { return <AgentSlackPage />; }
