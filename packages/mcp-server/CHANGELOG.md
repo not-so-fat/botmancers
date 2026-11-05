@@ -7,6 +7,26 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-04
+
+### Changed
+
+- Opening an Agent no longer drops you into a chat. Each Agent now has its
+  own area with an Agent rail and an Overview home, with Conversations,
+  Sessions, Activity and Slack pages under it.
+- Chat moved into Conversations: a durable history list and a detail page for
+  each conversation. Old `/threads/:id` links and bare `/?agent=` links
+  redirect to the matching Conversations page.
+- Sessions is now a full page for scanning and reviewing an Agent's sessions,
+  replacing the Sessions drawer. It keeps the 0.8.0 paging, title search,
+  workspace filter, sync status and Refresh, and a session can be opened
+  directly by link.
+- Activity shows what the Agent did as readable operations, with the raw logs
+  kept as a secondary view.
+
+The MCP tool contracts (`botmancers.mcp.v1` and `botmancers.mcp.v2`) and the
+CLI are unchanged.
+
 ## [0.8.0] - 2026-11-04
 
 ### Added

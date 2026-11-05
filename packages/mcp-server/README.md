@@ -81,8 +81,8 @@ release into `~/.botmancers/versions/<version>`, points `~/.botmancers/current`
 at it, and writes the launcher `~/.local/bin/botmancers`. Add `~/.local/bin`
 to your `PATH` if the script asks you to. Managed installs
 [update themselves safely](#upgrade). To install a specific version, run
-`BOTMANCERS_VERSION=0.8.0 bash install.sh` or
-`npx botmancers@0.8.0 install --to 0.8.0`.
+`BOTMANCERS_VERSION=0.9.0 bash install.sh` or
+`npx botmancers@0.9.0 install --to 0.9.0`.
 
 npm-global installs and bare `npx` still work for compatibility:
 
@@ -121,7 +121,7 @@ Then:
 5. **Check everything** with `botmancers doctor`.
 
 For anything long-running, use the managed install, or a pinned global
-release rather than `npx`: `npm install -g botmancers@0.8.0`, then run
+release rather than `npx`: `npm install -g botmancers@0.9.0`, then run
 `botmancers setup` and `botmancers start --daemon`.
 
 ### Product commands
@@ -314,7 +314,7 @@ newer and a running Botmancers app.
 To pin an exact release, which is recommended for anything long-running:
 
 ```sh
-BOTMANCERS_URL=http://127.0.0.1:3333 npx botmancers@0.8.0
+BOTMANCERS_URL=http://127.0.0.1:3333 npx botmancers@0.9.0
 ```
 
 ## Bridge configuration
@@ -464,7 +464,7 @@ time. After that, npx may reuse its cached copy. To move deliberately, name
 the version:
 
 ```sh
-npx botmancers@0.8.0 --version
+npx botmancers@0.9.0 --version
 ```
 
 For a global full product, stop it, upgrade, and start it again. Your state
