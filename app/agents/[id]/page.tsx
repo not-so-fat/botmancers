@@ -4,28 +4,60 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useAgentOverview } from './AgentShell';
 import { agentLabel } from '@/lib/bot-definition';
+import { HarnessIcon } from '@/app/components/HarnessIcon';
 import { ActivityList } from './activity/AgentActivityPage';
 
-const BRIDGE_SETUP_COMMAND = 'botmancers setup --client cursor';
+const BRIDGE_CLIENTS = [
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'claude', label: 'Claude Code' },
+] as const;
 
-function CopyBridgeSetup() {
-  const [copied, setCopied] = useState(false);
+type BridgeClientId = (typeof BRIDGE_CLIENTS)[number]['id'];
+
+function setupCommand(id: BridgeClientId) {
+  return `botmancers setup --client ${id}`;
+}
+
+function BridgeSetupClients() {
+  const [active, setActive] = useState<BridgeClientId>('cursor');
+  const [copied, setCopied] = useState<BridgeClientId | null>(null);
+  const command = setupCommand(active);
+
+  async function copyFor(id: BridgeClientId) {
+    setActive(id);
+    try {
+      await navigator.clipboard.writeText(setupCommand(id));
+      setCopied(id);
+      window.setTimeout(() => setCopied(current => (current === id ? null : current)), 1600);
+    } catch {
+      setCopied(null);
+    }
+  }
+
   return (
-    <button
-      type="button"
-      className="agent-primary-action"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(BRIDGE_SETUP_COMMAND);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1600);
-        } catch {
-          setCopied(false);
-        }
-      }}
-    >
-      {copied ? 'Copied' : 'Copy setup command'}
-    </button>
+    <div className="agent-setup-clients">
+      <div className="agent-setup-client-row" role="group" aria-label="Copy setup command for a coding client">
+        {BRIDGE_CLIENTS.map(client => {
+          const isActive = active === client.id;
+          const justCopied = copied === client.id;
+          return (
+            <button
+              key={client.id}
+              type="button"
+              className={`agent-setup-client${isActive ? ' is-active' : ''}${justCopied ? ' is-copied' : ''}`}
+              aria-pressed={isActive}
+              aria-label={justCopied ? `Copied setup command for ${client.label}` : `Copy setup command for ${client.label}`}
+              onClick={() => void copyFor(client.id)}
+            >
+              <HarnessIcon agent={client.id} size={14} className="agent-setup-client-mark" />
+              <span>{justCopied ? 'Copied' : client.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <pre className="agent-setup-command"><code>{command}</code></pre>
+    </div>
   );
 }
 
@@ -91,10 +123,8 @@ export default function AgentOverviewPage() {
             <span className="agent-use-number">01</span>
             <h3>Use from a coding agent</h3>
             <p>Let another coding agent discover {overview.agent.name} and ask its sessions — so work learned here can travel between agents.</p>
-            <p className="agent-muted">One command connects the client to the bridge and installs the collaboration skill:</p>
-            <pre className="agent-setup-command"><code>{BRIDGE_SETUP_COMMAND}</code></pre>
-            <CopyBridgeSetup />
-            <p className="agent-muted">Swap <code>cursor</code> for <code>codex</code> or <code>claude</code>.</p>
+            <p className="agent-muted">One command connects the client to the bridge and installs the collaboration skill. Click your client to copy it:</p>
+            <BridgeSetupClients />
           </article>
           <article>
             <span className="agent-use-number">02</span>

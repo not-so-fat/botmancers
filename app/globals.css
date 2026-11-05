@@ -2826,6 +2826,98 @@ button.avatar-pic {
   text-align: right;
 }
 
+.agent-shell-runtime-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.harness-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  overflow: hidden;
+}
+
+.harness-icon img {
+  display: block;
+  width: 70%;
+  height: 70%;
+  object-fit: contain;
+}
+
+.topbar-capacity {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px 18px;
+  padding: 10px clamp(18px, 4vw, 56px);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.topbar-capacity-eyebrow {
+  color: var(--ink-faint);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.topbar-capacity-empty {
+  color: var(--ink-faint);
+}
+
+.topbar-capacity-runtime {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar-capacity-runtime.is-exhausted {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, #e85d75 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, #e85d75 10%, transparent);
+}
+
+.topbar-capacity-windows {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.25;
+}
+
+.topbar-capacity-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.topbar-capacity-window-label {
+  color: var(--ink-faint);
+}
+
+.topbar-capacity-window.is-unknown {
+  color: var(--ink-faint);
+}
+
+.topbar-capacity-window.is-warning {
+  color: #d4a017;
+}
+
+.topbar-capacity-window.is-critical {
+  color: #e85d75;
+  font-weight: 600;
+}
+
 .availability {
   display: inline-flex;
   align-items: center;
@@ -3039,8 +3131,48 @@ button.avatar-pic {
   font-size: 12px;
 }
 
+.agent-setup-clients {
+  margin-top: 12px;
+}
+
+.agent-setup-client-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-setup-client {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-setup-client:hover,
+.agent-setup-client.is-active {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.agent-setup-client.is-copied {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.agent-setup-client-mark {
+  flex: 0 0 auto;
+}
+
 .agent-setup-command {
-  margin: 12px 0;
+  margin: 12px 0 0;
   padding: 10px 12px;
   overflow-x: auto;
   border: 1px solid var(--hairline);

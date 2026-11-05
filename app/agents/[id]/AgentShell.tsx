@@ -4,6 +4,8 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import Link from 'next/link';
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import BotAvatar from '@/app/components/BotAvatar';
+import { HarnessIcon } from '@/app/components/HarnessIcon';
+import TopBarCapacity from '@/app/components/TopBarCapacity';
 import AgentRail, { type RailAgent } from '@/app/components/AgentRail';
 import type { AgentOverviewDto } from '@/lib/agent-overview';
 import { agentLabel } from '@/lib/bot-definition';
@@ -114,6 +116,7 @@ export default function AgentShell({ children }: { children: ReactNode }) {
         />
 
         <section className="pane agent-pane">
+          <TopBarCapacity />
           <header className="agent-shell-header">
             <div className="agent-shell-identity">
               {selected ? <BotAvatar bot={selected} size={48} title={`${selected.name} avatar`} /> : null}
@@ -128,7 +131,10 @@ export default function AgentShell({ children }: { children: ReactNode }) {
                 <span className={runtime.available ? 'availability is-available' : 'availability is-blocked'}>
                   {runtime.available ? 'Available' : 'Needs setup'}
                 </span>
-                <span>{agentLabel(runtime.agent)} · {runtime.connection || 'No connection'}</span>
+                <span className="agent-shell-runtime-line">
+                  <HarnessIcon agent={runtime.agent} size={14} />
+                  <span>{agentLabel(runtime.agent)} · {runtime.connection || 'No connection'}</span>
+                </span>
               </div>
             ) : null}
           </header>

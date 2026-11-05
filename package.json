@@ -84,6 +84,7 @@
     "test:grok-handoff": "node test-grok-handoff.js",
     "test:home-paths": "node test-home-paths.js",
     "test:agent-home": "node test-agent-home.js",
+    "test:runtime-capacity": "node test-runtime-capacity.js",
     "test:agent-activity": "node test-agent-activity.js",
     "test:agent-slack-page": "node test-agent-slack-page.js",
     "seed:agent-home-fixture": "node scripts/seed-agent-home-fixture.js",
