@@ -7,6 +7,22 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-05
+
+### Added
+
+- Agent pages show your machine's coding-agent capacity in a top bar. Claude
+  Code, Codex, and Muse show the 5-hour and weekly (5H, 1W) remaining
+  percentage, and Cursor shows the monthly billing cycle (1M); a provider that
+  does not report capacity says why. Claude capacity is read from the local
+  `~/.claude.json` usage cache (read only), and Codex capacity from its local
+  `codex app-server`. Nothing is sent anywhere and no credentials are read. It
+  is served to the UI by a new owner route, `GET /api/runtime-capacity`.
+- "Make it reachable" has one-click setup per client: Cursor, Codex, and
+  Claude Code buttons, each with its logo, copy that client's
+  `botmancers setup --client <client>` command.
+- The Agent header shows the harness logo next to the Agent's runtime.
+
 ## [0.9.3] - 2026-11-05
 
 ### Changed
