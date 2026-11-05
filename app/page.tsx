@@ -255,14 +255,26 @@ export default function Home() {
       deletedCountRef.current = deleted;
       window.history.replaceState(null, '', '/');
     }
-    // NOT-498: an Agent Exchanges backlink opens that Agent's thread and
-    // brings the exchange's card into view.
+    // NOT-551: compatibility for old direct-thread/session/exchange URLs.
+    // The Agent itself still opens Overview; only an explicit old chat link
+    // resolves the canonical direct conversation before moving to detail.
     const linkedAgent = query.get('agent');
     if (linkedAgent) {
-      linkedAgentRef.current = linkedAgent;
-      linkedSessionsRef.current = query.get('sessions') === '1';
-      focusExchange.current = query.get('exchange');
-      window.history.replaceState(null, '', '/');
+      defaulted.current = true;
+      if (query.get('sessions') === '1') {
+        window.location.replace(`/agents/${encodeURIComponent(linkedAgent)}/sessions`);
+      } else {
+        const exchange = query.get('exchange');
+        void fetch(`/api/conversations?botId=${encodeURIComponent(linkedAgent)}`, { cache: 'no-store' })
+          .then(async response => response.ok ? response.json() : null)
+          .then(conversation => {
+            const target = conversation?.id
+              ? `/agents/${encodeURIComponent(linkedAgent)}/conversations/${encodeURIComponent(conversation.id)}`
+              : `/agents/${encodeURIComponent(linkedAgent)}/conversations`;
+            window.location.replace(`${target}${exchange ? `?exchange=${encodeURIComponent(exchange)}` : ''}`);
+          })
+          .catch(() => window.location.replace(`/agents/${encodeURIComponent(linkedAgent)}/conversations`));
+      }
     }
     void loadBots().then(() => {
       if (deleted > 0) setRosterStatus(deletedStatusLine(deleted));

@@ -2875,6 +2875,286 @@ button.avatar-pic {
   color: var(--ink-muted);
 }
 
+/* NOT-551: Agent-scoped durable conversation index and history. The list
+   stays narrow enough to scan; history owns the reading width and height. */
+.conversation-index,
+.conversation-detail,
+.conversation-detail-state {
+  width: min(960px, 100%);
+  margin: 0 auto;
+  box-sizing: border-box;
+  padding: clamp(24px, 4vw, 48px) clamp(16px, 4vw, 48px) 64px;
+}
+
+.conversation-index-head,
+.conversation-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.conversation-index h2,
+.conversation-detail h2,
+.conversation-detail-state h2 {
+  margin: 0;
+  font-size: clamp(26px, 4vw, 38px);
+  font-weight: 500;
+  letter-spacing: -.025em;
+}
+
+.conversation-index-head p:not(.agent-eyebrow) {
+  max-width: 680px;
+  margin: 12px 0 0;
+  color: var(--ink-muted);
+  line-height: 1.55;
+}
+
+.conversation-search {
+  margin-top: 28px;
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+}
+
+.conversation-search label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.conversation-search div {
+  display: flex;
+  gap: 8px;
+}
+
+.conversation-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+}
+
+.conversation-search button,
+.conversation-more,
+.conversation-older,
+.conversation-stop,
+.conversation-state button,
+.conversation-detail-state button {
+  padding: 9px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.conversation-state {
+  margin-top: 18px;
+  padding: 28px;
+  border: 1px dashed var(--hairline);
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+.conversation-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conversation-list a {
+  display: block;
+  padding: 17px 18px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 74%, transparent);
+  color: var(--ink);
+  text-decoration: none;
+  transition: border-color .15s ease, transform .15s ease;
+}
+
+.conversation-list a:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.conversation-row-title,
+.conversation-row-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversation-row-title strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.conversation-row-title > span {
+  padding: 3px 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.conversation-row-participants {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.conversation-row-meta {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  margin-top: 10px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.conversation-row-meta time {
+  margin-left: auto;
+}
+
+.conversation-more {
+  display: block;
+  margin: 18px auto 0;
+}
+
+.conversation-detail {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+}
+
+.conversation-detail-head > div > a,
+.conversation-read-only a,
+.conversation-detail-state a {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-underline-offset: 3px;
+}
+
+.conversation-detail-head .agent-eyebrow {
+  margin-top: 18px;
+}
+
+.conversation-participant-line {
+  margin: 12px 0 0;
+  color: var(--ink-muted);
+  font-size: 14px;
+}
+
+.conversation-origin-line {
+  margin: 6px 0 0;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.conversation-stop {
+  flex: 0 0 auto;
+}
+
+.conversation-read-only {
+  margin-top: 20px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--hairline));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--card));
+}
+
+.conversation-read-only strong {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.conversation-read-only p {
+  margin: 6px 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.conversation-history {
+  min-height: 50vh;
+  margin-top: 20px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card) 58%, transparent);
+}
+
+.conversation-older {
+  display: block;
+  margin: 12px auto 0;
+}
+
+.conversation-message-list {
+  display: flex;
+  min-height: 50vh;
+  max-height: min(62vh, 760px);
+  margin: 0;
+  padding: 20px clamp(14px, 3vw, 28px) 28px;
+  overflow-y: auto;
+  flex-direction: column;
+  list-style: none;
+  scroll-behavior: smooth;
+}
+
+.conversation-message-list > .msg-you,
+.conversation-message-list > .msg-bot {
+  flex: 0 0 auto;
+}
+
+.conversation-empty-history {
+  margin: auto;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.conversation-composer {
+  position: sticky;
+  bottom: 0;
+  margin-top: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.conversation-refresh-error {
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.conversation-search input:focus-visible,
+.conversation-search button:focus-visible,
+.conversation-list a:focus-visible,
+.conversation-more:focus-visible,
+.conversation-older:focus-visible,
+.conversation-stop:focus-visible,
+.conversation-composer button:focus-visible,
+.conversation-composer textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 @media (max-width: 799px) {
   .agent-field {
     overflow: hidden;
@@ -2917,6 +3197,41 @@ button.avatar-pic {
 
   .agent-use {
     padding: 20px;
+  }
+
+  .conversation-index,
+  .conversation-detail,
+  .conversation-detail-state {
+    padding: 22px 14px 48px;
+  }
+
+  .conversation-index-head,
+  .conversation-detail-head {
+    flex-direction: column;
+  }
+
+  .conversation-search div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .conversation-row-title,
+  .conversation-row-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .conversation-row-meta time {
+    margin-left: 0;
+  }
+
+  .conversation-message-list {
+    min-height: 46vh;
+    max-height: 58vh;
+  }
+
+  .conversation-composer {
+    padding-inline: 10px;
   }
 }
 

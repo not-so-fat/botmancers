@@ -145,6 +145,9 @@ jobs:
         run: |
           npm run test:agent-home
           npm run test:roster-a11y
+      - name: Agent conversation history and owner routes (NOT-551)
+        working-directory: .
+        run: npm run test:agent-conversations-ui-api
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app

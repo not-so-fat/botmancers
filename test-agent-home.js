@@ -120,7 +120,7 @@ try {
   test('legacy conversation, exchange, session, and Config deep links remain reachable', () => {
     assert.match(home, /query\.get\('exchange'\)/);
     assert.match(home, /query\.get\('sessions'\) === '1'/);
-    assert.match(overviewPage, /\/?agent=\$\{encodeURIComponent\(id\)\}/);
+    assert.match(overviewPage, /\/agents\/\$\{encodeURIComponent\(id\)\}\/conversations\/\$\{encodeURIComponent\(overview\.conversation\.id\)\}/);
     assert.match(overviewPage, /\/bots\/\$\{encodeURIComponent\(id\)\}\/config/);
   });
 
