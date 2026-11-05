@@ -7,6 +7,16 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-05
+
+### Changed
+
+- Agent Config now opens inside the Agent area at `/agents/:id/config`, with
+  its tab selected, instead of as a separate page. Old `/bots/:id/config`
+  links redirect there.
+- The Agent rail avatars are larger so the outline marks read next to the
+  Agent header.
+
 ## [0.9.2] - 2026-11-05
 
 ### Changed
