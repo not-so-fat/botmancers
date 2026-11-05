@@ -4,6 +4,8 @@ import { readSkillState } from './skills';
 import { listAgentSessions } from './session-catalog';
 import { agentMessagingReadiness } from './service-api';
 import { SERVICE_CAPABILITIES, type ServiceCapability } from './service-grants';
+import { listAgentActivity } from './agent-activity';
+import type { AgentActivityItem } from './agent-activity-view';
 
 const OVERVIEW_CAPABILITIES: ServiceCapability[] = [
   'agents:read',
@@ -47,6 +49,7 @@ export interface AgentOverviewDto {
   current_work: AgentOverviewWork[];
   recent_work: AgentOverviewWork[];
   conversation: { id: string; last_activity_at: number | null } | null;
+  recent_activity: AgentActivityItem[];
 }
 
 export function summarizeInstruction(value: string | null | undefined, empty: string, limit = 180): string {
@@ -109,5 +112,6 @@ export function getAgentOverview(id: string): AgentOverviewDto | null {
     current_work: work.filter(item => item.status === 'active').slice(0, 3),
     recent_work: work.slice(0, 7),
     conversation: conversation ? { id: conversation.id, last_activity_at: lastConversationMessage?.created_at ?? null } : null,
+    recent_activity: listAgentActivity(id, { filter: 'all', cursor: null, limit: 4 })?.items ?? [],
   };
 }

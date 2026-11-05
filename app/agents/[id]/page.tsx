@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useAgentOverview } from './AgentShell';
 import { agentLabel } from '@/lib/bot-definition';
+import { ActivityList } from './activity/AgentActivityPage';
 
 const CAPABILITY_LABELS: Record<string, string> = {
   'agents:read': 'Discoverable to connected coding agents',
@@ -91,8 +92,7 @@ export default function AgentOverviewPage() {
         </section>
         <section className="agent-panel">
           <div className="agent-panel-head"><div><p className="agent-eyebrow">Recent activity</p><h2>Latest work</h2></div><Link href={`/agents/${encodeURIComponent(id)}/activity`}>View activity</Link></div>
-          {overview.conversation?.last_activity_at ? <p className="agent-conversation-activity">Conversation active {new Date(overview.conversation.last_activity_at).toLocaleString()}</p> : null}
-          <WorkList rows={overview.recent_work.slice(0, 3)} empty="No session activity yet." />
+          {overview.recent_activity.length ? <ActivityList items={overview.recent_activity} compact /> : <p className="agent-empty">No operational activity yet.</p>}
         </section>
       </div>
     </div>
