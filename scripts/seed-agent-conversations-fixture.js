@@ -52,7 +52,7 @@ db.prepare(`
     id, requester_kind, requester_id, idempotency_key, request_hash, mode, origin_conversation_id,
     source_agent_id, source_binding_id, destination_agent_id, destination_conversation_id, instruction,
     state, created_at, updated_at, terminal_at
-  ) VALUES (?, 'person', 'owner', 'proof-exchange-focus', 'proof-hash', 'ask', ?, ?, ?, NULL, NULL, 'Confirm the release packet.', 'queued', ?, ?, NULL)
+  ) VALUES (?, 'person', 'local-owner', 'proof-exchange-focus', 'proof-hash', 'ask', ?, ?, ?, NULL, NULL, 'Confirm the release packet.', 'queued', ?, ?, NULL)
 `).run(exchangeId, direct.id, ada.id, bindingId, base + 196, base + 196);
 
 const fixture = {
