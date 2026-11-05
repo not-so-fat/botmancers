@@ -138,9 +138,31 @@ try {
     assert.equal(overviewPage.includes('Full Config'), false);
     assert.equal(overviewPage.includes('github.com/not-so-fat/botmancers'), false);
     assert.equal((overviewPage.match(/>Config</g) || []).length >= 2, true);
-    for (const text of ['Make it reachable', 'Use from a coding agent', 'Share a session to Slack', 'Message in Botmancers', 'botmancers setup --client cursor', 'Copy setup command']) {
+    for (const text of [
+      'Make it reachable',
+      'Use from a coding agent',
+      'Share a session to Slack',
+      'Message in Botmancers',
+      'Click your client to copy it',
+      'Copy setup command for a coding client',
+      "id: 'cursor'",
+      "id: 'codex'",
+      "id: 'claude'",
+      "label: 'Cursor'",
+      "label: 'Codex'",
+      "label: 'Claude Code'",
+      'botmancers setup --client ${id}',
+    ]) {
       assert.ok(overviewPage.includes(text), text);
     }
+    assert.equal(overviewPage.includes('Swap <code>cursor</code>'), false);
+    assert.equal(overviewPage.includes("'Copy setup command'"), false);
+    assert.equal(overviewPage.includes('BRIDGE_SETUP_COMMAND'), false);
+    assert.ok(overviewPage.includes('HarnessIcon'), 'setup clients use HarnessIcon');
+    assert.equal(overviewPage.includes('TopBarCapacity'), false, 'capacity stays off Make it reachable');
+    assert.equal(overviewPage.includes('AgentCapacity'), false, 'no per-Agent shell capacity chips');
+    assert.ok(shell.includes('HarnessIcon') && shell.includes('TopBarCapacity'), 'Agent shell uses top-bar capacity');
+    assert.equal(shell.includes('AgentCapacity'), false, 'shell no longer mounts per-Agent capacity chips');
     const coding = overviewPage.indexOf('Use from a coding agent');
     const slack = overviewPage.indexOf('Share a session to Slack');
     const direct = overviewPage.indexOf('Message in Botmancers');
