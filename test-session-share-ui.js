@@ -104,7 +104,7 @@ console.log('\nShare to Slack: offered only when the session can take an Ask and
     assert(!html.includes('data-share-action="create"') && reason.test(html), `${label}: no Share to Slack, says why`);
   }
   const allowlist = render(SessionShares, { row: row(), shares: [], policy: policy({ audiences: [] }), onChanged: () => {} });
-  assert(allowlist.includes('href="/bots/agent-dev/config#session-sharing"'), 'the allowlist reason links to Session sharing on Agent Config');
+  assert(allowlist.includes('href="/agents/agent-dev/config#session-sharing"'), 'the allowlist reason links to Session sharing on Agent Config');
   const loading = render(SessionShares, { row: row(), shares: null, policy: policy(), onChanged: () => {} });
   assert(loading.includes('Loading shares…'), 'while the shares load: a loading state');
   const checking = render(SessionShares, { row: row(), shares: [], policy: 'loading', onChanged: () => {} });
@@ -142,7 +142,7 @@ console.log('\nSource contracts');
   const panel = fs.readFileSync(path.join(ROOT, 'app/components/SessionsPanel.tsx'), 'utf8');
   const shares = fs.readFileSync(path.join(ROOT, 'app/components/SessionShares.tsx'), 'utf8');
   const card = fs.readFileSync(path.join(ROOT, 'app/components/SharePolicyCard.tsx'), 'utf8');
-  const config = fs.readFileSync(path.join(ROOT, 'app/bots/[id]/config/page.tsx'), 'utf8');
+  const config = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/config/page.tsx'), 'utf8');
   assert(panel.includes('<SessionShares row={row}') && panel.includes('/api/shares?agent_id=') && panel.includes('/share-policy'),
     'the Agent Sessions detail renders shares from the owner share list and policy');
   assert(shares.includes("`/api/shares/${encodeURIComponent(share.share_ref)}/revoke`") && shares.includes('data-share-action="confirm-revoke"'),

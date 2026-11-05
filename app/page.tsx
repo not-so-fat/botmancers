@@ -753,7 +753,7 @@ export default function Home() {
               </div>
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, alignItems: 'flex-start' }}>
                 <Link
-                  href={`/bots/${activeConversation.details.id}/config`}
+                  href={`/agents/${activeConversation.details.id}/config`}
                   className="attach-word"
                   style={{ textDecoration: 'none' }}
                 >

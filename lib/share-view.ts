@@ -121,7 +121,7 @@ export type ShareAvailability = { available: true } | { available: false; reason
 // answer as Ask from this context) and the owner's allowlist names at least
 // one Slack channel.
 export function shareCreateAvailability(row: Pick<SessionRow, 'status' | 'resumable' | 'agent' | 'actions'>, policy: SharePolicy | null): ShareAvailability {
-  const configHref = `/bots/${encodeURIComponent(row.agent.id)}/config#session-sharing`;
+  const configHref = `/agents/${encodeURIComponent(row.agent.id)}/config#session-sharing`;
   if (!policy) return { available: false, reason: 'Share to Slack is unavailable: the share policy could not be loaded.', configHref: null };
   const ask = sessionRowActions(row).find(item => item.action === 'ask');
   if (ask && !ask.availability.available) {

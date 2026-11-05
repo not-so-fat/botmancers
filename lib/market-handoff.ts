@@ -19,7 +19,7 @@ export function importedBotId(search: string): string | null {
 
 /** Where a completed import lands: the imported bot's own Config page. */
 export function importedConfigPath(botId: string): string {
-  return `/bots/${encodeURIComponent(botId)}/config`;
+  return `/agents/${encodeURIComponent(botId)}/config`;
 }
 
 export type ImportReturn =

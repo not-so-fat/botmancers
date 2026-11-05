@@ -1636,8 +1636,17 @@ button.thread-name {
   padding: 16px;
 }
 
+/* Config inside AgentShell: same content frame as Overview / Sessions. */
+.cfg-page.cfg-page-framed {
+  min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
+  padding: clamp(28px, 5vw, 64px) clamp(18px, 5vw, 64px) 72px;
+  background: transparent;
+}
+
 @media (min-width: 640px) {
-  .cfg-page {
+  .cfg-page:not(.cfg-page-framed) {
     padding: 24px;
   }
 }
@@ -1817,15 +1826,15 @@ button.cfg-link:hover {
 
 .mark-avatar {
   position: relative;
-  width: 44px;
-  height: 44px;
-  flex: 0 0 44px;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
 }
 
 .mark-avatar-sm {
-  width: 36px;
-  height: 36px;
-  flex-basis: 36px;
+  width: 40px;
+  height: 40px;
+  flex-basis: 40px;
 }
 
 .mark-avatar .mark-dot {

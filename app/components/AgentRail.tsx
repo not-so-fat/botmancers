@@ -170,7 +170,7 @@ export default function AgentRail({
 
   const agentRow = (agent: RailAgent) => (
     <div key={agent.id} className={activeAgentId === agent.id ? 'bot-row is-open' : 'bot-row'} onContextMenu={event => onContextMenu(event, agent)}>
-      <span className="mark-avatar mark-avatar-sm"><BotAvatar bot={agent} size={36} title={`${agent.name} avatar`} />{workingIds.includes(agent.id) ? <span className="mark-dot" /> : null}</span>
+      <span className="mark-avatar mark-avatar-sm"><BotAvatar bot={agent} size={40} title={`${agent.name} avatar`} />{workingIds.includes(agent.id) ? <span className="mark-dot" /> : null}</span>
       <div className="bot-copy">
         {editingId === agent.id ? rowRename(agent) : rowOpen(agent)}
         {latestLine(agent.latest) ? <div className="bot-preview">{latestLine(agent.latest)}</div> : null}
@@ -196,7 +196,7 @@ export default function AgentRail({
       {agents.length ? <div className={rowMenu ? 'roster menu-open' : 'roster'}>
         {visible.map(agent => isChiefOfStaff(agent) ? (
           <div key={agent.id} className="card" onContextMenu={event => onContextMenu(event, agent)}>
-            <div className="row-head"><span className="mark-avatar"><BotAvatar bot={agent} size={44} title={`${agent.name} avatar`} />{workingIds.includes(agent.id) ? <span className="mark-dot" /> : null}</span>
+            <div className="row-head"><span className="mark-avatar"><BotAvatar bot={agent} size={48} title={`${agent.name} avatar`} />{workingIds.includes(agent.id) ? <span className="mark-dot" /> : null}</span>
               {editingId === agent.id ? rowRename(agent, { color: '#D5D0C3', fontSize: 26 }) : rowOpen(agent, { fontSize: 26 })}{rowActions(agent)}</div>
             {latestLine(agent.latest) ? <div className="bot-preview">{latestLine(agent.latest)}</div> : null}
             <div className="bot-runtime" title={rosterRuntimeLine(agent)}>{rosterRuntimeLine(agent)}</div>{rowTip(agent)}
@@ -216,7 +216,7 @@ export default function AgentRail({
       <button type="button" role="menuitem" tabIndex={-1} onClick={() => { closeRowMenu(); void patchAgent(rowMenu.agent, { unread: 1 }); }}>Mark as Unread</button>
       <button type="button" role="menuitem" tabIndex={-1} onClick={() => { const agent = rowMenu.agent; closeRowMenu(false); setEditingId(agent.id); setRowName(agent.name); }}>Rename Agent</button>
       <button type="button" role="menuitem" tabIndex={-1} onClick={() => { const agent = rowMenu.agent; closeRowMenu(false); void patchAgent(agent, { hidden: agent.hidden ? 0 : 1 }).then(() => agent.hidden ? focusRow(agent.id) : hiddenToggleRef.current?.focus()); }}>{rowMenu.agent.hidden ? 'Unhide' : 'Hide from sidebar'}</button>
-      <Link role="menuitem" tabIndex={-1} href={`/bots/${rowMenu.agent.id}/config`} onClick={() => setRowMenu(null)}>Config</Link>
+      <Link role="menuitem" tabIndex={-1} href={`/agents/${rowMenu.agent.id}/config`} onClick={() => setRowMenu(null)}>Config</Link>
       <button type="button" role="menuitem" tabIndex={-1} onClick={() => { const agent = rowMenu.agent; closeRowMenu(false); setDeleteAsk(agent); }}>Delete agent…</button>
     </div> : null}
   </>;

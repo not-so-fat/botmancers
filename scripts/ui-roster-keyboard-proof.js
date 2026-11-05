@@ -362,8 +362,8 @@ async function run() {
     await fromStart();
     await openMenuOn(TARGET); await menuTo('Config'); await press('Enter');
     const id = (await api(TARGET)).id;
-    await waitFor(`location.pathname === '/bots/${id}/config'`, 'config page');
-    check(await evaluate('location.pathname') === `/bots/${id}/config`, 'Config opens the agent config page');
+    await waitFor(`location.pathname === '/agents/${id}/config'`, 'config page');
+    check(await evaluate('location.pathname') === `/agents/${id}/config`, 'Config opens the agent config page');
     await shot(vp, 'config');
 
     // Delete opens the shared confirmation; cancel returns focus to the row.

@@ -116,7 +116,7 @@ try {
     assert.ok(page.items.some(row => row.kind === 'conversation.created' && row.target.href.includes(`/agents/${ada.id}/conversations/`)));
     assert.ok(page.items.some(row => row.kind === 'exchange.created' && row.target.href === '/exchanges?id=exchange-ada'));
     assert.ok(page.items.some(row => row.kind === 'slack.share_created' && row.target.href.endsWith('/slack')));
-    assert.ok(page.items.some(row => row.kind.startsWith('availability.') && row.target.href === `/bots/${ada.id}/config`));
+    assert.ok(page.items.some(row => row.kind.startsWith('availability.') && row.target.href === `/agents/${ada.id}/config`));
     assert.ok(page.items.some(row => row.kind === 'session.turn_failed' && row.severity === 'error' && row.attention));
     assert.ok(page.items.some(row => row.kind === 'conversation.request_queued'));
     assert.ok(page.items.some(row => row.kind === 'conversation.finalization_failed'));

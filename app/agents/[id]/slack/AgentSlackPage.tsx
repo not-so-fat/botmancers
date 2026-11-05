@@ -145,7 +145,7 @@ export function AgentSlackView({ agentId, agentName, relay, policy, shares, filt
   onSharesChanged: () => void;
 }) {
   const sessionsHref = `/agents/${encodeURIComponent(agentId)}/sessions`;
-  const configHref = `/bots/${encodeURIComponent(agentId)}/config#session-sharing`;
+  const configHref = `/agents/${encodeURIComponent(agentId)}/config#session-sharing`;
   return (
     <div className="agent-slack" data-agent-slack-page>
       <header className="agent-slack-intro">

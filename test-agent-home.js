@@ -95,8 +95,8 @@ try {
   });
 
   test('shared shell exposes the full selected-tab navigation contract', () => {
-    for (const label of ['Overview', 'Sessions', 'Conversations', 'Slack', 'Activity']) assert.ok(shell.includes(`label: '${label}'`));
-    assert.match(shell, />Config<\/Link>/);
+    for (const label of ['Overview', 'Sessions', 'Conversations', 'Slack', 'Activity', 'Config']) assert.ok(shell.includes(`label: '${label}'`));
+    assert.match(shell, /segment: 'config'/);
     assert.match(shell, /aria-current=\{selectedTab \? 'page'/);
     assert.match(shell, /Runtime and availability/);
     for (const behavior of ['Hidden', 'Mark as Unread', 'Rename Agent', 'Hide from sidebar', 'Delete agent…', 'ArrowDown', 'onContextMenu']) {
@@ -121,7 +121,8 @@ try {
     assert.match(home, /query\.get\('exchange'\)/);
     assert.match(home, /query\.get\('sessions'\) === '1'[\s\S]*?\/agents\/\$\{encodeURIComponent\(linkedAgent\)\}\/sessions/);
     assert.match(overviewPage, /\/agents\/\$\{encodeURIComponent\(id\)\}\/conversations\/\$\{encodeURIComponent\(overview\.conversation\.id\)\}/);
-    assert.match(overviewPage, /\/bots\/\$\{encodeURIComponent\(id\)\}\/config/);
+    assert.match(overviewPage, /\/agents\/\$\{encodeURIComponent\(id\)\}\/config/);
+    assert.match(fs.readFileSync(path.join(ROOT, 'app/bots/[id]/config/page.tsx'), 'utf8'), /\/agents\/\$\{encodeURIComponent\(id\)\}\/config/);
   });
 
   test('Overview has no ambient thread or composer', () => {
