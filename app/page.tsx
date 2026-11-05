@@ -38,7 +38,7 @@ import ExchangeCard from '@/app/components/ExchangeCard';
 import type { ExchangeSummary } from '@/lib/exchange-view';
 import { registrationSessionSyncCopy, type RegistrationSessionSync } from '@/lib/session-view';
 import { agentLabel } from '@/lib/bot-definition';
-import { legacyAgentChatHref } from '@/lib/owner-conversations';
+import { legacyAgentChatHref } from '@/lib/owner-conversation-href';
 
 interface Bot {
   id: string;

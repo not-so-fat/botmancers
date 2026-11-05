@@ -145,9 +145,13 @@ function request(pathname) { return new Request(`http://127.0.0.1:3333${pathname
       );
       assert.equal(projection.legacyAgentChatHref(ada.id, null), `/agents/${ada.id}/conversations`);
       const home = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
+      assert.match(home, /import \{ legacyAgentChatHref \} from '@\/lib\/owner-conversation-href'/);
+      assert.equal(home.includes("from '@/lib/owner-conversations'"), false);
       assert.match(home, /legacyAgentChatHref\(linkedAgent,\s*conversation\?\.id \?\? null,\s*exchange\)/);
       assert.match(home, /legacyAgentChatHref\(linkedAgent,\s*null,\s*exchange\)/);
       assert.equal(home.includes('linkedAgentRef'), false);
+      const hrefHelper = fs.readFileSync(path.join(ROOT, 'lib/owner-conversation-href.ts'), 'utf8');
+      assert.equal(/from ['"]\.\/(db|approvals|session-shares|skills)['"]/.test(hrefHelper), false);
     });
 
     await test('list/detail source has deterministic states and preserves the direct-chat capability set', () => {

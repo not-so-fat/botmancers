@@ -8,8 +8,9 @@ import { parseApprovalCode, parseDraft } from './draft';
 import { getApprovalByCode } from './approvals';
 import { serviceRedactor } from './service-redaction';
 import { InvalidPageCursorError, paginateRows, type Page } from './page-cursor';
+import { legacyAgentChatHref } from './owner-conversation-href';
 
-export { InvalidPageCursorError };
+export { InvalidPageCursorError, legacyAgentChatHref };
 
 export interface OwnerConversationParticipant extends Principal {
   label: string;
@@ -131,19 +132,6 @@ export function parseOwnerConversationLimit(value: string | null): number {
   const limit = Number(value);
   if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('limit');
   return Math.min(limit, 100);
-}
-
-// NOT-551: old `/?agent=` chat links resolve here. Missing direct conversation
-// falls back to the Agent Conversations index; an exchange focus is preserved.
-export function legacyAgentChatHref(
-  agentId: string,
-  conversationId: string | null | undefined,
-  exchange?: string | null,
-): string {
-  const base = conversationId
-    ? `/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}`
-    : `/agents/${encodeURIComponent(agentId)}/conversations`;
-  return exchange ? `${base}?exchange=${encodeURIComponent(exchange)}` : base;
 }
 
 export function listOwnerConversations(agentId: string, input: { q: string | null; cursor: string | null; limit: number }): Page<OwnerConversationSummary> | null {
