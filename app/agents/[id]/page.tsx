@@ -32,7 +32,9 @@ export default function AgentOverviewPage() {
   if (error || !overview) return <div className="agent-state" role="alert"><h2>Overview unavailable</h2><p>Botmancers could not load this Agent. Refresh to try again.</p></div>;
 
   const configHref = `/bots/${encodeURIComponent(id)}/config`;
-  const messageHref = `/?agent=${encodeURIComponent(id)}`;
+  const messageHref = overview.conversation
+    ? `/agents/${encodeURIComponent(id)}/conversations/${encodeURIComponent(overview.conversation.id)}`
+    : `/agents/${encodeURIComponent(id)}/conversations`;
   const messagingStatus = overview.messaging.home_session_ref
     ? 'Home session configured'
     : overview.messaging.new_sessions_allowed && overview.messaging.default_workspace_set

@@ -38,6 +38,7 @@ import ExchangeCard from '@/app/components/ExchangeCard';
 import type { ExchangeSummary } from '@/lib/exchange-view';
 import { registrationSessionSyncCopy, type RegistrationSessionSync } from '@/lib/session-view';
 import { agentLabel } from '@/lib/bot-definition';
+import { legacyAgentChatHref } from '@/lib/owner-conversation-href';
 
 interface Bot {
   id: string;
@@ -186,7 +187,6 @@ export default function Home() {
   const [botsLoaded, setBotsLoaded] = useState(false);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const defaulted = useRef(false);
-  const linkedAgentRef = useRef<string | null>(null);
   const linkedSessionsRef = useRef(false);
   const linkedSessionRef = useRef<string | null>(null);
   const deletedCountRef = useRef(0);
@@ -256,15 +256,25 @@ export default function Home() {
       deletedCountRef.current = deleted;
       window.history.replaceState(null, '', '/');
     }
-    // NOT-498: an Agent Exchanges backlink opens that Agent's thread and
-    // brings the exchange's card into view.
+    // NOT-551: compatibility for old direct-thread/session/exchange URLs.
+    // The Agent itself still opens Overview; only an explicit old chat link
+    // resolves the canonical direct conversation before moving to detail.
     const linkedAgent = query.get('agent');
     if (linkedAgent) {
-      linkedAgentRef.current = linkedAgent;
-      linkedSessionsRef.current = query.get('sessions') === '1';
-      linkedSessionRef.current = query.get('session');
-      focusExchange.current = query.get('exchange');
-      window.history.replaceState(null, '', '/');
+      // NOT-551: old `/?agent=` chat links resolve to durable Conversations
+      // detail (or Sessions). Do not restore ambient home chat.
+      defaulted.current = true;
+      if (query.get('sessions') === '1') {
+        window.location.replace(`/agents/${encodeURIComponent(linkedAgent)}/sessions`);
+      } else {
+        const exchange = query.get('exchange');
+        void fetch(`/api/conversations?botId=${encodeURIComponent(linkedAgent)}`, { cache: 'no-store' })
+          .then(async response => response.ok ? response.json() : null)
+          .then(conversation => {
+            window.location.replace(legacyAgentChatHref(linkedAgent, conversation?.id ?? null, exchange));
+          })
+          .catch(() => window.location.replace(legacyAgentChatHref(linkedAgent, null, exchange)));
+      }
     }
     void loadBots().then(() => {
       if (deleted > 0) setRosterStatus(deletedStatusLine(deleted));
@@ -279,15 +289,10 @@ export default function Home() {
 
   useEffect(() => {
     if (defaulted.current || bots.length === 0 || activeConversation) return;
-    const linked = bots.find(bot => bot.id === linkedAgentRef.current);
-    const first = linked || [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b))[0] || bots[0];
+    const first = [...bots].filter(bot => !bot.hidden).sort((a, b) => rosterRank(a) - rosterRank(b))[0] || bots[0];
     defaulted.current = true;
-    if (linked) {
-      void openBot(first.id);
-    } else {
-      const deleted = deletedCountRef.current;
-      router.replace(`/agents/${encodeURIComponent(first.id)}${deleted > 0 ? `?deleted=${deleted}` : ''}`);
-    }
+    const deleted = deletedCountRef.current;
+    router.replace(`/agents/${encodeURIComponent(first.id)}${deleted > 0 ? `?deleted=${deleted}` : ''}`);
   }, [bots, activeConversation]);
 
   useEffect(() => {

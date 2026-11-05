@@ -1,6 +1,6 @@
 # Typical user flows
 
-**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-04 (NOT-552)
+**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-04 (botmancers 0.8.0; NOT-551, NOT-552)
 
 This file answers one question: *what do people actually do with Botmancers, start to finish?* Other docs own the details of each step ([core-engine.md](core-engine.md) for the engine contract, [mcp-bridge.md](mcp-bridge.md) and [service-grants.md](service-grants.md) for the MCP tools and grants, [session-shares.md](session-shares.md) and [slack-transport.md](slack-transport.md) for sharing and Slack, [packages/mcp-server/README.md](../packages/mcp-server/README.md) for install and commands). This file owns the **sequence**.
 
@@ -30,6 +30,7 @@ A coding agent's past sessions hold knowledge: why a design was chosen, what was
 | [F5](#f5-share-a-session-to-a-slack-thread) | Share a session to a Slack thread | Shipped (operator smoke) | `npm run test:agent-slack-page`, `test:slack-relay`, `smoke:slack-relay` |
 | [F6](#f6-let-a-running-agent-share-its-own-session) | Let a running Agent share its own session | Shipped (Claude Code, Codex) | `smoke:not-517-share-current` |
 | [F7](#f7-hand-work-from-one-agent-to-another) | Hand work from one Agent to another | Shipped | `npm run smoke:direct` |
+| [F8](#f8-review-and-message-an-agents-conversations) | Review and message an Agent's conversations | Shipped | `npm run test:agent-conversations-ui-api` |
 
 Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 (Agents launch direct); Hermes is the optional persistent conversation runtime ([core-engine.md](core-engine.md)).
 
@@ -151,3 +152,20 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 - **Success:** the whole round is visible in one conversation and no session ids were copied by hand.
 - **Common failures:** a destination Agent without the right grant or scope refuses; a workspace-write turn edits the configured workspace and Botmancers adds no commit, PR, or worktree handling.
 - **Owner docs:** [wake-contract-v1.md](wake-contract-v1.md), [acceptance-harness.md](acceptance-harness.md), [direct-operator-smoke.md](direct-operator-smoke.md).
+
+## F8. Review and message an Agent's conversations
+
+- **Actor / goal:** Owner. Review every durable conversation involving one Agent and reply only where owner authority permits.
+- **Trigger:** The owner opens an Agent and chooses **Conversations**, or chooses **Message in Botmancers** from Overview.
+- **Preconditions:** F2 done.
+
+| # | Owner does | Observable result |
+|---|------------|-------------------|
+| 1 | Open the Agent's **Conversations** tab | Direct, group, Agent-to-Agent, connected-service, and Slack-origin rows involving that Agent appear newest first with participants, origin, activity, and message count |
+| 2 | Search or load older rows, then open one | The durable ordered history and its related exchange cards appear under the same Agent shell |
+| 3 | In the local-owner direct conversation, send a message or use its draft, approval, attachment, and stop controls | The message and resulting state persist in that conversation |
+| 4 | Open a group, Agent-to-Agent, or service-origin history | The history identifies its participants and origin, shows why it is read-only, and has no composer |
+
+- **Success:** selecting the Agent still opens Overview; Conversations is the durable history and messaging destination, and legacy thread/exchange links retain their target.
+- **Common failures:** a removed or mismatched Agent/conversation pair shows the same not-found state; a failed list or history load offers Retry without presenting an empty history.
+- **Owner docs:** [core-engine.md](core-engine.md), [service-grants.md](service-grants.md).
