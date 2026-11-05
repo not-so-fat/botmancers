@@ -2760,6 +2760,7 @@ button.avatar-pic {
 
 .agent-shell-header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
@@ -2842,6 +2843,7 @@ button.avatar-pic {
 
 .agent-tabs {
   display: flex;
+  flex-shrink: 0;
   gap: 4px;
   padding: 0 clamp(18px, 4vw, 56px);
   overflow-x: auto;
