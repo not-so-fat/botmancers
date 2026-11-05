@@ -128,6 +128,41 @@ try {
     assert.match(css, /grid-template-columns: minmax\(18rem, 20rem\) minmax\(0, 1fr\)/);
     assert.match(css, /\.sessions-review\.has-detail \.sessions-list-pane/);
   });
+
+  test('selecting a page-2 row under a filter must not refetch page 1', () => {
+    // Catalog shape from the NOT-548 paging fixture: a workspace filter has a
+    // next page, and that page-2 row is absent from a fresh page-1. Exact-ref
+    // fallback is skipped while a filter is active, so a list refetch on
+    // ?session= would clear selection — the panel must keep accumulated rows.
+    const { seedSessionList, WORKSPACES } = require('./test-support/session-list-fixture');
+    // Four rotating workspaces → need >200 rows so one workspace exceeds the
+    // default page size of 50 and yields a Load-more cursor.
+    const paging = seedSessionList(dbModule, { count: 220 });
+    const workspace = WORKSPACES[1];
+    const page1 = catalog.listAgentSessionPage(dbModule.default, paging.agent.id, { workspace });
+    assert.equal(typeof page1.next_cursor, 'string');
+    assert.equal(page1.sessions.length, 50);
+    const page2 = catalog.listAgentSessionPage(dbModule.default, paging.agent.id, {
+      workspace, cursor: page1.next_cursor,
+    });
+    assert.ok(page2.sessions.length > 0);
+    const target = page2.sessions[0];
+    assert.equal(page1.sessions.some(row => row.ref === target.ref), false,
+      'the selected row is absent from a fresh page-1 under the same filter');
+    const accumulated = [...page1.sessions, ...page2.sessions];
+    assert.ok(accumulated.some(row => row.ref === target.ref),
+      'Load more keeps the page-2 row available for URL-driven selection');
+
+    const panel = fs.readFileSync(path.join(ROOT, 'app/components/SessionsPanel.tsx'), 'utf8');
+    assert.match(panel, /Do not depend on requestedRef/);
+    assert.match(panel, /\}, \[agentId, filter, query, workspaceFilter, attempt\]\);/);
+    assert.equal(/\}, \[agentId, filter, query, workspaceFilter, attempt, requestedRef\]/.test(panel), false);
+    assert.match(panel, /URL-driven selection cannot reset paging/);
+    assert.match(panel, /if \(filter !== 'all' \|\| query\.trim\(\) \|\| workspaceFilter\) return;/);
+    // Filter changes that drop the row clear the stale query param.
+    assert.match(panel, /later matching filter does not silently reopen detail/);
+    assert.match(panel, /if \(filter === 'all' && !query\.trim\(\) && !workspaceFilter\) return; \/\/ exact fetch may still land it/);
+  });
 } finally {
   dbModule.default.close();
   fs.rmSync(temp, { recursive: true, force: true });

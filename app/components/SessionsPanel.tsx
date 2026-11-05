@@ -97,8 +97,12 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
   const scrolledDeepLinkRef = useRef<string | null>(null);
   const providerLabel = agentProvider ? agentLabel(agentProvider) || undefined : undefined;
 
+  // Catalog list fetch. Do not depend on requestedRef: selecting or closing a
+  // session only changes ?session=, and refetching page 1 would discard
+  // Load-more rows (and under a filter, clear a page-2 selection).
   useEffect(() => {
     listSeqRef.current += 1;
+    const seq = listSeqRef.current;
     const key = `${agentId}\n${filter}`;
     const resetWorkspaces = workspaceKeyRef.current !== key;
     workspaceKeyRef.current = key;
@@ -109,29 +113,13 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
       fetch(sessionsListUrl(agentId, filter, query, workspaceFilter, null), { cache: 'no-store' })
         .then(async res => {
           const body = await res.json().catch(() => null);
-          if (cancelled) return;
+          if (cancelled || listSeqRef.current !== seq) return;
           if (!res.ok || !Array.isArray(body?.sessions)) {
             setLoadError(typeof body?.error === 'string' ? body.error : 'Could not load sessions.');
             return;
           }
-          let page = body.sessions as SessionRow[];
-          // NOT-552: an owning-session link (?session=) opens that exact
-          // Botmancers session even when it is older than the first catalog
-          // page. Unknown or cross-Agent refs stay indistinguishable (404).
-          if (requestedRef && !page.some(row => row.ref === requestedRef) && filter === 'all' && !query.trim() && !workspaceFilter) {
-            const exactResponse = await fetch(`/api/bots/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(requestedRef)}`, { cache: 'no-store' });
-            const exactBody = await exactResponse.json().catch(() => null);
-            if (exactResponse.ok && exactBody?.session) page = [exactBody.session as SessionRow, ...page];
-          }
-          if (cancelled) return;
+          const page = body.sessions as SessionRow[];
           setRows(page);
-          if (requestedRef && page.some(row => row.ref === requestedRef) && scrolledDeepLinkRef.current !== requestedRef) {
-            scrolledDeepLinkRef.current = requestedRef;
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-              document.querySelector<HTMLElement>(`[data-session-ref="${CSS.escape(requestedRef)}"]`)
-                ?.scrollIntoView({ block: 'nearest' });
-            }));
-          }
           setSync(body?.sync && typeof body.sync === 'object' ? body.sync as SessionSyncState : null);
           setNextCursor(typeof body?.next_cursor === 'string' ? body.next_cursor : null);
           setCursorScope(`${agentId}\n${filter}\n${query.trim()}\n${workspaceFilter}`);
@@ -139,10 +127,43 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
           const seen = page.map(row => row.context.workspace).filter((w): w is string => !!w);
           setWorkspaceOpts(prev => [...new Set([...(resetWorkspaces ? [] : prev), ...seen])]);
         })
-        .catch(() => { if (!cancelled) setLoadError('Could not load sessions.'); });
+        .catch(() => { if (!cancelled && listSeqRef.current === seq) setLoadError('Could not load sessions.'); });
     }, delay);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [agentId, filter, query, workspaceFilter, attempt, requestedRef]);
+  }, [agentId, filter, query, workspaceFilter, attempt]);
+
+  // NOT-552: an owning-session link (?session=) opens that exact Botmancers
+  // session even when it is older than the first catalog page. Unknown or
+  // cross-Agent refs stay indistinguishable (404). Kept separate from the
+  // list fetch so URL-driven selection cannot reset paging.
+  useEffect(() => {
+    if (!requestedRef || rows === null) return;
+    if (rows.some(row => row.ref === requestedRef)) {
+      if (scrolledDeepLinkRef.current !== requestedRef) {
+        scrolledDeepLinkRef.current = requestedRef;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          document.querySelector<HTMLElement>(`[data-session-ref="${CSS.escape(requestedRef)}"]`)
+            ?.scrollIntoView({ block: 'nearest' });
+        }));
+      }
+      return;
+    }
+    if (filter !== 'all' || query.trim() || workspaceFilter) return;
+    let cancelled = false;
+    fetch(`/api/bots/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(requestedRef)}`, { cache: 'no-store' })
+      .then(async exactResponse => {
+        const exactBody = await exactResponse.json().catch(() => null);
+        if (cancelled) return;
+        if (!exactResponse.ok || !exactBody?.session) return;
+        const exact = exactBody.session as SessionRow;
+        setRows(prev => {
+          if (!prev || prev.some(row => row.ref === exact.ref)) return prev;
+          return [exact, ...prev];
+        });
+      })
+      .catch(() => { /* leave the catalog page as-is; selection stays cleared */ });
+    return () => { cancelled = true; };
+  }, [requestedRef, rows, agentId, filter, query, workspaceFilter]);
 
   // The ?session= query is the source of truth for selection. Closing detail
   // clears the query; do not re-select from a stale param while navigation
@@ -152,6 +173,15 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
     if (requestedRef && rows.some(row => row.ref === requestedRef)) setSelectedRef(requestedRef);
     else setSelectedRef(null);
   }, [requestedRef, rows]);
+
+  // Filter/search changes that drop the selected row must clear ?session= so a
+  // later matching filter does not silently reopen detail without focus.
+  useEffect(() => {
+    if (!rows || !requestedRef) return;
+    if (rows.some(row => row.ref === requestedRef)) return;
+    if (filter === 'all' && !query.trim() && !workspaceFilter) return; // exact fetch may still land it
+    router.replace(`/agents/${encodeURIComponent(agentId)}/sessions`, { scroll: false });
+  }, [rows, requestedRef, filter, query, workspaceFilter, agentId, router]);
 
   useEffect(() => {
     if (!selectedRef) {
