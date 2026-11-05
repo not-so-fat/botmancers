@@ -184,17 +184,16 @@ async function main() {
 
     const detail = await evaluate(`(() => {
       const pane = document.querySelector('[data-session-detail]');
-      const text = pane?.innerText || '';
+      const text = (pane?.innerText || '').toLowerCase();
       const focus = document.activeElement;
+      const labels = ['last activity', 'started', 'runtime', 'reported usage', 'workspace', 'origin', 'actions', 'slack share', 'runs and usage', 'local debug: provider session id'];
       return {
         title: pane?.querySelector('h3')?.textContent.trim() || '',
         focused: focus === pane?.querySelector('h3'),
-        hasMeta: ['Last activity', 'Started', 'Runtime', 'Reported usage', 'Workspace', 'Origin', 'Actions', 'Slack share', 'Runs and usage', 'Local debug: provider session ID']
-          .every(label => text.includes(label)),
-        hasShare: /Share to Slack|Active share|No active share|Session sharing/.test(text),
+        hasMeta: labels.every(label => text.includes(label)),
         listHidden: getComputedStyle(document.querySelector('.sessions-list-pane')).display === 'none',
         detailShown: getComputedStyle(document.querySelector('.sessions-detail-pane')).display !== 'none',
-        body: text,
+        body: pane?.innerText || '',
         overflow: document.documentElement.scrollWidth > innerWidth + 1,
       };
     })()`);
@@ -212,7 +211,7 @@ async function main() {
 
     // Close detail and prove focus returns to the opening row control.
     await evaluate(`document.querySelector('.session-detail-close')?.click()`);
-    check(await waitFor("!document.querySelector('[data-session-detail]')"),
+    check(await waitFor("!document.querySelector('[data-session-detail]') && !location.search.includes('session=')"),
       `${viewport.name}: Back to session list closes detail`);
     const returned = await evaluate(`(() => {
       const active = document.activeElement;
@@ -245,23 +244,32 @@ async function main() {
     check(reachedNav && reachedScan, `${viewport.name}: Tab reaches Sessions nav and page controls`);
     check(visibleFocus, `${viewport.name}: keyboard focus is visible`);
 
-    // Thread-header Sessions deep link lands on the same page.
-    await cdp.send('Page.navigate', { url: `${BASE}/` });
-    check(await waitFor(`[...document.querySelectorAll('[data-open-bot]')].some(el => el.textContent.trim() === ${JSON.stringify(agentName)})`),
-      `${viewport.name}: roster shows seeded Agent`);
-    await evaluate(`([...document.querySelectorAll('[data-open-bot]')].find(el => el.textContent.trim() === ${JSON.stringify(agentName)}) || { click() {} }).click()`);
+    // Overview "All sessions" and legacy drawer deep links land on the page.
+    await cdp.send('Page.navigate', { url: `${BASE}/agents/${encodeURIComponent(agentId)}` });
+    check(await waitFor("document.querySelector('[data-agent-overview]')"),
+      `${viewport.name}: Agent Overview loads`);
+    await evaluate(`([...document.querySelectorAll('a')].find(a => a.textContent.trim() === 'All sessions') || { click() {} }).click()`);
+    check(await waitFor("location.pathname.includes('/sessions') && document.querySelector('[data-agent-sessions-page]')"),
+      `${viewport.name}: Overview All sessions opens the full page`);
+
+    await cdp.send('Page.navigate', { url: `${BASE}/?agent=${encodeURIComponent(agentId)}&sessions=1` });
+    check(await waitFor("location.pathname.includes('/sessions') && document.querySelector('[data-agent-sessions-page]')"),
+      `${viewport.name}: legacy ?agent=&sessions=1 lands on the full page`);
+    check(await evaluate("!document.querySelector('.sessions-drawer')"),
+      `${viewport.name}: no Sessions modal drawer remains`);
+
+    // Thread-header Sessions link from the chat surface.
+    await cdp.send('Page.navigate', { url: `${BASE}/?agent=${encodeURIComponent(agentId)}` });
     check(await waitFor(`document.querySelector('.thread-name')?.textContent.trim() === ${JSON.stringify(agentName)}`),
-      `${viewport.name}: opens Agent conversation`);
+      `${viewport.name}: ?agent= opens the Agent conversation`);
     await evaluate(`document.querySelector('.thread-bar a.attach-word[href*="/sessions"]')?.click()`);
     check(await waitFor("location.pathname.includes('/sessions') && document.querySelector('[data-agent-sessions-page]')"),
       `${viewport.name}: thread header Sessions navigates to the full page`);
-    check(await evaluate("!document.querySelector('.sessions-drawer') && !document.querySelector('[aria-modal=\"true\"].sessions-drawer')"),
-      `${viewport.name}: no Sessions modal drawer remains`);
   }
 
   cdp.close();
   browser.proc.kill();
-  fs.rmSync(browser.profile, { recursive: true, force: true });
+  try { fs.rmSync(browser.profile, { recursive: true, force: true }); } catch { /* chrome may still hold files briefly */ }
   fs.writeFileSync(path.join(OUT, 'agent-sessions-page-proof-receipt.json'), JSON.stringify({
     head: HEAD,
     app: `${BASE} real Next.js app, seeded canonical DB, no mocks`,

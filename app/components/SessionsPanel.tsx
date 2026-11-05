@@ -127,14 +127,24 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
     return () => { cancelled = true; clearTimeout(timer); };
   }, [agentId, filter, query, workspaceFilter, attempt]);
 
+  // The ?session= query is the source of truth for selection. Closing detail
+  // clears the query; do not re-select from a stale param while navigation
+  // catches up, and do not keep a local selection after the query is gone.
   useEffect(() => {
     if (!rows) return;
     if (requestedRef && rows.some(row => row.ref === requestedRef)) setSelectedRef(requestedRef);
-    else if (!requestedRef && selectedRef && !rows.some(row => row.ref === selectedRef)) setSelectedRef(null);
-  }, [requestedRef, rows, selectedRef]);
+    else setSelectedRef(null);
+  }, [requestedRef, rows]);
 
   useEffect(() => {
-    if (!selectedRef || !pendingDetailFocus.current) return;
+    if (!selectedRef) {
+      const returnTo = selectedFromRef.current;
+      if (!returnTo || pendingDetailFocus.current) return;
+      selectedFromRef.current = null;
+      if (returnTo.isConnected) returnTo.focus();
+      return;
+    }
+    if (!pendingDetailFocus.current) return;
     pendingDetailFocus.current = false;
     detailHeadingRef.current?.focus();
   }, [selectedRef]);
@@ -228,14 +238,11 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
   const selectSession = (row: SessionRow, trigger: HTMLElement) => {
     selectedFromRef.current = trigger;
     pendingDetailFocus.current = true;
-    setSelectedRef(row.ref);
     router.replace(`/agents/${encodeURIComponent(agentId)}/sessions?session=${encodeURIComponent(row.ref)}`, { scroll: false });
   };
   const closeDetail = () => {
-    const returnTo = selectedFromRef.current;
-    setSelectedRef(null);
+    pendingDetailFocus.current = false;
     router.replace(`/agents/${encodeURIComponent(agentId)}/sessions`, { scroll: false });
-    requestAnimationFrame(() => { if (returnTo?.isConnected) returnTo.focus(); });
   };
   const closeAction = () => {
     returnToRef.current = action?.returnTo ?? null;
