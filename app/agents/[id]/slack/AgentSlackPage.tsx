@@ -107,8 +107,8 @@ export default function AgentSlackPage() {
   };
 
   if (overviewLoading) return <div className="agent-state" role="status">Loading Slack operations…</div>;
-  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an Agent</Link></div>;
-  if (overviewError || !overview) return <div className="agent-state" role="alert"><h2>Slack page unavailable</h2><p>Botmancers could not load this Agent.</p></div>;
+  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an agent</Link></div>;
+  if (overviewError || !overview) return <div className="agent-state" role="alert"><h2>Slack page unavailable</h2><p>Botmancers could not load this agent.</p></div>;
 
   const agentChanged = loadedAgentId !== id;
 
@@ -152,7 +152,7 @@ export function AgentSlackView({ agentId, agentName, relay, policy, shares, filt
         <div>
           <p className="agent-eyebrow">Slack</p>
           <h2>Relay health and shared sessions</h2>
-          <p>Botmancers runs one optional Slack relay. {agentName} does not have a separate Slack app; below are only the session threads shared for this Agent.</p>
+          <p>Botmancers runs one optional Slack relay. {agentName} does not have a separate Slack app; below are only the session threads shared for this agent.</p>
         </div>
         <button type="button" className="agent-slack-refresh" onClick={onRefresh} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
       </header>
@@ -165,15 +165,15 @@ export function AgentSlackView({ agentId, agentName, relay, policy, shares, filt
       </section>
 
       <section className="agent-slack-policy" aria-labelledby="policy-heading">
-        <div className="agent-slack-section-head"><div><p className="agent-eyebrow">This Agent</p><h3 id="policy-heading">Sharing readiness</h3></div><Link href={configHref}>Edit in Config</Link></div>
+        <div className="agent-slack-section-head"><div><p className="agent-eyebrow">This agent</p><h3 id="policy-heading">Sharing readiness</h3></div><Link href={configHref}>Edit in Config</Link></div>
         {policy.state === 'loading' ? <p role="status">Checking sharing policy…</p> : null}
-        {policy.state === 'error' ? <div className="agent-slack-error" role="alert"><strong>Sharing policy unavailable</strong><p>Refresh, or open Config to review this Agent’s stored policy.</p></div> : null}
+        {policy.state === 'error' ? <div className="agent-slack-error" role="alert"><strong>Sharing policy unavailable</strong><p>Refresh, or open Config to review this agent’s stored policy.</p></div> : null}
         {policy.state === 'ready' ? <PolicyDetails policy={policy.value} /> : null}
       </section>
 
       <section className="agent-slack-shares" aria-labelledby="shares-heading">
         <div className="agent-slack-section-head agent-slack-shares-head">
-          <div><p className="agent-eyebrow">This Agent</p><h3 id="shares-heading">Shared session threads</h3><p>Each share is ask-only and can reach exactly one owning session.</p></div>
+          <div><p className="agent-eyebrow">This agent</p><h3 id="shares-heading">Shared session threads</h3><p>Each share is ask-only and can reach exactly one owning session.</p></div>
           <Link className="agent-primary-action" href={sessionsHref}>Share a session</Link>
         </div>
         <div className="agent-slack-filters" role="group" aria-label="Filter shares by state">
@@ -203,7 +203,7 @@ function PolicyDetails({ policy }: { policy: SharePolicy }) {
   const ready = policy.state === 'loaded' && policy.audiences.length > 0;
   return <div>
     <p><strong>{ready ? 'Ready to create session shares.' : policy.state === 'invalid' ? 'The sharing policy needs repair.' : 'No Slack audience is allowlisted yet.'}</strong></p>
-    <p className="agent-muted">Share from a running Agent turn: {policy.agent.share_from_turn ? 'On' : 'Off'}. Session owners can still share eligible sessions from Sessions.</p>
+    <p className="agent-muted">Share from a running agent turn: {policy.agent.share_from_turn ? 'On' : 'Off'}. Session owners can still share eligible sessions from Sessions.</p>
     {policy.audiences.length ? <ul className="agent-slack-audiences" aria-label="Allowed Slack audiences">{policy.audiences.map(audience => <li key={`${audience.team_id}:${audience.channel_id}`}>{audienceLabel(audience)}</li>)}</ul> : <p className="agent-slack-empty">No allowlisted Slack channels.</p>}
   </div>;
 }

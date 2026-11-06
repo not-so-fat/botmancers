@@ -6,17 +6,17 @@ import { useAgentOverview } from './AgentShell';
 export type AgentSectionName = 'sessions' | 'conversations' | 'slack' | 'activity';
 
 const COPY: Record<AgentSectionName, { eyebrow: string; title: string; body: string }> = {
-  sessions: { eyebrow: 'Sessions', title: 'Work attached to this Agent', body: 'Review active and previous runtime sessions in the existing Agent-scoped session catalog.' },
-  conversations: { eyebrow: 'Conversations', title: 'Talk with this Agent', body: 'Review durable direct, group, Agent-to-Agent, and connected-service histories for this Agent, and message where owner authority permits.' },
+  sessions: { eyebrow: 'Sessions', title: 'Work attached to this agent', body: 'Review active and previous runtime sessions in the existing agent-scoped session catalog.' },
+  conversations: { eyebrow: 'Conversations', title: 'Talk with this agent', body: 'Review durable direct, agent-to-agent, and connected-service histories for this agent, and message where owner authority permits.' },
   slack: { eyebrow: 'Slack', title: 'Share one session to Slack', body: 'Slack shares are created from a specific session and stay read-only, time-limited, and revocable.' },
-  activity: { eyebrow: 'Activity', title: 'Recent Agent work', body: 'This summary uses the Agent’s existing session activity; the full Activity destination will replace it in its follow-on ticket.' },
+  activity: { eyebrow: 'Activity', title: 'Recent agent work', body: 'This summary uses the agent’s existing session activity; the full Activity destination will replace it in its follow-on ticket.' },
 };
 
 export default function AgentSection({ section }: { section: AgentSectionName }) {
   const { id, overview, loading, error, notFound } = useAgentOverview();
   if (loading) return <div className="agent-state" role="status">Loading…</div>;
-  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an Agent</Link></div>;
-  if (error || !overview) return <div className="agent-state" role="alert">This Agent section is unavailable.</div>;
+  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an agent</Link></div>;
+  if (error || !overview) return <div className="agent-state" role="alert">This agent section is unavailable.</div>;
   const copy = COPY[section];
   const sessionHref = `/agents/${encodeURIComponent(id)}/sessions`;
   const conversationHref = `/agents/${encodeURIComponent(id)}/conversations`;
@@ -26,7 +26,7 @@ export default function AgentSection({ section }: { section: AgentSectionName })
       <p className="agent-eyebrow">{copy.eyebrow}</p>
       <h2>{copy.title}</h2>
       <p>{copy.body}</p>
-      {(section === 'sessions' || section === 'slack') ? <Link className="agent-primary-action" href={sessionHref}>Open Agent sessions</Link> : null}
+      {(section === 'sessions' || section === 'slack') ? <Link className="agent-primary-action" href={sessionHref}>Open agent sessions</Link> : null}
       {section === 'conversations' ? <Link className="agent-primary-action" href={conversationHref}>Open conversation</Link> : null}
       {section === 'slack' ? <p className="agent-muted">In Sessions, open a session and choose Share to Slack. Slack policy remains editable in <Link href={`/agents/${encodeURIComponent(id)}/config`}>Config</Link>.</p> : null}
       {section === 'activity' ? (

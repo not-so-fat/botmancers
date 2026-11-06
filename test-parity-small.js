@@ -314,7 +314,7 @@ async function main() {
   assert(groupCopy.length === 0, 'no client source renders Group copy (ARIA role="group" excepted)');
   const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
   assert(!/group/i.test(page), 'app/page.tsx has no group type, state, loader, row, mention, or thread branch');
-  assert((page.match(/>\s*New Agent\s*</g) || []).length === 1 && !/New Group|setKind|member-picks/.test(page), 'New opens one New Agent panel with no kind switch or member picker');
+  assert((page.match(/>\s*New agent\s*</g) || []).length === 1 && !/New Group|setKind|member-picks/.test(page), 'New opens one New agent panel with no kind switch or member picker');
   assert(/const mentionItems = mentionOpen\s*\?\s*bots\.filter/.test(page), 'composer mentions suggest agents only');
   const deleteCopy = jiti('./lib/bot-deletion.ts');
   assert(!/group/i.test(deleteCopy.DELETE_REMOVES_COPY + deleteCopy.DELETE_KEEPS_COPY), 'delete confirmation copy names no groups');

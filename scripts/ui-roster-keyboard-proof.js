@@ -9,7 +9,7 @@
 // - Tab from page start reaches every row in visual order, each focused row
 //   shows the whole-row outline, Enter and Space open an agent;
 // - the Actions trigger opens a menu whose items (Pin/Unpin, Mark as Unread,
-//   Rename Agent, Hide from sidebar, Config, Delete agent…) are each invoked
+//   Rename agent, Hide from sidebar, Config, Delete agent…) are each invoked
 //   with the keyboard, with focus always landing on a visible control;
 // - hidden agents keep the same open button and Actions trigger, whose menu
 //   offers Unhide;
@@ -269,7 +269,7 @@ async function run() {
     check(f.kind === 'menuitem', `Enter opens the menu and focuses "${f.name}"`);
     const items = await evaluate(`[...document.querySelectorAll('.row-menu [role=menuitem]')].map(n => n.textContent.trim())`);
     log(`  menu: ${JSON.stringify(items)}`);
-    check(JSON.stringify(items) === JSON.stringify(['Pin', 'Mark as Unread', 'Rename Agent', 'Hide from sidebar', 'Config', 'Delete agent…']), 'menu lists Pin, Mark as Unread, Rename Agent, Hide from sidebar, Config, Delete agent…');
+    check(JSON.stringify(items) === JSON.stringify(['Pin', 'Mark as Unread', 'Rename agent', 'Hide from sidebar', 'Config', 'Delete agent…']), 'menu lists Pin, Mark as Unread, Rename agent, Hide from sidebar, Config, Delete agent…');
     check(await evaluate(`document.querySelector('.row-actions[aria-expanded=true]')?.getAttribute('aria-label')`) === `Actions for ${TARGET}`, 'trigger reports aria-expanded=true');
     await axSnapshot(vp, 'row-menu', '.row-menu', role => ['menu', 'menuitem'].includes(role));
     await shot(vp, 'row-menu');
@@ -308,17 +308,17 @@ async function run() {
     await sleep(400);
     check((await api(TARGET)).unread === 1, `Mark as Unread sets unread on ${TARGET}`);
 
-    // Rename Agent and rename back.
-    await openMenuOn(TARGET); await menuTo('Rename Agent'); await press('Enter');
+    // Rename agent and rename back.
+    await openMenuOn(TARGET); await menuTo('Rename agent'); await press('Enter');
     f = await focus();
-    check(f.kind === 'input' && f.name === `Rename ${TARGET}`, 'Rename Agent focuses the "Rename <agent>" input');
+    check(f.kind === 'input' && f.name === `Rename ${TARGET}`, 'Rename agent focuses the "Rename <agent>" input');
     await cdp.send('Input.insertText', { text: 'X' });
     await press('Enter');
     await sleep(500);
     f = await focus();
     check(!!(await api(`${TARGET}X`)) && f.kind === 'open' && f.row === `${TARGET}X`, 'Enter saves the rename and focus returns to the row');
     await shot(vp, 'after-rename');
-    await openMenuOn(`${TARGET}X`); await menuTo('Rename Agent'); await press('Enter');
+    await openMenuOn(`${TARGET}X`); await menuTo('Rename agent'); await press('Enter');
     await press('Backspace'); await press('Enter');
     await sleep(500);
     check(!!(await api(TARGET)), 'rename back restores the name');
@@ -349,7 +349,7 @@ async function run() {
     await waitFor("document.querySelector('.row-menu')", 'hidden row menu');
     const hiddenItems = await evaluate(`[...document.querySelectorAll('.row-menu [role=menuitem]')].map(n => n.textContent.trim())`);
     log(`  hidden menu: ${JSON.stringify(hiddenItems)}`);
-    check(JSON.stringify(hiddenItems) === JSON.stringify(['Pin', 'Mark as Unread', 'Rename Agent', 'Unhide', 'Config', 'Delete agent…']), 'hidden row menu offers Unhide alongside the other row actions');
+    check(JSON.stringify(hiddenItems) === JSON.stringify(['Pin', 'Mark as Unread', 'Rename agent', 'Unhide', 'Config', 'Delete agent…']), 'hidden row menu offers Unhide alongside the other row actions');
     await axSnapshot(vp, 'hidden-row-menu', '.row-menu', role => ['menu', 'menuitem'].includes(role));
     await menuTo('Unhide');
     await shot(vp, 'hidden-unhide');

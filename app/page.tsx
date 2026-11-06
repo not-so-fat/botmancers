@@ -258,7 +258,7 @@ export default function Home() {
     if (linkedAgent) {
       // NOT-551: old `/?agent=` chat links resolve to durable Conversations
       // detail (or Sessions). Do not restore ambient home chat.
-      // NOT-550/552: old drawer links land on the Agent Sessions page and
+      // NOT-550/552: old drawer links land on the agent Sessions page and
       // preserve ?session= so an owning-session share opens that exact row.
       defaulted.current = true;
       if (query.get('sessions') === '1') {
@@ -1323,7 +1323,7 @@ function BotModal({ anchorRef, onClose, onCreated }: {
         style={placement ?? undefined}
       >
         <div className="kind-row">
-          <h2 id="new-agent-title" className="kind-word new-agent-title">New Agent</h2>
+          <h2 id="new-agent-title" className="kind-word new-agent-title">New agent</h2>
         </div>
         {createdSync ? (
           <div className="bot-form">

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// NOT-447: real-browser proof for the New Agent dialog. Drives a running
+// NOT-447: real-browser proof for the New agent dialog. Drives a running
 // Botmancers through headless Chrome over the DevTools protocol with real
 // key events, at desktop, narrow, and short viewports:
 // - opening New with the keyboard yields exactly one aria-modal dialog named
-//   "New Agent" in Chrome's accessibility tree, and no background control
+//   "New agent" in Chrome's accessibility tree, and no background control
 //   (New, Manage agents, Settings, roster rows) is exposed there or focusable;
 // - focus starts on Name; Tab and Shift+Tab are traced by focused control
 //   until they wrap; Escape closes and focus is back on New;
@@ -158,7 +158,7 @@ async function run() {
         };
       })()`);
       console.log(`  DOM: dialogs=${dom.count} aria-modal=${dom.modal} name="${dom.name}" page.inert=${dom.fieldInert} dialogInsidePage=${dom.dialogInsideField}`);
-      check(dom.count === 1 && dom.modal === 'true' && dom.name === 'New Agent', 'exactly one aria-modal dialog named "New Agent"');
+      check(dom.count === 1 && dom.modal === 'true' && dom.name === 'New agent', 'exactly one aria-modal dialog named "New agent"');
       check(dom.fieldInert && !dom.dialogInsideField, 'the page behind the dialog is inert and the dialog is outside it');
       check(!/\bgroups?\b|member/i.test(dom.text), 'no Group tab, member picker, or Group wording in the dialog');
 
@@ -169,7 +169,7 @@ async function run() {
       const axNames = exposed.map(n => `${n.role?.value}:${n.name?.value || ''}`);
       const background = axNames.filter(entry => /^(button|link):(New|Manage agents|Settings)$/.test(entry) || /^heading:botmancers$/i.test(entry));
       console.log(`  AX: dialogs=${JSON.stringify(axDialogs.map(n => n.name?.value))} exposed controls=${JSON.stringify(axNames.filter(e => /^(button|textbox|radio|combobox|link|LabelText)/.test(e)))}`);
-      check(axDialogs.length === 1 && axDialogs[0].name?.value === 'New Agent', 'accessibility tree exposes one dialog named "New Agent"');
+      check(axDialogs.length === 1 && axDialogs[0].name?.value === 'New agent', 'accessibility tree exposes one dialog named "New agent"');
       check(background.length === 0, `no background controls in the accessibility tree${background.length ? ` (found ${background.join(', ')})` : ''}`);
 
       // Keyboard trace: Tab forward until it wraps to Name, then Shift+Tab.

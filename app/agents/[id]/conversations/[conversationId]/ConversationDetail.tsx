@@ -13,7 +13,7 @@ import { classifyRuntimeFailure } from '@/lib/runtime-failure';
 import { parseRun, runLine } from '@/lib/run';
 import { wakeNotices, type WakeEventView } from '@/lib/wake-notice';
 import type { ExchangeSummary } from '@/lib/exchange-view';
-import type { OwnerConversationDetail, OwnerConversationMessage } from '@/lib/owner-conversations';
+import { ownerConversationEyebrow, type OwnerConversationDetail, type OwnerConversationMessage } from '@/lib/owner-conversations';
 
 const POLL_MS = 2000;
 
@@ -156,7 +156,7 @@ export default function ConversationDetail() {
     await load();
   };
 
-  if (notFound) return <div className="conversation-detail-state"><h2>Conversation not found</h2><p>This conversation does not involve the selected Agent or no longer exists.</p><Link href={`/agents/${encodeURIComponent(id)}/conversations`}>All conversations</Link></div>;
+  if (notFound) return <div className="conversation-detail-state"><h2>Conversation not found</h2><p>This conversation does not involve the selected agent or no longer exists.</p><Link href={`/agents/${encodeURIComponent(id)}/conversations`}>All conversations</Link></div>;
   if (!detail && !error) return <p className="conversation-detail-state" role="status" data-conversation-detail-state="loading">Loading conversation…</p>;
   if (!detail && error) return <div className="conversation-detail-state" role="alert" data-conversation-detail-state="error"><p>{error}</p><button type="button" onClick={() => setReload(value => value + 1)}>Retry</button></div>;
   if (!detail) return null;
@@ -170,7 +170,7 @@ export default function ConversationDetail() {
   return (
     <div className="conversation-detail" data-conversation-writable={detail.writable ? 'true' : 'false'}>
       <header className="conversation-detail-head">
-        <div><Link href={`/agents/${encodeURIComponent(id)}/conversations`}>← Conversations</Link><p className="agent-eyebrow">{detail.type === 'direct' ? 'Direct conversation' : detail.type === 'group' ? 'Group history' : detail.origin?.kind === 'service' ? 'External-service history' : 'Agent-to-Agent history'}</p><h2>{detail.label}</h2><p className="conversation-participant-line">{detail.participants.map(value => value.label).join(' · ')}</p><p className="conversation-origin-line">Origin: {detail.origin?.label ?? 'Unknown'} · {detail.message_count} messages</p></div>
+        <div><Link href={`/agents/${encodeURIComponent(id)}/conversations`}>← Conversations</Link><p className="agent-eyebrow">{ownerConversationEyebrow(detail)}</p><h2>{detail.label}</h2><p className="conversation-participant-line">{detail.participants.map(value => value.label).join(' · ')}</p><p className="conversation-origin-line">Origin: {detail.origin?.label ?? 'Unknown'} · {detail.message_count} messages</p></div>
         {detail.writable ? <button type="button" className="conversation-stop" onClick={() => void stop()}>Stop delegated turns</button> : null}
       </header>
       {!detail.writable ? <aside className="conversation-read-only" role="note"><strong>Read-only history</strong><p>{detail.read_only_reason}</p>{overview?.conversation ? <Link href={`/agents/${encodeURIComponent(id)}/conversations/${encodeURIComponent(overview.conversation.id)}`}>Open direct conversation</Link> : null}</aside> : null}
@@ -192,7 +192,7 @@ export default function ConversationDetail() {
           {exchangesBefore(Number.POSITIVE_INFINITY)}
         </ol>
       </div>
-      {detail.writable ? <div className="composer conversation-composer" onPaste={paste}><div className="composer-box">{attachError ? <p className="attach-error" role="alert">{attachError}</p> : null}{attachments.length ? <div className="attach-names">{attachments.map(item => <span key={item.id}>{item.name}</span>)}</div> : null}<textarea ref={composerRef} rows={2} value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={`Message ${overview?.agent.name ?? 'this Agent'}`} aria-label="Message" /></div><input ref={attachRef} className="attach-input" type="file" multiple onChange={event => { addAttachments(Array.from(event.target.files ?? [])); event.target.value = ''; }} /><button type="button" className="attach-word" onClick={() => attachRef.current?.click()}>Attach</button><button type="button" className="send-btn" disabled={sending} onClick={() => void send()}>{sending ? 'Sending…' : 'Send'}</button></div> : null}
+      {detail.writable ? <div className="composer conversation-composer" onPaste={paste}><div className="composer-box">{attachError ? <p className="attach-error" role="alert">{attachError}</p> : null}{attachments.length ? <div className="attach-names">{attachments.map(item => <span key={item.id}>{item.name}</span>)}</div> : null}<textarea ref={composerRef} rows={2} value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={`Message ${overview?.agent.name ?? 'this agent'}`} aria-label="Message" /></div><input ref={attachRef} className="attach-input" type="file" multiple onChange={event => { addAttachments(Array.from(event.target.files ?? [])); event.target.value = ''; }} /><button type="button" className="attach-word" onClick={() => attachRef.current?.click()}>Attach</button><button type="button" className="send-btn" disabled={sending} onClick={() => void send()}>{sending ? 'Sending…' : 'Send'}</button></div> : null}
     </div>
   );
 }

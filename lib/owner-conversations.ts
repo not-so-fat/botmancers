@@ -49,6 +49,25 @@ export interface OwnerConversationDetail extends OwnerConversationSummary {
   events: unknown[];
 }
 
+/** Legacy multi-party rows stay readable; UI must not surface Group product copy. */
+export function isOwnerGroupConversation(type: OwnerConversationSummary['type']): boolean {
+  return type === 'group';
+}
+
+export function ownerConversationTypeLabel(row: Pick<OwnerConversationSummary, 'type' | 'origin'>): string {
+  if (row.type === 'direct') return 'Direct';
+  if (isOwnerGroupConversation(row.type)) return 'Shared';
+  if (row.origin?.kind === 'service') return 'External service';
+  return 'agent to agent';
+}
+
+export function ownerConversationEyebrow(row: Pick<OwnerConversationSummary, 'type' | 'origin'>): string {
+  if (row.type === 'direct') return 'Direct conversation';
+  if (isOwnerGroupConversation(row.type)) return 'Shared history';
+  if (row.origin?.kind === 'service') return 'External-service history';
+  return 'agent-to-agent history';
+}
+
 interface ConversationRow {
   id: string;
   type: string;

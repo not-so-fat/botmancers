@@ -79,14 +79,14 @@ export const LABELS = {
 } as const;
 
 export const HINTS = {
-  connection: 'The runtime installation or account this Agent uses. Several Agents can share one.',
+  connection: 'The runtime installation or account this agent uses. Several agents can share one.',
   workspaces: 'One absolute path per line. An empty scope never means unrestricted.',
-  sessions: 'Only this Agent’s own Botmancers sessions can be selected.',
+  sessions: 'Only this agent’s own Botmancers sessions can be selected.',
   noSessions: 'This Agent has no sessions yet. Choose workspaces or all sessions for now.',
   allSessions: 'Every session this runtime can see. Choose this only on purpose.',
   defaultWorkspace: 'Where new sessions start. Convenience only — not a permission.',
   resumeEdits: 'Needs Workspace write.',
-  homeSession: 'A stable session to return to. Must be one of this Agent’s sessions.',
+  homeSession: 'A stable session to return to. Must be one of this agent’s sessions.',
   addConnection: 'Stores a name and host only. Credentials stay with the runtime.',
 } as const;
 
@@ -270,7 +270,7 @@ export interface RegistrationReadRow {
 }
 
 export function scopeSummary(scope: SessionScope | null | undefined, sessions?: SessionOption[]): string {
-  if (!scope) return 'Not set — this Agent cannot launch until a scope is chosen.';
+  if (!scope) return 'Not set — this agent cannot launch until a scope is chosen.';
   if (scope.kind === 'all_provider_sessions') return SCOPE_KIND_LABELS.all_provider_sessions;
   if (scope.kind === 'workspaces') return `${SCOPE_KIND_LABELS.workspaces}: ${scope.workspaces.join(', ')}`;
   const titles = scope.sessions.map(ref => sessions?.find(s => s.ref === ref)?.title ?? ref);
@@ -312,9 +312,9 @@ export function registrationReadView(
   const home = bot.home_session_id ? sessions?.find(s => s.ref === bot.home_session_id)?.title ?? bot.home_session_id : 'None';
   rows.push({ key: 'homeSession', label: 'Home session', value: home });
   if (bot.launch_blocker === 'connection') {
-    notices.push('Choose a runtime connection before this Agent can run.');
+    notices.push('Choose a runtime connection before this agent can run.');
   } else if (bot.launch_blocker === 'session_scope') {
-    notices.push('Choose a session scope before this Agent can run.');
+    notices.push('Choose a session scope before this agent can run.');
   } else if (bot.launch_blocker === 'agent') {
     notices.push('This Agent has an unsupported Agent type.');
   }

@@ -57,7 +57,7 @@ try {
     assert.equal(scoutOverview.instructions.skill, 'No skill instructions are installed.');
   });
 
-  test('active, recent, and empty work come from the Agent session catalog', () => {
+  test('active, recent, and empty work come from the agent session catalog', () => {
     assert.ok(devOverview.current_work.length > 0);
     assert.ok(devOverview.recent_work.some(row => row.status === 'ended'));
     assert.equal(tankOverview.current_work.length, 0);
@@ -91,7 +91,7 @@ try {
   test('zero-Agent and invalid-Agent states remain explicit', () => {
     assert.match(home, /const noBots = botsLoaded && bots\.length === 0/);
     assert.match(overviewPage, /Agent not found/);
-    assert.match(overviewPage, /This Agent does not exist or was removed/);
+    assert.match(overviewPage, /This agent does not exist or was removed/);
   });
 
   test('shared shell exposes the full selected-tab navigation contract', () => {
@@ -99,7 +99,7 @@ try {
     assert.match(shell, /segment: 'config'/);
     assert.match(shell, /aria-current=\{selectedTab \? 'page'/);
     assert.match(shell, /Runtime and availability/);
-    for (const behavior of ['Hidden', 'Mark as Unread', 'Rename Agent', 'Hide from sidebar', 'Delete agent…', 'ArrowDown', 'onContextMenu']) {
+    for (const behavior of ['Hidden', 'Mark as Unread', 'Rename agent', 'Hide from sidebar', 'Delete agent…', 'ArrowDown', 'onContextMenu']) {
       assert.ok(rail.includes(behavior), behavior);
     }
   });

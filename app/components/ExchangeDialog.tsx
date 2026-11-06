@@ -161,7 +161,7 @@ export default function ExchangeDialog({ mode, session, agents, origin, onClose,
                 disabled={submitting}
                 onChange={e => { setDestinationAgentId(e.target.value); setErrors(current => ({ ...current, destination: undefined })); }}
               >
-                <option value="">Choose an Agent</option>
+                <option value="">Choose an agent</option>
                 {destinations.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
               </select>
               {errors.destination ? <p id={`${destinationId}-error`} className="exchange-field-error">{errors.destination}</p> : null}
@@ -185,7 +185,7 @@ export default function ExchangeDialog({ mode, session, agents, origin, onClose,
               ? `${session.agent.name} answers from this exact session, read-only. The answer arrives in ${origin.label}.`
               : isResume
                 ? `${session.agent.name} resumes work in this exact session and may edit its workspace. The turn never moves to another session. Progress shows in ${origin.label}.`
-                : `${destinationName ?? 'The Agent you choose'} receives an extracted handoff (objective, decisions, constraints, references, open questions) and starts a new session of its own. ${session.agent.name}’s session is not shared and is not changed. Progress shows in ${origin.label}.`}
+                : `${destinationName ?? 'The agent you choose'} receives an extracted handoff (objective, decisions, constraints, references, open questions) and starts a new session of its own. ${session.agent.name}’s session is not shared and is not changed. Progress shows in ${origin.label}.`}
           </p>
           {isResume ? (
             <>

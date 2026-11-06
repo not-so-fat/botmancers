@@ -66,7 +66,7 @@ export function relayCopy(health: RelayHealth): RelayCopy {
 
 export function creationPathLabel(share: Pick<OwnerShare, 'created_via' | 'created_by'>): string {
   if (share.created_via === 'current_session') return 'Running Agent turn';
-  return share.created_by === 'owner' ? 'Agent Sessions' : 'Session share API';
+  return share.created_by === 'owner' ? 'Sessions' : 'Session share API';
 }
 
 export const SHARE_FILTERS: Array<{ value: 'all' | 'active' | 'expired' | 'revoked'; label: string }> = [

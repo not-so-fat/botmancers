@@ -88,7 +88,7 @@ export function getAgentOverview(id: string): AgentOverviewDto | null {
       id: bot.id,
       name: bot.name,
       title: bot.title,
-      role: bot.title.trim() || 'Botmancers Agent',
+      role: bot.title.trim() || 'Botmancers agent',
       avatar: bot.avatar ?? null,
       avatar_color: bot.avatar_color ?? null,
       avatar_eyes: bot.avatar_eyes ?? null,

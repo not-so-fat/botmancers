@@ -4,12 +4,12 @@ import { useEffect, useId, useState } from 'react';
 import { audienceInputError, audienceLabel, shareFromTurnNote, type SharePolicy, type SlackAudience } from '@/lib/share-view';
 
 // NOT-519: Session sharing on Agent Config. The owner's explicit
-// share_from_turn toggle for this Agent and the Slack channel allowlist
+// share_from_turn toggle for this agent and the Slack channel allowlist
 // every share must use (config/session-shares.json, through PUT
 // /api/bots/:id/share-policy). Each change is sent with the revision it was
 // made on, validated whole by the server before anything is written, and
 // refused if the document changed meanwhile (reload and retry). Turning the
-// toggle off revokes the Agent's live turn contexts at once.
+// toggle off revokes the agent's live turn contexts at once.
 type Phase = 'idle' | 'saving' | 'error';
 
 export default function SharePolicyCard({ agentId, agentName }: { agentId: string; agentName: string }) {
