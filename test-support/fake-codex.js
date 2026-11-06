@@ -30,15 +30,8 @@ function emptyState() {
 function load() {
   return STATE && fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : emptyState();
 }
-// Write to a temp file and rename it into place so a concurrent reader (the
-// test process, or another fake process) never sees a half-written file.
-function writeStateAtomic(statePath, state) {
-  const tmp = `${statePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, statePath);
-}
 function save(state) {
-  if (STATE) writeStateAtomic(STATE, state);
+  if (STATE) fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
 }
 function mutate(fn) {
   const state = load();
@@ -73,7 +66,7 @@ function seedFakeCodex(statePath, threads, config) {
     };
     state.order.push(t.id);
   }
-  writeStateAtomic(statePath, state);
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
 }
 
 module.exports = { seedFakeCodex, emptyState, FAKE_CODEX: __filename };
