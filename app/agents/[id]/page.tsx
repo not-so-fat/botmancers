@@ -7,6 +7,9 @@ import { agentLabel } from '@/lib/bot-definition';
 import { HarnessIcon } from '@/app/components/HarnessIcon';
 import { ActivityList } from './activity/AgentActivityPage';
 
+const COPIED_MS = 1600;
+
+// --- reach-copy helpers (test-agent-home.js evaluates this block) ---
 const BRIDGE_CLIENTS = [
   { id: 'cursor', label: 'Cursor' },
   { id: 'codex', label: 'Codex' },
@@ -19,6 +22,24 @@ function setupCommand(id: BridgeClientId) {
   return `botmancers setup --client ${id}`;
 }
 
+function askAgentPrompt(agentName: string) {
+  return `Use Botmancers to ask ${agentName}: <your question>`;
+}
+
+type ClipboardWriter = { writeText(text: string): Promise<void> };
+
+/** Writes text to the clipboard; resolves true only when the write succeeded. */
+async function copyText(text: string, clipboard?: ClipboardWriter): Promise<boolean> {
+  try {
+    const target = clipboard ?? navigator.clipboard;
+    await target.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+// --- end reach-copy helpers ---
+
 function BridgeSetupClients() {
   const [active, setActive] = useState<BridgeClientId>('cursor');
   const [copied, setCopied] = useState<BridgeClientId | null>(null);
@@ -26,11 +47,10 @@ function BridgeSetupClients() {
 
   async function copyFor(id: BridgeClientId) {
     setActive(id);
-    try {
-      await navigator.clipboard.writeText(setupCommand(id));
+    if (await copyText(setupCommand(id))) {
       setCopied(id);
-      window.setTimeout(() => setCopied(current => (current === id ? null : current)), 1600);
-    } catch {
+      window.setTimeout(() => setCopied(current => (current === id ? null : current)), COPIED_MS);
+    } else {
       setCopied(null);
     }
   }
@@ -57,6 +77,34 @@ function BridgeSetupClients() {
         })}
       </div>
       <pre className="agent-setup-command"><code>{command}</code></pre>
+    </div>
+  );
+}
+
+function AskAgentPrompt({ agentName }: { agentName: string }) {
+  const [copied, setCopied] = useState(false);
+  const prompt = askAgentPrompt(agentName);
+
+  async function copyPrompt() {
+    if (await copyText(prompt)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), COPIED_MS);
+    } else {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="agent-setup-prompt">
+      <pre className="agent-setup-command"><code>{prompt}</code></pre>
+      <button
+        type="button"
+        className={`agent-setup-client agent-setup-copy${copied ? ' is-copied' : ''}`}
+        aria-label={copied ? `Copied prompt to ask ${agentName}` : `Copy prompt to ask ${agentName}`}
+        onClick={() => void copyPrompt()}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
     </div>
   );
 }
@@ -123,8 +171,18 @@ export default function AgentOverviewPage() {
             <span className="agent-use-number">01</span>
             <h3>Use from a coding agent</h3>
             <p>Let another coding agent discover {overview.agent.name} and ask its sessions — so work learned here can travel between agents.</p>
-            <p className="agent-muted">One command connects the client to the bridge and installs the collaboration skill. Click your client to copy it:</p>
-            <BridgeSetupClients />
+            <ol className="agent-setup-steps">
+              <li>
+                <h4><span className="agent-setup-step-label">Step 1</span> Install in your coding agent</h4>
+                <p className="agent-muted">Run this where your coding agent runs (the one that will ask {overview.agent.name}), not on this registered Agent. Click your client to copy it:</p>
+                <BridgeSetupClients />
+              </li>
+              <li>
+                <h4><span className="agent-setup-step-label">Step 2</span> Ask it to talk to {overview.agent.name}</h4>
+                <AskAgentPrompt agentName={overview.agent.name} />
+                <p className="agent-muted">Your coding agent sends the question to {overview.agent.name}, waits for the answer, and can read the conversation.</p>
+              </li>
+            </ol>
           </article>
           <article>
             <span className="agent-use-number">02</span>

@@ -1,6 +1,6 @@
 # Typical user flows
 
-**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-04 (botmancers 0.8.0; NOT-551, NOT-552, NOT-553)
+**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-05 (botmancers 0.10.0; NOT-551, NOT-552, NOT-553, NOT-554)
 
 This file answers one question: *what do people actually do with Botmancers, start to finish?* Other docs own the details of each step ([core-engine.md](core-engine.md) for the engine contract, [mcp-bridge.md](mcp-bridge.md) and [service-grants.md](service-grants.md) for the MCP tools and grants, [session-shares.md](session-shares.md) and [slack-transport.md](slack-transport.md) for sharing and Slack, [packages/mcp-server/README.md](../packages/mcp-server/README.md) for install and commands). This file owns the **sequence**.
 
@@ -94,8 +94,9 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 
 | # | Who does | Observable result |
 |---|---------|-------------------|
-| 1 | Owner: `botmancers setup --client codex\|cursor\|claude` | The client is connected to the bridge and gets the collaboration skill ([Client setup](../packages/mcp-server/README.md#client-setup-and-the-collaboration-skill)) |
+| 1 | Owner: on the Agent's **Overview**, card **Use from a coding agent**, Step 1 copies `botmancers setup --client codex\|cursor\|claude`; run it where the caller coding agent runs, not on the registered Agent | The client is connected to the bridge and gets the collaboration skill ([Client setup](../packages/mcp-server/README.md#client-setup-and-the-collaboration-skill)) |
 | 2 | Owner: grant that caller the capabilities it needs on that Agent ([service-grants.md](service-grants.md)) | `botmancers_capabilities` lists the granted Agents and operations |
+| 2a | Owner: copy the card's Step 2 prompt (`Use Botmancers to ask <Agent>: <your question>`) into the caller, filling in the question | The caller starts the steps below for that Agent |
 | 3 | Caller: `botmancers_list_agents`, then `botmancers_list_sessions` | Granted Agents and their sessions by title and Botmancers reference |
 | 4 | Caller: `botmancers_create_exchange` (Ask) or `botmancers_send_to_session`; or `botmancers_message_agent` without naming a session | An exchange id (or a pin) comes back |
 | 5 | Caller: poll `botmancers_get_exchange` until `terminal` | The answer is in `exchange.answer` |
