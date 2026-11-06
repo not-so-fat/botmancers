@@ -533,7 +533,7 @@ export interface ServiceConversationSummary {
 function conversationSummary(row: ConversationRow, participants: Principal[]): ServiceConversationSummary {
   const type = row.type === 'bot' ? 'direct' : row.type === 'group' ? 'group' : 'agent';
   const label = type === 'direct' ? `${row.bot_name ?? 'Agent'} thread`
-    : type === 'group' ? (row.group_name ? `Group ${row.group_name}` : 'Group thread')
+    : type === 'group' ? (row.group_name ? `Shared · ${row.group_name}` : 'Shared thread')
       : 'Agent API conversation';
   return {
     conversation_id: row.id, type, label, participants,

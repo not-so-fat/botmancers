@@ -136,7 +136,7 @@ function conversationEvents(database: Database.Database, agentId: string, items:
     `, [agentId], window);
     for (const row of conversations) add(items, {
       id: row.activity_id, kind: 'conversation.created', category: 'conversations', occurred_at: row.created_at,
-      summary: row.type === 'agent' ? 'Agent conversation opened' : row.type === 'group' ? 'Group conversation opened' : 'Direct conversation opened',
+      summary: row.type === 'agent' ? 'Agent conversation opened' : row.type === 'group' ? 'Shared conversation opened' : 'Direct conversation opened',
       target: { href: conversationsHref(agentId, row.id), label: 'Open conversation' }, severity: 'info', attention: false,
       details: { conversation_type: row.type === 'agent' ? 'agent' : row.type === 'group' ? 'group' : 'direct' },
     });

@@ -58,14 +58,14 @@ export function ownerConversationTypeLabel(row: Pick<OwnerConversationSummary, '
   if (row.type === 'direct') return 'Direct';
   if (isOwnerGroupConversation(row.type)) return 'Shared';
   if (row.origin?.kind === 'service') return 'External service';
-  return 'agent to agent';
+  return 'Agent to agent';
 }
 
 export function ownerConversationEyebrow(row: Pick<OwnerConversationSummary, 'type' | 'origin'>): string {
   if (row.type === 'direct') return 'Direct conversation';
   if (isOwnerGroupConversation(row.type)) return 'Shared history';
   if (row.origin?.kind === 'service') return 'External-service history';
-  return 'agent-to-agent history';
+  return 'Agent-to-agent history';
 }
 
 interface ConversationRow {
@@ -98,7 +98,7 @@ const SELECT = `
 
 function participantLabel(principal: Principal): string {
   if (principal.kind === UI_OWNER_PRINCIPAL.kind && principal.id === UI_OWNER_PRINCIPAL.id) return 'You';
-  if (principal.kind === 'bot') return bots.getById(principal.id)?.name ?? 'Removed Agent';
+  if (principal.kind === 'bot') return bots.getById(principal.id)?.name ?? 'Removed agent';
   if (principal.kind === 'service') return principal.id ? `Service ${principal.id}` : 'External service';
   return principal.id === 'unknown' ? 'Person' : principal.id;
 }
@@ -120,7 +120,7 @@ function summary(row: ConversationRow): OwnerConversationSummary {
   const label = type === 'direct'
     ? `${row.bot_name ?? 'Agent'} conversation`
     : type === 'group'
-      ? (row.group_name ? `Group ${row.group_name}` : 'Group conversation')
+      ? (row.group_name ? `Shared · ${row.group_name}` : 'Shared conversation')
       : 'Agent conversation';
   const origin = row.origin_kind && row.origin_id ? participant({ kind: row.origin_kind, id: row.origin_id }) : null;
   const writable = row.type === 'bot'
@@ -128,9 +128,9 @@ function summary(row: ConversationRow): OwnerConversationSummary {
     && row.origin_kind === UI_OWNER_PRINCIPAL.kind
     && row.origin_id === UI_OWNER_PRINCIPAL.id;
   const readOnlyReason = writable ? null
-    : type === 'group' ? 'Group history is read-only here. Continue from an authorized direct conversation.'
+    : type === 'group' ? 'Shared history is read-only here. Continue from an authorized direct conversation.'
       : origin?.kind === 'service' ? 'This conversation was opened by an external service. Reply through that service or start a direct conversation.'
-        : 'This Agent-to-Agent history is read-only for the owner.';
+        : 'This agent-to-agent history is read-only for the owner.';
   return {
     conversation_id: row.id,
     type,
