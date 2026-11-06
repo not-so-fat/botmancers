@@ -122,7 +122,7 @@ export default function AgentShell({ children }: { children: ReactNode }) {
               {selected ? <BotAvatar bot={selected} size={48} title={`${selected.name} avatar`} /> : null}
               <div>
                 <p className="agent-shell-kicker">Agent</p>
-                <h1>{selected?.name ?? (loading ? 'Loading…' : 'Unknown Agent')}</h1>
+                <h1>{selected?.name ?? (loading ? 'Loading…' : 'Unknown agent')}</h1>
                 {selected ? <p>{selected.role}</p> : null}
               </div>
             </div>

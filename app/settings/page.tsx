@@ -87,7 +87,7 @@ export default function SettingsPage() {
               <p className="mt-2 text-xs cfg-faint">
                 Coding Agents need their provider CLI installed and signed in on this computer;
                 Hermes needs the gateway key. A runtime that is not available here cannot launch
-                an Agent until it is fixed.
+                an agent until it is fixed.
               </p>
               <button
                 onClick={() => setReloadToken(token => token + 1)}

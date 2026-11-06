@@ -184,7 +184,7 @@ export default function BotConfigPage() {
     setReloadToken(token => token + 1);
   }
 
-  // NOT-502: this Agent's own sessions (Botmancers refs and titles only)
+  // NOT-502: this agent's own sessions (Botmancers refs and titles only)
   // for the sessions scope and the home session.
   useEffect(() => {
     if (!id) return;
@@ -468,8 +468,8 @@ export default function BotConfigPage() {
       <div className="cfg-page cfg-page-framed">
         <div className="agent-state">
           <h2>Agent not found</h2>
-          <p>This Agent does not exist or was removed.</p>
-          <Link href="/">Choose an Agent</Link>
+          <p>This agent does not exist or was removed.</p>
+          <Link href="/">Choose an agent</Link>
         </div>
       </div>
     );

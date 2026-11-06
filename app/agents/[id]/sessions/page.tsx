@@ -7,8 +7,8 @@ import { useAgentOverview } from '../AgentShell';
 export default function SessionsPage() {
   const { id, agents, overview, loading, error, notFound } = useAgentOverview();
   if (loading) return <div className="agent-state" role="status">Loading sessions…</div>;
-  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an Agent</Link></div>;
-  if (error || !overview) return <div className="agent-state" role="alert"><h2>Sessions unavailable</h2><p>Botmancers could not load this Agent. Refresh to try again.</p></div>;
+  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an agent</Link></div>;
+  if (error || !overview) return <div className="agent-state" role="alert"><h2>Sessions unavailable</h2><p>Botmancers could not load this agent. Refresh to try again.</p></div>;
 
   return (
     <SessionsPanel

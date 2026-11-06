@@ -3,16 +3,9 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAgentOverview } from '../AgentShell';
-import type { OwnerConversationSummary } from '@/lib/owner-conversations';
+import { ownerConversationTypeLabel, type OwnerConversationSummary } from '@/lib/owner-conversations';
 
 interface ConversationPage { conversations: OwnerConversationSummary[]; next_cursor: string | null }
-
-function typeLabel(row: OwnerConversationSummary): string {
-  if (row.type === 'direct') return 'Direct';
-  if (row.type === 'group') return 'Group';
-  if (row.origin?.kind === 'service') return 'External service';
-  return 'Agent to Agent';
-}
 
 export default function ConversationsPage() {
   const { id, overview, loading: agentLoading, error: agentError, notFound } = useAgentOverview();
@@ -54,14 +47,14 @@ export default function ConversationsPage() {
     setActiveQuery(query.trim());
   };
 
-  if (agentLoading) return <div className="agent-state" role="status">Loading Agent conversations…</div>;
-  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an Agent</Link></div>;
-  if (agentError || !overview) return <div className="agent-state" role="alert">This Agent’s conversations are unavailable.</div>;
+  if (agentLoading) return <div className="agent-state" role="status">Loading agent conversations…</div>;
+  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an agent</Link></div>;
+  if (agentError || !overview) return <div className="agent-state" role="alert">This agent’s conversations are unavailable.</div>;
 
   return (
     <div className="conversation-index" data-agent-conversations>
       <header className="conversation-index-head">
-        <div><p className="agent-eyebrow">Conversations</p><h2>Durable history</h2><p>Direct messages, group rooms, Agent handoffs, and connected-service conversations involving {overview.agent.name}.</p></div>
+        <div><p className="agent-eyebrow">Conversations</p><h2>Durable history</h2><p>Direct messages, agent handoffs, and connected-service conversations involving {overview.agent.name}.</p></div>
         {overview.conversation ? <Link className="agent-primary-action" href={`/agents/${encodeURIComponent(id)}/conversations/${encodeURIComponent(overview.conversation.id)}`}>Message {overview.agent.name}</Link> : null}
       </header>
       <form className="conversation-search" role="search" onSubmit={search}>
@@ -71,13 +64,13 @@ export default function ConversationsPage() {
 
       {rows === null && !error ? <p className="conversation-state" role="status" data-conversation-state="loading">Loading conversations…</p> : null}
       {error ? <div className="conversation-state" role="alert" data-conversation-state="error"><p>{error}</p><button type="button" onClick={() => setReload(value => value + 1)}>Retry</button></div> : null}
-      {rows?.length === 0 && !error ? <p className="conversation-state" data-conversation-state="empty">{activeQuery ? 'No conversations match this search.' : 'No conversations involve this Agent yet.'}</p> : null}
+      {rows?.length === 0 && !error ? <p className="conversation-state" data-conversation-state="empty">{activeQuery ? 'No conversations match this search.' : 'No conversations involve this agent yet.'}</p> : null}
       {rows && rows.length > 0 ? (
         <ol className="conversation-list" aria-label="Conversations, newest activity first">
           {rows.map(row => (
             <li key={row.conversation_id}>
               <Link href={`/agents/${encodeURIComponent(id)}/conversations/${encodeURIComponent(row.conversation_id)}`}>
-                <span className="conversation-row-title"><strong>{row.label}</strong><span>{typeLabel(row)}</span></span>
+                <span className="conversation-row-title"><strong>{row.label}</strong><span>{ownerConversationTypeLabel(row)}</span></span>
                 <span className="conversation-row-participants">{row.participants.map(value => value.label).join(' · ')}</span>
                 <span className="conversation-row-meta"><span>Origin: {row.origin?.label ?? 'Unknown'}</span><span>{row.message_count} {row.message_count === 1 ? 'message' : 'messages'}</span><time dateTime={new Date(row.last_activity_at).toISOString()}>{new Date(row.last_activity_at).toLocaleString()}</time></span>
               </Link>

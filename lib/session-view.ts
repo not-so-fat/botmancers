@@ -1,4 +1,4 @@
-// NOT-496/NOT-550: pure presentation helpers for the Agent Sessions page
+// NOT-496/NOT-550: pure presentation helpers for the agent Sessions page
 // (app/components/SessionsPanel). The shapes mirror lib/session-catalog's
 // JSON; this module never sees an external provider session id.
 
@@ -34,7 +34,7 @@ export interface SessionRow {
   // NOT-509: provider-reported usage (lib/usage UsageSummary). Optional so
   // a row from an older server still renders.
   usage?: SessionUsageRow;
-  // NOT-507: the Agent's home session, how a turn reaches it, and what each
+  // NOT-507: the agent's home session, how a turn reaches it, and what each
   // session action (lib/session-actions) can do now. Optional likewise.
   home?: boolean;
   route?: SessionRoute;
@@ -84,6 +84,19 @@ export interface SessionAttemptRow {
 // (lib/session-catalog formatSessionTime), so a row never shows two zones.
 export function formatSessionDate(ts: number): string {
   return `${new Date(ts).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+/** Href for a session’s origin conversation; legacy multi-party rows keep /threads. */
+export function sessionConversationHref(
+  conversation: NonNullable<SessionRow['origin']['conversation']>,
+): string | null {
+  if (conversation.thread_agent_id) {
+    return `/agents/${encodeURIComponent(conversation.thread_agent_id)}/conversations`;
+  }
+  if (conversation.kind === 'group') {
+    return `/threads/${encodeURIComponent(conversation.id)}`;
+  }
+  return null;
 }
 
 // ---- NOT-548: recognizable rows ----
@@ -148,7 +161,7 @@ export function statusLabel(row: SessionRow): string {
 }
 
 // NOT-507: the tags that make a past session recognizable at a glance:
-// the Agent's home session, and the runtime's lifecycle and busy state.
+// the agent's home session, and the runtime's lifecycle and busy state.
 export function sessionStateTags(row: Pick<SessionRow, 'home' | 'state' | 'resumable'>): string[] {
   const tags: string[] = [];
   if (row.home) tags.push('Home');
@@ -243,7 +256,7 @@ export interface RegistrationSessionSync {
   error_code?: string;
 }
 
-// The New Agent flow's one line with the registration sync result.
+// The New agent flow's one line with the registration sync result.
 export function registrationSessionSyncCopy(sync: RegistrationSessionSync, providerLabel: string): string {
   if (sync.outcome === 'failed') {
     const { reason, fix } = sessionSyncErrorCopy(sync.error_code ?? 'provider_failed', providerLabel);

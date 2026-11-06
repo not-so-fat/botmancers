@@ -1,7 +1,7 @@
 // NOT-498: pure presentation helpers for session-targeted Ask and Continue
 // in the UI: the session-row actions and their dialogs
 // (app/components/ExchangeDialog), the inline exchange cards
-// (app/components/ExchangeCard), and the Agent Exchanges ledger
+// (app/components/ExchangeCard), and the agent Exchanges ledger
 // (app/exchanges/page). The shapes mirror lib/exchange-ledger's JSON. Every
 // state shown comes from the exchange API's `state` and events, never from
 // message prose; nothing here sees a provider session id.
@@ -168,9 +168,9 @@ export function detailsHref(id: string): string {
   return `/exchanges?id=${encodeURIComponent(id)}`;
 }
 
-// Where a linked thread opens: an owner thread opens in the Agent's durable
+// Where a linked thread opens: an owner thread opens in the agent's durable
 // conversation detail; a group thread uses its compatibility route to resolve
-// an Agent participant. Either way the exchange's card is brought into view.
+// an agent participant. Either way the exchange's card is brought into view.
 // An Agent API conversation is not an owner thread and has no backlink.
 export function threadHref(link: Pick<ExchangeConversationRef, 'id' | 'kind' | 'thread_agent_id'>, exchangeId?: string): string | null {
   const params = new URLSearchParams();
@@ -283,7 +283,7 @@ export function validateDraft(draft: ExchangeDraft): DraftErrors {
   if (!text) errors.instruction = `Enter ${what}.`;
   else if (draft.instruction.length > INSTRUCTION_LIMIT) errors.instruction = `Keep it under ${INSTRUCTION_LIMIT} characters.`;
   if (!draft.originConversationId) errors.origin = 'Choose the thread that follows this exchange.';
-  if (draft.mode === 'continue' && !draft.destinationAgentId) errors.destination = 'Choose the Agent who continues the work.';
+  if (draft.mode === 'continue' && !draft.destinationAgentId) errors.destination = 'Choose the agent who continues the work.';
   return errors;
 }
 
@@ -306,14 +306,14 @@ export function exchangeRequestBody(draft: ExchangeDraft, source: { agentId: str
 export function submitErrorMessage(code: string | null, message: string | null): string {
   switch (code) {
     case 'session_ended': return 'This session has ended and can’t be resumed.';
-    case 'session_not_resumable': return 'Botmancers can’t resume this session under the Agent’s current runtime.';
+    case 'session_not_resumable': return 'Botmancers can’t resume this session under the agent’s current runtime.';
     case 'source_session_busy': return 'This session already has an exchange in progress. Wait for it or cancel it from its card.';
     case 'agent_unavailable': return message || 'That Agent can’t launch yet. Choose its runtime connection and session scope in Config.';
     case 'idempotency_conflict': return 'This request changed while it was being sent. Send again.';
     // NOT-507: pin refusals. The session is never swapped for another.
     case 'session_missing': return 'The runtime no longer has this session. Its history stays here; choose another session.';
     case 'approval_required': return 'Resume work here needs your approval of edits. Tick the approval, then send again.';
-    case 'authority_not_allowed': return message || 'This Agent’s policy doesn’t allow edits in a resumed session. Change it in Config.';
+    case 'authority_not_allowed': return message || 'This agent’s policy doesn’t allow edits in a resumed session. Change it in Config.';
     case 'action_unavailable': return message || 'This runtime can’t do that in this session. Choose another action.';
     case 'provider_failed': return 'The runtime failed this turn. Nothing moved to another session; try again later.';
     default: return message || 'The exchange could not be started. Your draft is kept; try again.';

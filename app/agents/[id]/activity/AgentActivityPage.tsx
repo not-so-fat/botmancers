@@ -71,7 +71,7 @@ export function ActivityResults({ activity, filter, nextCursor, loadingMore, onL
   return <>
     {activity.state === 'loading' ? <p className="agent-activity-state" role="status">Loading activity…</p> : null}
     {activity.state === 'error' ? <div className="agent-activity-state is-error" role="alert"><strong>Activity unavailable</strong><p>No partial or stale timeline is shown. Refresh to try again.</p></div> : null}
-    {activity.state === 'ready' && !activity.items.length ? <p className="agent-activity-state">{filter === 'all' ? 'No operational activity has been recorded for this Agent yet.' : `No ${AGENT_ACTIVITY_FILTERS.find(row => row.value === filter)?.label.toLowerCase()} activity matches this filter.`}</p> : null}
+    {activity.state === 'ready' && !activity.items.length ? <p className="agent-activity-state">{filter === 'all' ? 'No operational activity has been recorded for this agent yet.' : `No ${AGENT_ACTIVITY_FILTERS.find(row => row.value === filter)?.label.toLowerCase()} activity matches this filter.`}</p> : null}
     {activity.state === 'ready' && activity.items.length ? <ActivityList items={activity.items} /> : null}
     {activity.state === 'ready' && nextCursor ? <button type="button" className="agent-activity-more" onClick={onLoadMore} disabled={loadingMore}>{loadingMore ? 'Loading…' : 'Load older activity'}</button> : null}
   </>;
@@ -115,9 +115,9 @@ export default function AgentActivityPage() {
     } catch { dispatch({ type: 'load_failed', key }); }
   };
 
-  if (overviewLoading) return <div className="agent-state" role="status">Loading Agent activity…</div>;
-  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an Agent</Link></div>;
-  if (overviewError || !overview) return <div className="agent-state" role="alert"><h2>Activity unavailable</h2><p>Botmancers could not load this Agent.</p></div>;
+  if (overviewLoading) return <div className="agent-state" role="status">Loading agent activity…</div>;
+  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><Link href="/">Choose an agent</Link></div>;
+  if (overviewError || !overview) return <div className="agent-state" role="alert"><h2>Activity unavailable</h2><p>Botmancers could not load this agent.</p></div>;
 
   return <div className="agent-activity" data-agent-activity-page>
     <header className="agent-activity-intro"><p className="agent-eyebrow">Activity</p><h2>What changed for {overview.agent.name}</h2><p>Operational history from Botmancers records. Open the owning page for actions and complete detail.</p></header>

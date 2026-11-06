@@ -124,9 +124,9 @@ function WorkList({ rows, empty }: { rows: Array<{ ref: string; title: string; s
 
 export default function AgentOverviewPage() {
   const { id, overview, loading, error, notFound } = useAgentOverview();
-  if (loading) return <div className="agent-state" role="status">Loading Agent overview…</div>;
-  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><p>This Agent does not exist or was removed.</p><Link href="/">Choose an Agent</Link></div>;
-  if (error || !overview) return <div className="agent-state" role="alert"><h2>Overview unavailable</h2><p>Botmancers could not load this Agent. Refresh to try again.</p></div>;
+  if (loading) return <div className="agent-state" role="status">Loading agent overview…</div>;
+  if (notFound) return <div className="agent-state"><h2>Agent not found</h2><p>This agent does not exist or was removed.</p><Link href="/">Choose an agent</Link></div>;
+  if (error || !overview) return <div className="agent-state" role="alert"><h2>Overview unavailable</h2><p>Botmancers could not load this agent. Refresh to try again.</p></div>;
 
   const configHref = `/agents/${encodeURIComponent(id)}/config`;
   const messageHref = overview.conversation
@@ -143,7 +143,7 @@ export default function AgentOverviewPage() {
     <div className="agent-overview" data-agent-overview>
       <div className="agent-overview-grid">
         <section className="agent-panel agent-instructions">
-          <div className="agent-panel-head"><div><p className="agent-eyebrow">Standing instructions</p><h2>How this Agent works</h2></div><Link href={configHref}>Config</Link></div>
+          <div className="agent-panel-head"><div><p className="agent-eyebrow">Standing instructions</p><h2>How this agent works</h2></div><Link href={configHref}>Config</Link></div>
           <dl>
             <div><dt>Rules</dt><dd>{overview.instructions.rules}</dd></div>
             <div><dt>Skill</dt><dd>{overview.instructions.skill}</dd></div>
@@ -154,17 +154,17 @@ export default function AgentOverviewPage() {
           <div className="agent-panel-head"><div><p className="agent-eyebrow">Runtime</p><h2>{overview.runtime.available ? 'Ready to work' : 'Setup required'}</h2></div><Link href={configHref}>Config</Link></div>
           <p>{overview.runtime.available
             ? `${agentLabel(overview.runtime.agent)} is connected through ${overview.runtime.connection || 'the configured runtime'}.`
-            : 'This Agent cannot launch with its current registration. Open Config to resolve the connection or session scope.'}</p>
+            : 'This agent cannot launch with its current registration. Open Config to resolve the connection or session scope.'}</p>
           <dl className="agent-runtime-facts">
             <div><dt>Heartbeat</dt><dd>{overview.runtime.last_seen ? new Date(overview.runtime.last_seen).toLocaleString() : 'Not reported'}</dd></div>
             <div><dt>Messaging</dt><dd>{messagingStatus}</dd></div>
           </dl>
-          <p className="agent-muted">Messages use the Agent’s configured home session or launch policy. Callers do not choose its runtime, model, or provider session.</p>
+          <p className="agent-muted">Messages use the agent’s configured home session or launch policy. Callers do not choose its runtime, model, or provider session.</p>
         </section>
       </div>
 
       <section className="agent-use" aria-labelledby="open-this-agent">
-        <p className="agent-eyebrow">Open this Agent</p>
+        <p className="agent-eyebrow">Open this agent</p>
         <h2 id="open-this-agent">Make it reachable</h2>
         <div className="agent-use-grid">
           <article>
@@ -187,7 +187,7 @@ export default function AgentOverviewPage() {
           <article>
             <span className="agent-use-number">02</span>
             <h3>Share a session to Slack</h3>
-            <p>Open one of this Agent’s sessions to people in Slack — a time-limited, read-only share so others can ask what the session already knows.</p>
+            <p>Open one of this agent’s sessions to people in Slack — a time-limited, read-only share so others can ask what the session already knows.</p>
             <Link href={`/agents/${encodeURIComponent(id)}/slack`}>Share through Slack</Link>
           </article>
           <article>

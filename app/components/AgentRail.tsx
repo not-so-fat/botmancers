@@ -214,7 +214,7 @@ export default function AgentRail({
       onContextMenu={event => event.preventDefault()} onKeyDown={onRowMenuKey}>
       <button type="button" role="menuitem" tabIndex={-1} autoFocus onClick={() => { closeRowMenu(); void patchAgent(rowMenu.agent, { pinned: rowMenu.agent.pinned ? 0 : 1 }); }}>{rowMenu.agent.pinned ? 'Unpin' : 'Pin'}</button>
       <button type="button" role="menuitem" tabIndex={-1} onClick={() => { closeRowMenu(); void patchAgent(rowMenu.agent, { unread: 1 }); }}>Mark as Unread</button>
-      <button type="button" role="menuitem" tabIndex={-1} onClick={() => { const agent = rowMenu.agent; closeRowMenu(false); setEditingId(agent.id); setRowName(agent.name); }}>Rename Agent</button>
+      <button type="button" role="menuitem" tabIndex={-1} onClick={() => { const agent = rowMenu.agent; closeRowMenu(false); setEditingId(agent.id); setRowName(agent.name); }}>Rename agent</button>
       <button type="button" role="menuitem" tabIndex={-1} onClick={() => { const agent = rowMenu.agent; closeRowMenu(false); void patchAgent(agent, { hidden: agent.hidden ? 0 : 1 }).then(() => agent.hidden ? focusRow(agent.id) : hiddenToggleRef.current?.focus()); }}>{rowMenu.agent.hidden ? 'Unhide' : 'Hide from sidebar'}</button>
       <Link role="menuitem" tabIndex={-1} href={`/agents/${rowMenu.agent.id}/config`} onClick={() => setRowMenu(null)}>Config</Link>
       <button type="button" role="menuitem" tabIndex={-1} onClick={() => { const agent = rowMenu.agent; closeRowMenu(false); setDeleteAsk(agent); }}>Delete agent…</button>

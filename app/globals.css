@@ -16,6 +16,14 @@
   --danger: #e85d75;
   --chrome: "Avenir Next", Avenir, "Helvetica Neue", system-ui;
   --mono: Monaco, "SF Mono", Menlo, Consolas, monospace;
+  /* Shared Agent-pane frame: shell chrome and every tab page title/content
+     use the same inline inset so Overview / Sessions / Conversations /
+     Slack / Activity / Config left edges stay aligned. */
+  --agent-inline: clamp(18px, 4vw, 56px);
+  --agent-inline-mobile: 16px;
+  --agent-page-pad-block: clamp(24px, 4vw, 48px);
+  --agent-page-max: 1280px;
+  --agent-title-size: clamp(26px, 3vw, 38px);
 }
 
 html,
@@ -349,9 +357,9 @@ textarea {
   outline: none;
   font-family: system-ui, sans-serif;
   font-size: 15px;
-  font-weight: 400;
+  font-weight: 500;
   line-height: 1.25;
-  color: #D5D0C3;
+  color: var(--accent);
 }
 
 .bot-preview {
@@ -1640,8 +1648,10 @@ button.thread-name {
 .cfg-page.cfg-page-framed {
   min-height: 0;
   height: 100%;
+  width: min(var(--agent-page-max), 100%);
+  margin: 0 auto;
   box-sizing: border-box;
-  padding: clamp(28px, 5vw, 64px) clamp(18px, 5vw, 64px) 72px;
+  padding: var(--agent-page-pad-block) var(--agent-inline) 72px;
   background: transparent;
 }
 
@@ -2163,10 +2173,10 @@ button.avatar-pic {
 /* NOT-550: Agent-scoped Sessions review page. The scan list stays narrow
    while operational detail earns the reading width. */
 .agent-sessions-page {
-  width: min(1280px, 100%);
+  width: min(var(--agent-page-max), 100%);
   margin: 0 auto;
   box-sizing: border-box;
-  padding: clamp(24px, 4vw, 52px) clamp(18px, 4vw, 52px) 72px;
+  padding: var(--agent-page-pad-block) var(--agent-inline) 72px;
 }
 
 .agent-sessions-head {
@@ -2178,7 +2188,7 @@ button.avatar-pic {
 
 .agent-sessions-head h2 {
   margin: 0;
-  font-size: clamp(26px, 3vw, 38px);
+  font-size: var(--agent-title-size);
   font-weight: 500;
   letter-spacing: -.02em;
 }
@@ -2638,7 +2648,7 @@ button.avatar-pic {
 
 @media (max-width: 799px) {
   .agent-sessions-page {
-    padding: 22px 14px 48px;
+    padding: 22px var(--agent-inline-mobile, 16px) 48px;
   }
 
   .agent-sessions-head {
@@ -2773,7 +2783,7 @@ button.avatar-pic {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 20px clamp(18px, 4vw, 56px) 16px;
+  padding: 20px var(--agent-inline) 16px;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -2808,6 +2818,8 @@ button.avatar-pic {
 .agent-shell-identity h1 {
   font-family: var(--mono);
   font-size: 20px;
+  color: var(--accent);
+  font-weight: 500;
 }
 
 .agent-shell-identity p:last-child,
@@ -2855,7 +2867,7 @@ button.avatar-pic {
   flex-shrink: 0;
   align-items: center;
   gap: 12px 18px;
-  padding: 10px clamp(18px, 4vw, 56px);
+  padding: 10px var(--agent-inline);
   border-bottom: 1px solid var(--hairline);
   color: var(--ink-muted);
   font-family: var(--mono);
@@ -2945,7 +2957,7 @@ button.avatar-pic {
   display: flex;
   flex-shrink: 0;
   gap: 4px;
-  padding: 0 clamp(18px, 4vw, 56px);
+  padding: 0 var(--agent-inline);
   overflow-x: auto;
   border-bottom: 1px solid var(--hairline);
   scrollbar-width: thin;
@@ -2982,10 +2994,10 @@ button.avatar-pic {
 .agent-overview,
 .agent-section-page,
 .agent-state {
-  width: min(1120px, 100%);
+  width: min(var(--agent-page-max), 100%);
   margin: 0 auto;
   box-sizing: border-box;
-  padding: clamp(28px, 5vw, 64px) clamp(18px, 5vw, 64px) 72px;
+  padding: var(--agent-page-pad-block) var(--agent-inline) 72px;
 }
 
 .agent-overview-grid {
@@ -3014,8 +3026,7 @@ button.avatar-pic {
 }
 
 .agent-panel h2,
-.agent-use h2,
-.agent-section-page h2 {
+.agent-use h2 {
   font-size: 22px;
 }
 
@@ -3304,13 +3315,15 @@ button.avatar-pic {
   font-size: 12px;
 }
 
-.agent-section-page {
-  margin-top: clamp(28px, 5vw, 64px);
-  padding: clamp(24px, 5vw, 48px);
-}
-
 .agent-section-page > p:not(.agent-eyebrow) {
   max-width: 680px;
+}
+
+.agent-section-page h2 {
+  margin: 0;
+  font-size: var(--agent-title-size);
+  font-weight: 500;
+  letter-spacing: -.02em;
 }
 
 .agent-section-page .agent-primary-action {
@@ -3326,10 +3339,10 @@ button.avatar-pic {
 .conversation-index,
 .conversation-detail,
 .conversation-detail-state {
-  width: min(960px, 100%);
+  width: min(var(--agent-page-max), 100%);
   margin: 0 auto;
   box-sizing: border-box;
-  padding: clamp(24px, 4vw, 48px) clamp(16px, 4vw, 48px) 64px;
+  padding: var(--agent-page-pad-block) var(--agent-inline) 72px;
 }
 
 .conversation-index-head,
@@ -3344,9 +3357,9 @@ button.avatar-pic {
 .conversation-detail h2,
 .conversation-detail-state h2 {
   margin: 0;
-  font-size: clamp(26px, 4vw, 38px);
+  font-size: var(--agent-title-size);
   font-weight: 500;
-  letter-spacing: -.025em;
+  letter-spacing: -.02em;
 }
 
 .conversation-index-head p:not(.agent-eyebrow) {
@@ -3606,10 +3619,10 @@ button.avatar-pic {
    separate reading surfaces so one installation is never mistaken for a
    bot deployed for each Agent. */
 .agent-slack {
-  width: min(1120px, 100%);
+  width: min(var(--agent-page-max), 100%);
   margin: 0 auto;
   box-sizing: border-box;
-  padding: clamp(28px, 5vw, 64px) clamp(18px, 5vw, 64px) 72px;
+  padding: var(--agent-page-pad-block) var(--agent-inline) 72px;
 }
 
 .agent-slack-intro,
@@ -3629,9 +3642,9 @@ button.avatar-pic {
 
 .agent-slack-intro h2 {
   margin: 0;
-  font-size: clamp(28px, 4vw, 44px);
+  font-size: var(--agent-title-size);
   font-weight: 500;
-  letter-spacing: -.025em;
+  letter-spacing: -.02em;
 }
 
 .agent-slack-intro > div > p:last-child {
@@ -3944,7 +3957,7 @@ button.avatar-pic {
 
   .agent-shell-header {
     align-items: flex-start;
-    padding: 14px 16px 12px;
+    padding: 14px var(--agent-inline-mobile, 16px) 12px;
   }
 
   .agent-shell-runtime {
@@ -3952,11 +3965,28 @@ button.avatar-pic {
   }
 
   .agent-tabs {
-    padding: 0 8px;
+    padding: 0 var(--agent-inline-mobile, 16px);
+  }
+
+  .topbar-capacity {
+    padding: 10px var(--agent-inline-mobile, 16px);
   }
 
   .agent-tabs a {
     padding-inline: 10px;
+  }
+
+  .agent-overview,
+  .agent-section-page,
+  .agent-state,
+  .agent-sessions-page,
+  .conversation-index,
+  .conversation-detail,
+  .conversation-detail-state,
+  .agent-slack,
+  .agent-activity,
+  .cfg-page.cfg-page-framed {
+    padding: 22px var(--agent-inline-mobile, 16px) 48px;
   }
 
   .agent-overview-grid,
@@ -3970,12 +4000,6 @@ button.avatar-pic {
 
   .agent-use {
     padding: 20px;
-  }
-
-  .conversation-index,
-  .conversation-detail,
-  .conversation-detail-state {
-    padding: 22px 14px 48px;
   }
 
   .conversation-index-head,
@@ -4905,17 +4929,17 @@ button.avatar-pic {
 /* NOT-553: Agent Activity is a secondary reading surface. Canonical events
    lead with human summaries; safe structured fields stay collapsed. */
 .agent-activity {
-  width: min(920px, 100%);
+  width: min(var(--agent-page-max), 100%);
   margin: 0 auto;
-  padding: clamp(24px, 4vw, 48px) clamp(16px, 4vw, 48px) 72px;
+  padding: var(--agent-page-pad-block) var(--agent-inline) 72px;
   box-sizing: border-box;
 }
 
 .agent-activity-intro h2 {
   margin: 0;
-  font-size: clamp(26px, 4vw, 38px);
+  font-size: var(--agent-title-size);
   font-weight: 500;
-  letter-spacing: -.025em;
+  letter-spacing: -.02em;
 }
 
 .agent-activity-intro > p:last-child {

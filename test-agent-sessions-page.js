@@ -132,6 +132,23 @@ try {
     assert.equal(/\}, \[requestedRef, rows\]\);/.test(panel), false);
     assert.match(css, /grid-template-columns: minmax\(18rem, 20rem\) minmax\(0, 1fr\)/);
     assert.match(css, /\.sessions-review\.has-detail \.sessions-list-pane/);
+    assert.match(css, /--agent-inline:/);
+    assert.match(css, /--agent-page-max:/);
+    assert.match(css, /--agent-title-size:/);
+    for (const selector of [
+      '.agent-sessions-page',
+      '.agent-overview',
+      '.conversation-index',
+      '.agent-slack',
+      '.agent-activity',
+      '.cfg-page.cfg-page-framed',
+    ]) {
+      assert.match(css, new RegExp(`${selector.replace(/\./g, '\\.')}[^{]*\\{[\\s\\S]*?padding:\\s*var\\(--agent-page-pad-block\\)\\s+var\\(--agent-inline\\)`),
+        `${selector} shares the Agent page frame inset`);
+    }
+    assert.match(css, /\.agent-sessions-head h2[^{]*\{[\s\S]*?font-size:\s*var\(--agent-title-size\)/);
+    assert.match(css, /\.agent-slack-intro h2[^{]*\{[\s\S]*?font-size:\s*var\(--agent-title-size\)/);
+    assert.match(css, /\.agent-activity-intro h2[^{]*\{[\s\S]*?font-size:\s*var\(--agent-title-size\)/);
   });
 
   test('selecting a page-2 row under a filter must not refetch page 1', () => {

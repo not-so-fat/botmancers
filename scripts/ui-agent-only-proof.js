@@ -207,7 +207,7 @@ async function run() {
     });
 
     await click('button.add-btn', 'New');
-    await waitFor("document.querySelector('form.bot-form')", 'New Agent panel');
+    await waitFor("document.querySelector('form.bot-form')", 'New agent panel');
     await shot('new-agent', async () => {
       const panel = await evaluate(`(() => {
         const form = document.querySelector('form.bot-form');
@@ -220,7 +220,7 @@ async function run() {
         };
       })()`);
       console.log(`  New panel: ${JSON.stringify(panel)}`);
-      checkFn(panel.heading.includes('New Agent') && panel.tabs === 0 && panel.checkboxes === 0, 'New opens one New Agent panel with no kind tab or member picker');
+      checkFn(panel.heading.includes('New agent') && panel.tabs === 0 && panel.checkboxes === 0, 'New opens one New agent panel with no kind tab or member picker');
     });
     await press('Escape');
     await sleep(200);

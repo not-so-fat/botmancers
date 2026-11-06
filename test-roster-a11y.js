@@ -43,7 +43,7 @@ console.log('\nCase 3: visible menu supports every action and keyboard movement'
 const actions = between('const rowActions = ', 'const rowTip = ');
 assert(/aria-haspopup="menu"/.test(actions) && /aria-expanded=/.test(actions), 'trigger is a labelled menu button with expanded state');
 assert(/aria-label=\{`Actions for \$\{agent\.name\}`\}/.test(actions), 'trigger is labelled with Agent name');
-for (const item of ['Mark as Unread', 'Rename Agent', 'Hide from sidebar', 'Unhide', 'Config', 'Delete agent…', 'Pin', 'Unpin']) {
+for (const item of ['Mark as Unread', 'Rename agent', 'Hide from sidebar', 'Unhide', 'Config', 'Delete agent…', 'Pin', 'Unpin']) {
   assert(rail.includes(item), `menu offers ${item}`);
 }
 assert((rail.match(/role="menuitem"/g) || []).length === 6, 'menu exposes six menuitems');

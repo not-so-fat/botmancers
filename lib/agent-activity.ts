@@ -1,4 +1,4 @@
-// NOT-553: the owner's Agent-scoped operational timeline. This is a read
+// NOT-553: the owner's agent-scoped operational timeline. This is a read
 // projection over canonical rows only; it owns no table and never reads
 // provider transcripts, message content, runtime payloads, external provider
 // ids, credentials, or filesystem paths.

@@ -11,6 +11,7 @@ import {
   formatSyncRelativeTime,
   noMatchingSessionsCopy,
   runtimeLabel,
+  sessionConversationHref,
   sessionOriginChips,
   sessionStateTags,
   sessionUsageLine,
@@ -34,7 +35,7 @@ import { detailsHref, sessionDialogMode, sessionRowActions, type SessionDialogMo
 import SessionShares from '@/app/components/SessionShares';
 import type { OwnerShare, SharePolicy } from '@/lib/share-view';
 
-// NOT-550: the selected Agent's full-page Sessions review surface. The
+// NOT-550: the selected agent's full-page Sessions review surface. The
 // compact list contains only scannable catalog facts; actions, explanations,
 // usage, shares, origin, timestamps, and debug identifiers live in detail.
 const SHARE_REFRESH_MS = 15_000;
@@ -52,9 +53,7 @@ function sessionsListUrl(agentId: string, filter: SessionFilter, query: string, 
 function conversationHref(row: SessionRow): string | null {
   const conversation = row.origin.conversation;
   if (!conversation) return null;
-  if (conversation.thread_agent_id) return `/agents/${encodeURIComponent(conversation.thread_agent_id)}/conversations`;
-  if (conversation.kind === 'group') return `/threads/${encodeURIComponent(conversation.id)}`;
-  return null;
+  return sessionConversationHref(conversation);
 }
 
 export default function SessionsPanel({ agentId, agentName, agentProvider, agents, origin, onExchangeStarted }: {
@@ -494,7 +493,7 @@ export function SessionDetail({ row, agentId, headingRef, origin, agents, shares
         {origin && available.length ? <div className="session-actions" role="group" aria-label={`Actions for ${row.title}`}>
           {available.map(item => <button key={item.action} type="button" className="session-action" data-session-action={item.action} aria-haspopup="dialog" onClick={e => onAction(sessionDialogMode(item.action), e.currentTarget)}>{item.label}</button>)}
         </div> : null}
-        {!origin && available.length ? <p className="session-unavailable">Open this Agent’s Conversation before starting an action.</p> : null}
+        {!origin && available.length ? <p className="session-unavailable">Open this agent’s Conversation before starting an action.</p> : null}
         {unavailable.length ? <ul className="session-unavailable" aria-label={`Unavailable actions for ${row.title}`}>{unavailable.map(item => <li key={item.action}><strong>{item.label}:</strong> {item.availability.available ? '' : item.availability.reason}</li>)}</ul> : null}
       </section>
 
