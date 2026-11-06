@@ -77,7 +77,7 @@ async function main() {
   assert(impl.context.workspace === '/Users/owner/work/botmancers' && !('deck' in impl.context), 'workspace comes from the stored launch snapshot; no deck in the read shape');
   const ended = byRef[replaced.id];
   assert(ended.status === 'ended' && ended.ended_at === BASE + 20 * MIN && ended.resumable === false, 'a released binding is ended, with its release time, and not resumable');
-  assert(byRef[group.id].title === 'Group Design review' && byRef[group.id].origin.conversation.kind === 'group'
+  assert(byRef[group.id].title === 'Shared · Design review' && byRef[group.id].origin.conversation.kind === 'group'
     && byRef[group.id].origin.conversation.thread_agent_id === null && byRef[group.id].resumable === false, 'a group binding is titled from its group and has no thread link');
   assert(byRef[direct.id].title === 'Dev · 2026-10-15 09:05 UTC', 'no Work Request or group: <Agent name> · <created date/time>');
   assert(byRef[directNext.id].context.workspace === null && !('deck' in byRef[directNext.id].context), 'no launch snapshot: no invented workspace, no deck key');
@@ -282,7 +282,7 @@ async function main() {
     'the normal Sessions flow has no modal drawer or drawer focus trap');
   assert(/Loading sessions…/.test(panel) && /role="alert"/.test(panel) && /Retry/.test(panel) && /emptySessionsCopy\(/.test(panel), 'loading, error (with retry), and empty states');
   assert(/statusLabel\(row\)/.test(panel) && /is-\$\{row\.status\}/.test(panel) && /aria-pressed=\{filter === option\.value\}/.test(panel), 'active/ended state per row and an active|ended|all filter');
-  assert(/conversation\.thread_agent_id[\s\S]*?\/conversations/.test(panel) && /Last activity/.test(panel) && /Origin/.test(panel),
+  assert(/sessionConversationHref\(conversation\)/.test(panel) && /thread_agent_id[\s\S]*?\/conversations/.test(read('lib/session-view.ts')) && /Last activity/.test(panel) && /Origin/.test(panel),
     'detail shows last activity and an Agent-scoped Conversations origin link');
   assert(/sessionOriginChips\(row\)/.test(panel), 'collapsed provenance chips come from canonical metadata');
   // NOT-548: the drawer gained a title search box. It stays the only
