@@ -148,7 +148,7 @@ export default function SharePolicyCard({ agentId, agentName }: { agentId: strin
           ) : null}
 
           <h3 className="cfg-title share-policy-sub">Slack channel allowlist</h3>
-          <p className="text-sm cfg-faint">Every Agent’s shares use this list. A share can only go to a channel on it.</p>
+          <p className="text-sm cfg-faint">Every agent’s shares use this list. A share can only go to a channel on it.</p>
           {policy.audiences.length === 0 ? (
             <p className="text-sm cfg-muted share-policy-empty">No channel yet: nothing can be shared to Slack.</p>
           ) : (

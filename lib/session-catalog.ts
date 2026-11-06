@@ -241,7 +241,7 @@ function originConversation(row: CatalogRow): SessionOriginConversation | null {
   const id = row.origin_conversation_id;
   if (!id) return null;
   if (row.conversation_type === 'group') {
-    return { id, kind: 'group', label: row.group_name ? `Group ${row.group_name}` : 'Group thread', thread_agent_id: null };
+    return { id, kind: 'group', label: row.group_name ? `Shared · ${row.group_name}` : 'Shared thread', thread_agent_id: null };
   }
   if (row.conversation_type === 'bot' && row.conversation_bot_id) {
     return {

@@ -181,7 +181,7 @@ try {
     const step1 = card.indexOf('Step 1</span> Install in your coding agent');
     const step2 = card.indexOf('Step 2</span> Ask it to talk to {overview.agent.name}');
     assert.ok(step1 > 0 && step2 > step1, 'Step 1 precedes Step 2 inside card 01');
-    assert.ok(card.includes('Run this where your coding agent runs (the one that will ask {overview.agent.name}), not on this registered Agent.'));
+    assert.ok(card.includes('Run this where your coding agent runs (the one that will ask {overview.agent.name}), not on this registered agent.'));
     assert.ok(card.indexOf('<BridgeSetupClients />') > step1 && card.indexOf('<BridgeSetupClients />') < step2, 'client buttons live in Step 1');
     assert.ok(card.indexOf('<AskAgentPrompt agentName={overview.agent.name} />') > step2, 'prompt lives in Step 2');
     assert.ok(card.includes('Your coding agent sends the question to {overview.agent.name}, waits for the answer, and can read the conversation.'));

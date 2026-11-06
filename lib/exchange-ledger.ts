@@ -37,7 +37,7 @@ function bounded(text: string | null | undefined): string | null {
 }
 
 function agentName(db: Db, id: string): string {
-  return (db.prepare('SELECT name FROM bots WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? 'Removed Agent';
+  return (db.prepare('SELECT name FROM bots WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? 'Removed agent';
 }
 
 function messageContent(db: Db, id: unknown): string | null {

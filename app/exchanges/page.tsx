@@ -110,7 +110,7 @@ export default function ExchangesPage() {
       <header className="ledger-head">
         <Link href="/" className="cfg-link ledger-back">← Back to chat</Link>
         <h1 className="ledger-title">Agent Exchanges</h1>
-        <p className="ledger-sub">Every Ask and Continue between Agent sessions, newest activity first.</p>
+        <p className="ledger-sub">Every Ask and Continue between agent sessions, newest activity first.</p>
       </header>
       <main className="ledger-main">
         <section className="ledger-list-pane" aria-labelledby={listTitleId}>
@@ -305,7 +305,7 @@ function ExchangeDetailView({ id, onBack, onChanged }: { id: string; onBack: () 
               <li key={link.id}>
                 {href
                   ? <Link className="session-link ledger-thread-link" href={href}>{link.label}</Link>
-                  : <span>{link.label}{link.kind === 'agent_api' ? <span className="ledger-link-role"> (between Agents, not an owner thread)</span> : null}</span>}
+                  : <span>{link.label}{link.kind === 'agent_api' ? <span className="ledger-link-role"> (between agents, not an owner thread)</span> : null}</span>}
                 <span className="ledger-link-role"> · {linkRoleLabel(link.roles)}</span>
               </li>
             );

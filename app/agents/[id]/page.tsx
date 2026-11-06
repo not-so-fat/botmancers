@@ -174,7 +174,7 @@ export default function AgentOverviewPage() {
             <ol className="agent-setup-steps">
               <li>
                 <h4><span className="agent-setup-step-label">Step 1</span> Install in your coding agent</h4>
-                <p className="agent-muted">Run this where your coding agent runs (the one that will ask {overview.agent.name}), not on this registered Agent. Click your client to copy it:</p>
+                <p className="agent-muted">Run this where your coding agent runs (the one that will ask {overview.agent.name}), not on this registered agent. Click your client to copy it:</p>
                 <BridgeSetupClients />
               </li>
               <li>

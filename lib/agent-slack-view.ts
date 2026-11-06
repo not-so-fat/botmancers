@@ -57,7 +57,7 @@ export function relayCopy(health: RelayHealth): RelayCopy {
     case 'disabled': return { label: 'Disabled', summary: 'The optional Botmancers Slack relay is off.', guidance: 'To use Slack sharing, configure both Slack relay credentials and at least one allowlisted channel, then restart Botmancers.', tone: 'quiet' };
     case 'misconfigured': return { label: 'Needs configuration', summary: 'The Botmancers Slack relay cannot start with its current configuration.', guidance: MISCONFIGURED_GUIDANCE[health.reason ?? 'share_config_invalid'] ?? 'Review the Slack relay credentials and sharing allowlist, then restart Botmancers.', tone: 'warning' };
     case 'connecting': return { label: 'Connecting', summary: 'The Botmancers Slack relay is opening its Socket Mode connection.', guidance: 'Wait a moment, then refresh. Existing shares remain bounded to their exact sessions.', tone: 'working' };
-    case 'connected': return { label: 'Connected', summary: 'The single Botmancers Slack relay is connected.', guidance: 'It can post and answer eligible shared-session threads for all Agents on this Botmancers instance.', tone: 'good' };
+    case 'connected': return { label: 'Connected', summary: 'The single Botmancers Slack relay is connected.', guidance: 'It can post and answer eligible shared-session threads for all agents on this Botmancers instance.', tone: 'good' };
     case 'reconnecting': return { label: 'Reconnecting', summary: 'The Botmancers Slack relay lost its connection and is reconnecting.', guidance: 'Wait and refresh. Pending work is recovered after the connection returns; do not recreate shares just for a reconnect.', tone: 'working' };
     case 'failed': return { label: 'Failed', summary: 'The Botmancers Slack relay could not authenticate or connect.', guidance: health.reason === 'slack_auth_failed' ? 'Check the configured Slack app and bot credentials, then restart Botmancers.' : 'Check Slack connectivity and the Socket Mode app configuration, then restart Botmancers.', tone: 'warning' };
     case 'stopped': return { label: 'Stopped', summary: 'The Botmancers Slack relay is not running.', guidance: 'Start or restart Botmancers. Existing share records remain available for review.', tone: 'quiet' };
@@ -65,7 +65,7 @@ export function relayCopy(health: RelayHealth): RelayCopy {
 }
 
 export function creationPathLabel(share: Pick<OwnerShare, 'created_via' | 'created_by'>): string {
-  if (share.created_via === 'current_session') return 'Running Agent turn';
+  if (share.created_via === 'current_session') return 'Running agent turn';
   return share.created_by === 'owner' ? 'Sessions' : 'Session share API';
 }
 
