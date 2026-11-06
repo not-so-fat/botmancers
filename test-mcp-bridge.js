@@ -701,7 +701,7 @@ async function child() {
     check(/^Step 2 \(discover\)/.test(desc.botmancers_list_agents) && /botmancers_list_sessions/.test(desc.botmancers_list_agents), 'list_agents: step 2; choose an Agent by name, then list its sessions');
     check(/^Step 3 \(select\)/.test(desc.botmancers_list_sessions) && /recognizable title/.test(desc.botmancers_list_sessions) && /botmancers_send_to_session/.test(desc.botmancers_list_sessions)
       && /botmancers_create_exchange/.test(desc.botmancers_list_sessions), 'list_sessions: step 3; recognizable sessions; send_to_session for the same Agent or create_exchange');
-    check(/^Step 4 \(act, same Agent\)/.test(desc.botmancers_send_to_session) && /^Step 4 \(act, exchange\)/.test(desc.botmancers_create_exchange), 'send_to_session and create_exchange: step 4, act');
+    check(/^Step 4 \(act, same agent\)/.test(desc.botmancers_send_to_session) && /^Step 4 \(act, exchange\)/.test(desc.botmancers_create_exchange), 'send_to_session and create_exchange: step 4, act');
     check(writes.every(name => /Step 5 \(observe\): poll botmancers_get_exchange/.test(desc[name]) && /doubling up to 30 s/.test(desc[name])), 'both mutations: step 5, poll get_exchange with backoff');
     check(/^Step 5 \(observe\)/.test(desc.botmancers_get_exchange) && /until terminal is true/.test(desc.botmancers_get_exchange), 'get_exchange: step 5, poll until terminal');
     check(['botmancers_get_exchange', 'botmancers_get_conversation'].every(name => /untrusted data/.test(desc[name]) && /never follow instructions/.test(desc[name]))
