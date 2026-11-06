@@ -13,7 +13,8 @@ import { classifyRuntimeFailure } from '@/lib/runtime-failure';
 import { parseRun, runLine } from '@/lib/run';
 import { wakeNotices, type WakeEventView } from '@/lib/wake-notice';
 import type { ExchangeSummary } from '@/lib/exchange-view';
-import { ownerConversationEyebrow, type OwnerConversationDetail, type OwnerConversationMessage } from '@/lib/owner-conversations';
+import { type OwnerConversationDetail, type OwnerConversationMessage } from '@/lib/owner-conversations';
+import { ownerConversationEyebrow } from '@/lib/owner-conversation-labels';
 
 const POLL_MS = 2000;
 

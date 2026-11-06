@@ -9,6 +9,7 @@ import { getApprovalByCode } from './approvals';
 import { serviceRedactor } from './service-redaction';
 import { InvalidPageCursorError, paginateRows, type Page } from './page-cursor';
 import { legacyAgentChatHref } from './owner-conversation-href';
+export { isOwnerGroupConversation, ownerConversationTypeLabel, ownerConversationEyebrow } from './owner-conversation-labels';
 
 export { InvalidPageCursorError, legacyAgentChatHref };
 
@@ -47,25 +48,6 @@ export interface OwnerConversationDetail extends OwnerConversationSummary {
   messages: OwnerConversationMessage[];
   next_cursor: string | null;
   events: unknown[];
-}
-
-/** Legacy multi-party rows stay readable; UI must not surface Group product copy. */
-export function isOwnerGroupConversation(type: OwnerConversationSummary['type']): boolean {
-  return type === 'group';
-}
-
-export function ownerConversationTypeLabel(row: Pick<OwnerConversationSummary, 'type' | 'origin'>): string {
-  if (row.type === 'direct') return 'Direct';
-  if (isOwnerGroupConversation(row.type)) return 'Shared';
-  if (row.origin?.kind === 'service') return 'External service';
-  return 'Agent to agent';
-}
-
-export function ownerConversationEyebrow(row: Pick<OwnerConversationSummary, 'type' | 'origin'>): string {
-  if (row.type === 'direct') return 'Direct conversation';
-  if (isOwnerGroupConversation(row.type)) return 'Shared history';
-  if (row.origin?.kind === 'service') return 'External-service history';
-  return 'Agent-to-agent history';
 }
 
 interface ConversationRow {

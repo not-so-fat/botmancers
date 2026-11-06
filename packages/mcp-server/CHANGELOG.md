@@ -7,6 +7,20 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-06
+
+### Changed
+
+- The Overview card "Use from a coding agent" is now two steps with copy
+  buttons: Install (run `botmancers setup` where your calling coding agent
+  runs, not on the registered Agent) and Ask (a copyable prompt that names
+  the Agent).
+- Agent pages share one page frame, and product copy is sentence-case
+  ("agent", not "Agent"), including MCP tool titles and descriptions.
+  Tool names, arguments, and results are unchanged.
+- Legacy multi-party conversations are labelled "Shared" instead of "Group",
+  and the Sessions panel keeps its selection in sync without a render lag.
+
 ## [0.10.0] - 2026-11-05
 
 ### Added

@@ -131,7 +131,7 @@ console.log('\nHelpers: ordering, labels, request body, allowlist validation');
   assert(/Workspace ID/.test(view.audienceInputError('*', 'C0NEW0001', existing)) && /Channel ID/.test(view.audienceInputError('T0OWNER01', 'general', existing))
     && /already/.test(view.audienceInputError('T0OWNER01', 'C0OWNER01', existing)), 'wildcard / malformed / duplicate entries are refused before sending');
   assert(view.SHARE_DURATIONS.every(d => d.seconds >= 300 && d.seconds <= 86400), 'every offered duration is inside the 300 s - 86 400 s TTL bounds');
-  assert(/revokes every live turn context/.test(view.shareFromTurnNote(policy())) && /Agent Sessions page/.test(view.shareFromTurnNote(policy({ agent: { ...policy().agent, share_from_turn: false } }))),
+  assert(/revokes every live turn context/.test(view.shareFromTurnNote(policy())) && /Sessions page/.test(view.shareFromTurnNote(policy({ agent: { ...policy().agent, share_from_turn: false } }))),
     'share_from_turn notes: on explains the revocation, off points to Sessions');
   const cursor = policy({ agent: { ...policy().agent, share_current: { supported: false, reason: 'Cursor has no per-launch MCP configuration.' } } });
   assert(view.shareFromTurnNote(cursor) === 'Cursor has no per-launch MCP configuration.', 'an unsupported runtime: the server\'s reason');

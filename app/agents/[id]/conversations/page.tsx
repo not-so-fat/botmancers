@@ -3,7 +3,8 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAgentOverview } from '../AgentShell';
-import { ownerConversationTypeLabel, type OwnerConversationSummary } from '@/lib/owner-conversations';
+import { type OwnerConversationSummary } from '@/lib/owner-conversations';
+import { ownerConversationTypeLabel } from '@/lib/owner-conversation-labels';
 
 interface ConversationPage { conversations: OwnerConversationSummary[]; next_cursor: string | null }
 
