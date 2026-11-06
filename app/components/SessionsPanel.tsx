@@ -168,11 +168,12 @@ export default function SessionsPanel({ agentId, agentName, agentProvider, agent
   // The ?session= query is the source of truth for selection. Closing detail
   // clears the query; do not re-select from a stale param while navigation
   // catches up, and do not keep a local selection after the query is gone.
-  useEffect(() => {
-    if (!rows) return;
-    if (requestedRef && rows.some(row => row.ref === requestedRef)) setSelectedRef(requestedRef);
-    else setSelectedRef(null);
-  }, [requestedRef, rows]);
+  // Adjusted during render (React's "adjust state on prop change" pattern)
+  // rather than in an effect; while rows are loading the prior value is kept.
+  const syncedSelectedRef = rows
+    ? (requestedRef && rows.some(row => row.ref === requestedRef) ? requestedRef : null)
+    : selectedRef;
+  if (syncedSelectedRef !== selectedRef) setSelectedRef(syncedSelectedRef);
 
   // Filter/search changes that drop the selected row must clear ?session= so a
   // later matching filter does not silently reopen detail without focus.

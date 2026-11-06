@@ -125,6 +125,11 @@ try {
     assert.match(panel, /router\.replace\(\`\/agents\/\$\{encodeURIComponent\(agentId\)\}\/sessions\?session=/);
     assert.match(panel, /sessions\/\$\{encodeURIComponent\(requestedRef\)\}/);
     assert.match(panel, /returnTo\.focus\(\)/);
+    // NOT-555: selection is derived from ?session= + rows during render (kept
+    // while rows load), never set from an effect body.
+    assert.match(panel, /requestedRef && rows\.some\(row => row\.ref === requestedRef\) \? requestedRef : null/);
+    assert.match(panel, /if \(syncedSelectedRef !== selectedRef\) setSelectedRef\(syncedSelectedRef\);/);
+    assert.equal(/\}, \[requestedRef, rows\]\);/.test(panel), false);
     assert.match(css, /grid-template-columns: minmax\(18rem, 20rem\) minmax\(0, 1fr\)/);
     assert.match(css, /\.sessions-review\.has-detail \.sessions-list-pane/);
   });
