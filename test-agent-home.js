@@ -77,6 +77,7 @@ try {
   const shell = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/AgentShell.tsx'), 'utf8');
   const rail = fs.readFileSync(path.join(ROOT, 'app/components/AgentRail.tsx'), 'utf8');
   const overviewPage = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/page.tsx'), 'utf8');
+  const reachCopySource = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/reach-copy.ts'), 'utf8');
   const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci-botmancers.yml'), 'utf8');
   const overviewDto = fs.readFileSync(path.join(ROOT, 'lib/agent-overview.ts'), 'utf8');
   const dtoShape = overviewDto.slice(overviewDto.indexOf('export interface AgentOverviewDto'), overviewDto.indexOf('export function summarizeInstruction'));
@@ -145,6 +146,10 @@ try {
       'Message in Botmancers',
       'Click your client to copy it',
       'Copy setup command for a coding client',
+    ]) {
+      assert.ok(overviewPage.includes(text), text);
+    }
+    for (const text of [
       "id: 'cursor'",
       "id: 'codex'",
       "id: 'claude'",
@@ -153,7 +158,7 @@ try {
       "label: 'Claude Code'",
       'botmancers setup --client ${id}',
     ]) {
-      assert.ok(overviewPage.includes(text), text);
+      assert.ok(reachCopySource.includes(text), text);
     }
     assert.equal(overviewPage.includes('Swap <code>cursor</code>'), false);
     assert.equal(overviewPage.includes("'Copy setup command'"), false);
@@ -172,6 +177,23 @@ try {
     assert.equal(/label[^>]*>\s*(Runtime|Model|Provider session)/i.test(overviewPage), false);
   });
 
+  test('coding-agent card splits into Install and Ask steps that name the Agent', () => {
+    const card = overviewPage.slice(overviewPage.indexOf('Use from a coding agent'), overviewPage.indexOf('Share a session to Slack'));
+    const step1 = card.indexOf('Step 1</span> Install in your coding agent');
+    const step2 = card.indexOf('Step 2</span> Ask it to talk to {overview.agent.name}');
+    assert.ok(step1 > 0 && step2 > step1, 'Step 1 precedes Step 2 inside card 01');
+    assert.ok(card.includes('Run this where your coding agent runs (the one that will ask {overview.agent.name}), not on this registered Agent.'));
+    assert.ok(card.indexOf('<BridgeSetupClients />') > step1 && card.indexOf('<BridgeSetupClients />') < step2, 'client buttons live in Step 1');
+    assert.ok(card.indexOf('<AskAgentPrompt agentName={overview.agent.name} />') > step2, 'prompt lives in Step 2');
+    assert.ok(card.includes('Your coding agent sends the question to {overview.agent.name}, waits for the answer, and can read the conversation.'));
+    for (const tool of ['botmancers_health', 'botmancers_start_task', 'botmancers_get_request', 'botmancers_get_conversation']) {
+      assert.equal(overviewPage.includes(tool), false, `no MCP tool name ${tool} on Overview`);
+    }
+    assert.match(overviewPage, /\{copied \? 'Copied' : 'Copy'\}/);
+    assert.match(overviewPage, /if \(await copyText\(prompt\)\) \{\s*setCopied\(true\)/);
+    assert.match(overviewPage, /if \(await copyText\(setupCommand\(id\)\)\) \{\s*setCopied\(id\)/);
+  });
+
   test('release-check workflow runs the focused Agent-home and roster suites', () => {
     assert.match(workflow, /npm run test:agent-home/);
     assert.match(workflow, /npm run test:roster-a11y/);
@@ -182,4 +204,29 @@ try {
   fs.rmSync(temp, { recursive: true, force: true });
 }
 
-console.log(`\n${passed} passed`);
+(async () => {
+  const { askAgentPrompt, setupCommand, copyText, BRIDGE_CLIENTS } = jiti('./app/agents/[id]/reach-copy.ts');
+
+  assert.equal(askAgentPrompt('Atlas'), 'Use Botmancers to ask Atlas: <your question>');
+  assert.deepEqual(BRIDGE_CLIENTS.map(client => setupCommand(client.id)), [
+    'botmancers setup --client cursor',
+    'botmancers setup --client codex',
+    'botmancers setup --client claude',
+  ]);
+  passed++;
+  console.log('ok - Step 2 prompt interpolates the Agent name; setup commands are unchanged');
+
+  const written = [];
+  const okClipboard = { writeText: async text => { written.push(text); } };
+  assert.equal(await copyText(askAgentPrompt('Atlas'), okClipboard), true);
+  assert.deepEqual(written, ['Use Botmancers to ask Atlas: <your question>']);
+  const failingClipboard = { writeText: async () => { throw new Error('denied'); } };
+  assert.equal(await copyText(askAgentPrompt('Atlas'), failingClipboard), false, 'failed write reports no copy');
+  passed++;
+  console.log('ok - copy writes exactly the prompt and reports failure so no Copied state is shown');
+
+  console.log(`\n${passed} passed`);
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
