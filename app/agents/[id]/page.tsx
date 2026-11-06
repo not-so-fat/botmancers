@@ -6,9 +6,39 @@ import { useAgentOverview } from './AgentShell';
 import { agentLabel } from '@/lib/bot-definition';
 import { HarnessIcon } from '@/app/components/HarnessIcon';
 import { ActivityList } from './activity/AgentActivityPage';
-import { BRIDGE_CLIENTS, askAgentPrompt, copyText, setupCommand, type BridgeClientId } from './reach-copy';
 
 const COPIED_MS = 1600;
+
+// --- reach-copy helpers (test-agent-home.js evaluates this block) ---
+const BRIDGE_CLIENTS = [
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'claude', label: 'Claude Code' },
+] as const;
+
+type BridgeClientId = (typeof BRIDGE_CLIENTS)[number]['id'];
+
+function setupCommand(id: BridgeClientId) {
+  return `botmancers setup --client ${id}`;
+}
+
+function askAgentPrompt(agentName: string) {
+  return `Use Botmancers to ask ${agentName}: <your question>`;
+}
+
+type ClipboardWriter = { writeText(text: string): Promise<void> };
+
+/** Writes text to the clipboard; resolves true only when the write succeeded. */
+async function copyText(text: string, clipboard?: ClipboardWriter): Promise<boolean> {
+  try {
+    const target = clipboard ?? navigator.clipboard;
+    await target.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+// --- end reach-copy helpers ---
 
 function BridgeSetupClients() {
   const [active, setActive] = useState<BridgeClientId>('cursor');

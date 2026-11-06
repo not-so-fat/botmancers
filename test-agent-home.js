@@ -77,7 +77,6 @@ try {
   const shell = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/AgentShell.tsx'), 'utf8');
   const rail = fs.readFileSync(path.join(ROOT, 'app/components/AgentRail.tsx'), 'utf8');
   const overviewPage = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/page.tsx'), 'utf8');
-  const reachCopySource = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/reach-copy.ts'), 'utf8');
   const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci-botmancers.yml'), 'utf8');
   const overviewDto = fs.readFileSync(path.join(ROOT, 'lib/agent-overview.ts'), 'utf8');
   const dtoShape = overviewDto.slice(overviewDto.indexOf('export interface AgentOverviewDto'), overviewDto.indexOf('export function summarizeInstruction'));
@@ -158,7 +157,7 @@ try {
       "label: 'Claude Code'",
       'botmancers setup --client ${id}',
     ]) {
-      assert.ok(reachCopySource.includes(text), text);
+      assert.ok(overviewPage.includes(text), text);
     }
     assert.equal(overviewPage.includes('Swap <code>cursor</code>'), false);
     assert.equal(overviewPage.includes("'Copy setup command'"), false);
@@ -205,7 +204,19 @@ try {
 }
 
 (async () => {
-  const { askAgentPrompt, setupCommand, copyText, BRIDGE_CLIENTS } = jiti('./app/agents/[id]/reach-copy.ts');
+  // Page files may not export helpers, so evaluate the marked helper block of page.tsx directly.
+  const overviewSource = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/page.tsx'), 'utf8');
+  const startMarker = '// --- reach-copy helpers';
+  const endMarker = '// --- end reach-copy helpers ---';
+  assert.ok(overviewSource.includes(startMarker) && overviewSource.includes(endMarker), 'page.tsx keeps the marked reach-copy helper block');
+  const helperTs = overviewSource.slice(overviewSource.indexOf(startMarker), overviewSource.indexOf(endMarker));
+  const ts = require('typescript');
+  const helperJs = ts.transpileModule(`${helperTs}\nmodule.exports = { askAgentPrompt, setupCommand, copyText, BRIDGE_CLIENTS };`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  const helperModule = { exports: {} };
+  new Function('module', 'exports', helperJs)(helperModule, helperModule.exports);
+  const { askAgentPrompt, setupCommand, copyText, BRIDGE_CLIENTS } = helperModule.exports;
 
   assert.equal(askAgentPrompt('Atlas'), 'Use Botmancers to ask Atlas: <your question>');
   assert.deepEqual(BRIDGE_CLIENTS.map(client => setupCommand(client.id)), [
