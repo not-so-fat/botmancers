@@ -983,7 +983,7 @@
                 },
                 "available": {
                   "type": "boolean",
-                  "description": "Whether the agent can currently be launched."
+                  "description": "Whether the agent is configured to launch (a runtime connection and session scope are set). It does not probe the runtime, so a send can still return agent_unavailable."
                 },
                 "capabilities": {
                   "type": "array",

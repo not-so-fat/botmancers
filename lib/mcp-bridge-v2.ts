@@ -202,7 +202,7 @@ const agentItem = closed({
   name: { type: 'string', description: 'Human-readable agent name.' },
   title: str,
   runtime: { type: 'string', description: 'Runtime kind the owner configured for this agent (informational; a caller never selects it).' },
-  available: { type: 'boolean', description: 'Whether the agent can currently be launched.' },
+  available: { type: 'boolean', description: 'Whether the agent is configured to launch (a runtime connection and session scope are set). It does not probe the runtime, so a send can still return agent_unavailable.' },
   capabilities: { ...capabilityList, description: 'The operations this caller can use on this agent (every capability; the agent\'s policy still gates new sessions and resume).' },
   messaging: {
     ...closed({
