@@ -1,24 +1,26 @@
 #!/usr/bin/env node
-// NOT-499: granted service access to Agents, sessions, conversations, and
-// exchanges (lib/service-grants, lib/service-audit, lib/service-api,
-// lib/service-api-http, app/api/v0/**).
-// Proves: the versioned owner-only grants document allows exactly what it
-// lists and fails closed when missing (narrow behavior kept), malformed,
-// unknown, duplicate, over-broad, reserved, or not owner-only; two service
-// principals over three Agents see only their granted Agents, sessions,
-// conversations, and exchanges, newest activity first with deterministic
-// cursors, and a target outside the grants is answered exactly like a
-// missing one; no view carries a provider session or run id, Deck, or
-// working directory; a session message accepts only content and an
-// idempotency key, refuses authority-seeking fields before any write, and
-// resumes exactly the referenced active binding as one read-only turn whose
-// request and conversation the caller can poll; exchanges reuse the
-// canonical store under exchanges:read/create on every Agent involved,
-// with cancellation, idempotent replay, and a restart (a real second
-// process); every call appends a bounded audit event that leaks no prompt,
-// transcript, token, provider id, or working directory. Handlers run
-// in-process with the real service-token authenticator and a fake attempt
-// adapter through the real leased dispatcher. Self-contained: isolated
+// NOT-556 (was NOT-499's test-service-grants): service access to Agents,
+// sessions, conversations, exchanges, pins, and shares with no owner grants
+// layer (lib/service-api, lib/service-api-http, lib/mcp-bridge-v2,
+// app/api/v0/**).
+// Proves: with no grants file, and with a leftover invalid one (never read,
+// never deleted), a configured service token reaches every registered
+// Agent: capabilities reports mode granted with every Agent and the full
+// capability list; it lists Agents, sessions, and conversations, sends to
+// an active session, and creates Ask and Continue exchanges. The Agent's
+// policy stays the gate for starting a session (no_eligible_session when
+// new sessions are off, a read-only start when on with a default
+// workspace) and for resume with edits (authority_not_allowed when the
+// policy is off, approval_required without approve_write); the owner's
+// allowlist stays the gate for share audiences (audience_not_allowed). A
+// second service principal cannot read or cancel the first one's
+// exchanges, pins, or shares; an unknown Agent is agent_not_found; a bad
+// token is 401; the session-context principal sees no Agents. No view
+// carries a provider session or run id, Deck, or working directory; every
+// call appends a bounded audit event; idempotent replays survive a restart
+// (a real second process). Handlers run in-process with the real
+// service-token authenticator, a fake attempt adapter through the real
+// leased dispatcher, and a fake session provider. Self-contained: isolated
 // SQLite file and HOME, no network, no listening socket.
 'use strict';
 
@@ -29,19 +31,21 @@ const { createHash } = require('crypto');
 const { spawnSync } = require('child_process');
 
 const ROOT = __dirname;
-const CHILD = process.env.GRANTS_SCENARIO === 'restart-child';
-const DB_PATH = process.env.GRANTS_DB || path.join(os.tmpdir(), `botmancers-grants-${process.pid}.db`);
+const CHILD = process.env.ACCESS_SCENARIO === 'restart-child';
+const DB_PATH = process.env.ACCESS_DB || path.join(os.tmpdir(), `botmancers-access-${process.pid}.db`);
 if (!CHILD) for (const suffix of ['', '-shm', '-wal']) fs.rmSync(DB_PATH + suffix, { force: true });
-process.env.GRANTS_DB = DB_PATH;
+process.env.ACCESS_DB = DB_PATH;
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-if (!process.env.GRANTS_HOME) process.env.GRANTS_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-grants-home-'));
-process.env.HOME = process.env.GRANTS_HOME;
+if (!process.env.ACCESS_HOME) process.env.ACCESS_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-access-home-'));
+process.env.HOME = process.env.ACCESS_HOME;
+process.env.BOTMANCERS_HOME = path.join(process.env.ACCESS_HOME, '.botmancers');
 process.env.HERMES_API_SERVER_KEY = 'fixture-hermes-key';
-const GRANTS_PATH = path.join(process.env.GRANTS_HOME, 'config', 'service-grants.json');
-process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
+// Where earlier releases read the owner's grants document. Nothing reads it now.
+const LEFTOVER_GRANTS_PATH = path.join(process.env.BOTMANCERS_HOME, 'config', 'service-grants.json');
 // NOT-515: the owner's session-share allowlist (lib/session-shares).
-const SHARES_PATH = path.join(process.env.GRANTS_HOME, 'config', 'session-shares.json');
+const SHARES_PATH = path.join(process.env.ACCESS_HOME, 'config', 'session-shares.json');
+const STATE = path.join(process.env.ACCESS_HOME, 'provider.json');
 process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES_PATH;
 
 const TOKENS = { grok: 'tok-grok-bot-SECRET-aaaa', ci: 'tok-ci-bot-SECRET-bbbb', other: 'tok-other-SECRET-cccc' };
@@ -53,7 +57,12 @@ const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 const dbModule = jiti('./lib/db.ts');
 const service = jiti('./lib/agent-conversations.ts');
 const dispatch = jiti('./lib/agent-dispatch.ts');
-const grantsLib = jiti('./lib/service-grants.ts');
+const capabilitiesLib = jiti('./lib/service-grants.ts');
+const contract = jiti('./lib/session-provider.ts');
+const ps = jiti('./lib/provider-sessions.ts');
+const mcp = jiti('./lib/mcp-bridge-v2.ts');
+const { SESSION_CONTEXT_PRINCIPAL } = jiti('./lib/session-context.ts');
+const fake = require('./test-support/fake-session-provider');
 const http = jiti('./lib/service-api-http.ts');
 const agentApi = jiti('./lib/agent-api.ts');
 
@@ -173,16 +182,15 @@ const api = {
   narrowSend: (token, agentId, body) => call(agentApi.handleSendAgentMessage, 'POST', `/api/v0/agents/${agentId}/messages`, { token, body }, agentId),
 };
 
-function writeGrants(doc, mode = 0o600) {
-  fs.mkdirSync(path.dirname(GRANTS_PATH), { recursive: true });
-  fs.writeFileSync(GRANTS_PATH, typeof doc === 'string' ? doc : JSON.stringify(doc, null, 2));
-  fs.chmodSync(GRANTS_PATH, mode);
-  grantsLib.resetServiceGrantsCache();
-}
-function removeGrants() {
-  fs.rmSync(GRANTS_PATH, { force: true });
-  grantsLib.resetServiceGrantsCache();
-}
+const ALL_CAPABILITIES = [...capabilitiesLib.SERVICE_CAPABILITIES];
+const mcpCall = async (principal, name, args) => {
+  try {
+    return { data: await mcp.callMcpV2Tool(principal, name, args, { v1Operations: [] }) };
+  } catch (error) {
+    if (error instanceof mcp.McpV2Error) return { error: mcp.mcpV2ErrorBody(error).error };
+    throw error;
+  }
+};
 
 // ---------------------------------------------------------------------
 // Fixture: three Agents (Codex, Grok, Claude) on a deck. Codex has two
@@ -221,23 +229,12 @@ function fixture() {
   return { codex, grok, claude };
 }
 
-function grantsDoc({ codex, grok, claude }) {
-  return {
-    version: 1,
-    grants: [
-      { service: 'grok-bot', agent: codex.id, capabilities: ['agents:read', 'sessions:read', 'conversations:read', 'sessions:message', 'exchanges:read', 'exchanges:create'] },
-      { service: 'grok-bot', agent: grok.id, capabilities: ['agents:read', 'conversations:read', 'exchanges:read', 'exchanges:create'] },
-      { service: 'ci-bot', agent: claude.id, capabilities: ['agents:read', 'sessions:read', 'conversations:read'] },
-    ],
-  };
-}
-
 // ---------------------------------------------------------------------
-// Restart child: a fresh process over the same database and grants.
+// Restart child: a fresh process over the same database.
 async function restartChild() {
   installAdapter();
-  const ids = JSON.parse(process.env.GRANTS_IDS);
-  service.configureDispatcher({ owner: `grants-restart-child:${process.pid}` });
+  const ids = JSON.parse(process.env.ACCESS_IDS);
+  service.configureDispatcher({ owner: `access-restart-child:${process.pid}` });
   await service.recoverCoordinatorLoops();
   const before = rowCounts();
   const replayExchange = await api.createExchange(TOKENS.grok, ids.exchangeBody);
@@ -250,7 +247,7 @@ async function restartChild() {
 
 async function main() {
   installAdapter();
-  service.configureDispatcher({ owner: `grants-test:${process.pid}`, config: { maxGlobal: 10, maxPerTarget: 1, heartbeatMs: 600_000 } });
+  service.configureDispatcher({ owner: `access-test:${process.pid}`, config: { maxGlobal: 10, maxPerTarget: 1, heartbeatMs: 600_000 } });
   const agents = fixture();
   const { codex, grok, claude } = agents;
   const codexA = seedSession(codex, SECRETS.codex, { key: 'codex-a' });
@@ -280,98 +277,89 @@ async function main() {
   }
 
   // -------------------------------------------------------------------
-  console.log('\n[1] grants document: missing keeps the narrow behavior; malformed fails closed');
+  console.log('\n[1] no grants layer: every configured token reaches every registered Agent');
+  const allIds = [codex.id, grok.id, claude.id].sort();
+  const ACCESS_CALLS = async token => {
+    const caps = await api.capabilities(token);
+    const list = await api.agents(token);
+    const sess = await api.sessions(token, claude.id);
+    const convs = await api.conversations(token, claude.id);
+    return { caps, list, sess, convs };
+  };
   {
-    removeGrants();
-    const caps = await api.capabilities(TOKENS.grok);
-    assert(caps.status === 200 && caps.json.mode === 'narrow' && caps.json.agents.length === 0, 'missing document: narrow mode, no Agents');
-    const list = await api.agents(TOKENS.grok);
-    assert(list.status === 200 && list.json.items.length === 0, 'missing document: the Agent list is empty');
-    const sess = await api.sessions(TOKENS.grok, codex.id);
-    const unknownAgent = await api.sessions(TOKENS.grok, 'no-such-agent');
-    assert(sess.status === 404 && same(sess.json, unknownAgent.json), 'missing document: a real Agent is indistinguishable from a missing one');
+    assert(!fs.existsSync(LEFTOVER_GRANTS_PATH), 'fixture: no grants file at the old path');
+    const { caps, list, sess, convs } = await ACCESS_CALLS(TOKENS.grok);
+    assert(list.status === 200 && same(list.json.items.map(a => a.agent_id).sort(), allIds)
+      && list.json.items.every(a => same(a.capabilities, ALL_CAPABILITIES)),
+    'absent grants file lists all Agents (each with the full capability list)');
+    assert(caps.status === 200 && caps.json.mode === 'granted' && same(caps.json.agents.map(a => a.agent_id), allIds)
+      && caps.json.agents.every(a => same(a.capabilities, ALL_CAPABILITIES)) && same(caps.json.vocabulary, ALL_CAPABILITIES),
+    'capabilities reports every Agent: mode granted, every registered Agent, the full capability list');
+    assert(sess.status === 200 && sess.json.items.some(s => s.ref === claudeS.binding.id) && convs.status === 200
+      && convs.json.items.some(c => c.conversation_id === claudeS.conv.id),
+    'absent grants file: a token lists any Agent\'s sessions and conversations');
+    for (const token of [TOKENS.ci, TOKENS.other]) {
+      const other = await api.agents(token);
+      assert(other.status === 200 && same(other.json.items.map(a => a.agent_id).sort(), allIds), 'every configured service principal sees every Agent');
+    }
+    const mcpCaps = await mcpCall({ kind: 'service', id: 'grok-bot' }, 'botmancers_capabilities', {});
+    const v2Tools = mcp.MCP_V2_TOOLS.map(t => t.name).filter(n => n !== 'botmancers_capabilities');
+    const listed = new Set(mcpCaps.data.operations.map(op => op.tool));
+    assert(mcpCaps.data.mode === 'granted' && same(mcpCaps.data.agents.map(a => a.agent_id), allIds)
+      && v2Tools.filter(n => !['botmancers_share_current_session'].includes(n)).every(n => listed.has(n))
+      && mcpCaps.data.operations.filter(op => op.tool === 'botmancers_list_sessions').every(op => same([...op.agent_ids].sort(), allIds)),
+    'MCP capabilities: mode granted, every Agent, every v2 tool with all Agent ids');
+    const mcpList = await mcpCall({ kind: 'service', id: 'grok-bot' }, 'botmancers_list_agents', {});
+    assert(same(mcpList.data.items.map(a => a.agent_id).sort(), allIds), 'MCP botmancers_list_agents returns every Agent');
+
+    // A leftover grants file from an earlier release: not owner-only, not
+    // JSON, naming nothing. It is never read, never deleted, never an error.
+    fs.mkdirSync(path.dirname(LEFTOVER_GRANTS_PATH), { recursive: true });
+    fs.writeFileSync(LEFTOVER_GRANTS_PATH, '{ "version": 1, this is not json');
+    fs.chmodSync(LEFTOVER_GRANTS_PATH, 0o644);
+    const leftover = await ACCESS_CALLS(TOKENS.grok);
+    const leftoverMcp = await mcpCall({ kind: 'service', id: 'grok-bot' }, 'botmancers_list_agents', {});
+    assert(leftover.caps.status === 200 && leftover.caps.json.mode === 'granted' && same(leftover.caps.json.agents.map(a => a.agent_id), allIds)
+      && leftover.list.status === 200 && same(leftover.list.json.items.map(a => a.agent_id).sort(), allIds)
+      && leftover.sess.status === 200 && leftover.convs.status === 200 && same(leftoverMcp.data.items.map(a => a.agent_id).sort(), allIds)
+      && ![leftover.caps, leftover.list, leftover.sess, leftover.convs].some(r => r.text.includes('grants_unavailable')),
+    'leftover grants file is ignored: the same calls succeed, no grants_unavailable');
+    assert(fs.existsSync(LEFTOVER_GRANTS_PATH) && fs.readFileSync(LEFTOVER_GRANTS_PATH, 'utf8') === '{ "version": 1, this is not json'
+      && (fs.statSync(LEFTOVER_GRANTS_PATH).mode & 0o777) === 0o644, 'leftover grants file is still on disk, unchanged');
+
+    const missing = await api.agent(TOKENS.grok, 'no-such-agent');
+    const missingSessions = await api.sessions(TOKENS.grok, 'no-such-agent');
+    assert(missing.status === 404 && missing.json.error.code === 'agent_not_found' && missingSessions.json.error.code === 'agent_not_found',
+      'an unknown Agent id answers agent_not_found');
+    const unauth = await call(http.handleGetCapabilities, 'GET', '/api/v0/capabilities', { token: 'wrong-token' });
+    const unauthList = await api.agents('tok-grok-bot-SECRET-aaab');
+    const noAuth = await call(http.handleGetCapabilities, 'GET', '/api/v0/capabilities', {});
+    assert(unauth.status === 401 && unauthList.status === 401 && noAuth.status === 401, 'a bad or missing token still answers 401');
+    const ctxList = await http.serviceOperations.listAgents(SESSION_CONTEXT_PRINCIPAL, { cursor: null, limit: null });
+    const ctxCaps = await http.serviceOperations.capabilities(SESSION_CONTEXT_PRINCIPAL);
+    const ctxAgent = await http.serviceOperations.getAgent(SESSION_CONTEXT_PRINCIPAL, codex.id);
+    const serviceApi = jiti('./lib/service-api.ts');
+    const ctxInner = serviceApi.serviceContext(SESSION_CONTEXT_PRINCIPAL);
+    const innerList = serviceApi.listServiceAgents(ctxInner, { cursor: null, limit: 20 });
+    assert([ctxList, ctxCaps, ctxAgent].every(r => r.status === 403 && r.body.error.code === 'principal_not_allowed')
+      && innerList.items.length === 0 && serviceApi.capabilitiesView(ctxInner).agents.length === 0 && !serviceApi.holds(ctxInner, codex.id),
+    'the session-context principal cannot list Agents (refused at the boundary, and reaches no Agent underneath)');
+    const ownerCaps = await http.serviceOperations.capabilities(OWNER);
+    assert(ownerCaps.status === 403 && ownerCaps.body.error.code === 'principal_not_allowed', 'a non-service principal is principal_not_allowed');
+
     script = () => ({ output: 'narrow reply' });
     const narrow = await api.narrowSend(TOKENS.grok, codex.id, { content: 'Start a fresh coordinator task', idempotencyKey: 'narrow-1' });
-    assert(narrow.status === 202 && typeof narrow.json.requestId === 'string', 'missing document: the existing narrow new-conversation route still accepts');
+    assert(narrow.status === 202 && typeof narrow.json.requestId === 'string', 'the v1 narrow new-conversation route still accepts');
     await service.waitForAgentDispatchIdle();
     const narrowRead = await api.narrowConversation(TOKENS.grok, narrow.json.conversationId);
-    assert(narrowRead.status === 200 && narrowRead.json.messages.length === 2, 'missing document: the service still reads the conversation it opened');
-
-    const bad = [
-      ['not JSON', '{ "version": 1, '],
-      ['wrong version', { version: 2, grants: [] }],
-      ['unknown top-level field', { version: 1, grants: [], defaults: {} }],
-      ['unknown capability', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['sessions:write'] }] }],
-      ['wildcard capability', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['*'] }] }],
-      ['wildcard Agent', { version: 1, grants: [{ service: 'grok-bot', agent: '*', capabilities: ['agents:read'] }] }],
-      ['duplicate capability', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['agents:read', 'agents:read'] }] }],
-      ['duplicate entry', { version: 1, grants: [
-        { service: 'grok-bot', agent: codex.id, capabilities: ['agents:read'] },
-        { service: 'grok-bot', agent: codex.id, capabilities: ['sessions:read'] }] }],
-      ['empty capabilities', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: [] }] }],
-      ['unknown entry field', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['agents:read'], deck: 'x' }] }],
-      ['reserved engine principal', { version: 1, grants: [{ service: 'botmancers-exchanges', agent: codex.id, capabilities: ['exchanges:create'] }] }],
-      // NOT-515: the share principals are engine-internal too.
-      ['reserved session-context principal', { version: 1, grants: [{ service: 'botmancers-session-context', agent: codex.id, capabilities: ['shares:create'] }] }],
-      ['reserved session-share principal', { version: 1, grants: [{ service: 'botmancers-session-share', agent: codex.id, capabilities: ['sessions:message'] }] }],
-      ['wildcard shares capability', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['shares:*'] }] }],
-      ['shares:ask is not grantable', { version: 1, grants: [{ service: 'grok-bot', agent: codex.id, capabilities: ['shares:ask'] }] }],
-      ['unconfigured service principal', { version: 1, grants: [
-        { service: 'grok-bot', agent: codex.id, capabilities: ['agents:read'] },
-        { service: 'grok-bott', agent: codex.id, capabilities: ['agents:read'] }] }],
-    ];
-    for (const [label, doc] of bad) {
-      writeGrants(doc);
-      const state = grantsLib.loadServiceGrants();
-      const response = await api.capabilities(TOKENS.grok);
-      const agentsResponse = await api.agents(TOKENS.ci);
-      assert(state.state === 'invalid' && response.status === 503 && response.json.error.code === 'grants_unavailable' && agentsResponse.status === 503,
-        `${label}: the whole document is refused (grants_unavailable for every service)`);
-    }
-    for (const mode of [0o666, 0o620, 0o644, 0o640, 0o604, 0o610]) {
-      writeGrants(grantsDoc(agents), mode);
-      assert(grantsLib.loadServiceGrants().state === 'invalid' && (await api.agents(TOKENS.grok)).status === 503,
-        `a document with mode 0${mode.toString(8)} (group/other readable or writable) is refused (owner-only)`);
-    }
-    writeGrants(grantsDoc(agents));
-    const tokens = process.env.BOTMANCERS_SERVICE_TOKENS;
-    process.env.BOTMANCERS_SERVICE_TOKENS = 'grok-bot=not-a-digest';
-    const malformedTokens = grantsLib.loadServiceGrants();
-    process.env.BOTMANCERS_SERVICE_TOKENS = `ci-bot=${digest(TOKENS.ci)}`;
-    const grokUnconfigured = grantsLib.loadServiceGrants();
-    process.env.BOTMANCERS_SERVICE_TOKENS = tokens;
-    assert(malformedTokens.state === 'invalid' && grokUnconfigured.state === 'invalid' && /configured service principal/.test(grokUnconfigured.reason)
-      && grantsLib.loadServiceGrants().state === 'loaded',
-    'grant entries are checked against BOTMANCERS_SERVICE_TOKENS: a malformed list or a removed service refuses the document; restoring it reloads');
-    const narrowStill = await api.narrowSend(TOKENS.grok, codex.id, { content: 'Still fresh', idempotencyKey: 'narrow-2' });
-    assert(narrowStill.status === 202, 'a malformed document leaves the narrow route working');
-    await service.waitForAgentDispatchIdle();
-
-    writeGrants(grantsDoc(agents));
-    const loaded = grantsLib.loadServiceGrants();
-    assert(loaded.state === 'loaded' && loaded.grants.get('grok-bot').size === 2 && loaded.grants.get('ci-bot').size === 1, 'the valid owner-only document loads');
-    const capsA = await api.capabilities(TOKENS.grok);
-    const capsOther = await api.capabilities(TOKENS.other);
-    assert(capsA.json.mode === 'granted' && same(capsA.json.agents.map(a => a.agent_id).sort(), [codex.id, grok.id].sort())
-      && same(capsA.json.agents.find(a => a.agent_id === grok.id).capabilities, ['agents:read', 'conversations:read', 'exchanges:read', 'exchanges:create']),
-    'capabilities lists exactly the caller\'s Agents and capability subsets');
-    assert(capsOther.status === 200 && capsOther.json.agents.length === 0, 'an authenticated service with no entry is granted nothing');
-    const unauth = await call(http.handleGetCapabilities, 'GET', '/api/v0/capabilities', { token: 'wrong-token' });
-    const noAuth = await call(http.handleGetCapabilities, 'GET', '/api/v0/capabilities', {});
-    assert(unauth.status === 401 && noAuth.status === 401, 'unknown or missing tokens are unauthenticated');
+    assert(narrowRead.status === 200 && narrowRead.json.messages.length === 2, 'the service still reads the conversation it opened');
   }
 
   // -------------------------------------------------------------------
-  console.log('\n[2] reads: two principals, three Agents, only granted safe metadata');
+  console.log('\n[2] reads: every Agent, only safe metadata, caller-owned conversations');
   {
     const listA = await api.agents(TOKENS.grok);
-    const listB = await api.agents(TOKENS.ci);
-    assert(same(listA.json.items.map(a => a.agent_id).sort(), [codex.id, grok.id].sort()), 'grok-bot discovers Codex and Grok only');
-    assert(same(listB.json.items.map(a => a.agent_id), [claude.id]), 'ci-bot discovers Claude only');
     assert(listA.json.items.every((a, i, all) => i === 0 || all[i - 1].last_activity_at >= a.last_activity_at), 'Agents are newest activity first');
-    const hidden = await api.agent(TOKENS.grok, claude.id);
-    const missing = await api.agent(TOKENS.grok, 'no-such-agent');
-    assert(hidden.status === 404 && same(hidden.json, missing.json), 'an ungranted Agent is answered exactly like a missing one');
     const agentDetail = await api.agent(TOKENS.grok, codex.id);
     assert(agentDetail.status === 200 && agentDetail.json.runtime === 'hermes' && !('deck_id' in agentDetail.json) && leaks(agentDetail.text).length === 0,
       'Agent detail names the runtime kind, never the Deck selection');
@@ -399,19 +387,17 @@ async function main() {
     const detail = await api.session(TOKENS.grok, codex.id, codexA.binding.id);
     assert(detail.status === 200 && detail.json.ref === codexA.binding.id && Array.isArray(detail.json.attempts) && leaks(detail.text).length === 0, 'session detail is safe');
     const grokSessions = await api.sessions(TOKENS.grok, grok.id);
-    assert(grokSessions.status === 404 && same(grokSessions.json, (await api.sessions(TOKENS.grok, 'no-such-agent')).json),
-      'sessions of an Agent granted without sessions:read are answered like a missing Agent');
+    assert(grokSessions.status === 200 && grokSessions.json.items.some(s => s.ref === grokS.binding.id), 'any Agent\'s sessions are listed');
     const viaOther = await api.session(TOKENS.grok, codex.id, claudeS.binding.id);
     const unknownRef = await api.session(TOKENS.grok, codex.id, 'no-such-ref');
     assert(viaOther.status === 404 && same(viaOther.json, unknownRef.json), 'another Agent\'s session is answered like a missing session');
-    const bSessions = await api.sessions(TOKENS.ci, claude.id);
-    const bCodex = await api.sessions(TOKENS.ci, codex.id);
-    assert(bSessions.json.items.map(s => s.ref).join() === claudeS.binding.id && bCodex.status === 404, 'ci-bot sees Claude\'s session and no Codex row');
+    const bCodex = await api.sessions(TOKENS.ci, codex.id, '?limit=100');
+    assert(bCodex.status === 200 && same(bCodex.json.items.map(s => s.ref), refs), 'a second service sees the same Codex sessions');
 
     const convs = await api.conversations(TOKENS.grok, codex.id);
     const ids = convs.json.items.map(c => c.conversation_id);
-    assert(ids.includes(codexA.conv.id) && !ids.includes(groupConv) && !ids.includes(otherConv),
-      'Codex conversations exclude a group with an ungranted Agent and another service\'s conversation');
+    assert(ids.includes(codexA.conv.id) && ids.includes(groupConv) && !ids.includes(otherConv),
+      'Codex conversations include a group with another registered Agent and exclude another service\'s conversation');
     assert(convs.json.items.every((c, i, list) => i === 0 || list[i - 1].last_activity_at >= c.last_activity_at), 'conversations are newest activity first');
     const thread = await api.conversation(TOKENS.grok, codex.id, codexA.conv.id);
     assert(thread.status === 200 && thread.json.messages.some(m => m.content.includes('[redacted runtime id]')) && leaks(thread.text).length === 0,
@@ -421,55 +407,52 @@ async function main() {
     const groupRead = await api.conversation(TOKENS.grok, codex.id, groupConv);
     const missingConv = await api.conversation(TOKENS.grok, codex.id, 'no-such-conversation');
     const otherRead = await api.conversation(TOKENS.grok, codex.id, otherConv);
-    assert(groupRead.status === 404 && same(groupRead.json, missingConv.json) && same(otherRead.json, missingConv.json),
-      'an ungranted conversation is answered exactly like a missing one');
-    const bConvs = await api.conversations(TOKENS.ci, claude.id);
-    assert(bConvs.json.items.every(c => c.conversation_id !== codexA.conv.id && c.conversation_id !== groupConv), 'ci-bot sees no Codex or mixed conversation');
+    assert(groupRead.status === 200 && missingConv.status === 404 && otherRead.status === 404 && same(otherRead.json, missingConv.json),
+      'another service\'s conversation is answered exactly like a missing one');
+    const otherOwn = await api.conversation(TOKENS.other, codex.id, otherConv);
+    assert(otherOwn.status === 200, 'the service that owns that conversation reads it');
     const person = await call(http.handleGetCapabilities, 'GET', '/api/v0/capabilities', {});
     assert(person.status === 401, 'no principal, no access');
   }
 
   // -------------------------------------------------------------------
-  console.log('\n[2b] shares:create: an explicit per-Agent capability, never implied');
+  console.log('\n[2b] shares: the owner\'s allowlist is the gate, no shares:create grant');
   {
-    fs.writeFileSync(SHARES_PATH, JSON.stringify({ version: 1, audiences: [{ kind: 'slack', team_id: 'T0GRANTS1', channel_id: 'C0GRANTS1' }] }));
+    fs.mkdirSync(path.dirname(SHARES_PATH), { recursive: true });
+    fs.writeFileSync(SHARES_PATH, JSON.stringify({ version: 1, audiences: [{ kind: 'slack', team_id: 'T0ACCESS1', channel_id: 'C0ACCESS1' }] }));
     fs.chmodSync(SHARES_PATH, 0o600);
-    const audience = { kind: 'slack', team_id: 'T0GRANTS1', channel_id: 'C0GRANTS1' };
+    const audience = { kind: 'slack', team_id: 'T0ACCESS1', channel_id: 'C0ACCESS1' };
     const share = (token, ref, body = {}) => call(http.handleCreateShare, 'POST', `/api/v0/sessions/${encodeURIComponent(ref)}/shares`,
       { token, body: { audience, idempotency_key: `share-${ref.length}-${Object.keys(body).join('-') || 'x'}`, ...body } }, ref);
     const getShare = (token, ref) => call(http.handleGetShare, 'GET', `/api/v0/shares/${ref}`, { token }, ref);
-    const caps = await api.capabilities(TOKENS.grok);
-    assert(caps.json.vocabulary.includes('shares:create') && caps.json.agents.every(a => !a.capabilities.includes('shares:create')),
-      'shares:create is in the vocabulary and granted to no one by the base document');
-    const missing = await share(TOKENS.grok, 'no-such-session');
-    const notImplied = await share(TOKENS.grok, codexA.binding.id);
-    assert(missing.status === 404 && missing.json.error.code === 'session_not_found' && notImplied.status === 404 && same(notImplied.json, missing.json),
-      'sessions:message, exchanges:create, and sessions:read on the Agent do not imply shares:create (answered like a missing session)');
-    const base = grantsDoc(agents);
-    writeGrants({ ...base, grants: base.grants.map(g => (g.service === 'grok-bot' && g.agent === codex.id ? { ...g, capabilities: [...g.capabilities, 'shares:create'] } : g)) });
-    const capsAfter = await api.capabilities(TOKENS.grok);
-    assert(same(capsAfter.json.agents.find(a => a.agent_id === codex.id).capabilities,
-      ['agents:read', 'sessions:read', 'conversations:read', 'sessions:message', 'exchanges:read', 'exchanges:create', 'shares:create'])
-      && same(capsAfter.json.agents.find(a => a.agent_id === grok.id).capabilities, ['agents:read', 'conversations:read', 'exchanges:read', 'exchanges:create']),
-      'granting shares:create on Codex adds exactly that capability there and changes no other Agent');
+    const listShares = token => call(http.handleListShares, 'GET', '/api/v0/shares', { token });
+    const revoke = (token, ref) => call(http.handleRevokeShare, 'POST', `/api/v0/shares/${ref}/revoke`, { token, body: {} }, ref);
+    assert(!fs.existsSync(LEFTOVER_GRANTS_PATH) || !/shares:create/.test(fs.readFileSync(LEFTOVER_GRANTS_PATH, 'utf8')), 'fixture: no shares:create grant anywhere');
+    const offList = await share(TOKENS.grok, codexA.binding.id, { audience: { kind: 'slack', team_id: 'T0ACCESS1', channel_id: 'C0NOTLISTED' } });
+    assert(offList.status === 403 && offList.json.error.code === 'audience_not_allowed', 'a channel not on the allowlist -> audience_not_allowed (403)');
     const created = await share(TOKENS.grok, codexA.binding.id);
     assert(created.status === 201 && created.json.share.session_ref === codexA.binding.id && created.json.share.authority === 'ask',
-      'with shares:create the exact session is shareable (201, ask only)');
-    const crossAgent = await share(TOKENS.grok, claudeS.binding.id);
+      'a channel on the allowlist -> 201, ask only, with no shares:create grant');
+    const missing = await share(TOKENS.grok, 'no-such-session');
     const wrongAgent = await share(TOKENS.grok, codexA.binding.id, { agent_id: grok.id });
-    const otherService = await share(TOKENS.ci, codexA.binding.id);
     const malformed = await share(TOKENS.grok, '%00../x');
-    for (const [label, res] of [['another Agent\'s session', crossAgent], ['an agent_id expectation for another Agent', wrongAgent],
-      ['a service with no shares:create on the owner', otherService], ['a malformed reference', malformed]]) {
+    assert(missing.status === 404 && missing.json.error.code === 'session_not_found', 'an unknown session is session_not_found');
+    for (const [label, res] of [['an agent_id expectation for another Agent', wrongAgent], ['a malformed reference', malformed]]) {
       assert(res.status === 404 && same(res.json, missing.json), `${label} -> exactly the missing-session answer`);
     }
     const own = await getShare(TOKENS.grok, created.json.share.share_ref);
     const foreign = await getShare(TOKENS.ci, created.json.share.share_ref);
     const none = await getShare(TOKENS.grok, 'shr_none');
-    assert(own.status === 200 && foreign.status === 404 && same(foreign.json, none.json), 'only the creator reads its share; anyone else gets the missing-share answer');
+    const foreignList = await listShares(TOKENS.ci);
+    const foreignRevoke = await revoke(TOKENS.ci, created.json.share.share_ref);
+    assert(own.status === 200 && foreign.status === 404 && same(foreign.json, none.json)
+      && foreignList.status === 200 && foreignList.json.items.every(item => item.share_ref !== created.json.share.share_ref)
+      && foreignRevoke.status === 404 && foreignRevoke.json.error.code === 'share_not_found',
+    'a second service cannot read, list, or revoke the first one\'s share (answered as not found)');
+    assert((await getShare(TOKENS.grok, created.json.share.share_ref)).json.share.state === 'active', 'the share is still active after the refused revoke');
     const audit = raw.prepare("SELECT outcome, code FROM service_audit_events WHERE operation = 'shares.create' ORDER BY id").all();
-    assert(audit.length === 7 && audit.filter(r => r.code === 'not_granted').length === 3, 'every share create is audited; ungranted refusals are recorded as not_granted');
-    writeGrants(grantsDoc(agents));
+    assert(audit.length === 5 && audit.some(r => r.code === 'audience_not_allowed') && !audit.some(r => r.code === 'not_granted'),
+      'every share create is audited; none is refused for a missing grant');
   }
 
   // -------------------------------------------------------------------
@@ -532,17 +515,19 @@ async function main() {
     const ended = await api.message(TOKENS.grok, codexEnded.binding.id, { content: 'hi', idempotency_key: 'ended' });
     const mismatched = await api.message(TOKENS.grok, codexOther.binding.id, { content: 'hi', idempotency_key: 'other-runtime' });
     const unknown = await api.message(TOKENS.grok, 'no-such-ref', { content: 'hi', idempotency_key: 'unknown' });
-    const ungranted = await api.message(TOKENS.grok, claudeS.binding.id, { content: 'hi', idempotency_key: 'ungranted' });
-    const noMessageCap = await api.message(TOKENS.grok, grokS.binding.id, { content: 'hi', idempotency_key: 'nocap' });
-    const otherService = await api.message(TOKENS.ci, codexA.binding.id, { content: 'hi', idempotency_key: 'ci' });
     assert(ended.status === 409 && ended.json.error.code === 'session_ended', 'an ended session is session_ended');
     assert(mismatched.status === 409 && mismatched.json.error.code === 'session_not_resumable', 'a session under another runtime is session_not_resumable');
-    assert(unknown.status === 404 && same(ungranted.json, unknown.json) && same(noMessageCap.json, unknown.json) && same(otherService.json, unknown.json),
-      'unknown, another Agent\'s ungranted, capability-less, and another service\'s sessions are all one session_not_found');
+    assert(unknown.status === 404 && unknown.json.error.code === 'session_not_found', 'an unknown session is session_not_found');
+    script = () => ({ output: 'claude answer', session: SECRETS.claude });
+    const anyAgent = await api.message(TOKENS.ci, claudeS.binding.id, { content: 'hi Claude', idempotency_key: 'ci-claude' });
+    await service.waitForAgentDispatchIdle();
+    assert(anyAgent.status === 202 && anyAgent.json.agent_id === claude.id, 'with no grants file a second token sends to an active session of any Agent');
+    const ciConv = await api.narrowConversation(TOKENS.grok, anyAgent.json.conversation_id);
+    assert(ciConv.status === 404, 'the first service cannot read the second one\'s session-message conversation');
   }
 
   // -------------------------------------------------------------------
-  console.log('\n[4] exchanges: canonical store, grants on every Agent involved, cancel, replay');
+  console.log('\n[4] exchanges: canonical store, any Agent, caller-owned, cancel, replay');
   let continueBody;
   let continueId;
   {
@@ -559,7 +544,7 @@ async function main() {
     assert(ownerRead.status === 404 && same(ownerRead.json, missingEx.json), 'an owner exchange is answered like a missing one');
 
     script = (input, kind) => {
-      if (kind === 'extract') return { output: JSON.stringify({ objective: 'Finish the grants API', decisions: ['Grants are per Agent'], constraints: [], artifacts: [], open_questions: [] }), session: SECRETS.codex };
+      if (kind === 'extract') return { output: JSON.stringify({ objective: 'Finish the access API', decisions: ['Every Agent is reachable'], constraints: [], artifacts: [], open_questions: [] }), session: SECRETS.codex };
       if (kind === 'deliver') return { output: 'Grok picked it up.', session: SECRETS.grokFresh };
       return { output: 'ask answer', session: SECRETS.codex };
     };
@@ -604,14 +589,18 @@ async function main() {
     const conflict = await api.createExchange(TOKENS.grok, { ...continueBody, instruction: 'different' });
     assert(conflict.status === 409 && conflict.json.error.code === 'idempotency_conflict', 'a changed payload is idempotency_conflict');
 
-    const toClaude = await api.createExchange(TOKENS.grok, { ...continueBody, idempotency_key: 'cont-claude', destination: { agent_id: claude.id } });
     const toMissing = await api.createExchange(TOKENS.grok, { ...continueBody, idempotency_key: 'cont-missing', destination: { agent_id: 'no-such-agent' } });
-    assert(toClaude.status === 404 && same(toClaude.json, toMissing.json), 'a Continue to an ungranted Agent is answered like a missing Agent');
-    const fromGrok = await api.createExchange(TOKENS.grok, { mode: 'ask', idempotency_key: 'from-grok-ask', source: { session_ref: claudeS.binding.id }, instruction: 'q' });
+    assert(toMissing.status === 404 && toMissing.json.error.code === 'agent_not_found', 'a Continue to an unknown Agent is agent_not_found');
+    script = () => ({ output: 'ci ask answer', session: SECRETS.claude });
     const ciCreate = await api.createExchange(TOKENS.ci, { mode: 'ask', idempotency_key: 'ci-ask', source: { session_ref: claudeS.binding.id }, instruction: 'q' });
     const missingRef = await api.createExchange(TOKENS.ci, { mode: 'ask', idempotency_key: 'ci-missing', source: { session_ref: 'no-such-ref' }, instruction: 'q' });
-    assert(fromGrok.status === 404 && ciCreate.status === 404 && same(ciCreate.json, missingRef.json),
-      'without exchanges:create on the source Agent the session is answered as missing');
+    await service.waitForAgentDispatchIdle();
+    assert(ciCreate.status === 201 && ciCreate.json.exchange.mode === 'ask' && missingRef.status === 404 && missingRef.json.error.code === 'session_not_found',
+      'with no grants file a token creates an Ask on any Agent\'s session; an unknown session is session_not_found');
+    const ciAsk = await api.exchange(TOKENS.ci, ciCreate.json.exchange.id);
+    const grokOnCi = await api.exchange(TOKENS.grok, ciCreate.json.exchange.id);
+    assert(ciAsk.json.state === 'completed' && ciAsk.json.answer?.content === 'ci ask answer' && grokOnCi.status === 404,
+      'the Ask completes for its creator only');
     const authority = await api.createExchange(TOKENS.grok, { ...continueBody, idempotency_key: 'auth', tool_profile: 'edit' });
     const nestedAuthority = await api.createExchange(TOKENS.grok, { ...continueBody, idempotency_key: 'auth2', destination: { agent_id: grok.id, deck: 'x' } });
     assert(authority.json.error.code === 'authority_not_allowed' && nestedAuthority.json.error.code === 'authority_not_allowed', 'tool_profile and nested Deck fields are refused');
@@ -624,14 +613,18 @@ async function main() {
       && listAll.json.items.some(e => e.kind === 'session_message') && listA.json.next_cursor !== null,
     'the exchange list holds only the caller\'s own (session messages included), paginated');
     assert(listAll.json.items.every((e, i, list) => i === 0 || list[i - 1].updated_at >= e.updated_at), 'exchanges are newest activity first');
-    assert((await api.exchanges(TOKENS.ci)).json.items.length === 0, 'ci-bot has no exchanges');
+    const ciList = await api.exchanges(TOKENS.ci, '?limit=100');
+    assert(ciList.json.items.every(e => e.id !== continueId) && ciList.json.items.some(e => e.id === ciCreate.json.exchange.id),
+      'ci-bot lists only its own exchanges');
 
     // Cancellation of an in-flight Ask.
     const held = holdAdapter();
     const ask = await api.createExchange(TOKENS.grok, { mode: 'ask', idempotency_key: 'ask-cancel', source: { session_ref: codexB.binding.id }, instruction: 'Hold on' });
     await waitFor(() => calls.some(c => c.requestId === ask.json.exchange.hops.source.request_id), 'held Ask in its adapter');
     const ciCancel = await api.cancel(TOKENS.ci, ask.json.exchange.id);
-    assert(ciCancel.status === 404, 'another service cannot cancel it');
+    assert(ciCancel.status === 404 && ciCancel.json.error.code === 'exchange_not_found'
+      && one('SELECT cancel_requested_at FROM session_exchanges WHERE id = ?', ask.json.exchange.id).cancel_requested_at === null,
+    'another service cannot cancel it (exchange_not_found, nothing recorded)');
     const cancelResult = await api.cancel(TOKENS.grok, ask.json.exchange.id, { reason: 'not needed' });
     held.release();
     await service.waitForAgentDispatchIdle();
@@ -642,7 +635,7 @@ async function main() {
   }
 
   // -------------------------------------------------------------------
-  console.log('\n[4b] every service-visible output is redacted; create-only sees status; audit commits with the mutation');
+  console.log('\n[4b] every service-visible output is redacted; audit commits with the mutation');
   {
     http.resetServiceApiRateLimits();
     // Each runtime output echoes a run id, the working directory, the Deck
@@ -680,33 +673,9 @@ async function main() {
     const ownerView = service.getConversation(OWNER, conversations.getByBotId(codex.id).id);
     assert(ownerView.messages.some(m => m.content.includes(WORKDIR)), 'the owner\'s own reads are unchanged (not redacted)');
 
-    // exchanges:create without exchanges:read: status metadata only.
-    const doc = grantsDoc(agents);
-    doc.grants.push({ service: 'other-bot', agent: codex.id, capabilities: ['exchanges:create'] });
-    writeGrants(doc);
-    const createOnly = await api.createExchange(TOKENS.other, { mode: 'ask', idempotency_key: 'create-only', source: { session_ref: codexB.binding.id }, instruction: `Secret plan ${PROMPT_MARK}` });
+    const createdFull = await api.createExchange(TOKENS.other, { mode: 'ask', idempotency_key: 'other-full', source: { session_ref: codexB.binding.id }, instruction: `Plan ${PROMPT_MARK}` });
     await service.waitForAgentDispatchIdle();
-    const createOnlyReplay = await api.createExchange(TOKENS.other, { mode: 'ask', idempotency_key: 'create-only', source: { session_ref: codexB.binding.id }, instruction: `Secret plan ${PROMPT_MARK}` });
-    const summaryKeys = ['created_at', 'destination', 'failure', 'id', 'kind', 'mode', 'source', 'state', 'terminal_at', 'updated_at'];
-    assert(createOnly.status === 201 && same(Object.keys(createOnly.json.exchange).sort(), summaryKeys), 'a create-only principal gets status metadata on create');
-    assert(createOnlyReplay.status === 200 && createOnlyReplay.json.replayed && createOnlyReplay.json.exchange.state === 'completed'
-      && same(Object.keys(createOnlyReplay.json.exchange).sort(), summaryKeys)
-      && !createOnlyReplay.text.includes('Answer:') && !createOnlyReplay.text.includes(PROMPT_MARK) && !/"answer"|"packet"|"instruction"|"hops"|"events"|conversation_id/.test(createOnlyReplay.text),
-    'replaying the create after completion reveals no answer, instruction, hop, or conversation');
-    const createOnlyRead = await api.exchange(TOKENS.other, createOnly.json.exchange.id);
-    assert(createOnlyRead.status === 404 && (await api.exchanges(TOKENS.other)).json.items.length === 0, 'without exchanges:read the exchange cannot be read or listed');
-    const createOnlyCont = await api.createExchange(TOKENS.grok, { mode: 'continue', idempotency_key: 'grok-full', source: { session_ref: codexB.binding.id }, destination: { agent_id: grok.id }, instruction: 'x' });
-    assert(createOnlyCont.status === 201 && 'instruction' in createOnlyCont.json.exchange, 'a principal holding exchanges:read still gets the full view on create');
-    await service.waitForAgentDispatchIdle();
-    const heldOnly = holdAdapter();
-    const pendingAsk = await api.createExchange(TOKENS.other, { mode: 'ask', idempotency_key: 'create-only-cancel', source: { session_ref: codexB.binding.id }, instruction: 'hold' });
-    const pendingHop = one('SELECT source_request_id FROM session_exchanges WHERE id = ?', pendingAsk.json.exchange.id).source_request_id;
-    await waitFor(() => calls.some(c => c.requestId === pendingHop), 'held create-only exchange');
-    const cancelOnly = await api.cancel(TOKENS.other, pendingAsk.json.exchange.id);
-    heldOnly.release();
-    await service.waitForAgentDispatchIdle();
-    assert(cancelOnly.status === 200 && same(Object.keys(cancelOnly.json.exchange).sort(), summaryKeys), 'a create-only cancel returns status metadata only');
-    writeGrants(grantsDoc(agents));
+    assert(createdFull.status === 201 && 'instruction' in createdFull.json.exchange, 'every service principal gets the full view of its own exchange on create');
 
     // A failing audit append rolls the mutation back: nothing is written,
     // dispatched, or launched; the failure itself is audited as an error.
@@ -764,12 +733,88 @@ async function main() {
   }
 
   // -------------------------------------------------------------------
-  console.log('\n[5] restart: a second process replays idempotently and re-reads the grants');
+  console.log('\n[4c] the Agent\'s policy is the only gate for starting a session and resume with edits');
+  {
+    http.resetServiceApiRateLimits();
+    const { runtimeConnections } = dbModule;
+    const connectionId = runtimeConnections.create({ provider: 'codex', label: 'Codex laptop', host: 'This computer' }).id;
+    contract.registerSessionProvider({ connectionId }, () => fake.createFakeSessionProvider({ statePath: STATE, ignoreScope: true }));
+    fake.seedFakeProvider(STATE, [
+      { id: 'pol-open-SECRET', title: 'Fix the uploader retry', workspace: '/work/a' },
+      { id: 'pol-ro-SECRET', title: 'Read-only session', workspace: '/work/a' },
+    ]);
+    const nativeAgent = (name, policy, extra = {}) => {
+      const bot = bots.create({
+        name, title: 'Native', description: 'Native sessions', agent: 'codex', runtime_connection_id: connectionId, launch_profile: 'direct',
+        session_scope_kind: 'all_provider_sessions', session_scope_items: '[]',
+        policy_mode: policy.mode, allow_new_sessions: policy.newSessions ? 1 : 0, allow_resume_with_edits: policy.resumeEdits ? 1 : 0,
+      });
+      if (extra.defaultWorkspace) raw.prepare('UPDATE bots SET default_workspace = ? WHERE id = ?').run(extra.defaultWorkspace, bot.id);
+      return bot;
+    };
+    const closed = nativeAgent('Closed', { mode: 'read_only', newSessions: false, resumeEdits: false });
+    const starter = nativeAgent('Starter', { mode: 'read_only', newSessions: true, resumeEdits: false }, { defaultWorkspace: '/work/a' });
+    const writer = nativeAgent('Writer', { mode: 'workspace_write', newSessions: false, resumeEdits: true });
+    const reader = nativeAgent('Reader', { mode: 'read_only', newSessions: false, resumeEdits: false });
+    const sync = async agentId => { let cursor = null; do { cursor = (await ps.syncAgentSessions(raw, agentId, { cursor })).next_cursor; } while (cursor); };
+    for (const bot of [writer, reader]) await sync(bot.id);
+    const keep = (bot, ids) => raw.prepare(`DELETE FROM provider_sessions WHERE agent_id = ? AND provider_session_id NOT IN (${ids.map(() => '?').join(',')})`).run(bot.id, ...ids);
+    keep(writer, ['pol-open-SECRET']);
+    keep(reader, ['pol-ro-SECRET']);
+    const writerRef = one('SELECT id FROM provider_sessions WHERE agent_id = ? AND provider_session_id = ?', writer.id, 'pol-open-SECRET').id;
+    const readerRef = one('SELECT id FROM provider_sessions WHERE agent_id = ? AND provider_session_id = ?', reader.id, 'pol-ro-SECRET').id;
+    const msgAgent = (token, agentId, body) => call(http.handleMessageAgent, 'POST', `/api/v0/agents/${agentId}/pins`, { token, body }, agentId);
+    const pinSession = (token, ref, body) => call(http.handlePinSession, 'POST', `/api/v0/sessions/${ref}/pins`, { token, body }, ref);
+    const readPin = (token, ref) => call(http.handleReadPin, 'GET', `/api/v0/pins/${ref}`, { token }, ref);
+    const sendToPin = (token, ref, body) => call(http.handleSendToPin, 'POST', `/api/v0/pins/${ref}/messages`, { token, body }, ref);
+    const detachPin = (token, ref) => call(http.handleDetachPin, 'POST', `/api/v0/pins/${ref}/detach`, { token, body: {} }, ref);
+
+    const startsBefore = fake.providerCalls(STATE, 'startSession');
+    const closedMsg = await msgAgent(TOKENS.grok, closed.id, { content: 'Anyone there?', idempotency_key: 'pol-closed' });
+    assert(closedMsg.status === 409 && closedMsg.json.error.code === 'no_eligible_session' && fake.providerCalls(STATE, 'startSession') === startsBefore,
+      'allow_new_sessions off: messaging an Agent with no eligible session -> no_eligible_session, nothing started');
+    const startedMsg = await msgAgent(TOKENS.grok, starter.id, { content: 'Start please', idempotency_key: 'pol-start' });
+    const startCall = fake.loadFakeState(STATE).calls.filter(c => c.op === 'startSession').pop();
+    assert(startedMsg.status === 202 && startedMsg.json.resolution === 'started' && startedMsg.json.pin.authority === 'read_only'
+      && startCall && startCall.workspace === '/work/a' && startCall.authority === 'read_only' && fake.providerCalls(STATE, 'startSession') === startsBefore + 1,
+    'allow_new_sessions on with a default workspace: a read-only session is started (no sessions:start grant)');
+    const startAudit = raw.prepare("SELECT * FROM service_audit_events WHERE operation = 'agents.message.start' ORDER BY id DESC LIMIT 1").get();
+    assert(startAudit && startAudit.capability === 'sessions:start' && startAudit.outcome === 'allowed', 'the start is audited with sessions:start');
+
+    const resumeOff = await pinSession(TOKENS.grok, readerRef, { action: 'resume', approve_write: true, idempotency_key: 'pol-r-off' });
+    assert(resumeOff.status === 403 && resumeOff.json.error.code === 'authority_not_allowed',
+      'resume refused with authority_not_allowed when allow_resume_with_edits is off (even with approve_write)');
+    const resumeNoApproval = await pinSession(TOKENS.grok, writerRef, { action: 'resume', idempotency_key: 'pol-r-noapprove' });
+    assert(resumeNoApproval.status === 403 && resumeNoApproval.json.error.code === 'approval_required' && resumeNoApproval.json.error.recovery === 'approve_write',
+      'resume refused when approve_write is missing (approval_required)');
+    const resumed = await pinSession(TOKENS.grok, writerRef, { action: 'resume', approve_write: true, idempotency_key: 'pol-r-ok' });
+    assert(resumed.status === 201 && resumed.json.pin.authority === 'workspace_write' && resumed.json.pin.action === 'resume',
+      'resume allowed when the policy is on and approve_write is true (no sessions:resume grant)');
+    const mcpResumeOff = await mcpCall({ kind: 'service', id: 'grok-bot' }, 'botmancers_pin_session', { session_ref: readerRef, action: 'resume', approve_write: true, idempotency_key: 'pol-mcp-off' });
+    assert(mcpResumeOff.error?.code === 'authority_not_allowed', 'MCP: the same policy refusal (authority_not_allowed)');
+
+    // Pins are caller-owned: a second service sees none of the first one's.
+    const pinRef = resumed.json.pin.pin_ref;
+    const otherRead = await readPin(TOKENS.ci, pinRef);
+    const otherSend = await sendToPin(TOKENS.ci, pinRef, { content: 'hijack', idempotency_key: 'pol-hijack' });
+    const otherDetach = await detachPin(TOKENS.ci, pinRef);
+    const noPin = await readPin(TOKENS.ci, 'pin_none');
+    assert(otherRead.status === 404 && otherRead.json.error.code === 'pin_not_found' && same(otherRead.json, noPin.json)
+      && otherSend.status === 404 && otherDetach.status === 404,
+    'a second service cannot read, send to, or detach the first one\'s pin (answered as not found)');
+    const stillAttached = await readPin(TOKENS.grok, pinRef);
+    assert(stillAttached.status === 200 && stillAttached.json.pin.state === 'attached', 'the pin is still attached for its owner');
+    const leaksHere = [closedMsg, startedMsg, resumed, stillAttached].map(r => r.text).join('');
+    assert(!/SECRET/.test(leaksHere.replace(/tok-[a-z-]+SECRET[a-z-]*/g, '')) && !leaksHere.includes('/work/a'), 'no provider id or workspace path in any pin view');
+  }
+
+  // -------------------------------------------------------------------
+  console.log('\n[5] restart: a second process replays idempotently');
   {
     const child = spawnSync(process.execPath, [__filename], {
       env: {
-        ...process.env, GRANTS_SCENARIO: 'restart-child',
-        GRANTS_IDS: JSON.stringify({
+        ...process.env, ACCESS_SCENARIO: 'restart-child',
+        ACCESS_IDS: JSON.stringify({
           exchangeBody: continueBody, exchangeId: continueId, sessionRef: codexA.binding.id,
           messageBody: { content: `Why leases? ${PROMPT_MARK}`, idempotency_key: 'msg-1' },
         }),
@@ -786,7 +831,7 @@ async function main() {
   }
 
   // -------------------------------------------------------------------
-  console.log('\n[6] rate limit and rotation');
+  console.log('\n[6] rate limit; exchange hops stay readable to their requester only');
   {
     http.resetServiceApiRateLimits();
     process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE = '3';
@@ -801,7 +846,7 @@ async function main() {
     const hopRequestId = service.exchanges.get(continueId).source_request_id;
     const destHopRequestId = service.exchanges.get(continueId).destination_request_id;
     assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200 && !!destHopRequestId
-      && (await api.narrowRequest(TOKENS.grok, destHopRequestId)).status === 200, 'fixture: the requesting service reads both exchange hops while granted');
+      && (await api.narrowRequest(TOKENS.grok, destHopRequestId)).status === 200, 'the requesting service reads both exchange hops while the Agents exist (no grants file)');
     const continueRow = service.exchanges.get(continueId);
     const hopMessages = async () => {
       const ask = await api.narrowConversation(TOKENS.grok, message.conversation_id);
@@ -814,45 +859,14 @@ async function main() {
         text: ask.text + dest.text,
       };
     };
-    const granted = await hopMessages();
-    assert(granted.ask === 2 && granted.dest === 1, 'fixture: while granted its own conversations show the session-message question/answer and the Continue reply');
-
-    // Rotation: removing grok-bot's Codex entry revokes it on the next call.
-    const doc = grantsDoc(agents);
-    doc.grants = doc.grants.filter(g => !(g.service === 'grok-bot' && g.agent === codex.id));
-    writeGrants(doc);
-    const revoked = await api.sessions(TOKENS.grok, codex.id);
-    const revokedEx = await api.exchange(TOKENS.grok, continueId);
-    assert(revoked.status === 404 && revokedEx.status === 404, 'a revoked grant applies on the next call (sessions and exchanges hidden)');
-    const revokedHop = await api.narrowRequest(TOKENS.grok, hopRequestId);
-    assert(revokedHop.status === 404 && revokedHop.json.error.code === 'request_not_found' && leaks(revokedHop.text).length === 0,
-      'the exchange hop request it learned is gone on the next call too (request_not_found)');
-    const revokedConv = await hopMessages();
-    assert(revokedConv.ask === 0 && revokedConv.dest === 0 && revokedConv.events === 0 && !revokedConv.text.includes(PROMPT_MARK),
-      'its own conversations withhold the exchange-written question, answer, and Continue reply on the next call');
-    const revokedDest = await api.narrowRequest(TOKENS.grok, destHopRequestId);
-    assert(revokedDest.status === 404 && revokedDest.json.error.code === 'request_not_found' && leaks(revokedDest.text).length === 0,
-      'a Continue\'s destination hop (a conversation the service participates in) is gone on the next call too');
-    writeGrants(grantsDoc(agents));
-    assert((await api.sessions(TOKENS.grok, codex.id)).status === 200, 'rolling the document back restores access');
-    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200 && (await api.narrowRequest(TOKENS.grok, destHopRequestId)).status === 200,
-      'and restores both hop reads');
-
-    // An entry for an Agent that does not exist invalidates the document: the
-    // other entries do not stay quietly in force.
-    const ghost = grantsDoc(agents);
-    ghost.grants.push({ service: 'grok-bot', agent: 'ghost-agent-0001', capabilities: ['agents:read'] });
-    writeGrants(ghost);
-    const ghostState = grantsLib.loadServiceGrants();
-    assert(ghostState.state === 'invalid' && /not a registered Agent/.test(ghostState.reason) && (await api.agents(TOKENS.grok)).status === 503,
-      'a grant naming an unknown Agent makes the whole document invalid (grants_unavailable)');
-    writeGrants(grantsDoc(agents));
-    assert(grantsLib.loadServiceGrants().state === 'loaded', 'the corrected document loads again');
-    const restored = await hopMessages();
-    assert(restored.ask === 2 && restored.dest === 1, 'and the exchange-written conversation messages');
-    fs.rmSync(GRANTS_PATH, { force: true });
-    assert((await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 404, 'with no grants document a service reads no exchange hop');
-    writeGrants(grantsDoc(agents));
+    const own = await hopMessages();
+    assert(own.ask === 2 && own.dest === 1, 'its own conversations show the session-message question/answer and the Continue reply');
+    const ciHop = await api.narrowRequest(TOKENS.ci, hopRequestId);
+    const ciDest = await api.narrowRequest(TOKENS.ci, destHopRequestId);
+    assert(ciHop.status === 404 && ciHop.json.error.code === 'request_not_found' && ciDest.status === 404 && leaks(ciHop.text).length === 0,
+      'another service cannot read those exchange hops (request_not_found)');
+    assert(fs.existsSync(LEFTOVER_GRANTS_PATH) && (await api.narrowRequest(TOKENS.grok, hopRequestId)).status === 200,
+      'the leftover grants file still changes nothing for hop reads');
 
     // The redactor's reference exemption is explicit: a Botmancers id passes,
     // the provider's own run and session ids (whatever their key) do not.
@@ -896,24 +910,24 @@ async function main() {
     const msg = rows.find(r => r.operation === 'sessions.message' && r.outcome === 'allowed');
     assert(msg && msg.capability === 'sessions:message' && msg.target_ref === codexA.binding.id && msg.agent_id === codex.id && msg.principal === 'service:grok-bot',
       'a session message records the principal, capability, session reference, and owning Agent');
-    assert(rows.some(r => r.operation === 'agents.read' && r.outcome === 'denied' && r.code === 'not_granted' && r.target_ref === claude.id)
-      && rows.some(r => r.operation === 'agents.read' && r.outcome === 'denied' && r.code === 'agent_not_found'),
-    'internally the trail tells an ungranted target from a missing one');
+    assert(rows.some(r => r.operation === 'agents.read' && r.outcome === 'denied' && r.code === 'agent_not_found')
+      && !rows.some(r => r.code === 'grants_unavailable' || r.code === 'grant_required'),
+    'an unknown Agent is audited as agent_not_found; no grants refusal exists any more');
     assert(rows.some(r => r.outcome === 'rejected' && r.code === 'authority_not_allowed') && rows.some(r => r.outcome === 'error' && r.code === 'internal_error')
-      && rows.some(r => r.code === 'rate_limited') && rows.some(r => r.code === 'grants_unavailable'),
-    'validation, internal-error, rate-limit, and grants-unavailable paths are audited');
+      && rows.some(r => r.code === 'rate_limited'),
+    'validation, internal-error, and rate-limit paths are audited');
     assert(rows.some(r => r.target_ref === '[invalid]'), 'a reference that is not a Botmancers id is stored as [invalid]');
     const createRows = rows.filter(r => r.operation === 'exchanges.create');
     const authorityRow = createRows.find(r => r.code === 'authority_not_allowed');
-    const deniedRow = createRows.find(r => r.code === 'not_granted');
+    const deniedRow = createRows.find(r => r.code === 'session_not_found');
     const okRow = createRows.find(r => r.outcome === 'allowed');
     assert(authorityRow && authorityRow.target_kind === 'session' && authorityRow.target_ref === codexA.binding.id && authorityRow.agent_id === codex.id,
       'a refused (authority-seeking) create records its source session and owning Agent');
-    assert(deniedRow && deniedRow.target_kind === 'session' && deniedRow.target_ref && deniedRow.agent_id,
-      'a grant-denied create records its source session and owning Agent');
+    assert(deniedRow && deniedRow.target_kind === 'session' && deniedRow.target_ref,
+      'a create on an unknown session records its source session');
     assert(okRow && okRow.target_kind === 'exchange' && okRow.target_ref === continueId && okRow.agent_id === codex.id, 'an allowed create records the exchange');
-    const msgDenied = rows.find(r => r.operation === 'sessions.message' && r.code === 'not_granted' && r.target_ref === claudeS.binding.id);
-    assert(msgDenied && msgDenied.agent_id === claude.id, 'a grant-denied session message records the owning Agent');
+    const msgOther = rows.find(r => r.operation === 'sessions.message' && r.outcome === 'allowed' && r.principal === 'service:ci-bot' && r.target_ref === claudeS.binding.id);
+    assert(msgOther && msgOther.agent_id === claude.id && msgOther.capability === 'sessions:message', 'a second service\'s session message is audited with its capability and owning Agent');
     assert(rows.some(r => r.capability === 'participant' && r.operation === 'requests.read' && r.target_ref === message.request_id),
       'narrow /api/v0 reads by a service are audited too');
     const update = (() => { try { raw.prepare("UPDATE service_audit_events SET outcome = 'allowed'").run(); return null; } catch (e) { return e; } })();
@@ -922,15 +936,7 @@ async function main() {
     assert(serviceAudit.list({ principal: 'service:ci-bot', limit: 5 }).every(r => r.principal === 'service:ci-bot'), 'the owner can read the trail per principal');
   }
 
-  // -------------------------------------------------------------------
-  console.log('\n[8] documentation');
-  {
-    const doc = fs.readFileSync(path.join(ROOT, 'docs/service-grants.md'), 'utf8');
-    assert(/service-grants\.json/.test(doc) && /chmod 600/.test(doc) && /Rotation/i.test(doc) && /Rollback/i.test(doc) && /least[- ]privilege/i.test(doc),
-      'docs/service-grants.md covers setup, rotation, rollback, and least-privilege examples');
-  }
-
-  console.log(failures === 0 ? '\nAll service grant checks passed.' : `\n${failures} service grant check(s) failed.`);
+  console.log(failures === 0 ? '\nAll service access checks passed.' : `\n${failures} service access check(s) failed.`);
   process.exit(failures === 0 ? 0 : 1);
 }
 

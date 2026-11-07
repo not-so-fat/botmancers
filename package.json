@@ -92,7 +92,7 @@
     "proof:agent-activity": "node scripts/ui-agent-activity-proof.js",
     "seed:agent-slack-fixture": "node scripts/seed-agent-slack-fixture.js",
     "proof:agent-slack": "node scripts/ui-agent-slack-proof.js",
-    "test:service-grants": "node test-service-grants.js",
+    "test:service-access": "node test-service-access.js",
     "test:session-provider": "node test-session-provider.js",
     "test:codex-session-provider": "node test-codex-session-provider.js",
     "test:claude-session-provider": "node test-claude-session-provider.js",
