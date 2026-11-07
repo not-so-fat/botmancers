@@ -33,8 +33,7 @@ fs.rmSync(TMP, { recursive: true, force: true });
 fs.mkdirSync(TMP, { recursive: true });
 process.env.BOTMANCERS_DB_PATH = path.join(TMP, 'botmancers.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-process.env.BOTMANCERS_SERVICE_GRANTS_PATH = path.join(TMP, 'service-grants.json');
-process.env.BOTMANCERS_SERVICE_TOKENS = `grok-bot=sha256:${'a'.repeat(64)},slack-relay=sha256:${'c'.repeat(64)}`;
+process.env.BOTMANCERS_SERVICE_TOKENS = `grok-bot=sha256:${'a'.repeat(64)}`;
 for (const name of Object.keys(process.env)) if (/^AGENT_DECK/.test(name)) delete process.env[name];
 globalThis.fetch = async () => { throw new Error('network disabled in this test'); };
 
@@ -139,12 +138,11 @@ async function main() {
   const s2 = refOf(dev, 'share-2-SECRET');
   const gone = refOf(dev, 'gone-1-SECRET');
   const otherRef = refOf(otherAgent, 'other-1-SECRET');
-  fs.writeFileSync(process.env.BOTMANCERS_SERVICE_GRANTS_PATH, JSON.stringify({ version: 1, grants: [
-    { service: 'grok-bot', agent: dev.id, capabilities: ['agents:read', 'sessions:read'] },
-  ] }));
-  fs.chmodSync(process.env.BOTMANCERS_SERVICE_GRANTS_PATH, 0o600);
   const grok = { kind: 'service', id: 'grok-bot' };
-  const relayPrincipal = { kind: 'service', id: 'slack-relay' };
+  // The relay acts as the reserved engine principal (lib/session-shares
+  // SHARE_PRINCIPAL), which no token can name and which reaches no Agent
+  // through the service API (NOT-556).
+  const relayPrincipal = { kind: 'service', id: 'botmancers-session-share' };
   const owner = dbModule.UI_OWNER_PRINCIPAL;
   // shares:create is the new SessionShare grant capability and
   // share_from_turn the owner's per-Agent opt-in (sketch); the model holds
@@ -171,11 +169,11 @@ async function main() {
   });
   const relaySends = () => fake.loadFakeState(STATE).calls.filter(call => call.op === 'sendTurn').length;
   const sendsTo = id => Object.values(fake.loadFakeState(STATE).turns).filter(turn => turn.session === id).length;
-  const audits = () => count("SELECT COUNT(*) AS n FROM service_audit_events WHERE principal IN ('service:slack-relay', 'service:grok-bot', 'service:botmancers-session-context')");
+  const audits = () => count("SELECT COUNT(*) AS n FROM service_audit_events WHERE principal IN ('service:botmancers-session-share', 'service:grok-bot', 'service:botmancers-session-context')");
   const lastAudit = () => db.prepare('SELECT * FROM service_audit_events ORDER BY id DESC LIMIT 1').get();
   const denyRelay = await serviceOperations.pinSession(relayPrincipal, s1, () => ({ action: 'ask', idempotency_key: 'relay-direct-1' }), null);
   assert(denyRelay.status === 404 && denyRelay.body.error.code === 'session_not_found',
-    'the Slack relay principal cannot pin or message any session through the grants API: shares do not broaden Agent-wide grants');
+    'the Slack relay principal cannot pin or message any session through the service API: shares do not broaden into Agent-wide access');
   const audience = { kind: 'slack', team_id: 'T0SHARE01', channel_id: 'C0SHARE01' };
 
   console.log('\nCurrent-session context: exactly one session, or session_context_required');
@@ -305,13 +303,13 @@ async function main() {
     'the question identity is the pin turn idempotency key: replayed to the same turn, nothing dispatched, one audit row');
 
   console.log('\nCanonical totals and privacy');
-  const pinRows = db.prepare("SELECT * FROM session_pins WHERE requester_id = 'slack-relay'").all();
+  const pinRows = db.prepare("SELECT * FROM session_pins WHERE requester_id = 'botmancers-session-share'").all();
   assert(pinRows.length === 4 && pinRows.every(p => p.action === 'ask' && p.authority === 'read_only'), 'one read-only ask pin per share (current, A, B, C), never workspace-write');
   assert(sendsTo('share-1-SECRET') === 3 && sendsTo('share-2-SECRET') === 0, 'three questions reached share A\'s session; the expired and revoked shares\' session got none');
-  const relayAudit = db.prepare("SELECT operation, outcome, code FROM service_audit_events WHERE principal = 'service:slack-relay' AND operation = 'shares.ask' ORDER BY id").all();
+  const relayAudit = db.prepare("SELECT operation, outcome, code FROM service_audit_events WHERE principal = 'service:botmancers-session-share' AND operation = 'shares.ask' ORDER BY id").all();
   const summary = relayAudit.map(r => `${r.outcome}${r.code ? `:${r.code}` : ''}`).join(',');
   assert(summary === 'allowed,allowed,denied:share_turn_in_progress,allowed,denied:share_expired,denied:share_revoked,allowed:replayed', `relay audit trail: ${summary}`);
-  const publicSurface = JSON.stringify([posts, relay.log.map(({ replied, ...rest }) => rest), shares.listShares(owner).body, db.prepare("SELECT * FROM service_audit_events WHERE principal = 'service:slack-relay'").all()]);
+  const publicSurface = JSON.stringify([posts, relay.log.map(({ replied, ...rest }) => rest), shares.listShares(owner).body, db.prepare("SELECT * FROM service_audit_events WHERE principal = 'service:botmancers-session-share'").all()]);
   assert(!SECRET.test(publicSurface) && !publicSurface.includes('/work/share') && !/xox[abp]-|xapp-/.test(publicSurface), 'no provider id, working directory, or credential in replies, relay log, share views, or audit');
   const outcomes = sketch.errors.map(e => e.code);
   assert(Object.keys(model.SHARE_ERROR_STATUS).every(code => outcomes.includes(code) && sketch.errors.find(e => e.code === code).status === model.SHARE_ERROR_STATUS[code]),

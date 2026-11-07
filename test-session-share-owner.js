@@ -38,7 +38,6 @@ if (!RESTART) {
 const CLAUDE = { config: path.join(TMP, 'claude-config'), state: path.join(TMP, 'claude-state') };
 process.env.BOTMANCERS_DB_PATH = path.join(TMP, 'botmancers.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-process.env.BOTMANCERS_SERVICE_GRANTS_PATH = path.join(TMP, 'service-grants.json');
 process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES_PATH;
 process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE = '100000';
 for (const name of Object.keys(process.env)) if (/^AGENT_DECK|^CLAUDE_CODE|^BOTMANCERS_SLACK/.test(name)) delete process.env[name];

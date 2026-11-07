@@ -46,7 +46,6 @@ const TMP = fs.realpathSync(os.tmpdir()) + `/botmancers-session-context-${TAG}`;
 fs.rmSync(TMP, { recursive: true, force: true });
 fs.mkdirSync(TMP, { recursive: true });
 const STATE = path.join(TMP, 'provider.json');
-const GRANTS_PATH = path.join(TMP, 'service-grants.json');
 const SHARES_PATH = path.join(TMP, 'session-shares.json');
 const HOME_DIR = path.join(TMP, 'home');
 const WS = path.join(TMP, 'ws');
@@ -61,7 +60,6 @@ const GROK_TOKEN = 'grok-token-NOT517';
 process.env.HOME = HOME_DIR;
 process.env.BOTMANCERS_DB_PATH = path.join(TMP, 'botmancers.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
 process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES_PATH;
 process.env.BOTMANCERS_SERVICE_TOKENS = `grok-bot=${digest(GROK_TOKEN)}`;
 process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE = '100000';
@@ -77,7 +75,6 @@ const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 const dbModule = jiti('./lib/db.ts');
 const contract = jiti('./lib/session-provider.ts');
 const ps = jiti('./lib/provider-sessions.ts');
-const grantsLib = jiti('./lib/service-grants.ts');
 const tokenAuth = jiti('./lib/service-token-auth.ts');
 const sc = jiti('./lib/session-context.ts');
 const launch = jiti('./lib/session-context-launch.ts');
@@ -240,7 +237,6 @@ async function main() {
   const s2 = refOf(dev, 'ctx-2-SECRET');
   const gone = refOf(dev, 'gone-1-SECRET');
   const otherRef = refOf(otherAgent, 'other-1-SECRET');
-  writeJson(GRANTS_PATH, { version: 1, grants: [{ service: 'grok-bot', agent: dev.id, capabilities: ['agents:read', 'sessions:read', 'shares:create'] }] });
   const sharesConfig = on => ({
     version: 1, audiences: [audience],
     agents: [dev, claudeDev, codexDev, execDev, cursorDev].map(bot => ({ agent: bot.id, share_from_turn: on }))
@@ -340,12 +336,12 @@ async function main() {
     assert(sc.resolveSessionContext(b.token).reason === 'revoked', 'turning it back on never revives a revoked context');
   }
 
-  console.log('\nThe reserved principal: share-current only; refused in grants and token configuration');
+  console.log('\nThe reserved principal: share-current only; reaches no Agent; refused in token configuration');
   {
-    const refusedGrant = (() => {
-      try { grantsLib.parseServiceGrants(JSON.stringify({ version: 1, grants: [{ service: 'botmancers-session-context', agent: dev.id, capabilities: ['shares:create'] }] })); return false; } catch (error) { return /reserved/.test(error.message); }
-    })();
-    assert(refusedGrant, 'a grants document naming service:botmancers-session-context is refused');
+    const serviceApi = jiti('./lib/service-api.ts');
+    const ctxView = serviceApi.serviceContext(sc.SESSION_CONTEXT_PRINCIPAL);
+    assert(!serviceApi.holds(ctxView, dev.id) && serviceApi.listServiceAgents(ctxView, { cursor: null, limit: 20 }).items.length === 0,
+      'service:botmancers-session-context reaches no Agent through the service API (NOT-556: there are no grants to name it in)');
     const refusedToken = (() => {
       try { tokenAuth.parseServiceTokens(`botmancers-session-context=${digest('x')}`); return false; } catch (error) { return error instanceof tokenAuth.ServiceTokenConfigError && /reserved/.test(error.message); }
     })();

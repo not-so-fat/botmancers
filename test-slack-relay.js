@@ -39,7 +39,6 @@ const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT516_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-slack-relay-${TAG}`);
 const STATE = path.join(TMP, 'provider.json');
-const GRANTS_PATH = path.join(TMP, 'service-grants.json');
 const SHARES_PATH = path.join(TMP, 'session-shares.json');
 const IDS_PATH = path.join(TMP, 'ids.json');
 if (!RESTART) {
@@ -49,7 +48,6 @@ if (!RESTART) {
 const digest = token => `sha256:${createHash('sha256').update(token, 'utf8').digest('hex')}`;
 process.env.BOTMANCERS_DB_PATH = path.join(TMP, 'botmancers.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
 process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES_PATH;
 process.env.BOTMANCERS_SERVICE_TOKENS = `grok-bot=${digest('grok-token-NOT516')}`;
 process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE = '100000';
@@ -189,7 +187,6 @@ async function main() {
   { let cursor = null; do cursor = (await ps.syncAgentSessions(db, dev.id, { cursor })).next_cursor; while (cursor); }
   const refOf = id => db.prepare('SELECT id FROM provider_sessions WHERE agent_id = ? AND provider_session_id = ?').get(dev.id, id).id;
   const [s1, s2, s3, s4] = ['share-1-SECRET', 'share-2-SECRET', 'share-3-SECRET', 'share-4-SECRET'].map(refOf);
-  writeJson(GRANTS_PATH, { version: 1, grants: [{ service: 'grok-bot', agent: dev.id, capabilities: ['agents:read', 'sessions:read', 'shares:create'] }] });
   writeJson(SHARES_PATH, { version: 1, audiences: fixtures.audiences.map(({ kind, team_id, channel_id }) => ({ kind, team_id, channel_id })) });
   const create = async (ref, key, extra = {}) => {
     const res = await serviceOperations.createShare(grok, ref, () => ({ audience, idempotency_key: key, ...extra }), null);
