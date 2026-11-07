@@ -3,11 +3,12 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
+import BotAvatar from '@/app/components/BotAvatar';
 import ExchangeCard from '@/app/components/ExchangeCard';
 import RuntimeFailureNotice from '@/app/components/RuntimeFailureNotice';
 import WakeNotice from '@/app/components/WakeNotice';
 import { useAgentOverview } from '../../AgentShell';
-import { agentEventDisplay } from '@/lib/bot-runtime-ui';
+import { agentEventDisplay, agentEventKindOfLine, isAgentEventLine } from '@/lib/bot-runtime-ui';
 import { parseApprovalCode, parseDraft, draftTitle, parseFileNames } from '@/lib/draft';
 import { classifyRuntimeFailure } from '@/lib/runtime-failure';
 import { parseRun, runLine } from '@/lib/run';
@@ -17,6 +18,53 @@ import { type OwnerConversationDetail, type OwnerConversationMessage } from '@/l
 import { ownerConversationEyebrow } from '@/lib/owner-conversation-labels';
 
 const POLL_MS = 2000;
+
+function formatMessageTime(ts: number): string {
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function senderMonogram(name: string): string {
+  const cleaned = name.replace(/^Service\s+/i, '').trim();
+  const parts = cleaned.split(/[\s_-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return (cleaned.slice(0, 2) || '?').toUpperCase();
+}
+
+function MessageMeta({
+  message,
+  mine,
+  systemLabel,
+}: {
+  message: OwnerConversationMessage;
+  mine: boolean;
+  /** Runtime/system traces: never attribute them as agent speech. */
+  systemLabel?: string;
+}) {
+  const timeLabel = formatMessageTime(message.created_at);
+  const timeTitle = new Date(message.created_at).toLocaleString();
+  const name = systemLabel ?? message.sender_name;
+  const avatar = systemLabel
+    ? <span className="msg-monogram msg-monogram-system" aria-hidden="true">RT</span>
+    : message.sender_kind === 'bot' && message.sender_avatar
+      ? <BotAvatar bot={message.sender_avatar} size={28} title={`${message.sender_name} avatar`} className="msg-avatar bot-avatar" />
+      : !mine
+        ? <span className="msg-monogram" aria-hidden="true">{senderMonogram(message.sender_name)}</span>
+        : null;
+  return (
+    <div className={mine ? 'msg-meta msg-meta-you' : 'msg-meta'}>
+      {avatar}
+      <div className="msg-meta-text">
+        <span className={mine ? 'msg-name msg-name-you' : systemLabel ? 'msg-name msg-name-system' : 'msg-name'}>{name}</span>
+        <time className="msg-time" dateTime={new Date(message.created_at).toISOString()} title={timeTitle}>{timeLabel}</time>
+      </div>
+    </div>
+  );
+}
 
 function stripStoredPrefix(content: string) {
   let text = content;
@@ -28,18 +76,171 @@ function stripStoredPrefix(content: string) {
   return text.replace(/^\s+/, '');
 }
 
-function renderThreadBody(text: string, keyPrefix: string): ReactNode {
+/**
+ * Launch/fail notices are stored as bot-sender rows and often echo the
+ * owner's prompt after the event line. That echo is not a second chat
+ * turn — keep the whole notice as a folded runtime trace.
+ */
+function splitThreadContent(text: string): { speech: string[]; trace: string[] | null } {
   const lines = String(text ?? '').split('\n');
-  if (!lines.some(line => agentEventDisplay(line) !== null)) return text;
-  const out: ReactNode[] = [];
-  lines.forEach((line, index) => {
-    if (index > 0) out.push(<br key={`${keyPrefix}-br-${index}`} />);
+  const first = lines.find(line => line.trim()) ?? '';
+  if (isAgentEventLine(first)) {
+    return { speech: [], trace: lines };
+  }
+  const speech: string[] = [];
+  const trailingEvents: string[] = [];
+  for (const line of lines) {
+    if (isAgentEventLine(line)) trailingEvents.push(line);
+    else speech.push(line);
+  }
+  while (speech.length && speech[0].trim() === '') speech.shift();
+  while (speech.length && speech[speech.length - 1].trim() === '') speech.pop();
+  return { speech, trace: trailingEvents.length ? trailingEvents : null };
+}
+
+function renderSpeechLines(lines: string[], keyPrefix: string): ReactNode {
+  if (!lines.length) return null;
+  return lines.map((line, index) => (
+    <Fragment key={`${keyPrefix}-speech-${index}`}>
+      {index > 0 ? <br /> : null}
+      <span>{line}</span>
+    </Fragment>
+  ));
+}
+
+function renderTraceLines(lines: string[], keyPrefix: string): ReactNode {
+  return lines.map((line, index) => {
     const event = agentEventDisplay(line);
-    out.push(event
-      ? <span key={`${keyPrefix}-${index}`} className="agent-event"><span className="agent-event-label">{event.label}</span>{event.detail ? ` ${event.detail}` : ''}</span>
-      : <span key={`${keyPrefix}-${index}`}>{line}</span>);
+    return (
+      <Fragment key={`${keyPrefix}-trace-${index}`}>
+        {index > 0 ? <br /> : null}
+        {event
+          ? <span className="agent-event"><span className="agent-event-label">{event.label}</span>{event.detail ? ` ${event.detail}` : ''}</span>
+          : <span className="msg-trace-payload">{line}</span>}
+      </Fragment>
+    );
   });
-  return out;
+}
+
+function FoldedRuntimeGroup({
+  notices,
+}: {
+  notices: { id: string; created_at: number; lines: string[] }[];
+}) {
+  if (!notices.length) return null;
+  const labels = notices
+    .map(notice => notice.lines.map(agentEventDisplay).find(Boolean)?.label)
+    .filter((label): label is string => Boolean(label));
+  const unique = [...new Set(labels)];
+  const summary = unique.length ? unique.join(' · ') : 'Runtime detail';
+  const latest = notices[notices.length - 1];
+  return (
+    <li className="msg-system">
+      <details className="msg-trace msg-trace-group">
+        <summary>
+          <span className="msg-trace-summary">{summary}</span>
+          <time className="msg-time" dateTime={new Date(latest.created_at).toISOString()} title={new Date(latest.created_at).toLocaleString()}>
+            {formatMessageTime(latest.created_at)}
+          </time>
+        </summary>
+        <div className="msg-trace-body">
+          {notices.map((notice, index) => (
+            <Fragment key={notice.id}>
+              {index > 0 ? <hr className="msg-trace-sep" /> : null}
+              {renderTraceLines(notice.lines, notice.id)}
+            </Fragment>
+          ))}
+        </div>
+      </details>
+    </li>
+  );
+}
+
+function RuntimeFailureRow({
+  message,
+  lines,
+}: {
+  message: OwnerConversationMessage;
+  lines: string[];
+}) {
+  const event = lines.map(agentEventDisplay).find(Boolean);
+  const title = event?.label ?? 'Agent failed';
+  const detail = lines.join('\n');
+  return (
+    <li className="msg-system msg-system-error">
+      <div className="runtime-failure" role="status">
+        <p className="runtime-failure-title">
+          <span className="runtime-failure-severity">Error</span>
+          <span>{title}</span>
+          <time className="msg-time" dateTime={new Date(message.created_at).toISOString()} title={new Date(message.created_at).toLocaleString()}>
+            {formatMessageTime(message.created_at)}
+          </time>
+        </p>
+        {event?.detail ? <p className="runtime-failure-recovery">{event.detail}</p> : null}
+        <details className="runtime-failure-details">
+          <summary>Details</summary>
+          <code className="runtime-failure-detail">{detail}</code>
+        </details>
+      </div>
+    </li>
+  );
+}
+
+function leadingEventKind(content: string) {
+  const first = String(content ?? '').split('\n').find(line => line.trim()) ?? '';
+  return agentEventKindOfLine(first);
+}
+
+/** Happy-path launch/run traces: fold. Failures stay visible as errors. */
+function isHappyRuntimeNotice(message: OwnerConversationMessage): boolean {
+  if (message.sender_name === 'You') return false;
+  const content = stripStoredPrefix(message.content);
+  if (classifyRuntimeFailure(content) || parseRun(message.content) || parseDraft(content)) return false;
+  const { speech, trace } = splitThreadContent(content);
+  if (!(trace !== null && speech.length === 0)) return false;
+  const kind = leadingEventKind(content);
+  return kind !== null && kind !== 'failed';
+}
+
+function isFailedRuntimeNotice(message: OwnerConversationMessage): boolean {
+  if (message.sender_name === 'You') return false;
+  const content = stripStoredPrefix(message.content);
+  if (classifyRuntimeFailure(content) || parseRun(message.content) || parseDraft(content)) return false;
+  const { speech, trace } = splitThreadContent(content);
+  return trace !== null && speech.length === 0 && leadingEventKind(content) === 'failed';
+}
+
+type ThreadItem =
+  | { kind: 'chat'; message: OwnerConversationMessage }
+  | { kind: 'runtime'; notices: { id: string; created_at: number; lines: string[] }[] }
+  | { kind: 'runtime-error'; message: OwnerConversationMessage; lines: string[] };
+
+function groupThreadItems(messages: OwnerConversationMessage[]): ThreadItem[] {
+  const items: ThreadItem[] = [];
+  for (const message of messages) {
+    const content = stripStoredPrefix(message.content);
+    if (isHappyRuntimeNotice(message)) {
+      const notice = {
+        id: message.id,
+        created_at: message.created_at,
+        lines: splitThreadContent(content).trace ?? [message.content],
+      };
+      const last = items[items.length - 1];
+      if (last?.kind === 'runtime') last.notices.push(notice);
+      else items.push({ kind: 'runtime', notices: [notice] });
+      continue;
+    }
+    if (isFailedRuntimeNotice(message)) {
+      items.push({
+        kind: 'runtime-error',
+        message,
+        lines: splitThreadContent(content).trace ?? [message.content],
+      });
+      continue;
+    }
+    items.push({ kind: 'chat', message });
+  }
+  return items;
 }
 
 function mergeMessages(current: OwnerConversationMessage[], incoming: OwnerConversationMessage[]): OwnerConversationMessage[] {
@@ -180,14 +381,69 @@ export default function ConversationDetail() {
         {nextCursor ? <button className="conversation-older" type="button" disabled={paging} onClick={() => void load(nextCursor, true)}>{paging ? 'Loading…' : 'Load older messages'}</button> : null}
         <ol ref={listRef} className="conversation-message-list" aria-label="Conversation history">
           {messages.length === 0 ? <li className="conversation-empty-history">No messages in this conversation yet.</li> : null}
-          {messages.map(message => {
+          {groupThreadItems(messages).map(item => {
+            if (item.kind === 'runtime') {
+              const at = item.notices[0].created_at;
+              return (
+                <Fragment key={`runtime-${item.notices.map(notice => notice.id).join('-')}`}>
+                  {noticesBefore(at)}
+                  {exchangesBefore(at)}
+                  <FoldedRuntimeGroup notices={item.notices} />
+                </Fragment>
+              );
+            }
+            if (item.kind === 'runtime-error') {
+              return (
+                <Fragment key={item.message.id}>
+                  {noticesBefore(item.message.created_at)}
+                  {exchangesBefore(item.message.created_at)}
+                  <RuntimeFailureRow message={item.message} lines={item.lines} />
+                </Fragment>
+              );
+            }
+            const message = item.message;
             const mine = message.sender_name === 'You';
             const content = stripStoredPrefix(message.content);
             const failure = mine ? null : classifyRuntimeFailure(content);
             const run = mine ? null : parseRun(message.content);
             const draft = !mine && !run ? parseDraft(content) : null;
             const approval = !mine && !run ? parseApprovalCode(message.content) : null;
-            return <Fragment key={message.id}>{noticesBefore(message.created_at)}{exchangesBefore(message.created_at)}<li className={mine ? 'msg-you' : 'msg-bot'}><div className={mine ? 'msg-name msg-name-you' : 'msg-name'}>{message.sender_name}</div>{failure ? <div className="msg-status"><RuntimeFailureNotice failure={failure} /></div> : run ? <div className="msg-body">{runLine(run)}{run.state === 'running' && detail.writable ? <> <button type="button" className="attach-word" onClick={() => void stop(message.id)}>Stop</button></> : null}</div> : draft && message.draftStatus ? <div className="msg-body"><DraftCard message={message} conversationId={conversationId} status={message.draftStatus} writable={detail.writable} onDone={() => void load()} /></div> : <div className="msg-body">{renderThreadBody(content, message.id)}{approval && message.approvalStatus ? <ApprovalCard message={message} conversationId={conversationId} status={message.approvalStatus} writable={detail.writable} onDone={() => void load()} /> : null}<FileLinks names={parseFileNames(message.content)} /></div>}</li></Fragment>;
+            const { speech, trace } = splitThreadContent(content);
+            return (
+              <Fragment key={message.id}>
+                {noticesBefore(message.created_at)}
+                {exchangesBefore(message.created_at)}
+                <li className={mine ? 'msg-you' : 'msg-bot'}>
+                  <MessageMeta message={message} mine={mine} />
+                  {failure ? (
+                    <div className="msg-status"><RuntimeFailureNotice failure={failure} /></div>
+                  ) : run ? (
+                    <div className="msg-body">
+                      {runLine(run)}
+                      {run.state === 'running' && detail.writable ? <> <button type="button" className="attach-word" onClick={() => void stop(message.id)}>Stop</button></> : null}
+                    </div>
+                  ) : draft && message.draftStatus ? (
+                    <div className="msg-body">
+                      <DraftCard message={message} conversationId={conversationId} status={message.draftStatus} writable={detail.writable} onDone={() => void load()} />
+                    </div>
+                  ) : (
+                    <div className="msg-body">
+                      {speech.length ? <div className="msg-speech">{renderSpeechLines(speech, message.id)}</div> : null}
+                      {trace ? (
+                        <details className="msg-trace">
+                          <summary>{trace.map(agentEventDisplay).find(Boolean)?.label ?? 'Runtime detail'}</summary>
+                          <div className="msg-trace-body">{renderTraceLines(trace, message.id)}</div>
+                        </details>
+                      ) : null}
+                      {approval && message.approvalStatus ? (
+                        <ApprovalCard message={message} conversationId={conversationId} status={message.approvalStatus} writable={detail.writable} onDone={() => void load()} />
+                      ) : null}
+                      <FileLinks names={parseFileNames(message.content)} />
+                    </div>
+                  )}
+                </li>
+              </Fragment>
+            );
           })}
           {noticesBefore(Number.POSITIVE_INFINITY)}
           {exchangesBefore(Number.POSITIVE_INFINITY)}

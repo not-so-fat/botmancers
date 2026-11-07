@@ -504,7 +504,7 @@ export default function BotConfigPage() {
           <header className="mb-6 flex flex-wrap items-center gap-4">
             <div className="min-w-0">
               <p className="agent-eyebrow">Config</p>
-              <h2 className="text-xl font-bold truncate">Couldn&apos;t load agent details</h2>
+              <h2 className="cfg-page-title truncate">Couldn&apos;t load agent details</h2>
             </div>
             <div className="ml-auto text-right">
               <p className="text-sm cfg-muted">
@@ -606,7 +606,7 @@ export default function BotConfigPage() {
         <header className="mb-6 flex flex-wrap items-center gap-4">
           <div className="min-w-0">
             <p className="agent-eyebrow">Config</p>
-            <h2 className="text-xl font-bold truncate">Standing setup</h2>
+            <h2 className="cfg-page-title truncate">Standing setup</h2>
           </div>
           <div className="ml-auto text-right">
             <p className="text-sm cfg-muted">
