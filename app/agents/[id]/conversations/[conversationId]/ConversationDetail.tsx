@@ -122,16 +122,69 @@ function renderTraceLines(lines: string[], keyPrefix: string): ReactNode {
   });
 }
 
-function FoldedRuntimeTrace({ lines, keyPrefix }: { lines: string[]; keyPrefix: string }) {
-  if (!lines.length) return null;
-  const firstEvent = lines.map(agentEventDisplay).find(Boolean);
-  const summary = firstEvent ? firstEvent.label : 'Runtime detail';
+function FoldedRuntimeGroup({
+  notices,
+}: {
+  notices: { id: string; created_at: number; lines: string[] }[];
+}) {
+  if (!notices.length) return null;
+  const labels = notices
+    .map(notice => notice.lines.map(agentEventDisplay).find(Boolean)?.label)
+    .filter((label): label is string => Boolean(label));
+  const unique = [...new Set(labels)];
+  const summary = unique.length ? unique.join(' · ') : 'Runtime detail';
+  const latest = notices[notices.length - 1];
   return (
-    <details className="msg-trace">
-      <summary>{summary}</summary>
-      <div className="msg-trace-body">{renderTraceLines(lines, keyPrefix)}</div>
-    </details>
+    <li className="msg-system">
+      <details className="msg-trace msg-trace-group">
+        <summary>
+          <span className="msg-trace-summary">{summary}</span>
+          <time className="msg-time" dateTime={new Date(latest.created_at).toISOString()} title={new Date(latest.created_at).toLocaleString()}>
+            {formatMessageTime(latest.created_at)}
+          </time>
+        </summary>
+        <div className="msg-trace-body">
+          {notices.map((notice, index) => (
+            <Fragment key={notice.id}>
+              {index > 0 ? <hr className="msg-trace-sep" /> : null}
+              {renderTraceLines(notice.lines, notice.id)}
+            </Fragment>
+          ))}
+        </div>
+      </details>
+    </li>
   );
+}
+
+function isRuntimeNoticeMessage(message: OwnerConversationMessage): boolean {
+  if (message.sender_name === 'You') return false;
+  const content = stripStoredPrefix(message.content);
+  if (classifyRuntimeFailure(content) || parseRun(message.content) || parseDraft(content)) return false;
+  const { speech, trace } = splitThreadContent(content);
+  return trace !== null && speech.length === 0;
+}
+
+type ThreadItem =
+  | { kind: 'chat'; message: OwnerConversationMessage }
+  | { kind: 'runtime'; notices: { id: string; created_at: number; lines: string[] }[] };
+
+function groupThreadItems(messages: OwnerConversationMessage[]): ThreadItem[] {
+  const items: ThreadItem[] = [];
+  for (const message of messages) {
+    if (isRuntimeNoticeMessage(message)) {
+      const notice = {
+        id: message.id,
+        created_at: message.created_at,
+        lines: splitThreadContent(stripStoredPrefix(message.content)).trace ?? [message.content],
+      };
+      const last = items[items.length - 1];
+      if (last?.kind === 'runtime') last.notices.push(notice);
+      else items.push({ kind: 'runtime', notices: [notice] });
+      continue;
+    }
+    items.push({ kind: 'chat', message });
+  }
+  return items;
 }
 
 function mergeMessages(current: OwnerConversationMessage[], incoming: OwnerConversationMessage[]): OwnerConversationMessage[] {
@@ -272,7 +325,18 @@ export default function ConversationDetail() {
         {nextCursor ? <button className="conversation-older" type="button" disabled={paging} onClick={() => void load(nextCursor, true)}>{paging ? 'Loading…' : 'Load older messages'}</button> : null}
         <ol ref={listRef} className="conversation-message-list" aria-label="Conversation history">
           {messages.length === 0 ? <li className="conversation-empty-history">No messages in this conversation yet.</li> : null}
-          {messages.map(message => {
+          {groupThreadItems(messages).map(item => {
+            if (item.kind === 'runtime') {
+              const at = item.notices[0].created_at;
+              return (
+                <Fragment key={`runtime-${item.notices.map(notice => notice.id).join('-')}`}>
+                  {noticesBefore(at)}
+                  {exchangesBefore(at)}
+                  <FoldedRuntimeGroup notices={item.notices} />
+                </Fragment>
+              );
+            }
+            const message = item.message;
             const mine = message.sender_name === 'You';
             const content = stripStoredPrefix(message.content);
             const failure = mine ? null : classifyRuntimeFailure(content);
@@ -280,14 +344,12 @@ export default function ConversationDetail() {
             const draft = !mine && !run ? parseDraft(content) : null;
             const approval = !mine && !run ? parseApprovalCode(message.content) : null;
             const { speech, trace } = splitThreadContent(content);
-            const runtimeNotice = !mine && !failure && !run && !draft && trace !== null && speech.length === 0;
-            const systemLabel = runtimeNotice ? 'Runtime' : undefined;
             return (
               <Fragment key={message.id}>
                 {noticesBefore(message.created_at)}
                 {exchangesBefore(message.created_at)}
-                <li className={mine ? 'msg-you' : runtimeNotice ? 'msg-system' : 'msg-bot'}>
-                  <MessageMeta message={message} mine={mine} systemLabel={systemLabel} />
+                <li className={mine ? 'msg-you' : 'msg-bot'}>
+                  <MessageMeta message={message} mine={mine} />
                   {failure ? (
                     <div className="msg-status"><RuntimeFailureNotice failure={failure} /></div>
                   ) : run ? (
@@ -302,7 +364,12 @@ export default function ConversationDetail() {
                   ) : (
                     <div className="msg-body">
                       {speech.length ? <div className="msg-speech">{renderSpeechLines(speech, message.id)}</div> : null}
-                      {trace ? <FoldedRuntimeTrace lines={trace} keyPrefix={message.id} /> : null}
+                      {trace ? (
+                        <details className="msg-trace">
+                          <summary>{trace.map(agentEventDisplay).find(Boolean)?.label ?? 'Runtime detail'}</summary>
+                          <div className="msg-trace-body">{renderTraceLines(trace, message.id)}</div>
+                        </details>
+                      ) : null}
                       {approval && message.approvalStatus ? (
                         <ApprovalCard message={message} conversationId={conversationId} status={message.approvalStatus} writable={detail.writable} onDone={() => void load()} />
                       ) : null}
