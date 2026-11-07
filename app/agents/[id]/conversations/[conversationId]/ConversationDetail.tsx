@@ -76,17 +76,26 @@ function stripStoredPrefix(content: string) {
   return text.replace(/^\s+/, '');
 }
 
-/** Split durable runtime traces from the speech the owner cares about. */
-function splitThreadContent(text: string): { speech: string[]; events: string[] } {
+/**
+ * Launch/fail notices are stored as bot-sender rows and often echo the
+ * owner's prompt after the event line. That echo is not a second chat
+ * turn — keep the whole notice as a folded runtime trace.
+ */
+function splitThreadContent(text: string): { speech: string[]; trace: string[] | null } {
+  const lines = String(text ?? '').split('\n');
+  const first = lines.find(line => line.trim()) ?? '';
+  if (isAgentEventLine(first)) {
+    return { speech: [], trace: lines };
+  }
   const speech: string[] = [];
-  const events: string[] = [];
-  for (const line of String(text ?? '').split('\n')) {
-    if (isAgentEventLine(line)) events.push(line);
+  const trailingEvents: string[] = [];
+  for (const line of lines) {
+    if (isAgentEventLine(line)) trailingEvents.push(line);
     else speech.push(line);
   }
   while (speech.length && speech[0].trim() === '') speech.shift();
   while (speech.length && speech[speech.length - 1].trim() === '') speech.pop();
-  return { speech, events };
+  return { speech, trace: trailingEvents.length ? trailingEvents : null };
 }
 
 function renderSpeechLines(lines: string[], keyPrefix: string): ReactNode {
@@ -99,15 +108,15 @@ function renderSpeechLines(lines: string[], keyPrefix: string): ReactNode {
   ));
 }
 
-function renderEventLines(lines: string[], keyPrefix: string): ReactNode {
+function renderTraceLines(lines: string[], keyPrefix: string): ReactNode {
   return lines.map((line, index) => {
     const event = agentEventDisplay(line);
     return (
-      <Fragment key={`${keyPrefix}-event-${index}`}>
+      <Fragment key={`${keyPrefix}-trace-${index}`}>
         {index > 0 ? <br /> : null}
         {event
           ? <span className="agent-event"><span className="agent-event-label">{event.label}</span>{event.detail ? ` ${event.detail}` : ''}</span>
-          : <span>{line}</span>}
+          : <span className="msg-trace-payload">{line}</span>}
       </Fragment>
     );
   });
@@ -115,12 +124,12 @@ function renderEventLines(lines: string[], keyPrefix: string): ReactNode {
 
 function FoldedRuntimeTrace({ lines, keyPrefix }: { lines: string[]; keyPrefix: string }) {
   if (!lines.length) return null;
-  const first = agentEventDisplay(lines[0]);
-  const summary = first ? first.label : 'Runtime detail';
+  const firstEvent = lines.map(agentEventDisplay).find(Boolean);
+  const summary = firstEvent ? firstEvent.label : 'Runtime detail';
   return (
     <details className="msg-trace">
-      <summary>{summary}{lines.length > 1 ? ` · ${lines.length} lines` : ''}</summary>
-      <div className="msg-trace-body">{renderEventLines(lines, keyPrefix)}</div>
+      <summary>{summary}</summary>
+      <div className="msg-trace-body">{renderTraceLines(lines, keyPrefix)}</div>
     </details>
   );
 }
@@ -270,15 +279,14 @@ export default function ConversationDetail() {
             const run = mine ? null : parseRun(message.content);
             const draft = !mine && !run ? parseDraft(content) : null;
             const approval = !mine && !run ? parseApprovalCode(message.content) : null;
-            const { speech, events } = splitThreadContent(content);
-            const runtimeOnly = !mine && !failure && !run && !draft && events.length > 0 && speech.length === 0;
-            const mixedRuntime = !mine && !failure && !run && !draft && events.length > 0 && speech.length > 0;
-            const systemLabel = (runtimeOnly || mixedRuntime) ? 'Runtime' : undefined;
+            const { speech, trace } = splitThreadContent(content);
+            const runtimeNotice = !mine && !failure && !run && !draft && trace !== null && speech.length === 0;
+            const systemLabel = runtimeNotice ? 'Runtime' : undefined;
             return (
               <Fragment key={message.id}>
                 {noticesBefore(message.created_at)}
                 {exchangesBefore(message.created_at)}
-                <li className={mine ? 'msg-you' : runtimeOnly ? 'msg-system' : 'msg-bot'}>
+                <li className={mine ? 'msg-you' : runtimeNotice ? 'msg-system' : 'msg-bot'}>
                   <MessageMeta message={message} mine={mine} systemLabel={systemLabel} />
                   {failure ? (
                     <div className="msg-status"><RuntimeFailureNotice failure={failure} /></div>
@@ -294,7 +302,7 @@ export default function ConversationDetail() {
                   ) : (
                     <div className="msg-body">
                       {speech.length ? <div className="msg-speech">{renderSpeechLines(speech, message.id)}</div> : null}
-                      <FoldedRuntimeTrace lines={events} keyPrefix={message.id} />
+                      {trace ? <FoldedRuntimeTrace lines={trace} keyPrefix={message.id} /> : null}
                       {approval && message.approvalStatus ? (
                         <ApprovalCard message={message} conversationId={conversationId} status={message.approvalStatus} writable={detail.writable} onDone={() => void load()} />
                       ) : null}

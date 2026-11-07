@@ -3746,7 +3746,8 @@ button.avatar-pic {
 }
 
 .conversation-message-list .msg-trace-body .agent-event,
-.conversation-message-list .msg-trace-body .agent-event-label {
+.conversation-message-list .msg-trace-body .agent-event-label,
+.conversation-message-list .msg-trace-payload {
   font-size: 12px;
   color: var(--ink-muted);
 }
