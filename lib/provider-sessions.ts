@@ -220,7 +220,7 @@ async function readyContext(db: Db, agentId: string, input: { correlation?: Atte
   const ctx = agentContext(db, agentId);
   if (!ctx.provider.ready) return ctx;
   const ready = await ctx.provider.ready(callContext(input));
-  if (!ready.ok) failWith(ready.error);
+  if (!ready.ok) failWith(ready.error, undefined, agentId);
   return { ...ctx, capabilities: normalizeCapabilities(ctx.provider.capabilities()) };
 }
 
@@ -242,7 +242,7 @@ function clampLimit(ctx: AgentContext, limit: number | null | undefined): number
   return Math.min(n, ctx.capabilities.max_page_size);
 }
 
-function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'provider_failed'): never {
+function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'provider_failed', agentId?: string): never {
   const code: ProviderSessionErrorCode = error.code === 'unsupported' ? 'unsupported'
     : error.code === 'unsupported_authority' ? 'authority_not_allowed'
       : error.code === 'not_found' ? 'session_missing'
@@ -253,9 +253,16 @@ function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'pr
                 : error.code === 'auth_required' || error.code === 'permission_denied'
                   || error.code === 'incompatible_version' || error.code === 'usage_limit' ? error.code
                   : fallback;
-  // Provider diagnostics never reach the caller verbatim.
+  // Provider diagnostics never reach the caller verbatim; they go to the
+  // core log so the owner can tell why a call was refused.
+  const detail = String(error.message ?? '').replace(/[\r\n]+/g, ' ').slice(0, 300);
+  console.error('Session provider refused a call:', `agent=${agentId ?? 'unknown'} code=${error.code} message=${detail}`);
+  if (code === 'provider_unavailable') throw new ProviderSessionError(code, PROVIDER_UNAVAILABLE_MESSAGE);
   throw new ProviderSessionError(code, `The session provider refused the call (${error.code}).`);
 }
+
+const PROVIDER_UNAVAILABLE_MESSAGE = 'The Agent’s runtime reported itself unavailable (it may not be installed, signed in, or startable). The Botmancers core log has the detail.';
+const OTHER_CONNECTION_MESSAGE = 'The session belongs to a different runtime connection than the Agent’s current one. Choose a session of the current connection.';
 
 function callContext(input: { correlation?: AttemptCorrelation | null; signal?: AbortSignal | null; deadlineAt?: number | null }): ProviderCallContext {
   return { correlation: { ...(input.correlation ?? {}) }, signal: input.signal ?? null, deadline_at: input.deadlineAt ?? null };
@@ -495,7 +502,7 @@ export async function syncAgentSessions(db: Db, agentId: string, input: SyncInpu
   const result = await ctx.provider.listSessions({
     ...callContext(input), scope: providerScope(scope, selected), query, cursor: input.cursor ?? null, limit,
   });
-  if (!result.ok) failWith(result.error);
+  if (!result.ok) failWith(result.error, undefined, agentId);
   const now = input.now ?? Date.now();
   // A provider returning more than asked is cut to the bound.
   const records = result.value.items.slice(0, limit);
@@ -787,10 +794,10 @@ export async function refreshProviderSession(db: Db, agentId: string, ref: strin
   const ctx = await readyContext(db, agentId, input);
   const row = requireSession(db, agentId, ref);
   if (row.runtime_connection_id !== ctx.connection.id) {
-    throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
+    throw new ProviderSessionError('provider_unavailable', OTHER_CONNECTION_MESSAGE);
   }
   const result = await ctx.provider.getSession({ ...callContext(input), provider_session_id: row.provider_session_id });
-  if (!result.ok) failWith(result.error);
+  if (!result.ok) failWith(result.error, undefined, agentId);
   const now = input.now ?? Date.now();
   db.transaction(() => {
     if (result.value === null) markMissing(db, row, now);
@@ -834,7 +841,7 @@ export async function importProviderSession(db: Db, agentId: string, input: Impo
     || (scope.kind === 'workspaces' && where !== null && scope.workspaces.some(root => workspaceContains(root, where)));
   if (!admits(workspace)) throw new ProviderSessionError('out_of_scope', 'The session is outside the Agent\'s session scope.');
   const result = await ctx.provider.importSession({ ...callContext(input), provider_session_id: providerSessionId, workspace });
-  if (!result.ok) failWith(result.error);
+  if (!result.ok) failWith(result.error, undefined, agentId);
   const reported = { ...result.value, provider_session_id: providerSessionId };
   const now = input.now ?? Date.now();
   return db.transaction(() => {
@@ -870,13 +877,13 @@ export async function readProviderTranscript(
   requireCapability(ctx, 'read');
   const row = requireSession(db, agentId, ref);
   if (row.runtime_connection_id !== ctx.connection.id) {
-    throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
+    throw new ProviderSessionError('provider_unavailable', OTHER_CONNECTION_MESSAGE);
   }
   const limit = clampLimit(ctx, input.limit);
   const result = await ctx.provider.readTranscript({ ...callContext(input), provider_session_id: row.provider_session_id, cursor: input.cursor ?? null, limit });
   if (!result.ok) {
     if (result.error.code === 'not_found') db.transaction(() => markMissing(db, row, input.now ?? Date.now())).immediate();
-    failWith(result.error);
+    failWith(result.error, undefined, agentId);
   }
   const redact = redactor(row);
   return {
@@ -1023,7 +1030,7 @@ export async function startProviderSession(db: Db, agentId: string, input: Start
   });
   if (!started.ok) {
     contexts.abandon();
-    failWith(started.error);
+    failWith(started.error, undefined, agentId);
   }
   const handle = started.value;
   const record = await ctx.provider.getSession({ ...callContext(input), provider_session_id: handle.provider_session_id });
@@ -1066,7 +1073,7 @@ export async function sendProviderTurn(db: Db, agentId: string, ref: string, inp
   const ctx = await readyContext(db, agentId, input);
   requireCapability(ctx, 'resume');
   if (row.runtime_connection_id !== ctx.connection.id) {
-    throw new ProviderSessionError('provider_unavailable', 'The session belongs to another runtime connection.');
+    throw new ProviderSessionError('provider_unavailable', OTHER_CONNECTION_MESSAGE);
   }
   const scope = requireScope(ctx);
   // A Botmancers-launched session (a binding) is the Agent's own; a native
@@ -1090,7 +1097,7 @@ export async function sendProviderTurn(db: Db, agentId: string, ref: string, inp
   });
   if (!sent.ok) {
     contexts.abandon();
-    failWith(sent.error);
+    failWith(sent.error, undefined, agentId);
   }
   const now = input.now ?? Date.now();
   try {
@@ -1185,7 +1192,7 @@ export async function observeProviderTurn(
   const result = await ctx.provider.observeTurn({ ...callContext(input), provider_turn_id: turn.provider_turn_id });
   if (!result.ok) {
     if (result.error.code === 'cancelled' || result.error.code === 'timed_out') return turnView(db, requireTurn(db, agentId, turnRef));
-    failWith(result.error);
+    failWith(result.error, undefined, agentId);
   }
   finishTurn(db, turn, result.value, input.now ?? Date.now());
   return turnView(db, requireTurn(db, agentId, turnRef));
@@ -1203,7 +1210,7 @@ export async function cancelProviderTurn(
   const now = input.now ?? Date.now();
   appendEvent(db, { agentId, sessionRef: turn.session_ref, turnId: turn.id, type: 'cancel_requested', now });
   const result = await ctx.provider.cancelTurn({ ...callContext(input), provider_turn_id: turn.provider_turn_id });
-  if (!result.ok) failWith(result.error);
+  if (!result.ok) failWith(result.error, undefined, agentId);
   if (result.value === 'cancelled') {
     finishTurn(db, turn, { status: 'cancelled', provider_session_id: '', output: null, failure: { code: 'cancelled', message: '' }, finished_at: now }, now);
     return { turn: turnView(db, requireTurn(db, agentId, turnRef)), outcome: 'cancelled' };

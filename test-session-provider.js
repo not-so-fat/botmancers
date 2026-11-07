@@ -243,6 +243,30 @@ async function main() {
   assert(ps.agentProviderCapabilities(db, bare.id) === null && ps.agentProviderCapabilities(db, dev.id).provider_kind === 'fake-direct',
     'capability discovery per Agent: null without a provider, the provider\'s capabilities otherwise');
 
+  console.log('\nNOT-558: a provider that reports itself unavailable is logged, not echoed');
+  const downConnection = runtimeConnections.create({ provider: 'claude', label: 'Claude down', host: 'This computer' }).id;
+  contract.registerSessionProvider({ connectionId: downConnection }, () => ({
+    ...fake.createFakeSessionProvider({ statePath: path.join(TMP, 'down.json') }),
+    ready: async () => ({ ok: false, error: { code: 'unavailable', message: `claude --version failed\nSECRET-MARKER-123 spawn ENOENT\n${'x'.repeat(400)}` } }),
+  }));
+  const down = agent('Down', downConnection, { kind: 'all_provider_sessions' }, write);
+  const logged = [];
+  const realConsoleError = console.error;
+  console.error = (...args) => { logged.push(args.map(String).join(' ')); };
+  let downError = null;
+  try { await ps.syncAgentSessions(db, down.id); } catch (error) { downError = error; } finally { console.error = realConsoleError; }
+  assert(downError && downError.code === 'provider_unavailable'
+    && downError.message === 'The Agent’s runtime reported itself unavailable (it may not be installed, signed in, or startable). The Botmancers core log has the detail.',
+  'ready() unavailable maps to provider_unavailable with the Botmancers-authored message');
+  assert(!/SECRET-MARKER-123/.test(downError && downError.message), 'the provider message never reaches the thrown error');
+  const refused = logged.filter(line => line.startsWith('Session provider refused a call:'));
+  assert(logged.length === 1 && refused.length === 1, `exactly one console.error line is written (got ${logged.length})`);
+  const line = refused[0] || '';
+  assert(line.includes(down.id) && line.includes('unavailable') && line.includes('SECRET-MARKER-123') && !/[\r\n]/.test(line),
+    'the log line names the agent id, the provider code and the provider message on one line');
+  const loggedMessage = (line.split('message=')[1] || '');
+  assert(loggedMessage.length <= 300, `the logged provider message is truncated to 300 characters (got ${loggedMessage.length})`);
+
   console.log('\nUnsupported capabilities are refused before the provider is called');
   const limitedRef = (() => {
     const id = require('crypto').randomUUID();
