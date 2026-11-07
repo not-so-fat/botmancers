@@ -42,7 +42,8 @@ import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, type Ser
 import { serviceRedactor } from './service-redaction';
 import { recoveryFor, type Recovery, type SessionActions } from './session-actions';
 import { warmAgentProvider } from './provider-sessions';
-import { SESSION_CONTEXT_PRINCIPAL, SESSION_CONTEXT_SERVICE_ID, type SessionContextResolution } from './session-context';
+import { SESSION_CONTEXT_PRINCIPAL, type SessionContextResolution } from './session-context';
+import { RESERVED_SERVICE_IDS } from './service-token-auth';
 import {
   ShareError,
   createShare,
@@ -225,8 +226,11 @@ export interface ServiceContext {
   principal: Principal;
   // Always 'granted' (NOT-556); the contract keeps the field.
   mode: 'granted';
-  // Whether this principal reaches the registered Agents at all. False only
-  // for the session-context principal, authorized by its context alone.
+  // Whether this principal reaches the registered Agents at all. False for
+  // the engine-internal principals (RESERVED_SERVICE_IDS): no token maps to
+  // one, and in-process callers acting as one (the Slack relay's share
+  // principal; NOT-517: the session-context principal, authorized by its
+  // context alone for share-current) never reach an Agent through here.
   reachesAgents: boolean;
 }
 
@@ -236,9 +240,7 @@ export function serviceContext(principal: Principal): ServiceContext {
   if (principal.kind !== 'service') {
     throw new ServiceApiError('principal_not_allowed', 'The service API accepts only service principals.');
   }
-  // NOT-517: the session-context principal sees no Agents (its only
-  // operation, share-current, is authorized by its context).
-  return { principal, mode: 'granted', reachesAgents: principal.id !== SESSION_CONTEXT_SERVICE_ID };
+  return { principal, mode: 'granted', reachesAgents: !RESERVED_SERVICE_IDS.includes(principal.id) };
 }
 
 // The caller reaches the Agent and the Agent exists. NOT-556: there is no

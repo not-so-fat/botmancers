@@ -344,6 +344,18 @@ async function main() {
     assert([ctxList, ctxCaps, ctxAgent].every(r => r.status === 403 && r.body.error.code === 'principal_not_allowed')
       && innerList.items.length === 0 && serviceApi.capabilitiesView(ctxInner).agents.length === 0 && !serviceApi.holds(ctxInner, codex.id),
     'the session-context principal cannot list Agents (refused at the boundary, and reaches no Agent underneath)');
+    const { RESERVED_SERVICE_IDS, parseServiceTokens } = jiti('./lib/service-token-auth.ts');
+    const engineReach = [];
+    for (const id of RESERVED_SERVICE_IDS) {
+      const ctx = serviceApi.serviceContext({ kind: 'service', id });
+      if (serviceApi.holds(ctx, codex.id) || serviceApi.listServiceAgents(ctx, { cursor: null, limit: 20 }).items.length) engineReach.push(id);
+      try { parseServiceTokens(`${id}=${digest('x')}`); engineReach.push(`${id} (token)`); } catch { /* refused, as it must be */ }
+    }
+    assert(engineReach.length === 0 && RESERVED_SERVICE_IDS.length === 4,
+      `the engine-internal principals reach no Agent and no token can name one (${engineReach.join(',')})`);
+    const relayPin = await http.serviceOperations.pinSession({ kind: 'service', id: 'botmancers-session-share' }, codexA.binding.id,
+      () => ({ action: 'ask', idempotency_key: 'relay-direct' }), null);
+    assert(relayPin.status === 404 && relayPin.body.error.code === 'session_not_found', 'the session-share principal cannot pin a session through the service API');
     const ownerCaps = await http.serviceOperations.capabilities(OWNER);
     assert(ownerCaps.status === 403 && ownerCaps.body.error.code === 'principal_not_allowed', 'a non-service principal is principal_not_allowed');
 
