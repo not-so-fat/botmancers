@@ -510,7 +510,7 @@ rejected (`untracked_lineage`). Every Work Request records its root principal.
   a grant.
 - `implementation` and `revision` Wakes require a durable owner grant for the
   exact (caller Agent, target Agent) pair. Without one, the Wake and its Work
-  Request are `blocked` with `grant_required`, and the source conversation offers
+  Request are `blocked` with `edit_approval_required`, and the source conversation offers
   the owner **Allow** (persist the pair grant and re-evaluate availability,
   queuing the request only when the target can launch) or **Deny**
   (cancel this request; the coordinator is told no work ran).
@@ -518,7 +518,7 @@ rejected (`untracked_lineage`). Every Work Request records its root principal.
   without a grant. API-rooted and Wake-rooted self-wakes need a grant.
 - Checks run in a fixed order and stop at the first unmet one: envelope,
   references, depth, and budget (rejected); target name (unavailable); resume and
-  reviewer rules (rejected); **grant** (blocked, `grant_required`); **availability**
+  reviewer rules (rejected); **grant** (blocked, `edit_approval_required`); **availability**
   (blocked, `target_unconfigured` or `target_unavailable`). Allow persists the grant
   and re-checks availability: the request is queued only if the target can launch,
   otherwise it stays blocked on availability and `retryWake` queues it later. Deny

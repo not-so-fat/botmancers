@@ -8,7 +8,7 @@ replies, the `SlackTransport` interface), `test-support/fake-slack-transport.js`
 [`contracts/slack-relay-v0.fixtures.json`](contracts/slack-relay-v0.fixtures.json).
 
 The relay turns human replies in one Slack thread into read-only questions to
-exactly one [session share](service-grants.md#session-shares-not-515) and
+exactly one [session share](service-access.md#session-shares-not-515) and
 posts the answer back in that thread. It owns no share authority: every
 question goes through NOT-515's internal `askShare`, which applies the
 audience allowlist, expiry, revocation, turn limit, in-flight guard,

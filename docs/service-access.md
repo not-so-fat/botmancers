@@ -1,163 +1,112 @@
-# Service grants: granted `/api/v0` access for other agents
+# Service access: what a service token can do in `/api/v0`
 
-Status: NOT-499. Code: `lib/service-grants.ts` (document), `lib/service-audit.ts`
-(audit trail), `lib/service-api.ts` (core services), `lib/service-api-http.ts`
-(HTTP boundary), `app/api/v0/**`. Contract test: `npm run test:service-grants`.
+Status: NOT-499, simplified by NOT-556. Code: `lib/service-api.ts` (core
+services), `lib/service-api-http.ts` (HTTP boundary), `lib/service-audit.ts`
+(audit trail), `lib/service-token-auth.ts` (tokens), `app/api/v0/**`.
+Contract test: `npm run test:service-access`.
 
-A service principal (a caller authenticated by a `BOTMANCERS_SERVICE_TOKENS`
-entry, see [`mcp-bridge.md`](mcp-bridge.md)) gets no access to Agents,
-sessions, conversations, or exchanges beyond the narrow bridge unless the
-owner grants it, per Agent and per capability, in one document. The caller
-never receives a provider session or run id, a Deck credential or selection,
-a working directory, or a tool profile choice, and it can never choose them.
+A service principal is a caller authenticated by a `BOTMANCERS_SERVICE_TOKENS`
+entry (the principal `service:<id>`, see [`mcp-bridge.md`](mcp-bridge.md)).
+**A configured service token reaches every registered Agent.** There is no
+second, per-Agent permission step: the service can discover every Agent,
+read its sessions and conversations, message its sessions, start exchanges,
+pin sessions, and share them, subject to the gates below. The caller never
+receives a provider session or run id, a Deck credential or selection, a
+working directory, or a tool profile choice, and it can never choose them.
 
 The same operations are MCP tools (contract `botmancers.mcp.v2`,
 [`mcp-bridge.md`](mcp-bridge.md)): `botmancers_capabilities`,
 `botmancers_list_agents`, `botmancers_list_sessions`,
 `botmancers_list_conversations`, `botmancers_get_conversation` (with
 `agent_id`), `botmancers_send_to_session`, `botmancers_create_exchange`,
-`botmancers_get_exchange`, and `botmancers_list_exchanges`. Each is one call of
-the same audited, rate-limited service operation (`serviceOperations` in
-`lib/service-api-http.ts`), under the grants below; the audit trail records
-MCP and REST calls alike.
+`botmancers_get_exchange`, `botmancers_list_exchanges`, the pin tools, and
+the share tools. Each is one call of the same audited, rate-limited service
+operation (`serviceOperations` in `lib/service-api-http.ts`); the audit trail
+records MCP and REST calls alike.
 
-## The document
+## The gates that remain
 
-Path: `<BOTMANCERS_HOME>/config/service-grants.json` (default
-`~/.botmancers/config/service-grants.json`). `BOTMANCERS_SERVICE_GRANTS_PATH`
-overrides it (a source checkout without `BOTMANCERS_HOME` must set it to use
-grants at all).
+Giving a service a token means trusting it with every Agent. The risky
+actions are still decided elsewhere, by the owner:
 
-```json
-{
-  "version": 1,
-  "grants": [
-    {
-      "service": "grok-bot",
-      "agent": "<Codex agent id>",
-      "capabilities": ["agents:read", "sessions:read", "conversations:read", "sessions:message"]
-    }
-  ]
-}
-```
+- **The Agent's policy** (Agent Config, `lib/session-pins`). A message to a
+  registered Agent starts a new read-only session only when the Agent has no
+  session that can take it, its policy allows new sessions, and it has a
+  default workspace; otherwise 409 `no_eligible_session` or
+  `workspace_required`. Resume work here (`POST /api/v0/sessions/{ref}/pins`
+  with `action: "resume"`, workspace-write turns in that exact session) runs
+  only when the Agent's policy allows resuming with edits and its runtime
+  enforces it (else 409 `action_unavailable`).
+- **`approve_write`.** A resume pin also needs `approve_write: true`, which
+  the caller sets only after the person it acts for approved edits; without
+  it, 403 `approval_required`. Every other service turn is read-only.
+- **The Slack channel allowlist** (Agent Config, under Session sharing). A
+  share's audience must be on it, else 403 `audience_not_allowed`
+  ([Session shares](#session-shares-not-515)).
+- **Caller-owned visibility.** A service sees only the exchanges, pins,
+  shares, and service conversations it created itself. A conversation is
+  visible under an Agent only when that Agent participates, every Agent in
+  it still exists, and no other service participates (one service never
+  reads another's conversation). Anything else answers exactly like a
+  missing target.
+- **The audit trail.** Every call is recorded ([Audit trail](#audit-trail)).
 
-- `service` is the id from `BOTMANCERS_SERVICE_TOKENS` (the principal
-  `service:<id>`). Every entry must name a service configured there: a typo,
-  a service removed from the token list, or a malformed token list refuses the
-  whole document.
-- `agent` is one Agent id (the id in `/api/bots`, or in the Agent's config
-  page URL). There is no wildcard.
-- `capabilities` is an explicit, non-empty subset of:
+The engine-internal principals (`botmancers-exchanges`, `botmancers-engine`,
+`botmancers-session-share`, `botmancers-session-context`) are refused in
+`BOTMANCERS_SERVICE_TOKENS` and reach no Agent through this API.
 
-| Capability | Allows, for this Agent |
-| --- | --- |
-| `agents:read` | appear in `GET /api/v0/agents`, `GET /api/v0/agents/{agentId}` |
-| `sessions:read` | `GET /api/v0/agents/{agentId}/sessions`, `.../sessions/{ref}` |
-| `conversations:read` | `GET /api/v0/agents/{agentId}/conversations`, `.../conversations/{id}` |
-| `sessions:message` | `POST /api/v0/sessions/{ref}/messages` on this Agent's sessions |
-| `exchanges:read` | `GET /api/v0/exchanges`, `GET /api/v0/exchanges/{id}` for the caller's exchanges involving it |
-| `exchanges:create` | `POST /api/v0/exchanges`, `POST /api/v0/exchanges/{id}/cancel` involving it |
-| `sessions:start` | NOT-507: let `POST /api/v0/agents/{agentId}/pins` (a registered-Agent message) start a new read-only session when the Agent has none that can take it, its policy allows new sessions, and it has a default workspace. Never implied by `sessions:message`. |
-| `sessions:resume` | NOT-507: `POST /api/v0/sessions/{ref}/pins` with `action: "resume"` (Resume work here: workspace-write turns in that exact session, with `approve_write: true`, only when the Agent's policy allows resuming with edits and its runtime enforces it). Never implied by `sessions:message`. |
-| `shares:create` | NOT-515: `POST /api/v0/sessions/{ref}/shares` on this Agent's sessions, and `GET /api/v0/shares`, `GET /api/v0/shares/{shareRef}`, `POST /api/v0/shares/{shareRef}/revoke` for the caller's own shares of them ([Session shares](#session-shares-not-515)). Never implied by `sessions:message`, and grants no Ask itself. |
+Each operation still names the capability it uses (`agents:read`,
+`sessions:read`, `conversations:read`, `sessions:message`, `exchanges:read`,
+`exchanges:create`, `sessions:start`, `sessions:resume`, `shares:create`).
+These are labels the audit trail records and `botmancers_capabilities`
+reports for every Agent, not permissions the owner hands out.
 
 NOT-507 pins: `POST /api/v0/agents/{agentId}/pins` (message a registered
-Agent; `sessions:message`), `POST /api/v0/sessions/{ref}/pins` (`action:
-"ask"` needs `sessions:message`), and `GET /api/v0/pins/{pinRef}`,
-`POST /api/v0/pins/{pinRef}/messages`, `POST /api/v0/pins/{pinRef}/detach`
-(the capability the pin was created under, checked again on every call, so a
-withdrawn grant makes the pin answer `pin_not_found`). Each audit event names
-the resolved Agent and session, the capability actually used, and the final
-action (`agents.message`, `agents.message.start`, `pins.ask`, `pins.resume`,
-`pins.send`, `pins.read`, `pins.detach`).
+Agent), `POST /api/v0/sessions/{ref}/pins` (`action: "ask"` or `"resume"`),
+and `GET /api/v0/pins/{pinRef}`, `POST /api/v0/pins/{pinRef}/messages`,
+`POST /api/v0/pins/{pinRef}/detach` (the caller's own pins, while their Agent
+still exists). Each audit event names the resolved Agent and session, the
+capability used, and the final action (`agents.message`,
+`agents.message.start`, `pins.ask`, `pins.resume`, `pins.send`, `pins.read`,
+`pins.detach`).
 
-The file must be owned by the user running Botmancers and neither readable
-nor writable by group or others (modes such as `644` or `640` are refused):
+## Add, rotate, or revoke a service
 
-```sh
-chmod 600 ~/.botmancers/config/service-grants.json
-```
+- **Add:** put a `<service-id>=sha256:<digest>` entry in `BOTMANCERS_SERVICE_TOKENS`
+  ([`mcp-bridge.md`](mcp-bridge.md)) and restart. Check with
+  `GET /api/v0/capabilities` using the service's token: `"mode": "granted"`
+  and every registered Agent.
+- **Rotate a token:** replace the digest of the service id in
+  `BOTMANCERS_SERVICE_TOKENS`, or add the new digest under a new id.
+- **Revoke:** remove the service's entry from `BOTMANCERS_SERVICE_TOKENS` and
+  restart. Its next call is unauthenticated. Exchanges already running finish
+  under the engine; the caller can no longer read or cancel them.
 
-### Fail closed
+The owner's service audit route (owner UI boundary, loopback only) reports
+the latest service audit events.
 
-- **Missing document:** nothing is granted. The narrow bridge behavior is
-  unchanged (`POST /api/v0/agents/{agentId}/messages` opens a new
-  conversation; a service reads only conversations and requests it
-  opened). `GET /api/v0/capabilities` reports `"mode": "narrow"`.
-- **Invalid document:** the whole document is refused and every granted
-  route answers 503 `grants_unavailable` for every service. Invalid means:
-  not JSON, `version` other than 1, an unknown field anywhere, an unknown,
-  empty, or repeated capability, a wildcard or malformed Agent id, a repeated
-  `(service, agent)` pair, an entry naming an Agent that is not registered,
-  a reserved engine principal
-  (`botmancers-exchanges`, `botmancers-engine`, and, NOT-515,
-  `botmancers-session-share` and `botmancers-session-context`), more than 512 entries or
-  64 KiB, or a file that is not owner-only. The narrow routes keep working.
-- An entry for an Agent that does not exist (a typo, or an Agent you deleted)
-  makes the document invalid, so the other entries never stay quietly in
-  force: fix or remove the entry. The document is re-validated whenever the
-  registered Agents change. A service with no entry is granted nothing.
+### Upgrading from grants
 
-The document is re-read whenever the file changes; no restart is needed.
-`GET /api/service-grants` (owner UI boundary, loopback only) shows whether it
-loaded, the first problem when it did not, the effective grants, and the
-latest audit events.
-
-## Rotation, revocation, rollback
-
-- **Rotate a token:** add the new `sha256:` digest under a new service id or
-  replace the digest of the existing id in `BOTMANCERS_SERVICE_TOKENS`. Grants
-  are keyed by service id, so replacing the digest of the same id keeps its
-  grants; a new id needs its own entries. Retiring a service id: delete its
-  grant entries first, then remove it from `BOTMANCERS_SERVICE_TOKENS`; an
-  entry naming an unconfigured service refuses the whole document.
-- **Revoke:** delete the service's entries (or one capability) and save. The
-  next call is refused; targets it can no longer see answer exactly as
-  missing ones. Exchanges already running finish under the engine; the caller
-  can no longer read or cancel them.
-- **Rollback:** keep the previous file (`service-grants.json.bak`) and copy it
-  back, or delete the file to return to the narrow behavior. Both apply on the
-  next call. Keep the copy `chmod 600`.
-
-## Least-privilege examples
-
-Consult a past Codex context, read only:
-
-```json
-{ "service": "grok-bot", "agent": "<codex>", "capabilities": ["agents:read", "sessions:read", "conversations:read"] }
-```
-
-Ask Codex's exact session a question (one read-only turn, no Deck or
-runtime choice):
-
-```json
-{ "service": "grok-bot", "agent": "<codex>", "capabilities": ["agents:read", "sessions:read", "sessions:message"] }
-```
-
-Hand Codex's work to Grok (`Continue`): `exchanges:create` on both Agents,
-`exchanges:read` to follow it:
-
-```json
-{ "service": "grok-bot", "agent": "<codex>", "capabilities": ["sessions:read", "exchanges:read", "exchanges:create"] },
-{ "service": "grok-bot", "agent": "<grok>",  "capabilities": ["exchanges:read", "exchanges:create"] }
-```
-
-Grant `conversations:read` only for Agents whose whole transcript the service
-may see: a conversation is visible only when every Agent in it is granted
-`conversations:read` and no other service participates.
+Earlier releases also required an owner-only grants document,
+`config/service-grants.json`. A leftover `service-grants.json` is ignored:
+it is never read, never deleted, and never causes an error, and
+`BOTMANCERS_SERVICE_GRANTS_PATH` has no effect. You can delete the file.
+A service that had no grant entries now reaches every Agent, so remove from
+`BOTMANCERS_SERVICE_TOKENS` any service you do not trust with all of them.
 
 ## API
 
 All routes need `Authorization: Bearer <token>` of a service principal
 (person and bot principals get 403 `principal_not_allowed`). Errors use
-`{ "error": { "code", "message" } }`. A target outside the caller's grants is
-answered with exactly the code and message of a missing one
-(`agent_not_found`, `session_not_found`, `conversation_not_found`,
-`exchange_not_found`, all 404).
+`{ "error": { "code", "message" } }`. A target the caller may not see
+(another service's exchange or conversation, a deleted Agent) is answered
+with exactly the code and message of a missing one (`agent_not_found`,
+`session_not_found`, `conversation_not_found`, `exchange_not_found`, all
+404).
 
 | Route | Notes |
 | --- | --- |
-| `GET /api/v0/capabilities` | `mode` (`granted` or `narrow`), the caller's Agents and capabilities, limits |
+| `GET /api/v0/capabilities` | `mode` (always `granted`), every registered Agent and its capabilities, limits |
 | `GET /api/v0/agents` | id, name, title, runtime kind, availability, capabilities, activity |
 | `GET /api/v0/agents/{agentId}/sessions?status=active\|ended\|all` | the session catalog without its launch context |
 | `GET /api/v0/agents/{agentId}/sessions/{ref}` | adds the session's Attempts |
@@ -190,22 +139,21 @@ the service's question and the Agent's answer are in one conversation the
 service owns per session.
 
 **Exchanges** are the canonical NOT-497 exchanges with the service as
-requester; `exchanges:create` is needed on the source Agent and, for a
-`Continue`, on the destination Agent. The destination starts a fresh session
+requester. The destination of a `Continue` starts a fresh session
 it owns with its own configured Deck. When `origin_conversation_id` is
 omitted, a new conversation owned by the service is opened. When a `Continue`
 omits `destination.conversation_id`, the delivery goes to a new conversation
 the service opens with the destination Agent (never the owner's direct thread);
 a named destination conversation must be one the service participates in.
 `POST /api/v0/exchanges` and its cancel return the full exchange (instruction,
-hops, answer, handoff packet, events) only when the caller also holds
-`exchanges:read` on every Agent involved; with `exchanges:create` alone they
-return status metadata (`id`, `kind`, `mode`, `state`, source and destination
-Agent and session, failure code, timestamps), also on an idempotent replay.
+hops, answer, handoff packet, events) while every Agent involved still
+exists; otherwise status metadata (`id`, `kind`, `mode`, `state`, source and
+destination Agent and session, failure code, timestamps), also on an
+idempotent replay.
 
 **Redaction:** everything a service is shown — conversation messages, session
 titles and Attempts, Ask answers, Continue handoff packets, failure messages,
-and events, through the granted routes and through
+and events, through the service routes and through
 `GET /api/v0/requests/{id}` and `GET /api/v0/conversations/{id}` — passes
 through one sanitizer (`lib/service-redaction.ts`): every provider session
 and run id the engine recorded becomes `[redacted runtime id]`, and every
@@ -236,9 +184,9 @@ editor, the expiry sweeper, `botmancers doctor`) is
 A **share** lets one audience ask exactly one session read-only questions
 for a while. It is one NOT-507 Ask pin on that `session_ref` (read-only,
 never workspace-write), requested by the reserved engine principal
-`service:botmancers-session-share`. That principal holds no grant (it is
-refused in this document), so the share is the only authority its questions
-have: a share never broadens anyone's grants, and the share principal cannot
+`service:botmancers-session-share`. That principal reaches no Agent (it is
+refused in `BOTMANCERS_SERVICE_TOKENS`), so the share is the only authority
+its questions have: a share never broadens anyone's access, and the share principal cannot
 use `POST /api/v0/sessions/{ref}/pins`, `/messages`, or any pin route.
 
 | Route | MCP tool | Notes |
@@ -248,7 +196,7 @@ use `POST /api/v0/sessions/{ref}/pins`, `/messages`, or any pin route.
 | `GET /api/v0/shares/{shareRef}` | `botmancers_get_share` | one own share |
 | `POST /api/v0/shares/{shareRef}/revoke` | `botmancers_revoke_share` | 200 `{ share, replayed }`; revoking a revoked share returns it unchanged |
 
-Share-current (`POST /api/v0/shares/current`) is not a granted-service route:
+Share-current (`POST /api/v0/shares/current`) is not a service-token route:
 see [Share the current session](#share-the-current-session-not-517).
 
 - **Session.** Only an explicit `session_ref` (from `.../sessions`). The
@@ -265,10 +213,10 @@ see [Share the current session](#share-the-current-session-not-517).
 - **Eligibility** is NOT-507's: an ended, missing, or unresumable session is
   `session_ended`, `session_missing`, or `session_not_resumable`, and no share
   is created.
-- **Visibility.** A share is visible to its creator only while it still holds
-  `shares:create` on the session's Agent; anything else is 404
-  `share_not_found`, exactly like a missing share. An unknown, ungranted, or
-  other-Agent session is 404 `session_not_found`, exactly like a missing one.
+- **Visibility.** A share is visible only to its creator, and only while the
+  session's Agent still exists; anything else is 404 `share_not_found`,
+  exactly like a missing share. An unknown or other-Agent session is 404
+  `session_not_found`, exactly like a missing one.
 - **View.** `share_ref` (opaque `shr_…`), `agent_id`, `session_ref`,
   `authority`, `state`, `audience`, `created_via`, `created_at`, `expires_at`,
   `revoked_at`, `max_turns`, `turns_used`. Never a provider id, working
@@ -278,9 +226,12 @@ see [Share the current session](#share-the-current-session-not-517).
   and list, the `share_ref` for read and revoke). A create or revoke commits
   with its `allowed` row.
 
-**The owner's share configuration** is a second owner-only document,
-`<BOTMANCERS_HOME>/config/session-shares.json`
-(`BOTMANCERS_SESSION_SHARES_PATH` overrides it):
+**The owner's share configuration** is edited in Agent Config, under
+Session sharing ([`session-shares.md`](session-shares.md)): the Slack
+channel allowlist and, per Agent, `share_from_turn`. It is stored in an
+owner-only file, `<BOTMANCERS_HOME>/config/session-shares.json`
+(`BOTMANCERS_SESSION_SHARES_PATH` overrides it), which you never need to
+edit by hand:
 
 ```json
 {
@@ -291,12 +242,14 @@ see [Share the current session](#share-the-current-session-not-517).
 ```
 
 A share's `audience` must be on `audiences` (else 403
-`audience_not_allowed`). `share_from_turn` is the per-Agent opt-in for
-[share-current](#share-the-current-session-not-517) (default off). The same fail-closed rules apply as for
-this document (owner-only `chmod 600`, at most 64 KiB and 512 entries, strict
-JSON, no unknown field, no wildcard or malformed id, no duplicate, only
-registered Agents): while it is missing or invalid, no audience is allowed
-and `share_from_turn` is off. It is re-read when it changes.
+`audience_not_allowed`: "That Slack channel is not on the share allowlist.
+Add it in Agent Config, under Session sharing."). `share_from_turn` is the
+per-Agent opt-in for [share-current](#share-the-current-session-not-517)
+(default off). The file fails closed (owner-only `chmod 600`, at most 64 KiB
+and 512 entries, strict JSON, no unknown field, no wildcard or malformed id,
+no duplicate, only registered Agents): while it is missing or invalid, no
+audience is allowed and `share_from_turn` is off. It is re-read when it
+changes.
 
 **Asking through a share** (`askShare` in `lib/session-shares.ts`) is internal:
 the Slack relay's entry, not a route or MCP tool. Each question is one
@@ -308,7 +261,7 @@ questions), or `share_turn_in_progress` (one question at a time per share: a
 durable claim is taken before dispatch, and a claim left by a crashed process
 is recovered after a restart). Answers are redacted and cut at 3000
 characters. Every ask is audited as `shares.ask` (capability `shares:ask`,
-audit-only and not grantable) on the share's session, by
+audit-only) on the share's session, by
 `service:botmancers-session-share`, whatever its outcome; an accepted turn,
 its count, and its audit row commit together. Share rows and their
 append-only `session_share_events` survive restarts. The Slack relay core
@@ -375,9 +328,8 @@ points at another session.
 authenticated only by a live context. It can call share-current and nothing
 else: every other operation is 403 `principal_not_allowed`, its MCP
 `tools/list` holds only `botmancers_share_current_session`, and any other tool
-is unknown. It is refused in this document and in
-`BOTMANCERS_SERVICE_TOKENS`, like `botmancers-exchanges`. A granted service
-never sees the tool, and calling share-current with a service token is 400
+is unknown. It is refused in `BOTMANCERS_SERVICE_TOKENS`, like
+`botmancers-exchanges`. A service token never sees the tool, and calling share-current with a service token is 400
 `invalid_request` (`invalid_arguments` over MCP).
 
 **Errors** (REST status; the MCP tool returns the same code, `invalid_request`
@@ -411,13 +363,13 @@ no share, event, or pin.
 
 ## Audit trail
 
-Every granted call, and every narrow `/api/v0` call by a service, appends one
+Every `/api/v0` call by a service appends one
 row to `service_audit_events` (in the Botmancers database): time, principal,
-operation, capability (`participant` for the narrow routes), target kind and
+operation, capability (`participant` for the v1 bridge routes), target kind and
 Botmancers reference, the owning Agent when known, outcome (`allowed`,
 `denied`, `rejected`, `error`), and a stable code. Internally a refusal
-because of the grants is recorded as `not_granted`, distinct from a missing
-target. Rows never hold a prompt, transcript, token, credential, provider id,
+of a target the caller may not see is recorded as `not_granted`, distinct
+from a missing target. Rows never hold a prompt, transcript, token, credential, provider id,
 or working directory; a reference that does not look like a Botmancers id is
 stored as `[invalid]`. Rows cannot be updated or deleted. A mutation (session
 message, exchange create, cancel) commits in the same transaction as its
@@ -425,11 +377,3 @@ message, exchange create, cancel) commits in the same transaction as its
 cannot be written, nothing is recorded or launched and the caller gets 500
 `internal_error` (audited as `error` when the trail accepts it). Unauthenticated
 requests are not recorded (there is no principal).
-
-## Migration
-
-Nothing changes for an existing installation until the owner writes the
-document. The audit table is created on first start. To adopt grants: create
-the file as above, `chmod 600`, and check `GET /api/v0/capabilities` with the
-service's token (it should report `"mode": "granted"` and the Agents you
-listed).

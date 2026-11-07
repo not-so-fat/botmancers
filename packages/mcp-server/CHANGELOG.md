@@ -7,6 +7,27 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+### Changed
+
+- Service tokens no longer need owner grants. A service configured in
+  `BOTMANCERS_SERVICE_TOKENS` reaches every registered Agent through the v2
+  tools; each Agent's policy (new sessions, resume with edits),
+  `approve_write`, and the Slack channel share allowlist still decide the
+  risky actions. `botmancers_capabilities` always reports `mode: "granted"`
+  with every Agent. The `grant_required` and `grants_unavailable` errors are
+  gone, and a leftover `service-grants.json` is ignored. To revoke a
+  service, remove its entry from `BOTMANCERS_SERVICE_TOKENS`
+  ([`docs/service-access.md`](../../docs/service-access.md)).
+- The `botmancers-collaboration` skill's "Permission and grants" reference is
+  now "Permissions": it covers `no_eligible_session`,
+  `authority_not_allowed`, `audience_not_allowed`, `agent_not_found`, and
+  `session_not_found`, and no longer tells agents to ask the owner for a
+  grant.
+- A share to a Slack channel off the allowlist still fails with 403
+  `audience_not_allowed`; its message now says where to fix it: "That Slack
+  channel is not on the share allowlist. Add it in Agent Config, under
+  Session sharing."
+
 ## [0.10.1] - 2026-11-06
 
 ### Changed
@@ -266,7 +287,7 @@ Not published; see 0.4.1.
   catalog and Sessions UI, session-targeted Ask and Continue exchanges with
   inline exchange cards, and an Agent Exchanges ledger.
 - Service grants let the owner give another Agent narrow, audited access to
-  sessions, conversations, and exchanges (`docs/service-grants.md`). Grants
+  sessions, conversations, and exchanges (`docs/service-access.md`). Grants
   are re-checked at read time, and an unregistered Agent invalidates the
   document.
 

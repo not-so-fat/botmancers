@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-515: SessionShare core (lib/session-shares) and its explicit REST/MCP
-// lifecycle (docs/service-grants.md, Session shares). Proves against the
+// lifecycle (docs/service-access.md, Session shares). Proves against the
 // real store, an isolated SQLite file, and the deterministic fake provider:
 //   - the share store: opaque stable share_ref, exact session_ref, ask-only
 //     authority, TTL and turn-limit defaults and bounds, the owner's
@@ -275,6 +275,9 @@ async function main() {
       'the bounds themselves (300 s, 86400 s, 1 and 100 turns) are accepted');
     const offList = await serviceOperations.createShare(grok, s2, () => ({ audience: { ...audience, channel_id: 'C0NOTLIST' }, idempotency_key: 'share-off-1' }), null);
     assert(offList.status === 403 && offList.body.error.code === 'audience_not_allowed' && lastAudit().outcome === 'denied', 'a channel off the owner allowlist -> 403 audience_not_allowed, audited denied');
+    assert(offList.body.error.message === 'That Slack channel is not on the share allowlist. Add it in Agent Config, under Session sharing.'
+      && !/session-shares\.json/.test(offList.body.error.message),
+      'the off-allowlist message names Agent Config and Session sharing, not session-shares.json');
   }
 
   console.log('\nCreate: heuristic and authority-seeking inputs, unauthorized targets');

@@ -1,4 +1,4 @@
-// NOT-515: durable temporary session shares (docs/service-grants.md,
+// NOT-515: durable temporary session shares (docs/service-access.md,
 // Session shares; docs/design/2026-10-24-session-share-preflight.md).
 //
 // A share is one read-only Ask pin (NOT-507, lib/session-pins) on exactly
@@ -501,7 +501,7 @@ export async function createShare(input: CreateShareInput): Promise<{ share: Sha
     return { share: replay, created: false };
   }
   if (!audienceAllowed(input.audience)) {
-    throw new ShareError('audience_not_allowed', 'That audience is not on the owner\'s share allowlist (session-shares.json).');
+    throw new ShareError('audience_not_allowed', 'That Slack channel is not on the share allowlist. Add it in Agent Config, under Session sharing.');
   }
   const agentId = sessionOwner(input.sessionRef);
   if (!agentId || (input.agentId && input.agentId !== agentId)) throw new ShareError('session_not_found', 'No session with that reference.');

@@ -22,7 +22,6 @@ const next = states => (states.length > 1 ? states.shift() : states[0]);
 
 export function makeSimulator(fixtures, scenario) {
   const byName = name => fixtures.agents.find(agent => agent.name === name);
-  const grants = scenario.grants ?? Object.fromEntries(fixtures.agents.map(agent => [agent.name, ALL]));
   const errors = structuredClone(scenario.errors ?? {});
   const exchangeStates = [...(scenario.exchange ?? [])];
   const requestStates = [...(scenario.request ?? [])];
@@ -35,10 +34,11 @@ export function makeSimulator(fixtures, scenario) {
     switch (tool) {
       case 'botmancers_capabilities':
         return {
-          mode: scenario.mode ?? 'granted',
-          agents: scenario.mode === 'narrow' ? [] : fixtures.agents.map(agent => ({ agent_id: agent.agent_id, capabilities: grants[agent.name] ?? [] })),
-          operations: scenario.mode === 'narrow' ? [] : Object.entries(CAPABILITY).map(([name, capability]) => ({
-            tool: name, capability, agent_ids: fixtures.agents.filter(agent => (grants[agent.name] ?? []).includes(capability)).map(agent => agent.agent_id),
+          // NOT-556: a service token reaches every registered Agent.
+          mode: 'granted',
+          agents: fixtures.agents.map(agent => ({ agent_id: agent.agent_id, capabilities: ALL })),
+          operations: Object.entries(CAPABILITY).map(([name, capability]) => ({
+            tool: name, capability, agent_ids: fixtures.agents.map(agent => agent.agent_id),
           })),
           polling: { initial_seconds: 2, max_seconds: 30 },
         };

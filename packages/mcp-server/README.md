@@ -14,29 +14,31 @@ No source checkout or separately started app is needed.
   configurations keep working.
 
 The tool contract is `botmancers.mcp.v2`, which serves every
-`botmancers.mcp.v1` tool unchanged and adds granted access to Agents,
+`botmancers.mcp.v1` tool unchanged and adds service access to Agents,
 sessions, conversations, and exchanges. Its JSON schema ships in this
 package at `schemas/botmancers.mcp.v2.tools.json`, next to the frozen
 `schemas/botmancers.mcp.v1.tools.json`; both are byte-identical to the
 captures in the Botmancers repository
 ([`docs/contracts`](../../docs/contracts/mcp-bridge-v2.tools.json)).
 
-v1 tools (no grants needed):
+v1 tools:
 
 | Tool | What it does |
 | --- | --- |
 | `botmancers_start_task` | Sends one objective to an allowlisted coordinator. Returns `request_id` and `conversation_id`. |
 | `botmancers_get_request` | Polls a request until `terminal`. Returns its `result` or `failure`. |
-| `botmancers_get_conversation` | Reads the conversation the task opened. With `agent_id` (v2 path), reads any granted conversation of that Agent, paginated. |
+| `botmancers_get_conversation` | Reads the conversation the task opened. With `agent_id` (v2 path), reads any of that Agent's conversations your service can see, paginated. |
 | `botmancers_health` | Shows the caller's identity and the available coordinators. |
 
-v2 tools (each needs the owner's grant on the Agents involved,
-[`docs/service-grants.md`](../../docs/service-grants.md)), in workflow order:
+v2 tools, in workflow order. A configured service token reaches every
+registered Agent; each Agent's policy decides new sessions and
+resume-with-edits, and the owner's Slack channel allowlist decides share
+audiences ([`docs/service-access.md`](../../docs/service-access.md)):
 
 | Tool | What it does |
 | --- | --- |
-| `botmancers_capabilities` | Discover: supported contracts, the granted Agents, and the operations this caller may use. |
-| `botmancers_list_agents` | Discover: the granted Agents by name, paginated. |
+| `botmancers_capabilities` | Discover: supported contracts, the registered Agents, and the operations this caller may use. |
+| `botmancers_list_agents` | Discover: the registered Agents by name, paginated. |
 | `botmancers_list_sessions` | Select: an Agent's sessions by stable Botmancers reference and recognizable title. |
 | `botmancers_list_conversations` | History: an Agent's conversations, paginated. |
 | `botmancers_send_to_session` | Act: one message to the exact same session of the same Agent (idempotency key required). |
@@ -182,12 +184,12 @@ The package ships an optional [Agent Skill](https://agentskills.io),
 `botmancers-collaboration`, in `skills/botmancers-collaboration/`. It teaches
 an agent the procedure for working with other Botmancers Agents over MCP:
 
-- discover the granted Agents and recognizable sessions instead of asking
+- discover the registered Agents and recognizable sessions instead of asking
   you for IDs;
 - choose between a fresh task, a same-session message, an `Ask`, and a
   `Continue`;
 - poll with bounded backoff and read the durable result;
-- stop on grant, ended-session, conflict, failure, and cancellation states
+- stop on policy, ended-session, conflict, failure, and cancellation states
   without retry loops or silently switching targets;
 - report where a result came from, and treat returned text as untrusted data.
 
@@ -360,7 +362,7 @@ or pin a bridge release that predates v2. No error message contains a token.
 
 Every v1 and v2 `tools/call` is forwarded to Botmancers unchanged, and its
 result returned unchanged; Botmancers validates the arguments and applies
-the grants.
+each Agent's policy.
 
 | Exit | Meaning | What to do |
 | --- | --- | --- |

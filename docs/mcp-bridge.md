@@ -10,8 +10,9 @@ agent conversation service, not a generic route proxy. The caller picks a
 coordinator from an allowlist and gives an objective and an idempotency key.
 It cannot choose a runtime, Deck, model, tool profile, grant, or target.
 
-Contract `botmancers.mcp.v2` adds granted access on top: with the owner's
-grants ([`service-grants.md`](service-grants.md)) an MCP client can discover
+Contract `botmancers.mcp.v2` adds service access on top: with a configured
+service token, which reaches every registered Agent
+([`service-access.md`](service-access.md)), an MCP client can discover
 Agents and recognizable sessions, read conversations, send one message to the
 exact same session of the same Agent, and start `Ask`/`Continue` exchanges,
 without the Botmancers UI or any provider session id. v2 is a thin schema and
@@ -91,23 +92,25 @@ and a v1 client needs no change:
 
 ### v2 tools: discover, select, act, observe
 
-Each v2 tool needs a capability the owner granted this service principal on
-the Agents involved ([`service-grants.md`](service-grants.md)). The caller
+Every v2 tool works on every registered Agent for any configured service
+token ([`service-access.md`](service-access.md)); the Agent's policy,
+`approve_write`, and the share allowlist decide the risky actions. The
+Capability column is the name the audit trail records, not a permission. The caller
 never supplies a Deck, runtime, model, tool profile, provider session id,
 grant, principal, or destination session: none is in any input schema, and
 the Agent, runtime, and session come from the referenced Botmancers session
 and the Agent's stored configuration.
 
-| Step | Tool | Grant | Arguments | Returns |
+| Step | Tool | Capability | Arguments | Returns |
 | --- | --- | --- | --- | --- |
-| 1 discover | `botmancers_capabilities` | none | none | `contracts_supported`, `mode` (`granted` or `narrow`), granted `agents` and their capabilities, the granted `operations` (tool, contract, Agents), `limits`, `polling` |
+| 1 discover | `botmancers_capabilities` | none | none | `contracts_supported`, `mode` (always `granted`), every registered Agent in `agents` with its capabilities, every v2 tool in `operations` (tool, contract, Agents), `limits`, `polling` |
 | 2 discover | `botmancers_list_agents` | `agents:read` | `cursor`, `limit` | `items` (`agent_id`, `name`, `title`, `runtime`, `available`, `capabilities`), `next_cursor` |
 | 3 select | `botmancers_list_sessions` | `sessions:read` | `agent_id`, `status` (`active`, `ended`, `all`), `cursor`, `limit` | `items` (`ref`, recognizable `title`, `status`, `resumable`, `origin`, optional additive `usage`: provider-reported input/output tokens and cost, each with `sum` (null when unreported), `known`/`total`, and `quality` `complete`/`partial`/`unavailable`), `next_cursor` |
 | history | `botmancers_list_conversations` | `conversations:read` | `agent_id`, `cursor`, `limit` | `items` (`conversation_id`, `label`, `participants`, `message_count`), `next_cursor` |
 | history | `botmancers_get_conversation` (v2 path) | `conversations:read` | `conversation_id`, `agent_id`, `cursor`, `limit` | `messages` (redacted, `truncated`), `next_cursor` (older messages), `content_trust: "untrusted"` |
 | 4 act, same Agent | `botmancers_send_to_session` | `sessions:message` | `session_ref`, `content`, `idempotency_key` | `exchange_id`, `request_id`, `conversation_id`, `message_id`, `state`, `replayed` |
-| 4 act, exchange | `botmancers_create_exchange` | `exchanges:create` on every Agent involved | `mode` (`ask`, `continue`), `source` (`session_ref`, optional `agent_id`), `destination` (`agent_id`, optional `conversation_id`; Continue only), optional `origin_conversation_id`, `instruction`, `idempotency_key` | `exchange` (full view with `exchanges:read`, else status metadata), `replayed`, `terminal` |
-| 5 observe | `botmancers_get_exchange` | `exchanges:read` on every Agent involved | `exchange_id` | `exchange` (state, `answer`, `packet`, `failure`, `events`), `terminal`, `content_trust: "untrusted"` |
+| 4 act, exchange | `botmancers_create_exchange` | `exchanges:create` | `mode` (`ask`, `continue`), `source` (`session_ref`, optional `agent_id`), `destination` (`agent_id`, optional `conversation_id`; Continue only), optional `origin_conversation_id`, `instruction`, `idempotency_key` | `exchange` (full view while every Agent involved exists, else status metadata), `replayed`, `terminal` |
+| 5 observe | `botmancers_get_exchange` | `exchanges:read` | `exchange_id` | `exchange` (state, `answer`, `packet`, `failure`, `events`), `terminal`, `content_trust: "untrusted"` |
 | 5 observe | `botmancers_list_exchanges` | `exchanges:read` | `cursor`, `limit` | `items` (status metadata, session messages included), `next_cursor` |
 | 4 act, registered Agent | `botmancers_message_agent` | `sessions:message` (a new session also `sessions:start`) | `agent_id`, `content`, `idempotency_key` | `pin`, `turn`, `resolution` (`home`, `newest`, `started`), `replayed` |
 | 4 act, exact session | `botmancers_pin_session` | `sessions:message` (`ask`) or `sessions:resume` (`resume`) | `session_ref`, `action` (`ask`, `resume`), `approve_write`, optional `replace_pin_ref`, `idempotency_key` | `pin`, `replaced_pin_ref`, `replayed` |
@@ -119,9 +122,8 @@ and the Agent's stored configuration.
 | share | `botmancers_list_shares` | `shares:create` (own shares) | optional `session_ref`, `state` (`active`, `expired`, `revoked`), `cursor`, `limit` | `items`, `next_cursor` |
 | share | `botmancers_revoke_share` | `shares:create` (own share) | `share_ref` | `share`, `replayed` |
 
-- **Discover.** `botmancers_capabilities` lists only what this principal was
-  granted. Without a grants document the bridge is in `narrow` mode and only
-  the v1 tools work.
+- **Discover.** `botmancers_capabilities` lists every registered Agent and
+  every v2 tool; `mode` is always `granted`.
 - **Select.** A session is identified by its stable Botmancers reference
   (`ref`, passed as `session_ref`), never by a provider session id. Choose an
   `active`, `resumable` session to send to.
@@ -149,12 +151,13 @@ and the Agent's stored configuration.
   `messaging`.
 - **Share (NOT-515).** `botmancers_create_share` shares exactly one session,
   named by `session_ref`, as a temporary **ask-only** share for one audience
-  on the owner's allowlist (`session-shares.json`): its audience can ask the
+  on the owner's Slack channel allowlist (Agent Config, under Session
+  sharing): its audience can ask the
   session read-only questions until it expires, uses its `max_turns`, or is
   revoked with `botmancers_revoke_share`. A share never grants write access,
   and a session is never chosen by title, workspace, provider id, or
   "latest" (those fields are `authority_not_allowed`). See
-  [`service-grants.md`](service-grants.md#session-shares-not-515).
+  [`service-access.md`](service-access.md#session-shares-not-515).
 - **Share this session (NOT-517).** `botmancers_share_current_session` is not
   a service tool: it is served only to a Claude Code or Codex turn Botmancers
   launched, on the MCP entry Botmancers wrote for that launch with its
@@ -163,7 +166,7 @@ and the Agent's stored configuration.
   optional `ttl_seconds`, `max_turns`, `agent_id`, and `idempotency_key`, and
   never a session selector. Anything else answers `session_context_required`
   with a `reason`. See
-  [`service-grants.md`](service-grants.md#share-the-current-session-not-517).
+  [`service-access.md`](service-access.md#share-the-current-session-not-517).
 - **Observe.** Poll `botmancers_get_exchange` with the returned `exchange_id`
   until `terminal` is true; then read `exchange.answer` (Ask and session
   message) or `exchange.packet` and the destination conversation (Continue).
@@ -215,9 +218,9 @@ A rejected call writes nothing. Each tool lists the codes it can return in
   or coordinator returns `idempotency_conflict`, and nothing is written.
 - **Authority.** A coordinator may decide that implementation or review is
   needed. It then emits Wakes, and the engine applies its usual rules to them.
-  Implementation and revision wait for an owner grant (`grant_required`)
-  unless the owner has already granted that (coordinator, target) pair. The
-  bridge has no grant tool.
+  Implementation and revision wait for the owner's approval
+  (`edit_approval_required`) unless the owner has already allowed that
+  (coordinator, target) pair. The bridge has no approval tool.
 - **Polling.** Poll `get_request` until `terminal` is true. Then read
   `get_conversation`. If it is `active`, follow-up work the coordinator started
   is still open, possibly waiting for the owner.
@@ -228,7 +231,7 @@ A rejected call writes nothing. Each tool lists the codes it can return in
   service layer ([`lib/service-redaction.ts`](../lib/service-redaction.ts)).
   The owner's Sessions view (`docs/core-engine.md`, Session catalog) is a
   loopback UI route, not a bridge tool; the bridge never proxies it. v2 reads
-  sessions only through the grant-gated service API.
+  sessions only through the audited service API.
 
 ## Error recovery
 
@@ -238,11 +241,9 @@ A rejected call writes nothing. Each tool lists the codes it can return in
 | `unsupported_field` | A field the tool does not take (listed in `fields`). | Remove it. |
 | `authority_not_allowed` | A field asks for authority Botmancers chooses (Deck, runtime, model, tool profile, provider session, grant, principal; listed in `fields`). | Remove it; Botmancers takes these from the session and the Agent. |
 | `permission_denied` | The authenticated principal is not a service. | Use a service token. |
-| `grant_required` | This principal holds the tool's capability on no Agent. | Ask the owner to grant it in `service-grants.json`; check `botmancers_capabilities`. |
-| `grants_unavailable` | The owner's grants document is malformed or not owner-only (retryable). | The owner fixes it; retry later. |
-| `agent_not_found` | No such Agent, or not granted for this operation. | Re-run `botmancers_list_agents`. |
-| `session_not_found` | No such session, or its Agent is not granted for this operation. | Re-run `botmancers_list_sessions`. |
-| `conversation_not_found` | No such conversation, or not readable under the grants. | Re-run `botmancers_list_conversations`. |
+| `agent_not_found` | No such Agent (or it was deleted). | Re-run `botmancers_list_agents`. |
+| `session_not_found` | No such session, or it belongs to another Agent than the `agent_id` given. | Re-run `botmancers_list_sessions`. |
+| `conversation_not_found` | No such conversation, or another service participates in it. | Re-run `botmancers_list_conversations`. |
 | `exchange_not_found` | No such exchange, or not this caller's or not readable. | Use the `exchange_id` the mutation returned. |
 | `session_ended` | The session has ended. | Choose an `active` session. |
 | `session_not_resumable` | The session belongs to another runtime than the Agent's current one. | Choose another session. |
@@ -256,7 +257,7 @@ A rejected call writes nothing. Each tool lists the codes it can return in
 | `payload_too_large` | The request is too large. | Shorten `content` or `instruction`. |
 | `rate_limited` | Over the service limit (retryable; `retry_after_seconds`). | Wait that long, then retry with the same key. |
 | `internal_error` | Unexpected failure (retryable). | Retry with the same key; mutations stay idempotent. |
-| `pin_not_found` | No such pin of this caller, or its grant was withdrawn. | Pin a session again. |
+| `pin_not_found` | No such pin of this caller, or its Agent was deleted. | Pin a session again. |
 | `pin_detached` | The pin was detached or switched. | Use the replacing pin, or pin again. |
 | `workspace_required` | The Agent has no session that can take a message and no default workspace for a new one. | Ask the owner to set one, or pin one of its sessions. |
 | `no_eligible_session` | No session can take a message and a new one is not allowed. | Ask the owner, or pin one of its sessions. |
@@ -264,23 +265,22 @@ A rejected call writes nothing. Each tool lists the codes it can return in
 | `action_unavailable` | The runtime cannot do this action on this session. | Choose another action (see `actions`). |
 | `approval_required` | Resume work here needs `approve_write: true`. | Ask the user to approve edits first. |
 | `provider_failed` | The runtime failed the turn (retryable; the pin stays). | Retry later with the same key. |
-| `share_not_found` | No such share of this caller, or its `shares:create` grant was withdrawn. | Re-run `botmancers_list_shares`. |
+| `share_not_found` | No such share of this caller, or its Agent was deleted. | Re-run `botmancers_list_shares`. |
 | `share_expired` | The share is past its `expires_at`. | Create a new share. |
 | `share_revoked` | The share was revoked. | Create a new share. |
 | `share_turn_in_progress` | The share's previous question is still being answered. | Wait for it, then ask again. |
 | `share_turn_limit` | The share has used all of its `max_turns`. | Create a new share. |
-| `audience_not_allowed` | The audience is not on the owner's share allowlist (or it is missing or invalid). | Ask the owner to allow that channel in `session-shares.json`. |
+| `audience_not_allowed` | The Slack channel is not on the owner's share allowlist. | Ask the owner to add it in Agent Config, under Session sharing. |
 | `session_context_required` | Share-current without a live session context (`reason`: `missing`, `ambiguous`, `unsupported`, `unknown`, `stale`, `revoked`). | Share explicitly: `botmancers_list_sessions`, then `botmancers_create_share` with its `session_ref`. |
 
-A target outside the caller's grants is answered exactly like a missing one.
+A target the caller may not see (another caller's exchange, pin, or share; another service's conversation) is answered exactly like a missing one.
 A terminal exchange carries its own stable `failure.code` (for example
 `packet_invalid` or `destination_session_invalid`).
 
 ## Example: same-session message, then cross-Agent Continue
 
-A client granted `agents:read`, `sessions:read`, `sessions:message`,
-`exchanges:read`, and `exchanges:create` on Codex, and `agents:read`,
-`exchanges:read`, and `exchanges:create` on Grok (`tools/call` arguments shown):
+A client with a configured service token, and two registered Agents, Codex
+and Grok (`tools/call` arguments shown):
 
 1. `botmancers_capabilities {}` → `operations` lists `botmancers_send_to_session`
    for Codex and `botmancers_create_exchange` for Codex and Grok.
@@ -342,9 +342,9 @@ session from step 3.
    entry or a duplicate id disables the whole list, and the API fails closed.
    The same tokens also authenticate the REST `/api/v0` routes. Changes take
    effect on the next request.
-   Access beyond this bridge (Agents, sessions, conversations, session
-   messages, exchanges) needs explicit owner grants:
-   [`service-grants.md`](service-grants.md).
+   The same token reaches every registered Agent through the v2 tools and
+   `/api/v0`; remove its entry to revoke it:
+   [`service-access.md`](service-access.md).
 
 3. **Point the MCP client** at `http://127.0.0.1:3333/api/v0/mcp` and send the
    header `Authorization: Bearer $TOKEN`. Botmancers listens on loopback only.
@@ -388,7 +388,7 @@ session from step 3.
 4. **Check the setup.** Call `botmancers_health`. It should return
    `status: "ok"`, your service id, and each coordinator with
    `available: true`. For v2, call `botmancers_capabilities`: `mode` is
-   `granted` and `operations` lists what the owner granted.
+   `granted` and `operations` lists every v2 tool on every registered Agent.
 
 ## Standalone bridge (`npx botmancers`)
 

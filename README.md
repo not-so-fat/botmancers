@@ -109,7 +109,7 @@ npm run smoke:direct -- --workdir "$dir" --evidence /tmp/direct-smoke.json
 ```
 
 The smoke registers a Claude developer and a Codex reviewer, runs a fresh
-implementation turn (owner grant), a read-only review turn, and a revision
+implementation turn (owner approval), a read-only review turn, and a revision
 turn that resumes the implementation session, then prints redacted JSON
 evidence: versions, request states, session continuity, the adapters used,
 and proof that no non-loopback endpoint was touched.
@@ -123,11 +123,13 @@ npm run lint && npm run build
 
 ## MCP bridge (`botmancers.mcp.v2`)
 
-Granted Agent access (discover Agents, read their sessions and conversations,
-send one read-only message to an exact session, start `Ask`/`Continue`
-exchanges) is also an MCP contract, `botmancers.mcp.v2`, served next to the
-unchanged v1 tools. Grants are set up as in
-[`docs/service-grants.md`](docs/service-grants.md); the tool list and
+Service access to Agents (discover Agents, read their sessions and
+conversations, send one read-only message to an exact session, start
+`Ask`/`Continue` exchanges) is also an MCP contract, `botmancers.mcp.v2`,
+served next to the unchanged v1 tools. A configured service token reaches
+every registered Agent; each Agent's policy and the Slack channel allowlist
+decide the risky actions
+([`docs/service-access.md`](docs/service-access.md)); the tool list and
 workflow are in [`docs/mcp-bridge.md`](docs/mcp-bridge.md), and the
 machine-readable capture is
 [`docs/contracts/mcp-bridge-v2.tools.json`](docs/contracts/mcp-bridge-v2.tools.json).

@@ -9,9 +9,9 @@ Authority: [MCP bridge contract](../../mcp-bridge.md) and the
 This runbook connects Cursor's Grok Bot to a Botmancers coordinator through the
 published MCP bridge, pinned to **`botmancers@0.1.0`**. Grok Bot starts a task,
 polls it, and reads the coordinator's final reply. That is all it can do. It cannot
-pick a Deck, workspace, runtime, model, grant, or implementation target. Any
-implementation or review comes from the coordinator's own Wakes, under the owner's
-grants.
+pick a Deck, workspace, runtime, model, or implementation target. Any
+implementation or review comes from the coordinator's own Wakes, under that
+Agent's own policy.
 
 Cursor references: [Grok Bot plugin connections](https://cursor.com/help/grok-bot/connect-plugins)
 and [MCP in Cursor](https://prod.cursor.com/docs/mcp).
@@ -166,14 +166,14 @@ Grok Bot should list exactly four tools: `botmancers_start_task`,
 If it shows more or fewer tools, stop. That would mean you connected to
 something other than the pinned bridge. (This runbook pins a
 `botmancers.mcp.v1` bridge. Bridge releases that serve `botmancers.mcp.v2`
-list these four tools unchanged plus eight granted tools; see
+list these four tools unchanged plus eight v2 service tools; see
 [`docs/mcp-bridge.md`](../../mcp-bridge.md). Re-pinning is a separate change.)
 
 **Tool approval.** Keep Cursor's per-call approval on for `botmancers_start_task`,
 because each accepted call creates a durable Work Request. The other three tools
-are read-only and may be auto-approved. Grok Bot cannot approve grants:
+are read-only and may be auto-approved. Grok Bot cannot approve edits:
 implementation or revision Wakes from the coordinator wait for the owner
-(`grant_required`) in the Botmancers UI.
+(`edit_approval_required`) in the Botmancers UI.
 
 ## Using it
 

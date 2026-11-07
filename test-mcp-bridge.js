@@ -1058,9 +1058,9 @@ async function child() {
     const readme = read('README.md');
     const changelog = read('packages/mcp-server/CHANGELOG.md');
     check(V2_NAMES.every(name => bridgeDoc.includes(`\`${name}\``)) && bridgeDoc.includes('`botmancers_get_conversation`'), 'docs/mcp-bridge.md documents every v2 tool');
-    check(/botmancers\.mcp\.v2/.test(bridgeDoc) && /## Versioning/.test(bridgeDoc) && /v1 compatibility/i.test(bridgeDoc) && /service-grants\.md/.test(bridgeDoc)
+    check(/botmancers\.mcp\.v2/.test(bridgeDoc) && /## Versioning/.test(bridgeDoc) && /v1 compatibility/i.test(bridgeDoc) && /service-access\.md/.test(bridgeDoc)
       && /backoff/i.test(bridgeDoc) && /## Error recovery/.test(bridgeDoc) && /same-session/i.test(bridgeDoc) && /cross-Agent/.test(bridgeDoc),
-    'docs/mcp-bridge.md covers grants, v1 compatibility, polling/backoff, error recovery, versioning, and a same-session plus cross-Agent example');
+    'docs/mcp-bridge.md links service access, covers v1 compatibility, polling/backoff, error recovery, versioning, and a same-session plus cross-Agent example');
     const codes = ctx.lib('mcp-bridge-v2.ts').MCP_V2_ERROR_CODES;
     check(codes.every(code => bridgeDoc.includes(`\`${code}\``)), 'docs/mcp-bridge.md lists every v2 error code');
     check(/botmancers\.mcp\.v2/.test(readme) && readme.includes('docs/contracts/mcp-bridge-v2.tools.json'), 'README names the v2 contract and its capture');

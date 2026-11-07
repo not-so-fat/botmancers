@@ -366,7 +366,7 @@ export function createSlackRelay(options: SlackRelayOptions): SlackRelay {
       if (state === 'revoked') throw new ShareError('share_revoked', 'This share was revoked.');
       if (state === 'expired') throw new ShareError('share_expired', 'This share has expired.');
       const audience = { kind: 'slack' as const, team_id: row.audience_team_id, channel_id: row.audience_channel_id };
-      if (!audienceAllowed(audience)) throw new ShareError('audience_not_allowed', 'That audience is not on the owner\'s share allowlist (session-shares.json).');
+      if (!audienceAllowed(audience)) throw new ShareError('audience_not_allowed', 'That Slack channel is not on the share allowlist. Add it in Agent Config, under Session sharing.');
       const posted = await transport.post({
         channel: audience.channel_id, thread_ts: null, text: ANCHOR_TEXT,
         metadata: { event_type: ANCHOR_EVENT_TYPE, event_payload: { share_ref: row.id } },
