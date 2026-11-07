@@ -31,12 +31,7 @@ function load() {
   return STATE && fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : emptyState();
 }
 function save(state) {
-  if (!STATE) return;
-  // Write-then-rename so a concurrent reader (the test, or another fake process)
-  // never sees a truncated, half-written state file.
-  const tmp = `${STATE}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, STATE);
+  if (STATE) fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
 }
 function mutate(fn) {
   const state = load();
