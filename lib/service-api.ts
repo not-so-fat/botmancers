@@ -1053,6 +1053,9 @@ export async function messageServiceAgent(ctx: ServiceContext, agentId: string, 
   try {
     const result = await messageAgent({
       requester: ctx.principal, agentId, content: input.content, idempotencyKey: input.idempotencyKey,
+      // Any authenticated service may start a session; the Agent's policy
+      // (allow_new_sessions, default workspace) remains the gate.
+      mayStart: true,
       onResolved: target => hooks.onTarget({
         agentId: target.agentId, sessionRef: target.sessionRef,
         capability: target.resolution === 'started' ? 'sessions:start' : 'sessions:message',

@@ -166,31 +166,33 @@ async function main() {
   assert(true, `Agents Home, Writer, Reader, Nowhere, Outsider on ${connectionId.slice(0, 4)}…`);
 
   console.log('\nResolution matrix: registered-Agent messaging');
-  const home = await pins.messageAgent({ requester: grok, agentId: homeAgent.id, content: 'Status?', idempotencyKey: 'home-1' });
+  const home = await pins.messageAgent({ requester: grok, agentId: homeAgent.id, content: 'Status?', idempotencyKey: 'home-1', mayStart: false });
   await home.settled;
   assert(home.resolution === 'home' && home.pin.session_ref === homeRef && home.pin.action === 'ask' && home.pin.authority === 'read_only',
     'home: the configured home session, as a read-only Ask pin');
   // The home session goes missing: the newest eligible scoped session (the archived, resumable one) is next.
   fake.mutateFakeProvider(STATE, state => { state.sessions['home-1-SECRET'].deleted = true; });
-  const archivedPick = await pins.messageAgent({ requester: grok, agentId: homeAgent.id, content: 'Again?', idempotencyKey: 'home-2' });
+  const archivedPick = await pins.messageAgent({ requester: grok, agentId: homeAgent.id, content: 'Again?', idempotencyKey: 'home-2', mayStart: false });
   await archivedPick.settled;
   assert(archivedPick.resolution === 'newest' && archivedPick.pin.session_ref === oldRef, 'archived-resumable: a missing home session falls to the newest eligible scoped session');
   assert(db.prepare('SELECT availability FROM provider_sessions WHERE id = ?').get(homeRef).availability === 'missing', 'missing: the home session is recorded missing, not deleted');
   const turnsBefore = count('SELECT COUNT(*) AS n FROM session_pin_turns');
-  await rejects(pins.messageAgent({ requester: grok, agentId: reader.id, content: 'x', idempotencyKey: 'busy-1' }),
+  await rejects(pins.messageAgent({ requester: grok, agentId: reader.id, content: 'x', idempotencyKey: 'busy-1', mayStart: true }),
     'source_session_busy', 'busy: the only eligible session is busy -> source_session_busy (never a new session)');
   fake.mutateFakeProvider(STATE, state => { state.sessions['gone-1-SECRET'].deleted = true; });
-  await rejects(pins.messageAgent({ requester: other, agentId: outsider.id, content: 'x', idempotencyKey: 'gone-1' }),
+  await rejects(pins.messageAgent({ requester: other, agentId: outsider.id, content: 'x', idempotencyKey: 'gone-1', mayStart: true }),
     'no_eligible_session', 'missing + forbidden new session: no_eligible_session');
-  await rejects(pins.messageAgent({ requester: grok, agentId: nowhere.id, content: 'x', idempotencyKey: 'nowhere-1' }),
+  await rejects(pins.messageAgent({ requester: grok, agentId: nowhere.id, content: 'x', idempotencyKey: 'nowhere-1', mayStart: true }),
     'workspace_required', 'no session and no default workspace: workspace_required (a missing workspace is never unrestricted)');
   const startsBefore = fake.providerCalls(STATE, 'startSession');
   // Writer's sessions are all busy for a moment: it would start a new one.
   fake.mutateFakeProvider(STATE, state => { state.sessions['pin-1-SECRET'].busy = true; state.sessions['pin-2-SECRET'].busy = true; });
-  await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'x', idempotencyKey: 'w-busy' }),
+  await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'x', idempotencyKey: 'w-busy', mayStart: true }),
     'source_session_busy', 'busy sessions are waited on, never bypassed by starting a new one');
   fake.mutateFakeProvider(STATE, state => { state.sessions['pin-1-SECRET'].deleted = true; state.sessions['pin-2-SECRET'].deleted = true; state.sessions['pin-1-SECRET'].busy = false; state.sessions['pin-2-SECRET'].busy = false; });
-  const started = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Start please', idempotencyKey: 'w-start' });
+  await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Start please', idempotencyKey: 'w-start-0', mayStart: false }),
+    'no_eligible_session', 'policy and workspace allow a start, but a caller that does not opt in (mayStart: false) never starts one');
+  const started = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Start please', idempotencyKey: 'w-start', mayStart: true });
   await started.settled;
   const startCall = fake.loadFakeState(STATE).calls.filter(call => call.op === 'startSession').pop();
   assert(started.resolution === 'started' && started.pin.route === 'provider' && startCall.workspace === '/work/a' && startCall.authority === 'read_only'
@@ -199,9 +201,9 @@ async function main() {
   fake.mutateFakeProvider(STATE, state => { state.sessions['pin-1-SECRET'].deleted = false; state.sessions['pin-2-SECRET'].deleted = false; });
   await ps.refreshProviderSession(db, writer.id, pin1);
   await ps.refreshProviderSession(db, writer.id, pin2);
-  const replay = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Start please', idempotencyKey: 'w-start' });
+  const replay = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Start please', idempotencyKey: 'w-start', mayStart: true });
   assert(replay.replayed && replay.pin.id === started.pin.id && fake.providerCalls(STATE, 'startSession') === startsBefore + 1, 'a replayed message returns the same pin and starts nothing');
-  await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Different', idempotencyKey: 'w-start' }),
+  await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Different', idempotencyKey: 'w-start', mayStart: true }),
     'idempotency_conflict', 'the same key with different content is idempotency_conflict');
 
   console.log('\nExact-session pins: follow-ups stay on the same ref');

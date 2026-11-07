@@ -721,6 +721,10 @@ export interface MessageAgentInput {
   content: string;
   idempotencyKey: string;
   conversationId?: string | null;
+  // Whether this requester may start a new session when none can take the
+  // message. The Agent's policy and default workspace still decide; the
+  // authenticated service path opts in with true.
+  mayStart: boolean;
   now?: number;
   // Called with the resolved target before anything is written (the
   // service audit target), and inside the commit.
@@ -738,7 +742,7 @@ type Resolved = { kind: 'session'; summary: SessionSummary; route: 'provider' | 
 // registered-Agent message gives up on existing sessions.
 const CANDIDATE_LIMIT = 10;
 
-async function resolveTarget(facts: AgentFacts): Promise<Resolved> {
+async function resolveTarget(facts: AgentFacts, mayStart: boolean): Promise<Resolved> {
   const agentId = facts.bot.id;
   let sawBusy = false;
   const consider = async (ref: string): Promise<{ summary: SessionSummary; route: 'provider' | 'engine' } | 'busy' | null> => {
@@ -787,6 +791,9 @@ async function resolveTarget(facts: AgentFacts): Promise<Resolved> {
   if (!workspace) {
     throw new PinError('workspace_required', 'This Agent has no session that can take a message, and no default workspace for a new one. Ask the owner to set a default workspace, or pin one of its sessions.');
   }
+  if (!mayStart) {
+    throw new PinError('no_eligible_session', 'This Agent has no session that can take a message, and this caller does not start new sessions. Pin one of its sessions instead.');
+  }
   return { kind: 'start', workspace };
 }
 
@@ -812,7 +819,7 @@ export async function messageAgent(input: MessageAgentInput): Promise<MessageAge
   else if (input.requester.kind !== 'service') throw new PinError('invalid_request', 'conversation_id is required: the thread that holds this conversation.');
   if (bots.getById(input.agentId)) await warmAgentProvider(db, input.agentId);
   const facts = agentFacts(input.agentId);
-  const target = await resolveTarget(facts);
+  const target = await resolveTarget(facts, input.mayStart);
   const now = input.now ?? Date.now();
   if (target.kind === 'session') {
     input.onResolved?.({ agentId: input.agentId, sessionRef: target.summary.ref, resolution: target.resolution });
