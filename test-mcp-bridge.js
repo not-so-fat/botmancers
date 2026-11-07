@@ -438,7 +438,7 @@ async function child() {
     const [wake] = ctx.wakesIn(conv);
     const wakeRequest = wake && engine.getWorkRequest(wake.work_request_id);
     console.log(`  wake: status=${wake && wake.status} reason=${wake && wake.reason_code} request=${wakeRequest && `${wakeRequest.requester_kind}:${bots.getById(wakeRequest.requester_id).name} -> ${bots.getById(wakeRequest.target_agent_id).name} ${wakeRequest.execution_kind}/${wakeRequest.tool_profile} ${wakeRequest.state}`}`);
-    check(wake && wake.status === 'blocked' && wake.reason_code === 'grant_required', 'the coordinator\'s implementation Wake waits for an owner grant (grant_required)');
+    check(wake && wake.status === 'blocked' && wake.reason_code === 'edit_approval_required', 'the coordinator\'s implementation Wake waits for an owner grant (edit_approval_required)');
     check(wakeRequest && wakeRequest.requester_kind === 'bot' && wakeRequest.requester_id === tank.id && wakeRequest.parent_request_id === root.id
       && wakeRequest.root_principal_kind === 'service' && wakeRequest.root_principal_id === 'grok-bot' && wakeRequest.tool_profile === 'edit',
       'the implementation request is created by the coordinator\'s Wake (requester bot:Tank, parent = the direct request, root principal recorded as the service)');

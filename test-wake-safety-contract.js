@@ -84,7 +84,7 @@ for (const fixture of fixtures.cases) {
     if (expect.wake.status === 'accepted' || expect.wake.status === 'blocked') {
       assert(expect.workRequest, `${name}: an accepted or blocked Wake names its Work Request`);
     }
-    if (expect.wake.reasonCode === 'grant_required' && expect.persisted) {
+    if (expect.wake.reasonCode === 'edit_approval_required' && expect.persisted) {
       assert.equal(expect.workRequest.state, 'blocked', `${name}: a missing grant blocks, it does not run`);
       if (kinds.length > 0) {
         assert.deepEqual(expect.projection[0].actions, ['allow', 'deny'], `${name}: the owner can allow or deny`);
@@ -100,7 +100,7 @@ for (const fixture of fixtures.cases) {
     }
     if (availabilityReasons.has(expect.wake.reasonCode)) {
       assert(kinds.includes('wake_blocked'), `${name}: an availability block is visible`);
-      assert.deepEqual(expect.projection[0].actions, [], `${name}: Allow and Deny are offered only for grant_required`);
+      assert.deepEqual(expect.projection[0].actions, [], `${name}: Allow and Deny are offered only for edit_approval_required`);
     }
     if (expect.workRequest && expect.workRequest.transition === 'blocked->queued') {
       assert.equal(expect.wake.status, 'accepted', `${name}: a request is queued only when its Wake is accepted`);
@@ -125,7 +125,7 @@ for (const fixture of fixtures.cases) {
 // Flow C: grant and availability blockers compose in the contract's order.
 const flowC = fixtures.cases.filter(fixture => fixture.flow === 'C');
 const unavailableTarget = fixture => fixture.given.targetAvailability && fixture.given.targetAvailability.available === false;
-assert(flowC.some(fixture => unavailableTarget(fixture) && fixture.expect.wake.reasonCode === 'grant_required'), 'Flow C: missing grant is asked before availability');
+assert(flowC.some(fixture => unavailableTarget(fixture) && fixture.expect.wake.reasonCode === 'edit_approval_required'), 'Flow C: missing grant is asked before availability');
 assert(flowC.some(fixture => fixture.action.decision === 'allow' && unavailableTarget(fixture) && fixture.expect.grant && fixture.expect.wake.reasonCode === 'target_unavailable'), 'Flow C: Allow on an unlaunchable target keeps the request blocked');
 assert(flowC.some(fixture => fixture.action.type === 'retry_wake' && fixture.expect.workRequest.transition === 'blocked->queued'), 'Flow C: retry queues once the target can launch');
 assert(flowC.some(fixture => fixture.action.decision === 'deny' && unavailableTarget(fixture) && fixture.expect.workRequest.state === 'cancelled'), 'Flow C: Deny wins regardless of availability');

@@ -334,7 +334,7 @@ async function runMain() {
       && /needs your approval for edit work/.test(blockedNotices[0].text), 'thread: the blocked Wake shows with Allow / Deny');
     const blockedDecision = latest(request.id);
     assert(blockedDecision.principal_type === 'agent_principal' && blockedDecision.principal_id === tank.id && blockedDecision.decision === 'blocked'
-      && blockedDecision.reason_code === 'grant_required' && blockedDecision.grant_id === null, 'blocked decision names the Agent caller and no grant');
+      && blockedDecision.reason_code === 'edit_approval_required' && blockedDecision.grant_id === null, 'blocked decision names the Agent caller and no grant');
     assert(safety.listWakeGrants().length === 0, 'no grant exists before the owner decides');
 
     console.log('  bypass: a blocked request forced to queued cannot launch');
@@ -363,7 +363,7 @@ async function runMain() {
     catch (error) { denied = error; }
     const still = router.getWake(pendingWake.id);
     assert(denied && denied.code === 'owner_required' && denied.status === fixture('api_principal_cannot_decide_grants').expect.http.status && same(counts(), snapshot)
-      && still.reason_code === 'grant_required' && engine.getWorkRequest(still.work_request_id).state === 'blocked', '[api_principal_cannot_decide_grants] 403 owner_required, state unchanged');
+      && still.reason_code === 'edit_approval_required' && engine.getWorkRequest(still.work_request_id).state === 'blocked', '[api_principal_cannot_decide_grants] 403 owner_required, state unchanged');
     let agentDecides = null;
     try { router.decideWakeGrant({ wakeId: pendingWake.id, decision: 'allow', caller: { category: 'agent_principal', principal: { kind: 'bot', id: tank.id } } }); }
     catch (error) { agentDecides = error; }
@@ -451,11 +451,11 @@ async function runMain() {
     // An API principal vouched as person:local-owner gets no exemption.
     const vouched = apiMessage(UI_OWNER_PRINCIPAL, dev, 'Implement the change.');
     const vouchedSelf = reply(vouched.requests[0], dev, block(fixture('api_rooted_self_wake_needs_grant').action.envelope)).routed[0];
-    assert(vouchedSelf.wake.reason_code === 'grant_required', 'self-wake exemption requires a human_owner intake, not a vouched API id');
+    assert(vouchedSelf.wake.reason_code === 'edit_approval_required', 'self-wake exemption requires a human_owner intake, not a vouched API id');
 
     // A Wake-rooted self-wake (depth 1) needs a grant too.
     const nested = reply(grantedImpl, dev, block({ version: 1, target: 'Dev', executionKind: 'implementation', objective: 'More.' })).routed[0];
-    assert(nested.wake.reason_code === 'grant_required', 'a Wake-rooted self-wake needs a grant');
+    assert(nested.wake.reason_code === 'edit_approval_required', 'a Wake-rooted self-wake needs a grant');
   }
   {
     // Revocation: asks again; accepted work keeps its evidence.
@@ -548,7 +548,7 @@ async function runMain() {
     expectCase('flow_c_readonly_wake_unlaunchable_target_blocks_on_availability', { wake: readonly.wake, request: readonly.request, views: newViews(tankConv.id, before, { requestId: readonly.request.id }) });
     let notPending = null;
     try { router.decideWakeGrant({ wakeId: readonly.wake.id, decision: 'allow', caller: OWNER }); } catch (error) { notPending = error; }
-    assert(notPending && notPending.code === 'not_pending', 'Allow / Deny are offered only while the reason is grant_required');
+    assert(notPending && notPending.code === 'not_pending', 'Allow / Deny are offered only while the reason is edit_approval_required');
     availability.delete('Researcher');
   }
 
@@ -968,8 +968,30 @@ function runLegacy() {
   worker.release(c2.lease, 'test');
   router.setWakeAvailabilityProbe(() => ({ available: true }));
   const recovered = router.retryWake('w3');
-  assert(recovered.wake.status === 'blocked' && recovered.wake.reason_code === 'grant_required' && engine.getWorkRequest('r3').state === 'blocked',
+  assert(recovered.wake.status === 'blocked' && recovered.wake.reason_code === 'edit_approval_required' && engine.getWorkRequest('r3').state === 'blocked',
     'a pre-upgrade blocked edit Wake goes through the new grant check on recovery');
+
+  // NOT-556 (migration 21): a Wake blocked before the rename carries the
+  // retired reason code; reopening recodes it and the owner can still decide.
+  const RETIRED = 'grant_required';
+  raw.prepare('UPDATE wakes SET reason_code = ? WHERE id = ?').run(RETIRED, 'w3');
+  raw.prepare("UPDATE work_requests SET state_reason = ? || substr(state_reason, instr(state_reason, ':')) WHERE id = 'r3'").run(RETIRED);
+  raw.prepare('DELETE FROM schema_migrations WHERE version = 21').run();
+  const eventsBefore = engine.listEvents('r3').length;
+  jiti('./lib/engine-store.ts').migrateEngineSchema(raw);
+  const recodedWake = router.getWake('w3');
+  const recodedRequest = engine.getWorkRequest('r3');
+  const reblock = engine.listEvents('r3').slice(eventsBefore);
+  assert(recodedWake.reason_code === 'edit_approval_required' && recodedRequest.state === 'blocked'
+    && recodedRequest.state_reason.startsWith('edit_approval_required: ')
+    && reblock.length === 1 && reblock[0].type === 'wake_reblocked' && JSON.parse(reblock[0].data).reason_code === 'edit_approval_required',
+    'migration 21 recodes a blocked Wake with the retired reason code, its request reason, and appends one wake_reblocked event');
+  const rerun = engine.listEvents('r3').length;
+  raw.prepare('DELETE FROM schema_migrations WHERE version = 21').run();
+  jiti('./lib/engine-store.ts').migrateEngineSchema(raw);
+  assert(engine.listEvents('r3').length === rerun && router.getWake('w3').reason_code === 'edit_approval_required', 'migration 21 is a no-op when no retired code remains');
+  const ownerDecision = router.decideWakeGrant({ wakeId: 'w3', decision: 'deny', caller: { category: 'human_owner', principal: db.UI_OWNER_PRINCIPAL } });
+  assert(ownerDecision.wake.reason_code === 'grant_denied', 'the owner can still decide a recoded Wake');
   const second = spawnSync(process.execPath, ['-e', `
     process.env.BOTMANCERS_DB_PATH = ${JSON.stringify(DB_PATH)}; process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
     const { createJiti } = require('jiti'); const jiti = createJiti(${JSON.stringify(__filename)}, { alias: { '@': ${JSON.stringify(ROOT)} } });

@@ -185,7 +185,7 @@ scenario('safety-denial', 'An edit Wake without a grant waits for the owner, who
   const conv = accepted.conversationId;
   const [wake] = ctx.wakesIn(conv);
   const request = wake && ctx.engine.getWorkRequest(wake.work_request_id);
-  ctx.engineCheck(wake && wake.status === 'blocked' && wake.reason_code === 'grant_required', `Wake blocked: grant_required (got ${wake && `${wake.status}/${wake.reason_code}`})`);
+  ctx.engineCheck(wake && wake.status === 'blocked' && wake.reason_code === 'edit_approval_required', `Wake blocked: edit_approval_required (got ${wake && `${wake.status}/${wake.reason_code}`})`);
   ctx.engineCheck(request && request.state === 'blocked' && request.tool_profile === 'edit' && ctx.attemptsOf(request.id).length === 0, 'edit request blocked, no Attempt');
   const decision = ctx.engine.latestSafetyDecision(request.id);
   ctx.engineCheck(decision && decision.decision === 'blocked' && decision.principal_type === 'agent_principal' && decision.target_agent_id === dev.id,
@@ -240,7 +240,7 @@ scenario('composed-review', 'Implementation, independent review, and revision co
   ]);
   const conv = accepted.conversationId;
   const [wake] = ctx.wakesIn(conv);
-  ctx.engineCheck(wake && wake.status === 'blocked' && wake.reason_code === 'grant_required', 'the first edit Wake waits for the owner');
+  ctx.engineCheck(wake && wake.status === 'blocked' && wake.reason_code === 'edit_approval_required', 'the first edit Wake waits for the owner');
   const host = await ctx.routeHost();
   const allowed = await host.owner('POST', `/api/wakes/${wake.id}/decision`, { decision: 'allow' });
   ctx.engineCheck(allowed.status === 200 && !!allowed.json.grantId, `owner Allow over HTTP records a grant (status ${allowed.status})`);
