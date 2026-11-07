@@ -7,6 +7,8 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-06
+
 ### Changed
 
 - Service tokens no longer need owner grants. A service configured in
