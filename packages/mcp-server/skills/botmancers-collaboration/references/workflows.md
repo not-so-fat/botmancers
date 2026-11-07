@@ -246,7 +246,7 @@ do not start them yourself.
 | --- | --- | --- |
 | `idempotency_conflict` | You reused a key with different arguments. | If you meant to retry, repeat the original arguments. If this is new work, use a new key. |
 | `source_session_busy` | The session is in another turn. It is retryable. | Wait, then retry once or twice with the same key. After that, report that it is busy. |
-| `agent_unavailable` | The Agent cannot launch now. It is retryable. | Same as `source_session_busy`. |
+| `agent_unavailable` | The Agent cannot launch now. It is retryable, even though an Agent listed as `available` (a configuration check, not a runtime probe) can return it. | If the message says the runtime connection has no session provider, the runtime reported itself unavailable, or the session belongs to a different runtime connection, retrying will not help: report the message so the owner can fix the Agent. Otherwise, same as `source_session_busy`. |
 | `conflict` | The exchange changed while you acted. It is retryable. | Read it with `botmancers_get_exchange`, then decide. |
 | `exchange_terminal` | It already ended. | Read it with `botmancers_get_exchange`, and report what it holds. |
 | `destination_invalid` | An Ask has a destination, or a Continue has none. | Fix `destination`. |

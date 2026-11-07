@@ -104,7 +104,7 @@ and the Agent's stored configuration.
 | Step | Tool | Capability | Arguments | Returns |
 | --- | --- | --- | --- | --- |
 | 1 discover | `botmancers_capabilities` | none | none | `contracts_supported`, `mode` (always `granted`), every registered Agent in `agents` with its capabilities, every v2 tool in `operations` (tool, contract, Agents), `limits`, `polling` |
-| 2 discover | `botmancers_list_agents` | `agents:read` | `cursor`, `limit` | `items` (`agent_id`, `name`, `title`, `runtime`, `available`, `capabilities`), `next_cursor` |
+| 2 discover | `botmancers_list_agents` | `agents:read` | `cursor`, `limit` | `items` (`agent_id`, `name`, `title`, `runtime`, `available`, `capabilities`), `next_cursor`. `available` is a configuration check, not a runtime probe: it is true when the Agent has a runtime connection and a session scope, so a send can still return `agent_unavailable`. |
 | 3 select | `botmancers_list_sessions` | `sessions:read` | `agent_id`, `status` (`active`, `ended`, `all`), `cursor`, `limit` | `items` (`ref`, recognizable `title`, `status`, `resumable`, `origin`, optional additive `usage`: provider-reported input/output tokens and cost, each with `sum` (null when unreported), `known`/`total`, and `quality` `complete`/`partial`/`unavailable`), `next_cursor` |
 | history | `botmancers_list_conversations` | `conversations:read` | `agent_id`, `cursor`, `limit` | `items` (`conversation_id`, `label`, `participants`, `message_count`), `next_cursor` |
 | history | `botmancers_get_conversation` (v2 path) | `conversations:read` | `conversation_id`, `agent_id`, `cursor`, `limit` | `messages` (redacted, `truncated`), `next_cursor` (older messages), `content_trust: "untrusted"` |
@@ -248,7 +248,7 @@ A rejected call writes nothing. Each tool lists the codes it can return in
 | `session_ended` | The session has ended. | Choose an `active` session. |
 | `session_not_resumable` | The session belongs to another runtime than the Agent's current one. | Choose another session. |
 | `source_session_busy` | The session is in another turn (retryable). | Back off and retry with the same key. |
-| `agent_unavailable` | The Agent cannot be launched now (retryable). | Back off and retry with the same key. |
+| `agent_unavailable` | The Agent cannot be launched now. `retryable` stays true, but the message can name a cause that retrying will not fix: the Agent's runtime connection has no session provider; the Agent's runtime reported itself unavailable (not installed, signed in, or startable); or the session belongs to a different runtime connection than the Agent's current one. | For those three causes, retrying will not help until the owner fixes the Agent (recovery `ask_owner`): tell the owner the message. Otherwise back off and retry with the same key. |
 | `destination_invalid` | An Ask names a destination, or a Continue names none. | Fix `destination`. |
 | `recursive_exchange` | An exchange cannot start from another exchange. | Start from a session. |
 | `idempotency_conflict` | The key was used with different arguments. | Use a new key, or repeat the original arguments. |
