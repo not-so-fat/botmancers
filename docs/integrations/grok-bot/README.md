@@ -173,7 +173,7 @@ list these four tools unchanged plus eight granted tools; see
 because each accepted call creates a durable Work Request. The other three tools
 are read-only and may be auto-approved. Grok Bot cannot approve grants:
 implementation or revision Wakes from the coordinator wait for the owner
-(`grant_required`) in the Botmancers UI.
+(`edit_approval_required`) in the Botmancers UI.
 
 ## Using it
 

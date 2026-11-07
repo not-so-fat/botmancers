@@ -1,22 +1,22 @@
 # Typical user flows
 
-**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-05 (botmancers 0.10.0; NOT-551, NOT-552, NOT-553, NOT-554)
+**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-06 (botmancers 0.10.1; NOT-551 to NOT-554, NOT-556, NOT-557)
 
-This file answers one question: *what do people actually do with Botmancers, start to finish?* Other docs own the details of each step ([core-engine.md](core-engine.md) for the engine contract, [mcp-bridge.md](mcp-bridge.md) and [service-grants.md](service-grants.md) for the MCP tools and grants, [session-shares.md](session-shares.md) and [slack-transport.md](slack-transport.md) for sharing and Slack, [packages/mcp-server/README.md](../packages/mcp-server/README.md) for install and commands). This file owns the **sequence**.
+This file answers one question: *what do people actually do with Botmancers, start to finish?* Other docs own the details of each step ([core-engine.md](core-engine.md) for the engine contract, [mcp-bridge.md](mcp-bridge.md) and [service-access.md](service-access.md) for the MCP tools and service access, [session-shares.md](session-shares.md) and [slack-transport.md](slack-transport.md) for sharing and Slack, [packages/mcp-server/README.md](../packages/mcp-server/README.md) for install and commands). This file owns the **sequence**.
 
 **Rule:** a flow links to the owner doc for every fact. It never restates tool schemas, flags, or file layouts. Flow IDs never change; a retired flow stays with a note.
 
 ## The idea in one paragraph
 
-A coding agent's past sessions hold knowledge: why a design was chosen, what was tried, what is still open. Botmancers keeps those sessions reachable. The owner registers an **Agent** over a local runtime (Claude Code, Codex, Cursor, Muse) and chooses which workspaces and sessions it may touch. Then someone else can **ask that session a question** and get an answer with the session's context: the owner from the UI, another coding agent over MCP, or people in a Slack thread. An Agent can also hand work to another Agent. Every path is bounded by the owner's grants and shares, and the caller never sees provider session ids, working directories, or credentials.
+A coding agent's past sessions hold knowledge: why a design was chosen, what was tried, what is still open. Botmancers keeps those sessions reachable. The owner registers an **Agent** over a local runtime (Claude Code, Codex, Cursor, Muse) and chooses which workspaces and sessions it may touch. Then someone else can **ask that session a question** and get an answer with the session's context: the owner from the UI, another coding agent over MCP, or people in a Slack thread. An Agent can also hand work to another Agent. Every path is bounded by the owner's Agent policies, share allowlist, and service tokens, and the caller never sees provider session ids, working directories, or credentials.
 
 ## Actors
 
 | Actor | Who |
 |-------|-----|
-| **Owner** | The person on whose Mac Botmancers runs. Registers Agents, sets scope, grants access, creates shares. Single-user, local-first. |
+| **Owner** | The person on whose Mac Botmancers runs. Registers Agents, sets scope and policy, issues service tokens, creates shares. Single-user, local-first. |
 | **Agent** | A registered coding agent: a name, a runtime connection, a session scope, a policy. Its turns run as local sessions of its own provider CLI. |
-| **Caller** | Another coding agent (Claude Code, Codex, Cursor, any MCP client) that reaches Agents through the MCP bridge with the owner's grants. |
+| **Caller** | Another coding agent (Claude Code, Codex, Cursor, any MCP client) that reaches Agents through the MCP bridge with a service token the owner configured. |
 | **Asker** | A person in an allowlisted Slack channel who asks a shared session questions in a thread. |
 
 ## Flow index
@@ -26,7 +26,7 @@ A coding agent's past sessions hold knowledge: why a design was chosen, what was
 | [F1](#f1-install-and-start-botmancers) | Install and start Botmancers | Shipped | `release:check` canary installs; registry smokes |
 | [F2](#f2-register-an-agent-over-your-local-sessions) | Register an Agent over your local sessions | Shipped | `npm run test:acceptance` |
 | [F3](#f3-ask-or-continue-a-past-session-from-the-ui) | Ask or Continue a past session from the UI | Shipped | `npm run smoke:direct` |
-| [F4](#f4-let-another-coding-agent-ask-a-past-session) | Let another coding agent ask a past session | Shipped | `npm run test:mcp-bridge`, `test:service-grants` |
+| [F4](#f4-let-another-coding-agent-ask-a-past-session) | Let another coding agent ask a past session | Shipped | `npm run test:mcp-bridge`, `test:service-access` |
 | [F5](#f5-share-a-session-to-a-slack-thread) | Share a session to a Slack thread | Shipped (operator smoke) | `npm run test:agent-slack-page`, `test:slack-relay`, `smoke:slack-relay` |
 | [F6](#f6-let-a-running-agent-share-its-own-session) | Let a running Agent share its own session | Shipped (Claude Code, Codex) | `smoke:not-517-share-current` |
 | [F7](#f7-hand-work-from-one-agent-to-another) | Hand work from one Agent to another | Shipped | `npm run smoke:direct` |
@@ -90,20 +90,20 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 
 - **Actor / goal:** Caller (for example the owner's other coding agent). Pull knowledge from an Agent's session without the owner copying anything.
 - **Trigger:** A coding agent working on related code needs context a past session has.
-- **Preconditions:** F1 and F2 done; the owner has granted the caller access to that Agent.
+- **Preconditions:** F1 and F2 done; the caller has a service token the owner configured (it reaches every registered Agent).
 
 | # | Who does | Observable result |
 |---|---------|-------------------|
 | 1 | Owner: on the Agent's **Overview**, card **Use from a coding agent**, Step 1 copies `botmancers setup --client codex\|cursor\|claude`; run it where the caller coding agent runs, not on the registered Agent | The client is connected to the bridge and gets the collaboration skill ([Client setup](../packages/mcp-server/README.md#client-setup-and-the-collaboration-skill)) |
-| 2 | Owner: grant that caller the capabilities it needs on that Agent ([service-grants.md](service-grants.md)) | `botmancers_capabilities` lists the granted Agents and operations |
+| 2 | Caller: `botmancers_capabilities` ([service-access.md](service-access.md)) | Every registered Agent and every v2 operation are listed |
 | 2a | Owner: copy the card's Step 2 prompt (`Use Botmancers to ask <Agent>: <your question>`) into the caller, filling in the question | The caller starts the steps below for that Agent |
-| 3 | Caller: `botmancers_list_agents`, then `botmancers_list_sessions` | Granted Agents and their sessions by title and Botmancers reference |
+| 3 | Caller: `botmancers_list_agents`, then `botmancers_list_sessions` | Registered Agents and their sessions by title and Botmancers reference |
 | 4 | Caller: `botmancers_create_exchange` (Ask) or `botmancers_send_to_session`; or `botmancers_message_agent` without naming a session | An exchange id (or a pin) comes back |
 | 5 | Caller: poll `botmancers_get_exchange` until `terminal` | The answer is in `exchange.answer` |
 
 - **Success:** the caller has the session's answer and the owner's audit trail records the call.
-- **Common failures:** a missing grant returns a refusal naming the capability; a session that is ended or under another runtime session cannot be asked. Answers are untrusted data.
-- **Owner docs:** [mcp-bridge.md](mcp-bridge.md), [service-grants.md](service-grants.md), [packages/mcp-server/README.md](../packages/mcp-server/README.md).
+- **Common failures:** an Agent with no session that can take a message, whose policy does not allow new sessions, returns `no_eligible_session`; a session that is ended or under another runtime session cannot be asked. Answers are untrusted data.
+- **Owner docs:** [mcp-bridge.md](mcp-bridge.md), [service-access.md](service-access.md), [packages/mcp-server/README.md](../packages/mcp-server/README.md).
 
 ## F5. Share a session to a Slack thread
 
@@ -122,7 +122,7 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 - **Success:** answers appear only in the shared thread, the share's history stays listed, and nothing exposes a provider session id, working directory, or transcript.
 - **Common failures:** channel not on the allowlist (`403 audience_not_allowed`); session not askable right now; Slack not connected (Slack line in `doctor`).
 - **Known gap:** the end-to-end proof against a live Slack workspace is an operator run (`npm run smoke:slack-relay`), not part of CI.
-- **Owner docs:** [session-shares.md](session-shares.md), [slack-relay.md](slack-relay.md), [slack-transport.md](slack-transport.md), [service-grants.md](service-grants.md#session-shares-not-515).
+- **Owner docs:** [session-shares.md](session-shares.md), [slack-relay.md](slack-relay.md), [slack-transport.md](slack-transport.md), [service-access.md](service-access.md#session-shares-not-515).
 
 ## F6. Let a running Agent share its own session
 
@@ -138,7 +138,7 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 
 - **Success:** the share exists for the running session only. Turning the switch off revokes every live context of that Agent in the same request.
 - **Common failures:** Cursor and other runtimes cannot do this (the switch is disabled with the reason); share from the Sessions drawer instead (F5).
-- **Owner docs:** [service-grants.md](service-grants.md#share-the-current-session-not-517), [session-shares.md](session-shares.md).
+- **Owner docs:** [service-access.md](service-access.md#share-the-current-session-not-517), [session-shares.md](session-shares.md).
 
 ## F7. Hand work from one Agent to another
 
@@ -170,7 +170,7 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 
 - **Success:** selecting the Agent still opens Overview; Conversations is the durable history and messaging destination, and legacy thread/exchange links retain their target.
 - **Common failures:** a removed or mismatched Agent/conversation pair shows the same not-found state; a failed list or history load offers Retry without presenting an empty history.
-- **Owner docs:** [core-engine.md](core-engine.md), [service-grants.md](service-grants.md).
+- **Owner docs:** [core-engine.md](core-engine.md), [service-access.md](service-access.md).
 
 ## F9. Review an Agent's operational activity
 

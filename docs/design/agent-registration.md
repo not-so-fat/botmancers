@@ -3,9 +3,11 @@
 A Botmancers Agent is a registered identity and policy attached to one runtime
 connection. Every Agent launches **direct**: a turn runs as a local session of
 the connection's provider CLI. There is no launch profile, deck, or run token
-(Agent Deck execution was removed in 0.7.0). A granted MCP caller addresses the
-registered Agent by its stable Agent ID; the service-grant principal and
-capability model is separate ([service-grants.md](../service-grants.md)).
+(Agent Deck execution was removed in 0.7.0). An MCP caller with a service token addresses the
+registered Agent by its stable Agent ID; service access (a configured token
+reaches every registered Agent, and the Agent's policy below gates new
+sessions and resume-with-edits) is described in
+[service-access.md](../service-access.md).
 
 ## Model
 

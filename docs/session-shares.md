@@ -9,7 +9,7 @@ Tests: `npm run test:session-share-owner`, `npm run test:session-share-ui`,
 and `packages/mcp-server/test/product.test.mjs` (doctor). Proof:
 `scripts/seed-shares-fixture.js` + `scripts/ui-session-shares-proof.js`.
 Design: [`design/2026-10-24-session-share-preflight.md`](design/2026-10-24-session-share-preflight.md)
-§6 child 5. Builds on [`service-grants.md`](service-grants.md) (Session
+§6 child 5. Builds on [`service-access.md`](service-access.md) (Session
 shares, Share the current session), [`slack-relay.md`](slack-relay.md), and
 [`slack-transport.md`](slack-transport.md).
 
