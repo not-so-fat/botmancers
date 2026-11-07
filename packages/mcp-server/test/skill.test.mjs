@@ -63,7 +63,8 @@ test('negative controls: the validator rejects each kind of defect', t => {
     ['digest', 'references/workflows.md', `\nsha256:${'b'.repeat(64)}\n`, /service token digest/],
     ['user id', 'references/workflows.md', '\nsession 3f2b8c1e-1d2a-4c3b-9e8f-0123456789ab\n', /UUID/],
     ['provider id', 'references/workflows.md', '\nresume prov-relay-SECRET-session\n', /provider session-like id/],
-    ['grants document', 'references/workflows.md', '\n{ "version": 1, "grants": [] }\n', /service-grants document/],
+    ['grants document', 'references/workflows.md', '\n{ "version": 1, "grants": [] }\n', /removed grants document/],
+    ['grant guidance', 'SKILL.md', '\nIf `mode` is `narrow`, ask the owner to grant access.\n', /removed grant guidance/],
     ['bearer', 'references/workflows.md', '\nAuthorization: Bearer abcdefgh12345678\n', /bearer credential/],
     ['home path', 'SKILL.md', '\nSee /Users/someone/.codex\n', /machine-specific home path/],
     ['broken link', 'SKILL.md', '\n[x](references/missing.md)\n', /does not resolve/],
@@ -142,8 +143,7 @@ function runSkill(scenario) {
   };
 
   // Step 1: discover.
-  const caps = sim.call('botmancers_capabilities', {});
-  const allowed = (tool, agentIds) => caps.operations.some(op => op.tool === tool && agentIds.every(id => op.agent_ids.includes(id)));
+  sim.call('botmancers_capabilities', {});
 
   if (facts.wants === 'fresh') {
     const action = table.get('Fresh task');
@@ -157,7 +157,6 @@ function runSkill(scenario) {
     return { ...result, outcome: done.status === 'succeeded' ? 'completed' : done.status };
   }
 
-  if (!allowed('botmancers_list_agents', [])) return { ...result, outcome: 'grant_missing:botmancers_list_agents' };
   const agents = sim.call('botmancers_list_agents', {}).items;
   const owner = agents.find(agent => agent.name === facts.session_agent);
   const sessions = sim.call('botmancers_list_sessions', { agent_id: owner.agent_id, status: 'active' }).items;
@@ -169,7 +168,6 @@ function runSkill(scenario) {
   // Step 2: the first row that fits.
   let tool;
   let args;
-  let involved = [owner.agent_id];
   let action;
   if (facts.wants === 'follow_up') {
     action = 'Same-session message';
@@ -183,10 +181,10 @@ function runSkill(scenario) {
     action = 'Continue';
     [tool] = table.get(action);
     const destination = agents.find(agent => agent.name === facts.to_agent);
-    involved = [owner.agent_id, destination.agent_id];
+    // Every Agent involved must be registered; otherwise stop and tell the user.
+    if (!destination) return { ...result, outcome: `agent_missing:${facts.to_agent}` };
     args = { mode: 'continue', source: { session_ref: session.ref }, destination: { agent_id: destination.agent_id }, instruction: facts.text, idempotency_key: key };
   }
-  if (!allowed(tool, involved)) return { ...result, outcome: `grant_missing:${tool}` };
   const acted = act(tool, args);
   if (acted.error) {
     if (['session_ended', 'session_not_resumable'].includes(acted.error.code)) {
@@ -234,7 +232,7 @@ test('fixtures cover both directions and every action and recovery', () => {
       assert.ok(fixtures.scenarios.some(scenario => scenario.name.startsWith(direction) && scenario.facts.wants === wants && scenario.expected.outcome === 'completed'), `${direction} ${wants}`);
     }
   }
-  for (const outcome of ['choose_session', 'error:session_ended', 'grant_missing:botmancers_create_exchange', 'error:grant_required', 'failed:packet_invalid', 'cancelled', 'error:source_session_busy']) {
+  for (const outcome of ['choose_session', 'error:session_ended', 'agent_missing:Nova', 'error:no_eligible_session', 'failed:packet_invalid', 'cancelled', 'error:source_session_busy']) {
     assert.ok(fixtures.scenarios.some(scenario => scenario.expected.outcome === outcome), outcome);
   }
   assert.equal(new Set(names).size, names.length);

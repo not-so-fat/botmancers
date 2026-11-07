@@ -194,13 +194,12 @@
       }
     },
     {
-      "name": "codex-to-grok-grant-missing",
+      "name": "codex-to-nova-agent-missing",
       "caller": "Codex",
-      "prompt": "Hand my uploader retry implementation session over to Grok.",
-      "facts": { "wants": "handoff", "session_agent": "Codex", "session_hint": "uploader retry implementation", "to_agent": "Grok", "text": "Carry this on." },
-      "grants": { "Codex": ["agents:read", "sessions:read", "exchanges:create", "exchanges:read"], "Grok": ["agents:read"] },
+      "prompt": "Hand my uploader retry implementation session over to Nova.",
+      "facts": { "wants": "handoff", "session_agent": "Codex", "session_hint": "uploader retry implementation", "to_agent": "Nova", "text": "Carry this on." },
       "expected": {
-        "outcome": "grant_missing:botmancers_create_exchange",
+        "outcome": "agent_missing:Nova",
         "calls": [
           ["botmancers_capabilities", {}],
           ["botmancers_list_agents", {}],
@@ -209,18 +208,18 @@
       }
     },
     {
-      "name": "codex-to-grok-grant-required-error",
+      "name": "codex-to-grok-no-eligible-session-error",
       "caller": "Codex",
       "prompt": "Ask Grok in the uploader retry review what is left to do.",
       "facts": { "wants": "answer", "session_agent": "Grok", "session_hint": "uploader retry review", "text": "What is left to do?" },
-      "errors": { "botmancers_create_exchange": ["grant_required"] },
+      "errors": { "botmancers_create_exchange": ["no_eligible_session"] },
       "expected": {
-        "outcome": "error:grant_required",
+        "outcome": "error:no_eligible_session",
         "calls": [
           ["botmancers_capabilities", {}],
           ["botmancers_list_agents", {}],
           ["botmancers_list_sessions", { "agent_id": "agent-grok-fixture", "status": "active" }],
-          ["botmancers_create_exchange", { "mode": "ask", "source": { "session_ref": "sref-grok-uploader" }, "instruction": "What is left to do?", "idempotency_key": "codex-to-grok-grant-required-error-1" }]
+          ["botmancers_create_exchange", { "mode": "ask", "source": { "session_ref": "sref-grok-uploader" }, "instruction": "What is left to do?", "idempotency_key": "codex-to-grok-no-eligible-session-error-1" }]
         ]
       }
     },
@@ -313,19 +312,6 @@
           ["botmancers_list_sessions", { "agent_id": "agent-codex-fixture", "status": "active" }],
           ["botmancers_create_exchange", { "mode": "ask", "source": { "session_ref": "sref-codex-uploader" }, "instruction": "What did you change?", "idempotency_key": "grok-to-codex-untrusted-answer-1" }],
           ["botmancers_get_exchange", { "exchange_id": "xch-fixture-1" }]
-        ]
-      }
-    },
-    {
-      "name": "codex-to-grok-narrow-mode-fresh-only",
-      "caller": "Codex",
-      "prompt": "Ask Grok in the uploader retry review what is left.",
-      "facts": { "wants": "answer", "session_agent": "Grok", "session_hint": "uploader retry review", "text": "What is left?" },
-      "mode": "narrow",
-      "expected": {
-        "outcome": "grant_missing:botmancers_list_agents",
-        "calls": [
-          ["botmancers_capabilities", {}]
         ]
       }
     }

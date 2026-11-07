@@ -17,8 +17,9 @@ every flow and the recovery for every error.
 
 ## 1. Discover
 
-1. Call `botmancers_capabilities`. It lists the Agents and operations the
-   owner granted you. If `mode` is `narrow`, only the fresh-task flow works.
+1. Call `botmancers_capabilities`. It lists every registered Agent and the
+   operations you can use on it. Each Agent's policy still decides whether
+   a new session can start and whether a session can be resumed with edits.
 2. Call `botmancers_list_agents`. Find the Agents the user named by `name`.
 3. If the request involves an existing session, call
    `botmancers_list_sessions` for that Agent. Match on the session `title`
@@ -53,9 +54,8 @@ Check the rows in order and use the first one that fits:
   instruction or more work.
 - Use the same-session message only for the Agent that owns the session. To
   reach a different Agent, use `Ask` or `Continue`.
-- Before you act, check that `botmancers_capabilities` lists the operation
-  for every Agent involved. If it is not listed, stop and say which grant is
-  missing (step 5).
+- Before you act, check that every Agent involved is in
+  `botmancers_list_agents`. If one is not, stop and tell the user (step 5).
 - Pass only the fields the tool defines. Botmancers chooses the Deck,
   runtime, model, tool profile, and destination session. Never pass them.
 - Pick a new `idempotency_key` for each new action, and reuse it only to
@@ -96,14 +96,14 @@ without telling the user. Retry only an error marked `retryable`: wait as
 long as it asks, retry once or twice with the same `idempotency_key`, then
 stop.
 
-- `grant_required`, `agent_not_found`, `session_not_found`: tell the user the
-  Agent or session does not exist or is not granted to you. Only the
-  Botmancers owner can grant access. You cannot.
+- `agent_not_found`, `session_not_found`, `no_eligible_session`,
+  `authority_not_allowed`, `audience_not_allowed`: follow
+  [permissions](references/workflows.md#permissions). Only the owner can
+  change an Agent's policy or the share allowlist. You cannot.
 - `session_ended`, `session_not_resumable`, `session_missing`: tell the
   user, list that Agent's sessions, and let the user choose.
 - Any error with `recovery`: follow it (`ask_owner`, `approve_write`,
-  `choose_session`, `pin_again`). `workspace_required` and
-  `no_eligible_session` need the owner; a pin never moves on its own.
+  `choose_session`, `pin_again`). A pin never moves on its own.
 - `idempotency_conflict`, `exchange_terminal`, `conflict`: read the existing
   exchange first, then decide.
 - A terminal `failed` or `cancelled` exchange: report `failure.code` and its

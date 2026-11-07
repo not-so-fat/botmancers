@@ -26,11 +26,14 @@ export const MAX_SKILL_LINES = 120;
 
 // Topics the references must cover, by heading (lower case).
 export const REQUIRED_TOPICS = [
-  'fresh task', 'same-session message', 'ask', 'continue', 'polling and backoff', 'permission and grants',
+  'fresh task', 'same-session message', 'ask', 'continue', 'polling and backoff', 'permissions',
   'ended session', 'conflict', 'failure', 'cancellation', 'provenance', 'untrusted content', 'without this skill',
   // NOT-507: registered-Agent addressing, exact-session pins, and the actions.
   'message a registered agent', 'pinned session', 'resume work here', 'detach or switch',
 ];
+
+// The errors the Permissions reference must explain (NOT-557).
+export const PERMISSION_ERRORS = ['no_eligible_session', 'authority_not_allowed', 'audience_not_allowed', 'agent_not_found', 'session_not_found'];
 
 // Fields Botmancers owns; no example may pass one.
 const AUTHORITY = /^(?:deck|deck_id|runtime|model|tool_profile|provider_session_id|external_session_id|grant|grants|principal|destination_session|session_id|working_directory)$/i;
@@ -41,7 +44,9 @@ const EXTRA_PATTERNS = [
   [/\b(?:prov|ses|sess)[-_][A-Za-z0-9_-]{6,}/, 'provider session-like id'],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, 'email address'],
   [/(?:\/Users\/|\/home\/|[A-Z]:\\Users\\)[^\s/\\]+/, 'machine-specific home path'],
-  [/service-grants\.json\s*[:=]|"grants"\s*:\s*\[/, 'service-grants document'],
+  // NOT-556/557: there is no grants layer; the skill must not send callers to one.
+  [/service[-_]grants|"grants"\s*:\s*\[/, 'removed grants document'],
+  [/\bgrants?_(?:required|unavailable)\b|\bmode\b[^\n]{0,8}\bnarrow\b|\bowner\s+(?:must\s+|can\s+|to\s+)?grants?\b/i, 'removed grant guidance'],
   [/Bearer\s+(?!<)[A-Za-z0-9._~+/=-]{8,}/, 'bearer credential'],
 ];
 
@@ -143,6 +148,15 @@ export function checkSkill(dir = SKILL_DIR) {
   }
   const topics = files.filter(file => file.startsWith('references/')).flatMap(rel => headings(read(rel)).map(heading => heading.toLowerCase().replace(/`/g, '')));
   for (const topic of REQUIRED_TOPICS) if (!topics.includes(topic)) problems.push(`references do not cover "${topic}" (no heading)`);
+  // NOT-557: the Permissions section names the errors a caller can really meet.
+  for (const rel of files.filter(file => file.startsWith('references/'))) {
+    const text = read(rel);
+    const at = text.search(/^## Permissions$/m);
+    if (at < 0) continue;
+    const next = text.slice(at + 1).search(/^## /m);
+    const section = next < 0 ? text.slice(at) : text.slice(at, at + 1 + next);
+    for (const code of PERMISSION_ERRORS) if (!section.includes(`\`${code}\``)) problems.push(`${rel}: Permissions does not cover \`${code}\``);
+  }
 
   // Contract names, example arguments, and secrets in every file.
   const used = new Set();
