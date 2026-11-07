@@ -306,6 +306,53 @@ async function main() {
     'a runtime that reports capabilities only after a probe: the session list probes it, then Resume work here is available');
   registerFake(connectionId);
 
+  console.log('\nNOT-558: each unavailable cause names itself; provider text stays in the log');
+  const causePin = await pins.createPin({ requester: grok, sessionRef: pin1, action: 'ask', idempotencyKey: 'cause-pin' });
+  const sendRefusal = async key => {
+    try {
+      await pins.sendPinTurn({ requester: grok, pinRef: causePin.pin.id, content: 'Are you there?', idempotencyKey: key });
+      return null;
+    } catch (error) { return error; }
+  };
+  // 1. No session provider resolves for the Agent's runtime connection.
+  contract.clearSessionProviders({ builtins: true });
+  const noProvider = await sendRefusal('cause-1');
+  // 2. The provider reports itself unavailable (its raw text is a secret).
+  contract.clearSessionProviders({ builtins: true });
+  contract.registerSessionProvider({ connectionId }, () => ({
+    ...fake.createFakeSessionProvider({ statePath: STATE, ignoreScope: true }),
+    ready: async () => ({ ok: false, error: { code: 'unavailable', message: 'claude --version failed:\nSECRET-MARKER-123 not signed in' } }),
+  }));
+  const causeLog = [];
+  const realConsoleError = console.error;
+  console.error = (...args) => { causeLog.push(args.map(String).join(' ')); };
+  let reported;
+  try { reported = await sendRefusal('cause-2'); } finally { console.error = realConsoleError; }
+  // 3. The session row belongs to another runtime connection than the
+  // Agent's current one (session identity is immutable, so the Agent moves).
+  const otherConnection = runtimeConnections.create({ provider: 'codex', label: 'Codex other', host: 'Elsewhere' }).id;
+  registerFake(connectionId);
+  contract.registerSessionProvider({ connectionId: otherConnection }, () => fake.createFakeSessionProvider({ statePath: STATE, ignoreScope: true }));
+  db.prepare('UPDATE bots SET runtime_connection_id = ? WHERE id = ?').run(otherConnection, writer.id);
+  const otherSession = await sendRefusal('cause-3');
+  db.prepare('UPDATE bots SET runtime_connection_id = ? WHERE id = ?').run(connectionId, writer.id);
+  registerFake(connectionId);
+  const causes = [noProvider, reported, otherSession];
+  assert(causes.every(error => error instanceof pins.PinError && error.code === 'agent_unavailable'),
+    `all three causes surface as agent_unavailable (got ${causes.map(error => error && error.code).join(', ')})`);
+  const causeMessages = causes.map(error => (error && error.message) || '');
+  assert(new Set(causeMessages).size === 3, 'the three messages are pairwise different');
+  assert(causeMessages[0].includes('no session provider'), `no provider: "${causeMessages[0]}"`);
+  assert(causeMessages[1].includes('reported itself unavailable'), `provider unavailable: "${causeMessages[1]}"`);
+  assert(causeMessages[2].includes('different runtime connection'), `other connection: "${causeMessages[2]}"`);
+  const reportedJson = JSON.stringify(reported && pins.pinErrorBody(reported));
+  assert(!causeMessages[1].includes('SECRET-MARKER-123') && !reportedJson.includes('SECRET-MARKER-123') && reportedJson.includes('agent_unavailable'),
+    'the raw provider text reaches neither the caller message nor its JSON body');
+  const causeLines = causeLog.filter(line => line.startsWith('Session provider refused a call:'));
+  assert(causeLines.length === 1 && causeLines[0].includes(writer.id) && causeLines[0].includes('unavailable')
+    && causeLines[0].includes('SECRET-MARKER-123') && !/[\r\n]/.test(causeLines[0]), 'the provider-reported cause writes one log line with the agent id, the code and the provider text');
+  pins.detachPin(grok, causePin.pin.id);
+
   console.log('\nDetach and switch');
   const switched = await pins.createPin({ requester: grok, sessionRef: pin2, action: 'ask', idempotencyKey: 'p2', replacePinRef: pinRef });
   const old = pins.requirePin(grok, pinRef);

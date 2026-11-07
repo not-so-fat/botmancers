@@ -225,7 +225,7 @@ function fromProvider(error: ProviderSessionError): PinError {
     case 'new_sessions_not_allowed': return new PinError('no_eligible_session', 'The Agent’s policy does not allow new sessions.');
     case 'unsupported': return new PinError('action_unavailable', 'The Agent’s runtime does not support this action.');
     case 'scope_missing': return new PinError('agent_unavailable', 'The Agent has no session scope; the owner must choose one.');
-    case 'provider_unavailable': return new PinError('agent_unavailable', 'The Agent’s runtime connection is not available.');
+    case 'provider_unavailable': return new PinError('agent_unavailable', error.message);
     case 'idempotency_conflict': return new PinError('idempotency_conflict', 'That idempotency key was used for a different turn.');
     case 'invalid_input': return new PinError('invalid_request', error.message);
     default: return new PinError('provider_failed', 'The runtime failed this turn. The pin stays on the same session; retry later.');
