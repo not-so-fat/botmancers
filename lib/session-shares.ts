@@ -1,4 +1,4 @@
-// NOT-515: durable temporary session shares (docs/service-grants.md,
+// NOT-515: durable temporary session shares (docs/service-access.md,
 // Session shares; docs/design/2026-10-24-session-share-preflight.md).
 //
 // A share is one read-only Ask pin (NOT-507, lib/session-pins) on exactly

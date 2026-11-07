@@ -1,6 +1,6 @@
 // NOT-517: launch-bound session contexts, the only credential of
 // share-current (docs/design/2026-10-24-session-share-preflight.md §2;
-// docs/service-grants.md, Share the current session).
+// docs/service-access.md, Share the current session).
 //
 // A context is minted by Botmancers for one launch it makes of a Claude Code
 // or Codex turn, and only while the owner has share_from_turn on for that

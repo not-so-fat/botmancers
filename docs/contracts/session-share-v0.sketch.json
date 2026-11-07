@@ -80,7 +80,7 @@
     { "item": "service principal auth, rate limit, audited call wrapper", "owner": "existing: lib/service-api-http serveAs (NOT-499)" },
     { "item": "audit rows", "owner": "existing: lib/service-audit (NOT-499); target_kind 'session', new operation words shares.*" },
     { "item": "redaction of answers and views", "owner": "existing: lib/service-redaction serviceRedactor (NOT-499)" },
-    { "item": "capability shares:create; reserved principal botmancers-session-context", "owner": "existing constants in lib/service-grants (one vocabulary word, one reserved id)" },
+    { "item": "capability shares:create; reserved principal botmancers-session-context", "owner": "existing constants SERVICE_CAPABILITIES (one vocabulary word) and RESERVED_SERVICE_IDS (one reserved id)" },
     { "item": "audience allowlist and share_from_turn opt-in", "owner": "NEW: SessionShare config document <BOTMANCERS_HOME>/config/session-shares.json (owner-only, 0600, fail-closed)" },
     { "item": "MCP tool schemas", "owner": "existing: lib/mcp-bridge-v2 + docs/contracts/mcp-bridge-v2.tools.json (five added tools)" },
     { "item": "share rows, events, expiry, revoke, turn limit, in-flight check, audience allowlist", "owner": "NEW: SessionShare (lib/session-shares.ts)" },

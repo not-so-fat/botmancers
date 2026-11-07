@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-515: SessionShare core (lib/session-shares) and its explicit REST/MCP
-// lifecycle (docs/service-grants.md, Session shares). Proves against the
+// lifecycle (docs/service-access.md, Session shares). Proves against the
 // real store, an isolated SQLite file, and the deterministic fake provider:
 //   - the share store: opaque stable share_ref, exact session_ref, ask-only
 //     authority, TTL and turn-limit defaults and bounds, the owner's

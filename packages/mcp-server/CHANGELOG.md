@@ -287,7 +287,7 @@ Not published; see 0.4.1.
   catalog and Sessions UI, session-targeted Ask and Continue exchanges with
   inline exchange cards, and an Agent Exchanges ledger.
 - Service grants let the owner give another Agent narrow, audited access to
-  sessions, conversations, and exchanges (`docs/service-grants.md`). Grants
+  sessions, conversations, and exchanges (`docs/service-access.md`). Grants
   are re-checked at read time, and an unregistered Agent invalidates the
   document.
 

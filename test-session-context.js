@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-517: launch-bound SessionContext and share-current
-// (lib/session-context, docs/service-grants.md "Share the current session",
+// (lib/session-context, docs/service-access.md "Share the current session",
 // docs/design/2026-10-24-session-share-preflight.md §2). Proves against the
 // real store, an isolated SQLite file, the real Claude Code and Codex
 // providers (driven through test-support/fake-claude-cli.js and
