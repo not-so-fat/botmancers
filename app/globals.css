@@ -3584,7 +3584,8 @@ button.avatar-pic {
 }
 
 .conversation-message-list > .msg-you,
-.conversation-message-list > .msg-bot {
+.conversation-message-list > .msg-bot,
+.conversation-message-list > .msg-system {
   flex: 0 0 auto;
 }
 
@@ -3602,6 +3603,18 @@ button.avatar-pic {
   align-items: stretch;
   gap: 8px;
   max-width: min(100%, 46rem);
+}
+
+.conversation-message-list > .msg-system {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  max-width: min(100%, 40rem);
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--hairline) 70%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--composer) 55%, transparent);
 }
 
 .conversation-message-list .msg-meta {
@@ -3639,6 +3652,11 @@ button.avatar-pic {
   color: var(--accent);
 }
 
+.conversation-message-list .msg-name-system {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
 .conversation-message-list .msg-time {
   font-family: var(--chrome);
   font-size: 12px;
@@ -3663,6 +3681,11 @@ button.avatar-pic {
   letter-spacing: 0.02em;
 }
 
+.conversation-message-list .msg-monogram-system {
+  font-size: 9px;
+  color: var(--ink-faint);
+}
+
 .conversation-message-list .msg-avatar {
   flex: none;
 }
@@ -3671,6 +3694,61 @@ button.avatar-pic {
   font-family: var(--chrome);
   font-size: 14px;
   line-height: 1.55;
+}
+
+.conversation-message-list .msg-speech {
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.conversation-message-list .msg-trace {
+  margin-top: 8px;
+  color: var(--ink-faint);
+  font-family: var(--chrome);
+  font-size: 12px;
+}
+
+.conversation-message-list .msg-system .msg-trace {
+  margin-top: 0;
+}
+
+.conversation-message-list .msg-trace > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink-muted);
+}
+
+.conversation-message-list .msg-trace > summary::-webkit-details-marker {
+  display: none;
+}
+
+.conversation-message-list .msg-trace > summary::before {
+  content: '▸ ';
+  color: var(--ink-faint);
+}
+
+.conversation-message-list .msg-trace[open] > summary::before {
+  content: '▾ ';
+}
+
+.conversation-message-list .msg-trace-body {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--hairline) 65%, transparent);
+  background: color-mix(in srgb, var(--composer) 70%, transparent);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.conversation-message-list .msg-trace-body .agent-event,
+.conversation-message-list .msg-trace-body .agent-event-label {
+  font-size: 12px;
+  color: var(--ink-muted);
 }
 
 .conversation-empty-history {

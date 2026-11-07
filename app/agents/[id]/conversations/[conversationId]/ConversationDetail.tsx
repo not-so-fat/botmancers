@@ -8,7 +8,7 @@ import ExchangeCard from '@/app/components/ExchangeCard';
 import RuntimeFailureNotice from '@/app/components/RuntimeFailureNotice';
 import WakeNotice from '@/app/components/WakeNotice';
 import { useAgentOverview } from '../../AgentShell';
-import { agentEventDisplay } from '@/lib/bot-runtime-ui';
+import { agentEventDisplay, isAgentEventLine } from '@/lib/bot-runtime-ui';
 import { parseApprovalCode, parseDraft, draftTitle, parseFileNames } from '@/lib/draft';
 import { classifyRuntimeFailure } from '@/lib/runtime-failure';
 import { parseRun, runLine } from '@/lib/run';
@@ -35,19 +35,31 @@ function senderMonogram(name: string): string {
   return (cleaned.slice(0, 2) || '?').toUpperCase();
 }
 
-function MessageMeta({ message, mine }: { message: OwnerConversationMessage; mine: boolean }) {
+function MessageMeta({
+  message,
+  mine,
+  systemLabel,
+}: {
+  message: OwnerConversationMessage;
+  mine: boolean;
+  /** Runtime/system traces: never attribute them as agent speech. */
+  systemLabel?: string;
+}) {
   const timeLabel = formatMessageTime(message.created_at);
   const timeTitle = new Date(message.created_at).toLocaleString();
-  const avatar = message.sender_kind === 'bot' && message.sender_avatar
-    ? <BotAvatar bot={message.sender_avatar} size={28} title={`${message.sender_name} avatar`} className="msg-avatar bot-avatar" />
-    : !mine
-      ? <span className="msg-monogram" aria-hidden="true">{senderMonogram(message.sender_name)}</span>
-      : null;
+  const name = systemLabel ?? message.sender_name;
+  const avatar = systemLabel
+    ? <span className="msg-monogram msg-monogram-system" aria-hidden="true">RT</span>
+    : message.sender_kind === 'bot' && message.sender_avatar
+      ? <BotAvatar bot={message.sender_avatar} size={28} title={`${message.sender_name} avatar`} className="msg-avatar bot-avatar" />
+      : !mine
+        ? <span className="msg-monogram" aria-hidden="true">{senderMonogram(message.sender_name)}</span>
+        : null;
   return (
     <div className={mine ? 'msg-meta msg-meta-you' : 'msg-meta'}>
       {avatar}
       <div className="msg-meta-text">
-        <span className={mine ? 'msg-name msg-name-you' : 'msg-name'}>{message.sender_name}</span>
+        <span className={mine ? 'msg-name msg-name-you' : systemLabel ? 'msg-name msg-name-system' : 'msg-name'}>{name}</span>
         <time className="msg-time" dateTime={new Date(message.created_at).toISOString()} title={timeTitle}>{timeLabel}</time>
       </div>
     </div>
@@ -64,18 +76,53 @@ function stripStoredPrefix(content: string) {
   return text.replace(/^\s+/, '');
 }
 
-function renderThreadBody(text: string, keyPrefix: string): ReactNode {
-  const lines = String(text ?? '').split('\n');
-  if (!lines.some(line => agentEventDisplay(line) !== null)) return text;
-  const out: ReactNode[] = [];
-  lines.forEach((line, index) => {
-    if (index > 0) out.push(<br key={`${keyPrefix}-br-${index}`} />);
+/** Split durable runtime traces from the speech the owner cares about. */
+function splitThreadContent(text: string): { speech: string[]; events: string[] } {
+  const speech: string[] = [];
+  const events: string[] = [];
+  for (const line of String(text ?? '').split('\n')) {
+    if (isAgentEventLine(line)) events.push(line);
+    else speech.push(line);
+  }
+  while (speech.length && speech[0].trim() === '') speech.shift();
+  while (speech.length && speech[speech.length - 1].trim() === '') speech.pop();
+  return { speech, events };
+}
+
+function renderSpeechLines(lines: string[], keyPrefix: string): ReactNode {
+  if (!lines.length) return null;
+  return lines.map((line, index) => (
+    <Fragment key={`${keyPrefix}-speech-${index}`}>
+      {index > 0 ? <br /> : null}
+      <span>{line}</span>
+    </Fragment>
+  ));
+}
+
+function renderEventLines(lines: string[], keyPrefix: string): ReactNode {
+  return lines.map((line, index) => {
     const event = agentEventDisplay(line);
-    out.push(event
-      ? <span key={`${keyPrefix}-${index}`} className="agent-event"><span className="agent-event-label">{event.label}</span>{event.detail ? ` ${event.detail}` : ''}</span>
-      : <span key={`${keyPrefix}-${index}`}>{line}</span>);
+    return (
+      <Fragment key={`${keyPrefix}-event-${index}`}>
+        {index > 0 ? <br /> : null}
+        {event
+          ? <span className="agent-event"><span className="agent-event-label">{event.label}</span>{event.detail ? ` ${event.detail}` : ''}</span>
+          : <span>{line}</span>}
+      </Fragment>
+    );
   });
-  return out;
+}
+
+function FoldedRuntimeTrace({ lines, keyPrefix }: { lines: string[]; keyPrefix: string }) {
+  if (!lines.length) return null;
+  const first = agentEventDisplay(lines[0]);
+  const summary = first ? first.label : 'Runtime detail';
+  return (
+    <details className="msg-trace">
+      <summary>{summary}{lines.length > 1 ? ` · ${lines.length} lines` : ''}</summary>
+      <div className="msg-trace-body">{renderEventLines(lines, keyPrefix)}</div>
+    </details>
+  );
 }
 
 function mergeMessages(current: OwnerConversationMessage[], incoming: OwnerConversationMessage[]): OwnerConversationMessage[] {
@@ -223,12 +270,16 @@ export default function ConversationDetail() {
             const run = mine ? null : parseRun(message.content);
             const draft = !mine && !run ? parseDraft(content) : null;
             const approval = !mine && !run ? parseApprovalCode(message.content) : null;
+            const { speech, events } = splitThreadContent(content);
+            const runtimeOnly = !mine && !failure && !run && !draft && events.length > 0 && speech.length === 0;
+            const mixedRuntime = !mine && !failure && !run && !draft && events.length > 0 && speech.length > 0;
+            const systemLabel = (runtimeOnly || mixedRuntime) ? 'Runtime' : undefined;
             return (
               <Fragment key={message.id}>
                 {noticesBefore(message.created_at)}
                 {exchangesBefore(message.created_at)}
-                <li className={mine ? 'msg-you' : 'msg-bot'}>
-                  <MessageMeta message={message} mine={mine} />
+                <li className={mine ? 'msg-you' : runtimeOnly ? 'msg-system' : 'msg-bot'}>
+                  <MessageMeta message={message} mine={mine} systemLabel={systemLabel} />
                   {failure ? (
                     <div className="msg-status"><RuntimeFailureNotice failure={failure} /></div>
                   ) : run ? (
@@ -242,7 +293,8 @@ export default function ConversationDetail() {
                     </div>
                   ) : (
                     <div className="msg-body">
-                      {renderThreadBody(content, message.id)}
+                      {speech.length ? <div className="msg-speech">{renderSpeechLines(speech, message.id)}</div> : null}
+                      <FoldedRuntimeTrace lines={events} keyPrefix={message.id} />
                       {approval && message.approvalStatus ? (
                         <ApprovalCard message={message} conversationId={conversationId} status={message.approvalStatus} writable={detail.writable} onDone={() => void load()} />
                       ) : null}
