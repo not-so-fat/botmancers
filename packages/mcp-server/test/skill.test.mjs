@@ -65,6 +65,8 @@ test('negative controls: the validator rejects each kind of defect', t => {
     ['provider id', 'references/workflows.md', '\nresume prov-relay-SECRET-session\n', /provider session-like id/],
     ['grants document', 'references/workflows.md', '\n{ "version": 1, "grants": [] }\n', /removed grants document/],
     ['grant guidance', 'SKILL.md', '\nIf `mode` is `narrow`, ask the owner to grant access.\n', /removed grant guidance/],
+    ['ask owner for a grant', 'references/workflows.md', '\nAsk the owner for a grant.\n', /removed grant guidance/],
+    ['request a grant', 'SKILL.md', '\nRequest a grant before retrying.\n', /removed grant guidance/],
     ['bearer', 'references/workflows.md', '\nAuthorization: Bearer abcdefgh12345678\n', /bearer credential/],
     ['home path', 'SKILL.md', '\nSee /Users/someone/.codex\n', /machine-specific home path/],
     ['broken link', 'SKILL.md', '\n[x](references/missing.md)\n', /does not resolve/],

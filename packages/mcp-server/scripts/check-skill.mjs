@@ -46,7 +46,7 @@ const EXTRA_PATTERNS = [
   [/(?:\/Users\/|\/home\/|[A-Z]:\\Users\\)[^\s/\\]+/, 'machine-specific home path'],
   // NOT-556/557: there is no grants layer; the skill must not send callers to one.
   [/service[-_]grants|"grants"\s*:\s*\[/, 'removed grants document'],
-  [/\bgrants?_(?:required|unavailable)\b|\bmode\b[^\n]{0,8}\bnarrow\b|\bowner\s+(?:must\s+|can\s+|to\s+)?grants?\b/i, 'removed grant guidance'],
+  [/\bgrants?_(?:required|unavailable)\b|\bmode\b[^\n]{0,8}\bnarrow\b|\bowner\s+(?:must\s+|can\s+|to\s+)?grants?\b|\bowner\s+for\s+(?:a\s+|an?\s+access\s+)?grants?\b|\b(?:request|ask\s+for)\s+(?:a\s+)?grants?\b/i, 'removed grant guidance'],
   [/Bearer\s+(?!<)[A-Za-z0-9._~+/=-]{8,}/, 'bearer credential'],
 ];
 
