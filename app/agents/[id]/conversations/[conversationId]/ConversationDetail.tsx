@@ -8,7 +8,7 @@ import ExchangeCard from '@/app/components/ExchangeCard';
 import RuntimeFailureNotice from '@/app/components/RuntimeFailureNotice';
 import WakeNotice from '@/app/components/WakeNotice';
 import { useAgentOverview } from '../../AgentShell';
-import { agentEventDisplay, isAgentEventLine } from '@/lib/bot-runtime-ui';
+import { agentEventDisplay, agentEventKindOfLine, isAgentEventLine } from '@/lib/bot-runtime-ui';
 import { parseApprovalCode, parseDraft, draftTitle, parseFileNames } from '@/lib/draft';
 import { classifyRuntimeFailure } from '@/lib/runtime-failure';
 import { parseRun, runLine } from '@/lib/run';
@@ -156,30 +156,86 @@ function FoldedRuntimeGroup({
   );
 }
 
-function isRuntimeNoticeMessage(message: OwnerConversationMessage): boolean {
+function RuntimeFailureRow({
+  message,
+  lines,
+}: {
+  message: OwnerConversationMessage;
+  lines: string[];
+}) {
+  const event = lines.map(agentEventDisplay).find(Boolean);
+  const title = event?.label ?? 'Agent failed';
+  const detail = lines.join('\n');
+  return (
+    <li className="msg-system msg-system-error">
+      <div className="runtime-failure" role="status">
+        <p className="runtime-failure-title">
+          <span className="runtime-failure-severity">Error</span>
+          <span>{title}</span>
+          <time className="msg-time" dateTime={new Date(message.created_at).toISOString()} title={new Date(message.created_at).toLocaleString()}>
+            {formatMessageTime(message.created_at)}
+          </time>
+        </p>
+        {event?.detail ? <p className="runtime-failure-recovery">{event.detail}</p> : null}
+        <details className="runtime-failure-details">
+          <summary>Details</summary>
+          <code className="runtime-failure-detail">{detail}</code>
+        </details>
+      </div>
+    </li>
+  );
+}
+
+function leadingEventKind(content: string) {
+  const first = String(content ?? '').split('\n').find(line => line.trim()) ?? '';
+  return agentEventKindOfLine(first);
+}
+
+/** Happy-path launch/run traces: fold. Failures stay visible as errors. */
+function isHappyRuntimeNotice(message: OwnerConversationMessage): boolean {
   if (message.sender_name === 'You') return false;
   const content = stripStoredPrefix(message.content);
   if (classifyRuntimeFailure(content) || parseRun(message.content) || parseDraft(content)) return false;
   const { speech, trace } = splitThreadContent(content);
-  return trace !== null && speech.length === 0;
+  if (!(trace !== null && speech.length === 0)) return false;
+  const kind = leadingEventKind(content);
+  return kind !== null && kind !== 'failed';
+}
+
+function isFailedRuntimeNotice(message: OwnerConversationMessage): boolean {
+  if (message.sender_name === 'You') return false;
+  const content = stripStoredPrefix(message.content);
+  if (classifyRuntimeFailure(content) || parseRun(message.content) || parseDraft(content)) return false;
+  const { speech, trace } = splitThreadContent(content);
+  return trace !== null && speech.length === 0 && leadingEventKind(content) === 'failed';
 }
 
 type ThreadItem =
   | { kind: 'chat'; message: OwnerConversationMessage }
-  | { kind: 'runtime'; notices: { id: string; created_at: number; lines: string[] }[] };
+  | { kind: 'runtime'; notices: { id: string; created_at: number; lines: string[] }[] }
+  | { kind: 'runtime-error'; message: OwnerConversationMessage; lines: string[] };
 
 function groupThreadItems(messages: OwnerConversationMessage[]): ThreadItem[] {
   const items: ThreadItem[] = [];
   for (const message of messages) {
-    if (isRuntimeNoticeMessage(message)) {
+    const content = stripStoredPrefix(message.content);
+    if (isHappyRuntimeNotice(message)) {
       const notice = {
         id: message.id,
         created_at: message.created_at,
-        lines: splitThreadContent(stripStoredPrefix(message.content)).trace ?? [message.content],
+        lines: splitThreadContent(content).trace ?? [message.content],
       };
       const last = items[items.length - 1];
       if (last?.kind === 'runtime') last.notices.push(notice);
       else items.push({ kind: 'runtime', notices: [notice] });
+      continue;
+    }
+    if (isFailedRuntimeNotice(message)) {
+      items.push({
+        kind: 'runtime-error',
+        message,
+        lines: splitThreadContent(content).trace ?? [message.content],
+      });
       continue;
     }
     items.push({ kind: 'chat', message });
@@ -333,6 +389,15 @@ export default function ConversationDetail() {
                   {noticesBefore(at)}
                   {exchangesBefore(at)}
                   <FoldedRuntimeGroup notices={item.notices} />
+                </Fragment>
+              );
+            }
+            if (item.kind === 'runtime-error') {
+              return (
+                <Fragment key={item.message.id}>
+                  {noticesBefore(item.message.created_at)}
+                  {exchangesBefore(item.message.created_at)}
+                  <RuntimeFailureRow message={item.message} lines={item.lines} />
                 </Fragment>
               );
             }

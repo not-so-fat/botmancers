@@ -3616,6 +3616,16 @@ button.avatar-pic {
   background: transparent;
 }
 
+.conversation-message-list > .msg-system-error {
+  max-width: min(100%, 46rem);
+  margin: 6px 0;
+}
+
+.conversation-message-list > .msg-system-error .runtime-failure-title .msg-time {
+  margin-left: auto;
+  font-weight: 400;
+}
+
 .conversation-message-list .msg-meta {
   display: flex;
   align-items: center;
