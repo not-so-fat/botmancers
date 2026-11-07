@@ -1655,6 +1655,13 @@ button.thread-name {
   background: transparent;
 }
 
+.cfg-page.cfg-page-framed .cfg-page-title {
+  margin: 0;
+  font-size: var(--agent-title-size);
+  font-weight: 500;
+  letter-spacing: -.02em;
+}
+
 @media (min-width: 640px) {
   .cfg-page:not(.cfg-page-framed) {
     padding: 24px;
@@ -3565,6 +3572,7 @@ button.avatar-pic {
 
 .conversation-message-list {
   display: flex;
+  gap: 14px;
   min-height: 50vh;
   max-height: min(62vh, 760px);
   margin: 0;
@@ -3578,6 +3586,91 @@ button.avatar-pic {
 .conversation-message-list > .msg-you,
 .conversation-message-list > .msg-bot {
   flex: 0 0 auto;
+}
+
+.conversation-message-list > .msg-you {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: min(80%, 42rem);
+}
+
+.conversation-message-list > .msg-bot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  max-width: min(100%, 46rem);
+}
+
+.conversation-message-list .msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.conversation-message-list .msg-meta-you {
+  flex-direction: row-reverse;
+}
+
+.conversation-message-list .msg-meta-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.conversation-message-list .msg-meta-you .msg-meta-text {
+  justify-content: flex-end;
+}
+
+.conversation-message-list .msg-name {
+  margin: 0;
+  font-family: var(--chrome);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.conversation-message-list .msg-name-you {
+  color: var(--accent);
+}
+
+.conversation-message-list .msg-time {
+  font-family: var(--chrome);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-faint);
+}
+
+.conversation-message-list .msg-monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--card) 70%, var(--composer));
+  color: var(--ink-muted);
+  font-family: var(--chrome);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.conversation-message-list .msg-avatar {
+  flex: none;
+}
+
+.conversation-message-list .msg-body {
+  font-family: var(--chrome);
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .conversation-empty-history {

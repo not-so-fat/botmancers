@@ -30,12 +30,22 @@ export interface OwnerConversationSummary {
   read_only_reason: string | null;
 }
 
+/** Bot avatar fields for chat rows; null for non-bot senders. */
+export interface OwnerMessageSenderAvatar {
+  name: string;
+  avatar_color: string | null;
+  avatar_eyes: string | null;
+  avatar_hands: string | null;
+  avatar_accessory: string | null;
+}
+
 export interface OwnerConversationMessage {
   id: string;
   sender_type: 'user' | 'bot';
   sender_id: string | null;
   sender_kind: PrincipalKind;
   sender_name: string;
+  sender_avatar: OwnerMessageSenderAvatar | null;
   request_id: string | null;
   content: string;
   handoff_targets: string | null;
@@ -189,12 +199,22 @@ export function getOwnerConversation(agentId: string, conversationId: string, in
       const legacy = !request && code ? db.prepare('SELECT status FROM approvals WHERE conversation_id = ? AND code = ?').get(conversationId, code) as { status: 'pending' | 'approved' | 'denied' } | undefined : undefined;
       const kind = message.sender_kind ?? (message.sender_type === 'bot' ? 'bot' : 'person');
       const senderId = message.sender_id ?? (kind === row.origin_kind ? row.origin_id : null) ?? 'unknown';
+      const bot = kind === 'bot' && message.sender_id ? bots.getById(message.sender_id) : undefined;
       return {
         id: message.id,
         sender_type: message.sender_type,
         sender_id: message.sender_id,
         sender_kind: kind,
         sender_name: participantLabel({ kind, id: senderId }),
+        sender_avatar: bot
+          ? {
+              name: bot.name,
+              avatar_color: bot.avatar_color ?? null,
+              avatar_eyes: bot.avatar_eyes ?? null,
+              avatar_hands: bot.avatar_hands ?? null,
+              avatar_accessory: bot.avatar_accessory ?? null,
+            }
+          : null,
         request_id: message.request_id,
         content: redactor.text(message.content),
         handoff_targets: message.handoff_targets,

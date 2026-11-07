@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
+import BotAvatar from '@/app/components/BotAvatar';
 import ExchangeCard from '@/app/components/ExchangeCard';
 import RuntimeFailureNotice from '@/app/components/RuntimeFailureNotice';
 import WakeNotice from '@/app/components/WakeNotice';
@@ -17,6 +18,41 @@ import { type OwnerConversationDetail, type OwnerConversationMessage } from '@/l
 import { ownerConversationEyebrow } from '@/lib/owner-conversation-labels';
 
 const POLL_MS = 2000;
+
+function formatMessageTime(ts: number): string {
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function senderMonogram(name: string): string {
+  const cleaned = name.replace(/^Service\s+/i, '').trim();
+  const parts = cleaned.split(/[\s_-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return (cleaned.slice(0, 2) || '?').toUpperCase();
+}
+
+function MessageMeta({ message, mine }: { message: OwnerConversationMessage; mine: boolean }) {
+  const timeLabel = formatMessageTime(message.created_at);
+  const timeTitle = new Date(message.created_at).toLocaleString();
+  const avatar = message.sender_kind === 'bot' && message.sender_avatar
+    ? <BotAvatar bot={message.sender_avatar} size={28} title={`${message.sender_name} avatar`} className="msg-avatar bot-avatar" />
+    : !mine
+      ? <span className="msg-monogram" aria-hidden="true">{senderMonogram(message.sender_name)}</span>
+      : null;
+  return (
+    <div className={mine ? 'msg-meta msg-meta-you' : 'msg-meta'}>
+      {avatar}
+      <div className="msg-meta-text">
+        <span className={mine ? 'msg-name msg-name-you' : 'msg-name'}>{message.sender_name}</span>
+        <time className="msg-time" dateTime={new Date(message.created_at).toISOString()} title={timeTitle}>{timeLabel}</time>
+      </div>
+    </div>
+  );
+}
 
 function stripStoredPrefix(content: string) {
   let text = content;
@@ -187,7 +223,35 @@ export default function ConversationDetail() {
             const run = mine ? null : parseRun(message.content);
             const draft = !mine && !run ? parseDraft(content) : null;
             const approval = !mine && !run ? parseApprovalCode(message.content) : null;
-            return <Fragment key={message.id}>{noticesBefore(message.created_at)}{exchangesBefore(message.created_at)}<li className={mine ? 'msg-you' : 'msg-bot'}><div className={mine ? 'msg-name msg-name-you' : 'msg-name'}>{message.sender_name}</div>{failure ? <div className="msg-status"><RuntimeFailureNotice failure={failure} /></div> : run ? <div className="msg-body">{runLine(run)}{run.state === 'running' && detail.writable ? <> <button type="button" className="attach-word" onClick={() => void stop(message.id)}>Stop</button></> : null}</div> : draft && message.draftStatus ? <div className="msg-body"><DraftCard message={message} conversationId={conversationId} status={message.draftStatus} writable={detail.writable} onDone={() => void load()} /></div> : <div className="msg-body">{renderThreadBody(content, message.id)}{approval && message.approvalStatus ? <ApprovalCard message={message} conversationId={conversationId} status={message.approvalStatus} writable={detail.writable} onDone={() => void load()} /> : null}<FileLinks names={parseFileNames(message.content)} /></div>}</li></Fragment>;
+            return (
+              <Fragment key={message.id}>
+                {noticesBefore(message.created_at)}
+                {exchangesBefore(message.created_at)}
+                <li className={mine ? 'msg-you' : 'msg-bot'}>
+                  <MessageMeta message={message} mine={mine} />
+                  {failure ? (
+                    <div className="msg-status"><RuntimeFailureNotice failure={failure} /></div>
+                  ) : run ? (
+                    <div className="msg-body">
+                      {runLine(run)}
+                      {run.state === 'running' && detail.writable ? <> <button type="button" className="attach-word" onClick={() => void stop(message.id)}>Stop</button></> : null}
+                    </div>
+                  ) : draft && message.draftStatus ? (
+                    <div className="msg-body">
+                      <DraftCard message={message} conversationId={conversationId} status={message.draftStatus} writable={detail.writable} onDone={() => void load()} />
+                    </div>
+                  ) : (
+                    <div className="msg-body">
+                      {renderThreadBody(content, message.id)}
+                      {approval && message.approvalStatus ? (
+                        <ApprovalCard message={message} conversationId={conversationId} status={message.approvalStatus} writable={detail.writable} onDone={() => void load()} />
+                      ) : null}
+                      <FileLinks names={parseFileNames(message.content)} />
+                    </div>
+                  )}
+                </li>
+              </Fragment>
+            );
           })}
           {noticesBefore(Number.POSITIVE_INFINITY)}
           {exchangesBefore(Number.POSITIVE_INFINITY)}

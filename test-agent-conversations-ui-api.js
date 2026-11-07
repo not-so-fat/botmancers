@@ -101,6 +101,10 @@ function request(pathname) { return new Request(`http://127.0.0.1:3333${pathname
       const detail = projection.getOwnerConversation(ada.id, 'external-service', { cursor: null, limit: 20 });
       assert.equal(detail.messages[0].content, 'external request [redacted]');
       assert.equal(detail.messages[0].sender_name, 'Service linear-sync');
+      assert.equal(detail.messages[0].sender_avatar, null);
+      const agentThread = projection.getOwnerConversation(ada.id, 'agent-to-agent', { cursor: null, limit: 20 });
+      assert.equal(agentThread.messages[0].sender_name, 'Bo');
+      assert.equal(agentThread.messages[0].sender_avatar?.name, 'Bo');
       assert.equal(projection.getOwnerConversation(ada.id, 'not-ada', { cursor: null, limit: 20 }), null);
       const response = await json(await detailRoute.GET(request(`/api/bots/${ada.id}/conversations/not-ada`), { params: Promise.resolve({ id: ada.id, conversationId: 'not-ada' }) }));
       assert.equal(response.status, 404);
