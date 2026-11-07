@@ -388,17 +388,18 @@ async function catalogFixtures() {
   }
 
   const serviceApi = jiti('./lib/service-api.ts');
-  const granted = { principal: { kind: 'service', id: 'svc-usage' }, mode: 'granted', agents: new Map([[agent.id, new Set(['sessions:read'])]]) };
+  const granted = serviceApi.serviceContext({ kind: 'service', id: 'svc-usage' });
   const page = serviceApi.listServiceSessions(granted, agent.id, { cursor: null, limit: 10, status: 'all' });
   const serviceRow = page.items.find(item => item.ref === sessions.claude.id);
   assert(same(serviceRow.usage, claude) && page.items.every(item => item.usage && !('context' in item)), 'service list carries the usage summary, still without launch context');
   const serviceDetail = serviceApi.getServiceSession(granted, agent.id, sessions.claude.id);
   assert(serviceDetail.usage_samples.length === 2 && serviceDetail.usage_samples[0].cost_usd === 0.4213 && !/breakdown|cache_read|SECRET/.test(JSON.stringify(serviceDetail)),
     'service detail carries per-run usage, no breakdown or provider id');
-  const ungranted = { principal: { kind: 'service', id: 'svc-other' }, mode: 'granted', agents: new Map([[agent.id, new Set(['agents:read'])]]) };
+  // NOT-556: no grants; an engine-internal principal still reaches no Agent.
+  const internal = serviceApi.serviceContext({ kind: 'service', id: 'botmancers-engine' });
   let refused = null;
-  try { serviceApi.getServiceSession(ungranted, agent.id, sessions.claude.id); } catch (error) { refused = error; }
-  assert(refused && refused.code === 'agent_not_found', 'without sessions:read the usage is not readable (existing grant)');
+  try { serviceApi.getServiceSession(internal, agent.id, sessions.claude.id); } catch (error) { refused = error; }
+  assert(refused && refused.code === 'agent_not_found', 'an engine-internal principal cannot read session usage');
   return fixture;
 }
 

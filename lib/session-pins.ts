@@ -73,7 +73,6 @@ export type PinErrorCode =
   | 'approval_required'
   | 'authority_not_allowed'
   | 'agent_unavailable'
-  | 'grant_required'
   | 'provider_failed'
   | 'idempotency_conflict';
 
@@ -94,7 +93,6 @@ export const PIN_ERROR_STATUS: Record<PinErrorCode, number> = {
   approval_required: 403,
   authority_not_allowed: 403,
   agent_unavailable: 409,
-  grant_required: 403,
   provider_failed: 502,
   idempotency_conflict: 409,
 };
@@ -723,8 +721,9 @@ export interface MessageAgentInput {
   content: string;
   idempotencyKey: string;
   conversationId?: string | null;
-  // Whether the requester may start a new session (a service needs the
-  // sessions:start grant; the owner always may).
+  // Whether this requester may start a new session when none can take the
+  // message. The Agent's policy and default workspace still decide; the
+  // authenticated service path opts in with true.
   mayStart: boolean;
   now?: number;
   // Called with the resolved target before anything is written (the
@@ -793,7 +792,7 @@ async function resolveTarget(facts: AgentFacts, mayStart: boolean): Promise<Reso
     throw new PinError('workspace_required', 'This Agent has no session that can take a message, and no default workspace for a new one. Ask the owner to set a default workspace, or pin one of its sessions.');
   }
   if (!mayStart) {
-    throw new PinError('grant_required', 'Starting a new session for this Agent needs the sessions:start grant, which only the Botmancers owner can give. Pin one of its sessions instead.');
+    throw new PinError('no_eligible_session', 'This Agent has no session that can take a message, and this caller does not start new sessions. Pin one of its sessions instead.');
   }
   return { kind: 'start', workspace };
 }

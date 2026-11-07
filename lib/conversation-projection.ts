@@ -161,11 +161,11 @@ function wakeReason(stateReason: string | null): { code: string | null; reason: 
   return match ? { code: match[1], reason: match[2] } : { code: null, reason: stateReason };
 }
 
-const GRANT_REQUIRED_TEXT = 'needs your approval for edit work';
+const EDIT_APPROVAL_TEXT = 'needs your approval for edit work';
 
 function wakeBlockedPart(target: string, code: string | null, reason: string | null, identity: Record<string, unknown>): Part {
-  const grant = code === 'grant_required';
-  const shown = grant ? GRANT_REQUIRED_TEXT : reason;
+  const grant = code === 'edit_approval_required';
+  const shown = grant ? EDIT_APPROVAL_TEXT : reason;
   return {
     kind: 'wake_blocked', attemptId: null,
     text: shown ? `Wake blocked: ${target} — ${shown}` : `Wake blocked: ${target}`,

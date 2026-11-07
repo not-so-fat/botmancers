@@ -35,7 +35,7 @@
 //   1. envelope, tracked lineage, references, depth, root budget -> rejected
 //   2. target name resolution                                      -> unavailable
 //   3. policy checks on the resolved Agent                         -> rejected
-//   4. edit grant (implementation/revision)                        -> blocked, grant_required
+//   4. edit grant (implementation/revision)                        -> blocked, edit_approval_required
 //   5. launchability and availability                              -> blocked, target_*
 //   6. accepted: the request is queued and waits for capacity
 // Depth and root budget are counted inside the routing IMMEDIATE
@@ -82,7 +82,7 @@ export type WakeReasonCode =
   | 'depth_exceeded'
   | 'root_budget_exhausted'
   | 'untracked_lineage'
-  | 'grant_required'
+  | 'edit_approval_required'
   | 'grant_denied';
 
 // NOT-475: approved limits per root lineage (lib/wake-safety). Depth counts
@@ -179,7 +179,7 @@ type Unrouted = {
   status: 'rejected' | 'unavailable'; code: WakeReasonCode; reason: string; target?: { id: string; name: string };
   limit?: number; observed?: number;
 };
-// grant: the rule that admitted the Wake (null while grant_required).
+// grant: the rule that admitted the Wake (null while edit_approval_required).
 type Routable = {
   status: 'accepted' | 'blocked'; code: WakeReasonCode | null; reason: string | null; target: { id: string; name: string };
   policy: ExecutionPolicySnapshot; grant: { rule: GrantRule; id: string | null } | null;
@@ -322,7 +322,7 @@ function checkTarget(envelope: WakeEnvelope, syntax: WakeSyntax, target: { id: s
   // it, and an unlaunchable target never hides a pending approval.
   const grant = grantFor(envelope, target, caller);
   if (!grant) {
-    return { status: 'blocked', code: 'grant_required', reason: `${target.name} needs your approval for edit work.`, target, policy, grant: null };
+    return { status: 'blocked', code: 'edit_approval_required', reason: `${target.name} needs your approval for edit work.`, target, policy, grant: null };
   }
   return availabilityOutcome(target, policy, grant);
 }
@@ -418,7 +418,7 @@ function createRequest(wake: Pick<Wake, 'id' | 'idempotency_key' | 'source_conve
     safety: decisionFor(outcome, wake.id, wake.requester_agent_id, snapshot, now),
     now,
   });
-  if (outcome.code === 'grant_required') grantRequested(request, wake.id, now);
+  if (outcome.code === 'edit_approval_required') grantRequested(request, wake.id, now);
   return request;
 }
 
@@ -536,7 +536,7 @@ export function routeAgentWakes(input: RouteWakesInput): RoutedWake[] {
 // found, creates its Work Request through steps 3-6; if the name now
 // resolves to something no Wake may target, it becomes rejected. A blocked
 // Wake re-runs steps 3-6 against its stored target Agent: a grant revoked
-// since asks again (grant_required), a launchable granted target moves its
+// since asks again (edit_approval_required), a launchable granted target moves its
 // request from blocked to queued, and one that stays blocked records the
 // current reason. Accepted, rejected, and owner-denied Wakes are returned
 // unchanged.
@@ -594,7 +594,7 @@ function settleBlocked(wake: Wake, request: WorkRequest, outcome: Outcome, queue
       wakeDepth: request.wake_depth, grant: outcome.grant, rootRequestId: null, counting: false,
     });
     engine.recordSafetyDecision(request.id, decisionFor(outcome, wake.id, wake.requester_agent_id, snapshot, now));
-    if (outcome.code === 'grant_required') grantRequested(request, wake.id, now);
+    if (outcome.code === 'edit_approval_required') grantRequested(request, wake.id, now);
     reblocked(request, outcome.code as WakeReasonCode, outcome.reason as string, now);
     return routed(getWake(wake.id) as Wake, false);
   }
@@ -627,7 +627,7 @@ export interface GrantDecisionResult extends RoutedWake {
 // accepted and its request moves blocked -> queued (grant_approved);
 // otherwise both stay blocked on the availability reason. Deny records
 // grant_denied and cancels the request (blocked -> cancelled, grant_denied);
-// no grant is created. Only offered while the reason is grant_required; a
+// no grant is created. Only offered while the reason is edit_approval_required; a
 // repeated decision returns the stored outcome and changes nothing.
 export function decideWakeGrant(input: {
   wakeId: string;
@@ -646,7 +646,7 @@ export function decideWakeGrant(input: {
       ...entry, decision: input.decision, grant,
       runnable: entry.request?.state === 'queued', ended: entry.request?.terminal_at !== null && entry.request?.terminal_at !== undefined,
     });
-    if (wake.status !== 'blocked' || wake.reason_code !== 'grant_required' || !request || request.state !== 'blocked') {
+    if (wake.status !== 'blocked' || wake.reason_code !== 'edit_approval_required' || !request || request.state !== 'blocked') {
       // Already decided this way: replay, not an error.
       const pair = request ? activeEditGrant(wake.requester_agent_id, request.target_agent_id) ?? null : null;
       if (input.decision === 'deny' && wake.reason_code === 'grant_denied') return { ...settled(routed(wake, false), null), runnable: false };

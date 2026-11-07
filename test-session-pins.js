@@ -2,16 +2,16 @@
 // NOT-507: registered-Agent messaging and exact-session pins
 // (lib/session-pins, lib/session-actions, lib/service-api, lib/mcp-bridge-v2).
 // Proves: the registered-Agent resolution matrix (home, archived-resumable,
-// busy, missing, no workspace, forbidden new session, started under policy
-// with and without sessions:start); an exact-session pin holds every
+// busy, missing, no workspace, forbidden new session, started under
+// policy); an exact-session pin holds every
 // follow-up on the same ref, never retargets after a provider failure or a
 // busy session, survives a Botmancers restart (a real second process on the
 // same database), and stops only on an explicit detach or switch; turn and
 // pin idempotency with row and event counts; Resume work here needs the
-// runtime's authority, the Agent's policy, the sessions:resume grant, and
-// explicit approval; grants and audit cover the resolved Agent, session,
-// capability, and final action for allowed, denied, stale-grant, and
-// cross-Agent calls, with no provider id anywhere; and the MCP tools return
+// runtime's authority, the Agent's policy, and explicit approval (NOT-556:
+// no grant); the audit covers the resolved Agent, session, capability, and
+// final action for allowed, rejected, and denied (unknown target or another
+// service's pin) calls, with no provider id anywhere; and the MCP tools return
 // the same contract with a structured recovery hint.
 // Self-contained: isolated SQLite and state files, no network, no socket.
 'use strict';
@@ -27,7 +27,6 @@ const TAG = process.env.NOT507_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-session-pins-${TAG}`);
 const DB_PATH = path.join(TMP, 'botmancers.db');
 const STATE = path.join(TMP, 'provider.json');
-const GRANTS_PATH = path.join(TMP, 'service-grants.json');
 const IDS_PATH = path.join(TMP, 'ids.json');
 if (!RESTART) {
   fs.rmSync(TMP, { recursive: true, force: true });
@@ -35,7 +34,6 @@ if (!RESTART) {
 }
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
 process.env.BOTMANCERS_SERVICE_TOKENS = `grok-bot=sha256:${'a'.repeat(64)},other-bot=sha256:${'b'.repeat(64)}`;
 for (const name of Object.keys(process.env)) if (/^AGENT_DECK/.test(name)) delete process.env[name];
 globalThis.fetch = async () => { throw new Error('network disabled in this test'); };
@@ -72,11 +70,6 @@ const grok = { kind: 'service', id: 'grok-bot' };
 const other = { kind: 'service', id: 'other-bot' };
 const sendsTo = id => fake.loadFakeState(STATE).calls.filter(call => call.op === 'sendTurn' && call.session === id).length;
 const sends = () => fake.providerCalls(STATE, 'sendTurn');
-
-function writeGrants(grants) {
-  fs.writeFileSync(GRANTS_PATH, JSON.stringify({ version: 1, grants }));
-  fs.chmodSync(GRANTS_PATH, 0o600);
-}
 
 function agent(name, connectionId, policy, extra = {}) {
   const bot = dbModule.bots.create({
@@ -170,14 +163,6 @@ async function main() {
   db.prepare('UPDATE bots SET home_session_id = ? WHERE id = ?').run(homeRef, homeAgent.id);
   const pin1 = nativeRef(writer.id, 'pin-1-SECRET');
   const pin2 = nativeRef(writer.id, 'pin-2-SECRET');
-  const caps = ['agents:read', 'sessions:read', 'sessions:message'];
-  writeGrants([
-    { service: 'grok-bot', agent: homeAgent.id, capabilities: caps },
-    { service: 'grok-bot', agent: writer.id, capabilities: [...caps, 'sessions:start', 'sessions:resume'] },
-    { service: 'grok-bot', agent: reader.id, capabilities: caps },
-    { service: 'grok-bot', agent: nowhere.id, capabilities: caps },
-    { service: 'other-bot', agent: outsider.id, capabilities: caps },
-  ]);
   assert(true, `Agents Home, Writer, Reader, Nowhere, Outsider on ${connectionId.slice(0, 4)}…`);
 
   console.log('\nResolution matrix: registered-Agent messaging');
@@ -206,7 +191,7 @@ async function main() {
     'source_session_busy', 'busy sessions are waited on, never bypassed by starting a new one');
   fake.mutateFakeProvider(STATE, state => { state.sessions['pin-1-SECRET'].deleted = true; state.sessions['pin-2-SECRET'].deleted = true; state.sessions['pin-1-SECRET'].busy = false; state.sessions['pin-2-SECRET'].busy = false; });
   await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Start please', idempotencyKey: 'w-start-0', mayStart: false }),
-    'grant_required', 'started: policy and workspace allow it, but without sessions:start -> grant_required');
+    'no_eligible_session', 'policy and workspace allow a start, but a caller that does not opt in (mayStart: false) never starts one');
   const started = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Start please', idempotencyKey: 'w-start', mayStart: true });
   await started.settled;
   const startCall = fake.loadFakeState(STATE).calls.filter(call => call.op === 'startSession').pop();
@@ -333,7 +318,7 @@ async function main() {
   await rejects(pins.sendPinTurn({ requester: grok, pinRef: switched.pin.id, content: 'x', idempotencyKey: 't6' }), 'pin_detached', 'a detached pin no longer sends');
   await rejects(pins.sendPinTurn({ requester: other, pinRef: resumed.pin.id, content: 'x', idempotencyKey: 't7' }), 'pin_not_found', 'another requester cannot see or use a pin');
 
-  console.log('\nService grants and audit');
+  console.log('\nService access and audit');
   resetServiceApiRateLimits();
   const auditBefore = count('SELECT COUNT(*) AS n FROM service_audit_events');
   const lastAudit = () => db.prepare('SELECT * FROM service_audit_events ORDER BY id DESC LIMIT 1').get();
@@ -352,26 +337,26 @@ async function main() {
   const forbiddenStart = await serviceOperations.messageAgent(grok, nowhere.id, () => ({ content: 'Hello', idempotency_key: 'svc-2' }), null);
   assert(forbiddenStart.status === 409 && forbiddenStart.body.error.code === 'workspace_required' && forbiddenStart.body.error.recovery === 'ask_owner'
     && lastAudit().outcome === 'rejected' && lastAudit().code === 'workspace_required', 'workspace_required: structured recovery, audited as rejected');
-  const crossAgent = await serviceOperations.messageAgent(other, writer.id, () => ({ content: 'Hello', idempotency_key: 'svc-3' }), null);
-  assert(crossAgent.status === 404 && crossAgent.body.error.code === 'agent_not_found' && lastAudit().outcome === 'denied' && lastAudit().code === 'not_granted',
-    'cross-Agent: an ungranted Agent is answered like a missing one and audited as denied');
-  const crossSession = await serviceOperations.pinSession(other, pin1, () => ({ action: 'ask', idempotency_key: 'svc-4' }), null);
-  assert(crossSession.status === 404 && crossSession.body.error.code === 'session_not_found' && lastAudit().agent_id === writer.id && lastAudit().outcome === 'denied',
-    'cross-Agent session pin: denied, audit names the owning Agent');
-  const resumeNoGrant = await serviceOperations.pinSession(grok, homeRef, () => ({ action: 'resume', approve_write: true, idempotency_key: 'svc-5' }), null);
+  const unknownAgent = await serviceOperations.messageAgent(other, 'no-such-agent', () => ({ content: 'Hello', idempotency_key: 'svc-3' }), null);
+  assert(unknownAgent.status === 404 && unknownAgent.body.error.code === 'agent_not_found' && lastAudit().outcome === 'denied' && lastAudit().code === 'agent_not_found',
+    'an unknown Agent is agent_not_found, audited as denied');
+  const unknownSession = await serviceOperations.pinSession(other, 'no-such-ref', () => ({ action: 'ask', idempotency_key: 'svc-4' }), null);
+  assert(unknownSession.status === 404 && unknownSession.body.error.code === 'session_not_found' && lastAudit().outcome === 'denied',
+    'an unknown session pin: session_not_found, audited as denied');
+  const resumeReadOnly = await serviceOperations.pinSession(grok, readerRef, () => ({ action: 'resume', approve_write: true, idempotency_key: 'svc-5' }), null);
   audit = lastAudit();
-  assert(resumeNoGrant.status === 404 && audit.capability === 'sessions:resume' && audit.operation === 'pins.resume' && audit.outcome === 'denied',
-    'resume without sessions:resume: denied, audited with the requested authority');
+  assert(resumeReadOnly.status === 403 && resumeReadOnly.body.error.code === 'authority_not_allowed' && audit.capability === 'sessions:resume'
+    && audit.operation === 'pins.resume' && audit.agent_id === reader.id,
+  'resume on an Agent whose policy forbids it: authority_not_allowed, audited with the requested authority');
   const svcPin = await serviceOperations.pinSession(grok, pin1, () => ({ action: 'ask', idempotency_key: 'svc-6' }), null);
   const svcSend = await serviceOperations.sendToPin(grok, svcPin.body.pin.pin_ref, () => ({ content: 'One more', idempotency_key: 'svc-7' }), null);
   audit = lastAudit();
   assert(svcPin.status === 201 && svcSend.status === 202 && audit.operation === 'pins.send' && audit.target_ref === pin1 && audit.outcome === 'allowed',
     'pin and send through the service: audited on the exact session');
-  // Stale grant: the owner withdraws Writer from grok-bot; the pin answers like a missing one.
-  writeGrants([{ service: 'grok-bot', agent: homeAgent.id, capabilities: caps }, { service: 'other-bot', agent: outsider.id, capabilities: caps }]);
-  const stale = await serviceOperations.sendToPin(grok, svcPin.body.pin.pin_ref, () => ({ content: 'Still there?', idempotency_key: 'svc-8' }), null);
-  assert(stale.status === 404 && stale.body.error.code === 'pin_not_found' && lastAudit().outcome === 'denied' && lastAudit().code === 'not_granted',
-    'stale grant: a withdrawn grant makes the pin unusable, audited as denied');
+  // Pins are caller-owned: another service's send answers like a missing pin.
+  const foreign = await serviceOperations.sendToPin(other, svcPin.body.pin.pin_ref, () => ({ content: 'Still there?', idempotency_key: 'svc-8' }), null);
+  assert(foreign.status === 404 && foreign.body.error.code === 'pin_not_found' && lastAudit().outcome === 'denied',
+    'another service cannot use the pin (pin_not_found), audited as denied');
   const auditRows = db.prepare('SELECT * FROM service_audit_events WHERE id > ?').all(auditBefore);
   assert(auditRows.length === 10, `every call appended exactly one audit row (${auditRows.length})`);
   const everything = JSON.stringify([auditRows, sessionsList.body, agentView.body, msg.body, svcPin.body, svcSend.body,
@@ -379,11 +364,6 @@ async function main() {
   assert(!SECRET.test(everything) && !everything.includes('/work/a'), 'no provider id or workspace path in any view, row, event, or audit');
 
   console.log('\nMCP: the same contract, with recovery');
-  writeGrants([
-    { service: 'grok-bot', agent: homeAgent.id, capabilities: caps },
-    { service: 'grok-bot', agent: writer.id, capabilities: [...caps, 'sessions:resume'] },
-    { service: 'grok-bot', agent: nowhere.id, capabilities: caps },
-  ]);
   const call = async (name, args) => {
     try {
       return { data: await mcp.callMcpV2Tool(grok, name, args, { v1Operations: [] }) };

@@ -12,7 +12,7 @@
   "grantRules": ["readonly_default", "edit_grant", "owner_direct_self_wake"],
   "wakeStatuses": ["accepted", "blocked", "unavailable", "rejected"],
   "reasonCodes": [
-    "grant_required",
+    "edit_approval_required",
     "grant_denied",
     "depth_exceeded",
     "root_budget_exhausted",
@@ -56,8 +56,8 @@
       "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the notification change." } },
       "expect": {
         "persisted": true,
-        "wake": { "status": "blocked", "reasonCode": "grant_required" },
-        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "wake": { "status": "blocked", "reasonCode": "edit_approval_required" },
+        "workRequest": { "state": "blocked", "reason": "edit_approval_required", "wakeDepth": 1 },
         "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
         "continuation": false,
         "audit": ["grant_requested"]
@@ -148,8 +148,8 @@
       "action": { "type": "agent_wake", "caller": "Dev", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the change." } },
       "expect": {
         "persisted": true,
-        "wake": { "status": "blocked", "reasonCode": "grant_required" },
-        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "wake": { "status": "blocked", "reasonCode": "edit_approval_required" },
+        "workRequest": { "state": "blocked", "reason": "edit_approval_required", "wakeDepth": 1 },
         "projection": [{ "kind": "wake_blocked", "actions": ["allow", "deny"] }],
         "continuation": false,
         "audit": ["grant_requested"]
@@ -163,8 +163,8 @@
       "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the next change." } },
       "expect": {
         "persisted": true,
-        "wake": { "status": "blocked", "reasonCode": "grant_required" },
-        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "wake": { "status": "blocked", "reasonCode": "edit_approval_required" },
+        "workRequest": { "state": "blocked", "reason": "edit_approval_required", "wakeDepth": 1 },
         "projection": [{ "kind": "wake_blocked", "actions": ["allow", "deny"] }],
         "continuation": false,
         "audit": ["grant_requested"]
@@ -253,8 +253,8 @@
       "action": { "type": "agent_wake", "caller": "Tank", "envelope": { "version": 1, "target": "Dev", "executionKind": "implementation", "objective": "Implement the notification change." } },
       "expect": {
         "persisted": true,
-        "wake": { "status": "blocked", "reasonCode": "grant_required" },
-        "workRequest": { "state": "blocked", "reason": "grant_required", "wakeDepth": 1 },
+        "wake": { "status": "blocked", "reasonCode": "edit_approval_required" },
+        "workRequest": { "state": "blocked", "reason": "edit_approval_required", "wakeDepth": 1 },
         "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
         "continuation": false,
         "audit": ["grant_requested"]
@@ -299,8 +299,8 @@
       "action": { "type": "retry_wake" },
       "expect": {
         "persisted": true,
-        "wake": { "status": "blocked", "reasonCode": "grant_required" },
-        "workRequest": { "state": "blocked", "transition": null, "reason": "grant_required" },
+        "wake": { "status": "blocked", "reasonCode": "edit_approval_required" },
+        "workRequest": { "state": "blocked", "transition": null, "reason": "edit_approval_required" },
         "projection": [{ "kind": "wake_blocked", "text": "Wake blocked: Dev — needs your approval for edit work", "actions": ["allow", "deny"] }],
         "continuation": false,
         "audit": ["grant_requested"]
@@ -389,7 +389,7 @@
       "principal": "api_principal",
       "given": { "wake": "coordinator_edit_wake_without_grant_waits_for_owner" },
       "action": { "type": "grant_decision", "decision": "allow" },
-      "expect": { "persisted": false, "http": { "status": 403, "code": "owner_required" }, "wake": { "status": "blocked", "reasonCode": "grant_required" }, "workRequest": { "state": "blocked", "reason": "grant_required" }, "projection": [], "continuation": false, "audit": [] }
+      "expect": { "persisted": false, "http": { "status": 403, "code": "owner_required" }, "wake": { "status": "blocked", "reasonCode": "edit_approval_required" }, "workRequest": { "state": "blocked", "reason": "edit_approval_required" }, "projection": [], "continuation": false, "audit": [] }
     },
     {
       "name": "ui_route_from_foreign_origin",

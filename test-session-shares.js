@@ -7,8 +7,9 @@
 //     fail-closed audience allowlist, expiry, revocation, one in-flight turn,
 //     restart recovery (a real second process), and idempotent turn
 //     accounting, with canonical row and event counts;
-//   - shares:create is its own per-Agent grant; missing, malformed,
-//     cross-Agent, and ungranted targets answer exactly like a missing one;
+//   - NOT-556: no shares:create grant; the owner's audience allowlist is the
+//     gate; missing, malformed, and cross-Agent targets answer exactly like
+//     a missing one, and a caller sees only its own shares;
 //   - create/get/list/revoke through serviceOperations, the REST route
 //     handlers, and the MCP v2 tools, with NOT-499 idempotency, pagination,
 //     audit, and heuristic or authority-seeking inputs refused before any
@@ -34,7 +35,6 @@ const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT515_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-session-shares-${TAG}`);
 const STATE = path.join(TMP, 'provider.json');
-const GRANTS_PATH = path.join(TMP, 'service-grants.json');
 const SHARES_PATH = path.join(TMP, 'session-shares.json');
 const IDS_PATH = path.join(TMP, 'ids.json');
 if (!RESTART) {
@@ -45,7 +45,6 @@ const digest = token => `sha256:${createHash('sha256').update(token, 'utf8').dig
 const TOKENS = { grok: 'grok-token-NOT515', other: 'other-token-NOT515' };
 process.env.BOTMANCERS_DB_PATH = path.join(TMP, 'botmancers.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
-process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
 process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES_PATH;
 process.env.BOTMANCERS_SERVICE_TOKENS = `grok-bot=${digest(TOKENS.grok)},other-bot=${digest(TOKENS.other)}`;
 process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE = '100000';
@@ -172,29 +171,21 @@ async function main() {
   const s3 = refOf(dev, 'share-3-SECRET');
   const gone = refOf(dev, 'gone-1-SECRET');
   const otherRef = refOf(otherAgent, 'other-1-SECRET');
-  writeJson(GRANTS_PATH, { version: 1, grants: [
-    { service: 'grok-bot', agent: dev.id, capabilities: ['agents:read', 'sessions:read', 'shares:create'] },
-    { service: 'grok-bot', agent: otherAgent.id, capabilities: ['sessions:read'] },
-    { service: 'other-bot', agent: dev.id, capabilities: ['sessions:message', 'sessions:read'] },
-  ] });
-
-  console.log('\nGrant vocabulary: shares:create, reserved share principals');
+  console.log('\nCapability vocabulary: shares:create, reserved share principals');
   {
-    assert(grantsLib.SERVICE_CAPABILITIES.includes('shares:create') && grantsLib.isServiceCapability('shares:create'), 'shares:create is in the grant vocabulary');
-    assert(!grantsLib.isServiceCapability('shares:ask') && !grantsLib.isServiceCapability('shares:*'), 'shares:ask (audit only) and wildcards are not grantable');
+    assert(grantsLib.SERVICE_CAPABILITIES.includes('shares:create') && grantsLib.isServiceCapability('shares:create'), 'shares:create is in the capability vocabulary');
+    assert(!grantsLib.isServiceCapability('shares:ask') && !grantsLib.isServiceCapability('shares:*'), 'shares:ask (audit only) and wildcards are not capabilities');
+    const { parseServiceTokens } = jiti('./lib/service-token-auth.ts');
     const refuse = service => {
       try {
-        grantsLib.parseServiceGrants(JSON.stringify({ version: 1, grants: [{ service, agent: dev.id, capabilities: ['shares:create'] }] }));
+        parseServiceTokens(`${service}=${digest('x')}`);
         return false;
       } catch (error) {
         return /reserved/.test(error.message);
       }
     };
     assert(refuse('botmancers-session-context') && refuse('botmancers-session-share') && refuse('botmancers-exchanges'),
-      'the session-context and session-share principals are refused in a grants document, like botmancers-exchanges');
-    const loaded = grantsLib.loadServiceGrants();
-    assert(loaded.state === 'loaded' && loaded.grants.get('grok-bot').get(dev.id).has('shares:create') && !loaded.grants.get('other-bot').get(dev.id).has('shares:create'),
-      'the grants document loads with shares:create granted to grok-bot on Dev only');
+      'no service token can name the session-context or session-share principal, like botmancers-exchanges');
   }
 
   console.log('\nOwner share configuration: owner-only, fail closed');
@@ -301,8 +292,6 @@ async function main() {
     assert(nested.status === 403 && nested.body.error.code === 'authority_not_allowed' && !JSON.stringify(nested.body).includes('/work/share'), 'a selector nested in audience is refused too, and never echoed');
     const missing = await serviceOperations.createShare(grok, 'no-such-session', () => ({ audience, idempotency_key: 'nf-1' }), null);
     const targets = [
-      ['an Agent without shares:create (sessions:read only)', grok, otherRef],
-      ['a service holding sessions:message but not shares:create', other, s1],
       ['an agent_id expectation naming another Agent', grok, s1, { agent_id: otherAgent.id }],
       ['a malformed reference', grok, '../../etc/passwd'],
       ['an over-long reference', grok, 'x'.repeat(500)],
@@ -312,10 +301,10 @@ async function main() {
       const res = await serviceOperations.createShare(principal, ref, () => ({ audience, idempotency_key: `nf-${label.length}`, ...(extra || {}) }), null);
       assert(res.status === 404 && same(res.body, missing.body), `${label} -> exactly the missing-session answer`);
     }
-    const narrow = db.prepare("SELECT outcome, code FROM service_audit_events WHERE operation = 'shares.create' AND principal = 'service:other-bot' ORDER BY id DESC LIMIT 1").get();
-    assert(narrow.outcome === 'denied' && narrow.code === 'not_granted', 'the ungranted refusal is audited as denied/not_granted (internally distinct, externally identical)');
     const relay = await serviceOperations.createShare(shares.SHARE_PRINCIPAL, s1, () => ({ audience, idempotency_key: 'relay-create' }), null);
-    assert(relay.status === 404 && relay.body.error.code === 'session_not_found', 'the share principal itself cannot create a share (it holds no grant)');
+    assert(relay.status === 404 && same(relay.body, missing.body), 'the share principal itself cannot create a share (an engine principal reaches no Agent)');
+    const narrow = db.prepare("SELECT outcome, code FROM service_audit_events WHERE operation = 'shares.create' AND principal = 'service:botmancers-session-share' ORDER BY id DESC LIMIT 1").get();
+    assert(narrow && narrow.outcome === 'denied' && narrow.code === 'not_granted', 'that refusal is audited as denied/not_granted (internally distinct, externally identical)');
     fake.mutateFakeProvider(STATE, state => { state.sessions['gone-1-SECRET'].deleted = true; });
     await ps.refreshProviderSession(db, dev.id, gone);
     const ended = await serviceOperations.createShare(grok, gone, () => ({ audience, idempotency_key: 'gone-1' }), null);
@@ -373,24 +362,6 @@ async function main() {
       && shares.shareRow(shareA.share_ref).state === 'active', 'another principal cannot revoke it; an authority-seeking revoke body is refused; the share stays active');
     const revokedList = await serviceOperations.listShares(grok, { cursor: null, limit: null, sessionRef: null, state: 'revoked' });
     assert(revokedList.body.items.length === 1 && revokedList.body.items[0].share_ref === shareC.share_ref, 'state=revoked filters to the revoked share');
-  }
-
-  console.log('\nshares:create withdrawn: the shares vanish');
-  {
-    writeJson(GRANTS_PATH, { version: 1, grants: [
-      { service: 'grok-bot', agent: dev.id, capabilities: ['agents:read', 'sessions:read'] },
-      { service: 'other-bot', agent: dev.id, capabilities: ['sessions:message', 'sessions:read'] },
-    ] });
-    const got = await serviceOperations.getShare(grok, shareA.share_ref);
-    const list = await serviceOperations.listShares(grok, { cursor: null, limit: null, sessionRef: null, state: null });
-    const revoke = await serviceOperations.revokeShare(grok, shareA.share_ref, () => '');
-    assert(got.body.error.code === 'share_not_found' && list.body.items.length === 0 && revoke.body.error.code === 'share_not_found'
-      && shares.shareRow(shareA.share_ref).state === 'active', 'without shares:create the caller can no longer see, list, or revoke its shares');
-    writeJson(GRANTS_PATH, { version: 1, grants: [
-      { service: 'grok-bot', agent: dev.id, capabilities: ['agents:read', 'sessions:read', 'shares:create'] },
-      { service: 'grok-bot', agent: otherAgent.id, capabilities: ['sessions:read'] },
-      { service: 'other-bot', agent: dev.id, capabilities: ['sessions:message', 'sessions:read'] },
-    ] });
   }
 
   console.log('\nSessionShare.ask: exact-session NOT-507 turns, audited as shares.ask');
@@ -570,12 +541,12 @@ async function main() {
       callTool('botmancers_create_share', { session_ref: s1, audience, idempotency_key: 'mcp-4', model: 'x' }),
       callTool('botmancers_create_share', { session_ref: s1, audience, idempotency_key: 'mcp-5', ttl_seconds: 10 }),
       callTool('botmancers_create_share', { session_ref: s1, audience, idempotency_key: 'mcp-6', surprise: 1 }),
-      callTool('botmancers_create_share', { session_ref: otherRef, audience, idempotency_key: 'mcp-7' }),
-      callTool('botmancers_create_share', { session_ref: s1, audience, idempotency_key: 'mcp-8' }, other),
+      callTool('botmancers_create_share', { session_ref: 'no-such-ref', audience, idempotency_key: 'mcp-7' }),
+      callTool('botmancers_create_share', { session_ref: s1, audience: { ...audience, channel_id: 'C0NOTLISTED' }, idempotency_key: 'mcp-8' }, other),
     ]);
     assert(mcpRejects[0].code === 'authority_not_allowed' && mcpRejects[1].code === 'authority_not_allowed' && mcpRejects[2].code === 'authority_not_allowed'
-      && mcpRejects[3].code === 'invalid_arguments' && mcpRejects[4].code === 'unsupported_field' && mcpRejects[5].code === 'session_not_found' && mcpRejects[6].code === 'grant_required',
-      `MCP refusals: workspace/latest/model authority_not_allowed, TTL invalid_arguments, unknown unsupported_field, ungranted session session_not_found, no shares:create grant_required (${mcpRejects.map(r => r.code).join(',')})`);
+      && mcpRejects[3].code === 'invalid_arguments' && mcpRejects[4].code === 'unsupported_field' && mcpRejects[5].code === 'session_not_found' && mcpRejects[6].code === 'audience_not_allowed',
+      `MCP refusals: workspace/latest/model authority_not_allowed, TTL invalid_arguments, unknown unsupported_field, unknown session session_not_found, off-allowlist audience_not_allowed (${mcpRejects.map(r => r.code).join(',')})`);
     const mcpGet = await callTool('botmancers_get_share', { share_ref: mcpCreate.data.share.share_ref });
     const mcpList = await callTool('botmancers_list_shares', { session_ref: s1, state: 'active', limit: 10 });
     const mcpRevoke = await callTool('botmancers_revoke_share', { share_ref: mcpCreate.data.share.share_ref });

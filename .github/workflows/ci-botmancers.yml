@@ -59,7 +59,7 @@ jobs:
           npm run test:muse-session-provider
           npm run test:session-catalog
           npm run test:engine-store
-          npm run test:service-grants
+          npm run test:service-access
           npm run test:mcp-bridge
       - name: Focused registration session sync suite (NOT-544)
         working-directory: .
@@ -101,11 +101,11 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-usage
-      - name: Focused session pin, service-grant, MCP, exchange, and skill suites (NOT-507)
+      - name: Focused session pin, service-access, MCP, exchange, and skill suites (NOT-507)
         working-directory: .
         run: |
           npm run test:session-pins
-          npm run test:service-grants
+          npm run test:service-access
           npm run test:mcp-bridge
           npm run test:agent-exchanges
           npm run test:exchange-ui
@@ -115,11 +115,11 @@ jobs:
         working-directory: .
         run: |
           npm run test:session-share-preflight
-      - name: Focused SessionShare core, service-grant, session-pin, and MCP suites (NOT-515)
+      - name: Focused SessionShare core, service-access, session-pin, and MCP suites (NOT-515)
         working-directory: .
         run: |
           npm run test:session-shares
-          npm run test:service-grants
+          npm run test:service-access
           npm run test:session-pins
           npm run test:mcp-bridge
       - name: SessionContext share-current and Claude/Codex/Cursor launch injection (NOT-517)

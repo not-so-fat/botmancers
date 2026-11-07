@@ -27,7 +27,8 @@
 // served list equals docs/contracts/mcp-bridge-v2.tools.json; strict schemas,
 // annotations, pagination bounds, and idempotency on mutations; the
 // workflow and untrusted-data text in the descriptions; a capability matrix
-// for two differently granted principals; discovery, same-session messages,
+// with every registered Agent for every configured principal (NOT-556: no
+// grants layer); discovery, same-session messages,
 // and Ask/Continue exchanges over seeded Agents and active/ended sessions
 // through the real service layer, with canonical row counts on every
 // rejection; stable error codes; redaction; and the documentation.
@@ -437,7 +438,7 @@ async function child() {
     const [wake] = ctx.wakesIn(conv);
     const wakeRequest = wake && engine.getWorkRequest(wake.work_request_id);
     console.log(`  wake: status=${wake && wake.status} reason=${wake && wake.reason_code} request=${wakeRequest && `${wakeRequest.requester_kind}:${bots.getById(wakeRequest.requester_id).name} -> ${bots.getById(wakeRequest.target_agent_id).name} ${wakeRequest.execution_kind}/${wakeRequest.tool_profile} ${wakeRequest.state}`}`);
-    check(wake && wake.status === 'blocked' && wake.reason_code === 'grant_required', 'the coordinator\'s implementation Wake waits for an owner grant (grant_required)');
+    check(wake && wake.status === 'blocked' && wake.reason_code === 'edit_approval_required', 'the coordinator\'s implementation Wake waits for an owner grant (edit_approval_required)');
     check(wakeRequest && wakeRequest.requester_kind === 'bot' && wakeRequest.requester_id === tank.id && wakeRequest.parent_request_id === root.id
       && wakeRequest.root_principal_kind === 'service' && wakeRequest.root_principal_id === 'grok-bot' && wakeRequest.tool_profile === 'edit',
       'the implementation request is created by the coordinator\'s Wake (requester bot:Tank, parent = the direct request, root principal recorded as the service)');
@@ -761,39 +762,17 @@ async function child() {
   const scoutS = seedSession(scout, PROVIDER.scout, 'scout');
   const vaultS = seedSession(vault, PROVIDER.vault, 'vault');
   ctx.db.messages.create(sageEnded.conv.id, 'bot', `I resumed ${PROVIDER.sageOld} in ${ctx.workspace}.`, sage.id);
-  const GRANTS_PATH = path.join(process.env.HOME, 'config', 'service-grants.json');
-  process.env.BOTMANCERS_SERVICE_GRANTS_PATH = GRANTS_PATH;
   process.env.BOTMANCERS_SERVICE_API_CALLS_PER_MINUTE = '1000';
-  const ALL = ['agents:read', 'sessions:read', 'conversations:read', 'sessions:message', 'exchanges:read', 'exchanges:create'];
-  const grants = {
-    version: 1,
-    grants: [
-      { service: 'grok-bot', agent: sage.id, capabilities: ALL },
-      { service: 'grok-bot', agent: scout.id, capabilities: ['agents:read', 'conversations:read', 'exchanges:read', 'exchanges:create'] },
-      { service: 'other-svc', agent: vault.id, capabilities: ['agents:read', 'sessions:read', 'exchanges:read'] },
-    ],
-  };
-  const writeGrants = doc => {
-    fs.mkdirSync(path.dirname(GRANTS_PATH), { recursive: true });
-    fs.writeFileSync(GRANTS_PATH, typeof doc === 'string' ? doc : JSON.stringify(doc));
-    fs.chmodSync(GRANTS_PATH, 0o600);
-  };
+  const allAgentIds = ctx.db.bots.getAll().map(bot => bot.id).sort();
+  const allAgentNames = ctx.db.bots.getAll().map(bot => bot.name).sort();
+  // A leftover grants document from an earlier release is never read.
+  const LEFTOVER_GRANTS = path.join(process.env.HOME, 'config', 'service-grants.json');
+  fs.mkdirSync(path.dirname(LEFTOVER_GRANTS), { recursive: true });
+  fs.writeFileSync(LEFTOVER_GRANTS, '{ "version": 1, ');
+  fs.chmodSync(LEFTOVER_GRANTS, 0o644);
 
-  section('v2 capability matrix: v1/v2 support and only the granted operations, per principal');
+  section('v2 capability matrix: v1/v2 support and every operation on every registered Agent, per principal');
   {
-    fs.rmSync(GRANTS_PATH, { force: true });
-    const narrow = await v2call('botmancers_capabilities', {});
-    conforms('botmancers_capabilities', narrow, 'narrow mode');
-    check(narrow.data.mode === 'narrow' && narrow.data.agents.length === 0 && narrow.data.operations.every(op => op.contract === 'botmancers.mcp.v1'),
-      'without a grants document: narrow mode, no Agents, only the v1 operations');
-    const narrowList = await v2call('botmancers_list_agents', {});
-    check(errorOf(narrowList)?.code === 'grant_required' && errorOf(narrowList).retryable === false && /service-grants\.json/.test(errorOf(narrowList).message),
-      'a v2 tool whose capability the caller holds nowhere -> grant_required, naming where the owner grants it');
-    writeGrants('{ "version": 1, ');
-    const broken = await v2call('botmancers_capabilities', {});
-    check(errorOf(broken)?.code === 'grants_unavailable' && errorOf(broken).retryable === true, 'a malformed grants document -> grants_unavailable (retryable once the owner fixes it)');
-    writeGrants(grants);
-
     const capsA = await v2call('botmancers_capabilities', {});
     const capsB = await v2call('botmancers_capabilities', {}, { token: OTHER_TOKEN });
     conforms('botmancers_capabilities', capsA, 'grok-bot');
@@ -801,18 +780,21 @@ async function child() {
     const ops = data => Object.fromEntries(data.operations.filter(op => op.contract === 'botmancers.mcp.v2').map(op => [op.tool, op.agent_ids.slice().sort()]));
     console.log(`  grok-bot  v2 operations: ${JSON.stringify(ops(capsA.data))}`);
     console.log(`  other-svc v2 operations: ${JSON.stringify(ops(capsB.data))}`);
-    const both = [sage.id, scout.id].sort();
     check(JSON.stringify(capsA.data.contracts_supported) === '["botmancers.mcp.v1","botmancers.mcp.v2"]' && capsA.data.mode === 'granted' && capsA.data.principal.id === 'grok-bot',
       'grok-bot: contracts v1 and v2 supported, granted mode, its own principal');
-    check(canonical(ops(capsA.data)) === canonical({
-      botmancers_list_agents: [], botmancers_list_sessions: [sage.id], botmancers_list_conversations: both, botmancers_get_conversation: both,
-      botmancers_send_to_session: [sage.id], botmancers_create_exchange: both, botmancers_get_exchange: [], botmancers_list_exchanges: [],
-      // NOT-507: the pin tools follow sessions:message (and sessions:resume, not granted here).
-      botmancers_message_agent: [sage.id], botmancers_pin_session: [sage.id], botmancers_send_to_pin: [sage.id], botmancers_get_pin: [sage.id],
-      botmancers_detach_pin: [sage.id],
-    }), 'grok-bot: exactly its granted v2 operations, each with the Agents it applies to');
-    check(canonical(ops(capsB.data)) === canonical({ botmancers_list_agents: [], botmancers_list_sessions: [vault.id], botmancers_get_exchange: [], botmancers_list_exchanges: [] }),
-      'other-svc: only list_agents, list_sessions (Vault), and exchange reads; no send, create, or conversation operation');
+    const every = allAgentIds;
+    const expected = {
+      botmancers_list_agents: [], botmancers_list_sessions: every, botmancers_list_conversations: every, botmancers_get_conversation: every,
+      botmancers_send_to_session: every, botmancers_create_exchange: every, botmancers_get_exchange: [], botmancers_list_exchanges: [],
+      botmancers_message_agent: every, botmancers_pin_session: every, botmancers_send_to_pin: every, botmancers_get_pin: every,
+      botmancers_detach_pin: every,
+      botmancers_create_share: every, botmancers_get_share: [], botmancers_list_shares: [], botmancers_revoke_share: [],
+    };
+    check(canonical(ops(capsA.data)) === canonical(expected) && canonical(capsA.data.agents.map(a => a.agent_id)) === canonical(allAgentIds)
+      && capsA.data.agents.every(a => a.capabilities.length === capsA.data.agents[0].capabilities.length && a.capabilities.includes('sessions:resume')),
+    'grok-bot: every v2 operation, each with every registered Agent, despite a leftover malformed grants file');
+    check(canonical(ops(capsB.data)) === canonical(expected) && capsB.data.mode === 'granted', 'other-svc: the same operations on every registered Agent');
+    check(fs.existsSync(LEFTOVER_GRANTS), 'the leftover grants file is left on disk');
     check(capsA.data.operations.some(op => op.tool === 'botmancers_start_task' && op.contract === 'botmancers.mcp.v1') && capsA.data.polling.initial_seconds === 2 && capsA.data.polling.max_seconds === 30,
       'the v1 operations stay listed, with the suggested polling backoff');
   }
@@ -822,11 +804,16 @@ async function child() {
     const before = v2counts();
     const agentsA = await v2call('botmancers_list_agents', {});
     conforms('botmancers_list_agents', agentsA);
-    check(canonical(agentsA.data.items.map(a => a.name).sort()) === '["Sage","Scout"]' && agentsA.data.next_cursor === null, 'grok-bot discovers Sage and Scout by name, nothing else');
+    check(canonical(agentsA.data.items.map(a => a.name).sort()) === canonical(allAgentNames) && agentsA.data.next_cursor === null, 'grok-bot discovers every registered Agent by name');
     const page1 = await v2call('botmancers_list_agents', { limit: 1 });
-    const page2 = await v2call('botmancers_list_agents', { limit: 1, cursor: page1.data.next_cursor });
-    check(page1.data.items.length === 1 && typeof page1.data.next_cursor === 'string' && page2.data.next_cursor === null
-      && canonical([...page1.data.items, ...page2.data.items].map(a => a.agent_id)) === canonical(agentsA.data.items.map(a => a.agent_id)), 'limit 1 pages concatenate to the full list via the opaque cursor');
+    const paged = [...page1.data.items];
+    for (let cursor = page1.data.next_cursor; cursor;) {
+      const next = await v2call('botmancers_list_agents', { limit: 1, cursor });
+      paged.push(...next.data.items);
+      cursor = next.data.next_cursor;
+    }
+    check(page1.data.items.length === 1 && typeof page1.data.next_cursor === 'string'
+      && canonical(paged.map(a => a.agent_id)) === canonical(agentsA.data.items.map(a => a.agent_id)), 'limit 1 pages concatenate to the full list via the opaque cursor');
     const invalid = [
       [{ limit: 0 }, 'limit 0'], [{ limit: 101 }, 'limit over 100'], [{ limit: '5' }, 'string limit'], [{ limit: 1.5 }, 'fractional limit'],
       [{ cursor: 'not-a-cursor' }, 'forged cursor'], [{ cursor: '' }, 'empty cursor'], ['nope', 'non-object arguments'],
@@ -866,13 +853,12 @@ async function child() {
       'usage is optional in the v2 session item: a result without it still conforms (backward compatible)');
     const scoutSessions = await v2call('botmancers_list_sessions', { agent_id: scout.id });
     const ghost = await v2call('botmancers_list_sessions', { agent_id: 'no-such-agent' });
-    const vaultViaA = await v2call('botmancers_list_sessions', { agent_id: vault.id });
-    check(errorOf(scoutSessions)?.code === 'agent_not_found' && canonical(errorOf(scoutSessions)) === canonical(errorOf(ghost)) && canonical(errorOf(vaultViaA)) === canonical(errorOf(ghost)),
-      'an Agent granted without sessions:read, and an ungranted Agent, are indistinguishable from a missing one');
+    check(scoutSessions.data && scoutSessions.data.items.some(s => s.ref === scoutS.binding.id) && errorOf(ghost)?.code === 'agent_not_found',
+      'any registered Agent\'s sessions are listed; an unknown Agent is agent_not_found');
     const vaultViaB = await v2call('botmancers_list_sessions', { agent_id: vault.id }, { token: OTHER_TOKEN });
     const sageViaB = await v2call('botmancers_list_sessions', { agent_id: sage.id }, { token: OTHER_TOKEN });
-    check(vaultViaB.data && vaultViaB.data.items.map(s => s.ref).join() === vaultS.binding.id && errorOf(sageViaB)?.code === 'agent_not_found',
-      'other-svc sees Vault\'s session and no Sage row');
+    check(vaultViaB.data && vaultViaB.data.items.map(s => s.ref).join() === vaultS.binding.id && sageViaB.data && sageViaB.data.items.length === 2,
+      'other-svc sees Vault\'s and Sage\'s sessions too');
 
     const convs = await v2call('botmancers_list_conversations', { agent_id: sage.id });
     conforms('botmancers_list_conversations', convs);
@@ -894,9 +880,9 @@ async function child() {
       'a v1 get_conversation of its own conversation keeps the exact v1 shape');
     const scoutThread = await v2call('botmancers_get_conversation', { conversation_id: sageEnded.conv.id, agent_id: scout.id });
     const vaultThread = await v2call('botmancers_get_conversation', { conversation_id: vaultS.conv.id, agent_id: sage.id });
-    check(errorOf(scoutThread)?.code === 'conversation_not_found' && errorOf(vaultThread)?.code === 'conversation_not_found', 'a conversation outside the grants -> conversation_not_found');
+    check(errorOf(scoutThread)?.code === 'conversation_not_found' && errorOf(vaultThread)?.code === 'conversation_not_found', 'a conversation the named Agent is not in -> conversation_not_found');
     const convB = await v2call('botmancers_list_conversations', { agent_id: vault.id }, { token: OTHER_TOKEN });
-    check(errorOf(convB)?.code === 'grant_required', 'other-svc holds conversations:read nowhere -> grant_required');
+    check(convB.data && convB.data.items.some(c => c.conversation_id === vaultS.conv.id), 'other-svc lists Vault\'s conversations');
     check(same(before, v2counts()), 'discovery and every refusal wrote nothing');
   }
 
@@ -915,9 +901,6 @@ async function child() {
       ['content over 4000 characters', { session_ref: ref, content: 'x'.repeat(4001), idempotency_key: 'r-5' }, 'invalid_arguments', 'grok'],
       ['ended session', { session_ref: sageEnded.binding.id, content: 'hi', idempotency_key: 'r-6' }, 'session_ended', 'grok'],
       ['unknown session', { session_ref: 'no-such-session', content: 'hi', idempotency_key: 'r-7' }, 'session_not_found', 'grok'],
-      ['ungranted Agent\'s session', { session_ref: vaultS.binding.id, content: 'hi', idempotency_key: 'r-8' }, 'session_not_found', 'grok'],
-      ['Agent granted without sessions:message', { session_ref: scoutS.binding.id, content: 'hi', idempotency_key: 'r-9' }, 'session_not_found', 'grok'],
-      ['principal with sessions:message nowhere', { session_ref: ref, content: 'hi', idempotency_key: 'r-10' }, 'grant_required', 'other'],
     ];
     const missing = await v2call('botmancers_send_to_session', { session_ref: 'no-such-session', content: 'hi', idempotency_key: 'r-0' });
     for (const [label, args, code, who] of rejected) {
@@ -968,7 +951,7 @@ async function child() {
     const rejected = [
       ['Ask with a destination', { ...askArgs, idempotency_key: 'x-1', destination: { agent_id: scout.id } }, 'destination_invalid'],
       ['Continue without a destination', { ...contArgs, idempotency_key: 'x-2', destination: undefined }, 'destination_invalid'],
-      ['Continue to an ungranted Agent', { ...contArgs, idempotency_key: 'x-3', destination: { agent_id: vault.id } }, 'agent_not_found'],
+      ['Continue to an unknown Agent', { ...contArgs, idempotency_key: 'x-3', destination: { agent_id: 'no-such-agent' } }, 'agent_not_found'],
       ['nested authority field', { ...contArgs, idempotency_key: 'x-4', destination: { agent_id: scout.id, deck: 'deck-x' } }, 'authority_not_allowed'],
       ['destination session field', { ...contArgs, idempotency_key: 'x-5', destination: { agent_id: scout.id, session_ref: scoutS.binding.id } }, 'unsupported_field'],
       ['tool_profile field', { ...askArgs, idempotency_key: 'x-6', tool_profile: 'edit' }, 'authority_not_allowed'],
@@ -985,8 +968,6 @@ async function child() {
     }
     const nested = await v2call('botmancers_create_exchange', { ...contArgs, idempotency_key: 'x-12', destination: { agent_id: scout.id, deck: 'deck-x' } });
     check(JSON.stringify(errorOf(nested).fields) === '["destination.deck"]', 'a nested authority field is named with its path');
-    const otherCreate = await v2call('botmancers_create_exchange', askArgs, { token: OTHER_TOKEN });
-    check(errorOf(otherCreate)?.code === 'grant_required', 'a principal holding exchanges:create nowhere -> grant_required');
     await ctx.service.waitForAgentDispatchIdle();
     check(same(before, v2counts()), 'no rejected create wrote anything');
 

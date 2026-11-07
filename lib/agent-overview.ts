@@ -7,14 +7,6 @@ import { SERVICE_CAPABILITIES, type ServiceCapability } from './service-grants';
 import { listAgentActivity } from './agent-activity';
 import type { AgentActivityItem } from './agent-activity-view';
 
-const OVERVIEW_CAPABILITIES: ServiceCapability[] = [
-  'agents:read',
-  'sessions:read',
-  'conversations:read',
-  'sessions:message',
-  'shares:create',
-];
-
 export interface AgentOverviewWork {
   ref: string;
   title: string;
@@ -107,7 +99,9 @@ export function getAgentOverview(id: string): AgentOverviewDto | null {
       blocker: resolved.launch_blocker,
       last_seen: bot.last_seen ?? null,
     },
-    capabilities: SERVICE_CAPABILITIES.filter(capability => OVERVIEW_CAPABILITIES.includes(capability)),
+    // NOT-556: a configured service reaches every operation on every
+    // registered Agent; its policy (messaging) gates the risky ones.
+    capabilities: [...SERVICE_CAPABILITIES],
     messaging: agentMessagingReadiness(bot),
     current_work: work.filter(item => item.status === 'active').slice(0, 3),
     recent_work: work.slice(0, 7),

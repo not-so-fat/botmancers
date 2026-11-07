@@ -21,7 +21,7 @@
   },
   "limits": { "ttl_seconds": { "min": 300, "default": 3600, "max": 86400 }, "max_turns": { "default": 20, "max": 100 }, "question_chars": 4000, "reply_chars": 3000 },
   "capabilities": {
-    "shares:create": "New grant capability (service-grants.json), per Agent. Create, get, list, revoke the caller's own shares of that Agent's sessions. Never implied by sessions:message; grants no Ask itself.",
+    "shares:create": "Capability name recorded in the audit trail. Any authenticated service may create, get, list, and revoke its own shares of a registered Agent's sessions (NOT-556 removed owner grants); the audience allowlist remains the gate. Grants no Ask itself.",
     "share_from_turn": "Not a grant: the owner's per-Agent opt-in in <BOTMANCERS_HOME>/config/session-shares.json (default off). Botmancers mints a session context for a launch of that Agent only while it is on; it is re-read on every call, so turning it off revokes every live context.",
     "shares:ask": "Audit-only capability name for a share-authorized Ask. Not grantable: the share is the authority."
   },
@@ -80,8 +80,8 @@
     { "item": "service principal auth, rate limit, audited call wrapper", "owner": "existing: lib/service-api-http serveAs (NOT-499)" },
     { "item": "audit rows", "owner": "existing: lib/service-audit (NOT-499); target_kind 'session', new operation words shares.*" },
     { "item": "redaction of answers and views", "owner": "existing: lib/service-redaction serviceRedactor (NOT-499)" },
-    { "item": "capability shares:create; reserved principal botmancers-session-context", "owner": "existing document lib/service-grants (one vocabulary word, one reserved id)" },
-    { "item": "audience allowlist and share_from_turn opt-in", "owner": "NEW: SessionShare config document <BOTMANCERS_HOME>/config/session-shares.json (owner-only, 0600, same fail-closed rules as service-grants.json)" },
+    { "item": "capability shares:create; reserved principal botmancers-session-context", "owner": "existing constants in lib/service-grants (one vocabulary word, one reserved id)" },
+    { "item": "audience allowlist and share_from_turn opt-in", "owner": "NEW: SessionShare config document <BOTMANCERS_HOME>/config/session-shares.json (owner-only, 0600, fail-closed)" },
     { "item": "MCP tool schemas", "owner": "existing: lib/mcp-bridge-v2 + docs/contracts/mcp-bridge-v2.tools.json (five added tools)" },
     { "item": "share rows, events, expiry, revoke, turn limit, in-flight check, audience allowlist", "owner": "NEW: SessionShare (lib/session-shares.ts)" },
     { "item": "minted session context (mint/resolve/stale/revoke)", "owner": "NEW: SessionShare (lib/session-shares.ts) + launch injection in lib/claude-session-provider.ts and lib/codex-session-provider.ts" },

@@ -77,7 +77,6 @@ const ERROR_RECOVERY: Record<string, Recovery> = {
   ...RECOVERY,
   workspace_required: 'ask_owner',
   no_eligible_session: 'ask_owner',
-  grant_required: 'ask_owner',
   agent_unavailable: 'ask_owner',
   approval_required: 'approve_write',
   pin_not_found: 'pin_again',

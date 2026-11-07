@@ -1,47 +1,16 @@
-// NOT-499: the owner-managed service-grants document.
+// The service API capability names and exchange key namespaces.
 //
-// A service principal (lib/service-token-auth, service:<id>) can use the
-// granted /api/v0 resources (lib/service-api) only for the Agents and
-// capabilities the owner lists here. The document lives at
+// NOT-556: there is no owner grants layer any more. A configured service
+// principal (lib/service-token-auth, service:<id>) can use every /api/v0
+// and MCP v2 operation on every registered Agent (lib/service-api); the
+// Agent's own policy (lib/session-pins), the owner's share allowlist
+// (lib/session-shares), and caller-owned visibility are the gates. Nothing
+// here reads a file: a leftover grants document from an earlier release is
+// never read, never deleted, and never causes an error.
 //
-//   <BOTMANCERS_HOME>/config/service-grants.json
-//
-// (BOTMANCERS_SERVICE_GRANTS_PATH overrides the path, as the other
-// per-path variables do in lib/home). Version 1:
-//
-//   {
-//     "version": 1,
-//     "grants": [
-//       { "service": "grok-bot", "agent": "<agent id>",
-//         "capabilities": ["agents:read", "sessions:read"] }
-//     ]
-//   }
-//
-// One entry per (service, Agent) pair, naming an explicit subset of
-// SERVICE_CAPABILITIES. There is no wildcard and no default: a service or
-// Agent that is not listed is granted nothing.
-//
-// Fail closed: the whole document is refused (state 'invalid', nothing is
-// granted to anyone) when it is not owner-only (owned by another user, or
-// readable or writable by group or others), too large, not JSON, the wrong version, or
-// carries an unknown field, an unknown or duplicate capability, a wildcard,
-// a duplicate (service, Agent) entry, a reserved engine principal, or a
-// service that is not a configured service principal (BOTMANCERS_SERVICE_TOKENS,
-// lib/service-token-auth; a malformed token list refuses the document). A
-// missing document is state 'absent': installations without one keep the
-// narrow bridge behavior (lib/agent-api) and the granted resources see no
-// Agents. The file is re-read when it changes, so a rotation or rollback
-// applies on the next request without a restart.
-import fs from 'fs';
-import path from 'path';
-import { createHash } from 'crypto';
-import db from './db';
-import { botmancersHome } from './home';
-import { RESERVED_SERVICE_IDS, SERVICE_TOKENS_ENV, ServiceTokenConfigError, parseServiceTokens } from './service-token-auth';
-
-export const SERVICE_GRANTS_PATH_ENV = 'BOTMANCERS_SERVICE_GRANTS_PATH';
-export const SERVICE_GRANTS_FILE = 'config/service-grants.json';
-export const SERVICE_GRANTS_VERSION = 1;
+// The capability names stay as plain constants because the audit trail
+// records one per operation and the botmancers.mcp.v2 contract lists them
+// per Agent.
 
 export const SERVICE_CAPABILITIES = [
   'agents:read',
@@ -50,12 +19,8 @@ export const SERVICE_CAPABILITIES = [
   'sessions:message',
   'exchanges:read',
   'exchanges:create',
-  // NOT-507: never implied by another capability (lib/service-api).
   'sessions:start',
   'sessions:resume',
-  // NOT-515: create, read, list, and revoke the caller's own temporary
-  // ask-only shares of the Agent's sessions (lib/session-shares). Never
-  // implied by sessions:message, and grants no Ask itself.
   'shares:create',
 ] as const;
 
@@ -65,174 +30,7 @@ export function isServiceCapability(value: unknown): value is ServiceCapability 
   return typeof value === 'string' && (SERVICE_CAPABILITIES as readonly string[]).includes(value);
 }
 
-// Engine-internal service principals (lib/session-exchanges,
-// lib/coordinator-loop; NOT-515: lib/session-shares, the requester of every
-// share's ask pin, and the session-context principal reserved for
-// share-current). A grant naming one is refused.
-// NOT-517: defined beside the token parser, which refuses them too.
-export { RESERVED_SERVICE_IDS };
-
 // The idempotency namespaces of a service's exchange rows: a session
 // message and an exchange never collide on the caller's key.
 export const MESSAGE_KEY_PREFIX = 'message:';
 export const EXCHANGE_KEY_PREFIX = 'exchange:';
-
-const SERVICE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const MAX_BYTES = 64 * 1024;
-const MAX_ENTRIES = 512;
-
-// service id -> agent id -> capabilities
-export type ServiceGrantTable = ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<ServiceCapability>>>;
-
-export type ServiceGrantsState =
-  | { state: 'absent'; path: string | null }
-  | { state: 'invalid'; path: string; reason: string }
-  | { state: 'loaded'; path: string; grants: ServiceGrantTable };
-
-export class ServiceGrantsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ServiceGrantsError';
-  }
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function onlyKeys(value: Record<string, unknown>, allowed: string[], where: string): void {
-  const unknown = Object.keys(value).find(key => !allowed.includes(key));
-  if (unknown !== undefined) throw new ServiceGrantsError(`${where} has an unknown field "${unknown}".`);
-}
-
-// Parses and validates the document text. Throws ServiceGrantsError with
-// the first problem; never returns a partial table. configuredServices,
-// when given, is the set of configured service principal ids every entry
-// must name, and knownAgents, when given, the set of registered Agent ids
-// every entry must name (an entry for an Agent that does not exist makes the
-// whole document invalid: a typo or a deleted Agent never leaves the other
-// entries quietly in force).
-export function parseServiceGrants(text: string, configuredServices?: ReadonlySet<string>, knownAgents?: ReadonlySet<string>): ServiceGrantTable {
-  let doc: unknown;
-  try {
-    doc = JSON.parse(text);
-  } catch {
-    throw new ServiceGrantsError('The document is not valid JSON.');
-  }
-  if (!isObject(doc)) throw new ServiceGrantsError('The document must be a JSON object.');
-  onlyKeys(doc, ['version', 'grants'], 'The document');
-  if (doc.version !== SERVICE_GRANTS_VERSION) throw new ServiceGrantsError(`version must be ${SERVICE_GRANTS_VERSION}.`);
-  if (!Array.isArray(doc.grants)) throw new ServiceGrantsError('grants must be a list.');
-  if (doc.grants.length > MAX_ENTRIES) throw new ServiceGrantsError(`grants has more than ${MAX_ENTRIES} entries.`);
-  const table = new Map<string, Map<string, Set<ServiceCapability>>>();
-  doc.grants.forEach((entry, index) => {
-    const where = `grants[${index}]`;
-    if (!isObject(entry)) throw new ServiceGrantsError(`${where} must be an object.`);
-    onlyKeys(entry, ['service', 'agent', 'capabilities'], where);
-    const { service, agent, capabilities } = entry;
-    if (typeof service !== 'string' || !SERVICE_ID.test(service)) {
-      throw new ServiceGrantsError(`${where}.service must be a configured service id (letters, digits, ".", "_", "-").`);
-    }
-    if (RESERVED_SERVICE_IDS.includes(service)) throw new ServiceGrantsError(`${where}.service names a reserved engine principal.`);
-    if (configuredServices && !configuredServices.has(service)) {
-      throw new ServiceGrantsError(`${where}.service is not a configured service principal (${SERVICE_TOKENS_ENV}).`);
-    }
-    if (typeof agent !== 'string' || !AGENT_ID.test(agent)) {
-      throw new ServiceGrantsError(`${where}.agent must be one Agent id; wildcards are not allowed.`);
-    }
-    if (knownAgents && !knownAgents.has(agent)) {
-      throw new ServiceGrantsError(`${where}.agent is not a registered Agent.`);
-    }
-    if (!Array.isArray(capabilities) || capabilities.length === 0) {
-      throw new ServiceGrantsError(`${where}.capabilities must list at least one capability.`);
-    }
-    const set = new Set<ServiceCapability>();
-    for (const capability of capabilities) {
-      if (!isServiceCapability(capability)) throw new ServiceGrantsError(`${where}.capabilities has an unknown capability.`);
-      if (set.has(capability)) throw new ServiceGrantsError(`${where}.capabilities lists ${capability} twice.`);
-      set.add(capability);
-    }
-    const agents = table.get(service) ?? new Map<string, Set<ServiceCapability>>();
-    if (agents.has(agent)) throw new ServiceGrantsError(`${where} repeats the grant of service ${service} for that Agent.`);
-    agents.set(agent, set);
-    table.set(service, agents);
-  });
-  return table;
-}
-
-export function serviceGrantsPath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const explicit = (env[SERVICE_GRANTS_PATH_ENV] || '').trim();
-  if (explicit) return path.resolve(explicit);
-  const home = botmancersHome(env);
-  return home ? path.join(home, SERVICE_GRANTS_FILE) : null;
-}
-
-let cache: { key: string; state: ServiceGrantsState } | null = null;
-
-// The configured service principal ids, or a reason they are unavailable.
-function configuredServiceIds(env: NodeJS.ProcessEnv): ReadonlySet<string> | string {
-  try {
-    return new Set(parseServiceTokens(env[SERVICE_TOKENS_ENV]).map(entry => entry.serviceId));
-  } catch (error) {
-    if (error instanceof ServiceTokenConfigError) return `${SERVICE_TOKENS_ENV} is malformed, so no grant can name a configured service.`;
-    throw error;
-  }
-}
-
-// The registered Agent ids (the document is re-validated when they change).
-function registeredAgentIds(): ReadonlySet<string> {
-  return new Set((db.prepare('SELECT id FROM bots').all() as { id: string }[]).map(row => row.id));
-}
-
-// The current document state. Re-reads the file when its identity, size,
-// mode, owner, or modification time, the configured service list, or the
-// registered Agents change.
-export function loadServiceGrants(env: NodeJS.ProcessEnv = process.env): ServiceGrantsState {
-  const file = serviceGrantsPath(env);
-  if (!file) return { state: 'absent', path: null };
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(file);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'absent', path: file };
-    return { state: 'invalid', path: file, reason: 'The document cannot be read.' };
-  }
-  const tokens = createHash('sha256').update(env[SERVICE_TOKENS_ENV] ?? '', 'utf8').digest('hex');
-  const agents = registeredAgentIds();
-  const agentsDigest = createHash('sha256').update([...agents].sort().join('\n'), 'utf8').digest('hex');
-  const key = [file, stat.ino, stat.size, stat.mode, stat.uid, stat.mtimeMs, tokens, agentsDigest].join(':');
-  if (cache && cache.key === key) return cache.state;
-  const state = readState(file, stat, configuredServiceIds(env), agents);
-  cache = { key, state };
-  return state;
-}
-
-function readState(file: string, stat: fs.Stats, services: ReadonlySet<string> | string, agents: ReadonlySet<string>): ServiceGrantsState {
-  if (!stat.isFile()) return { state: 'invalid', path: file, reason: 'The document is not a regular file.' };
-  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-    return { state: 'invalid', path: file, reason: 'The document must be owned by the user running Botmancers.' };
-  }
-  if ((stat.mode & 0o077) !== 0) {
-    return { state: 'invalid', path: file, reason: 'The document must not be readable or writable by group or others (chmod 600).' };
-  }
-  if (typeof services === 'string') return { state: 'invalid', path: file, reason: services };
-  if (stat.size > MAX_BYTES) return { state: 'invalid', path: file, reason: `The document exceeds ${MAX_BYTES} bytes.` };
-  let text: string;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch {
-    return { state: 'invalid', path: file, reason: 'The document cannot be read.' };
-  }
-  try {
-    return { state: 'loaded', path: file, grants: parseServiceGrants(text, services, agents) };
-  } catch (error) {
-    if (error instanceof ServiceGrantsError) return { state: 'invalid', path: file, reason: error.message };
-    throw error;
-  }
-}
-
-// Test seam: forget the cached document.
-export function resetServiceGrantsCache(): void {
-  cache = null;
-}

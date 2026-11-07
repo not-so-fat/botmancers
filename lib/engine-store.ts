@@ -1892,6 +1892,49 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // NOT-556: the Wake reason code for an edit Wake that waits on the
+    // owner's Allow / Deny is edit_approval_required (its old name was also
+    // a removed service API error code). A Wake whose stored code is outside
+    // the vocabulary below carries the retired name: recode it, recode its
+    // blocked Work Request's "<code>: <reason>", and append a wake_reblocked
+    // event so the conversation offers Allow / Deny under the new code.
+    // Earlier engine events and safety decisions are append-only and keep
+    // the name they were written with.
+    version: 21,
+    name: 'wake_edit_approval_reason_code',
+    up: db => {
+      const vocabulary = [
+        'invalid_envelope', 'invalid_reference', 'unsupported_policy', 'target_is_group', 'target_not_found',
+        'target_ambiguous', 'target_unconfigured', 'target_unavailable', 'limit_exceeded', 'reviewer_not_independent',
+        'depth_exceeded', 'root_budget_exhausted', 'untracked_lineage', 'grant_denied', 'edit_approval_required',
+      ];
+      const known = vocabulary.map(() => '?').join(', ');
+      const retired = db.prepare(
+        `SELECT id, work_request_id, reason FROM wakes WHERE reason_code IS NOT NULL AND reason_code NOT IN (${known})`
+      ).all(...vocabulary) as { id: string; work_request_id: string | null; reason: string | null }[];
+      if (retired.length === 0) return;
+      const now = Date.now();
+      const recodeWake = db.prepare("UPDATE wakes SET reason_code = 'edit_approval_required', updated_at = ? WHERE id = ?");
+      const recodeRequest = db.prepare(`
+        UPDATE work_requests SET state_reason = 'edit_approval_required' || substr(state_reason, instr(state_reason, ':')),
+          version = version + 1, updated_at = ?
+        WHERE id = ? AND state = 'blocked' AND instr(state_reason, ':') > 0
+      `);
+      const appendEvent = db.prepare(`
+        INSERT INTO engine_events (id, request_id, sequence, attempt_id, type, data, created_at)
+        SELECT ?, ?, COALESCE(MAX(sequence), 0) + 1, NULL, 'wake_reblocked', ?, ? FROM engine_events WHERE request_id = ?
+      `);
+      for (const wake of retired) {
+        recodeWake.run(now, wake.id);
+        if (!wake.work_request_id) continue;
+        if (recodeRequest.run(now, wake.work_request_id).changes === 1) {
+          const data = JSON.stringify({ reason_code: 'edit_approval_required', reason: wake.reason });
+          appendEvent.run(randomUUID(), wake.work_request_id, data, now, wake.work_request_id);
+        }
+      }
+    },
+  },
 ];
 
 // The runtime connection a Session Binding's Agent uses: its registered
