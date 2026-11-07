@@ -256,7 +256,7 @@ async function main() {
   // The service API view is additive and redacted; its message path refuses
   // a native reference without disclosing anything.
   const serviceApi = jiti('./lib/service-api.ts');
-  const ctx = { principal: { kind: 'service', id: 'svc-native' }, mode: 'granted', agents: new Map([[nat.id, new Set(['sessions:read', 'sessions:message'])]]) };
+  const ctx = serviceApi.serviceContext({ kind: 'service', id: 'svc-native' });
   const servicePage = serviceApi.listServiceSessions(ctx, nat.id, { cursor: null, limit: 2, status: 'all' });
   const servicePage2 = serviceApi.listServiceSessions(ctx, nat.id, { cursor: servicePage.next_cursor, limit: 10, status: 'all' });
   assert(servicePage.items.length === 2 && servicePage2.items.length === 4 && servicePage.items.every(item => item.state && item.source),
