@@ -153,7 +153,7 @@ function createSessionShareModel(deps) {
         throw new ShareError('invalid_request', 'audience must be { kind: "slack", team_id, channel_id }.');
       }
       if (!deps.audiences.some(a => a.team_id === audience.team_id && a.channel_id === audience.channel_id)) {
-        throw new ShareError('audience_not_allowed', 'That channel is not on the owner\'s share allowlist.');
+        throw new ShareError('audience_not_allowed', 'That Slack channel is not on the share allowlist. Add it in Agent Config, under Session sharing.');
       }
       const owner = deps.pins.sessionOwner(target.sessionRef);
       target.agentId = owner;
