@@ -599,7 +599,7 @@ export function negotiateProtocolVersion(requested: unknown): string {
 
 // Same text as the standalone bridge's MCP_INSTRUCTIONS (packages/mcp-server).
 export const MCP_INSTRUCTIONS = 'Botmancers bridge (botmancers.mcp.v1 and botmancers.mcp.v2). '
-  + 'v2, granted access to Agents, sessions, conversations, and exchanges: call botmancers_capabilities, then botmancers_list_agents; '
+  + 'v2, access to every registered Agent\'s sessions, conversations, and exchanges: call botmancers_capabilities, then botmancers_list_agents; '
   + 'choose an Agent by name and a recognizable session from botmancers_list_sessions (read history with botmancers_list_conversations and '
   + 'botmancers_get_conversation with agent_id); then either botmancers_send_to_session (the same Agent, the same session) or '
   + 'botmancers_create_exchange (Ask, or Continue to another Agent), each with your own idempotency_key; poll botmancers_get_exchange until '

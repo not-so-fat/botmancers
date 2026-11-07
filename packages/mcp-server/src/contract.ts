@@ -1,7 +1,7 @@
 // The Botmancers MCP tool contract, as captured by the Botmancers app in
 // docs/contracts/mcp-bridge-v2.tools.json and shipped here as a versioned
 // schema file: botmancers.mcp.v2, which keeps every botmancers.mcp.v1 tool
-// unchanged and adds the granted Agent, session, conversation, and exchange
+// unchanged and adds the Agent, session, conversation, and exchange
 // tools. The bridge serves tools/list from it and forwards only these tool
 // names to Botmancers; it never alters the contract. The frozen v1 capture
 // ships too (schemas/botmancers.mcp.v1.tools.json).
@@ -18,7 +18,7 @@ export const MCP_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'] 
 
 // Same text as the Botmancers app's MCP_INSTRUCTIONS (lib/mcp-bridge.ts).
 export const MCP_INSTRUCTIONS = 'Botmancers bridge (botmancers.mcp.v1 and botmancers.mcp.v2). '
-  + 'v2, granted access to Agents, sessions, conversations, and exchanges: call botmancers_capabilities, then botmancers_list_agents; '
+  + 'v2, access to every registered Agent\'s sessions, conversations, and exchanges: call botmancers_capabilities, then botmancers_list_agents; '
   + 'choose an Agent by name and a recognizable session from botmancers_list_sessions (read history with botmancers_list_conversations and '
   + 'botmancers_get_conversation with agent_id); then either botmancers_send_to_session (the same Agent, the same session) or '
   + 'botmancers_create_exchange (Ask, or Continue to another Agent), each with your own idempotency_key; poll botmancers_get_exchange until '

@@ -28,7 +28,7 @@
 //         "agents": [{ "agent": "<agent id>", "share_from_turn": true }]
 //       }
 //
-//     with the same fail-closed rules as service-grants.json: owner-only
+//     and it fails closed: owner-only
 //     (0600), bounded, strict JSON, no unknown field, no duplicate, no
 //     wildcard, only registered Agents. Missing or invalid, no audience is
 //     allowed and share_from_turn is off for every Agent;

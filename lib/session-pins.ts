@@ -73,7 +73,6 @@ export type PinErrorCode =
   | 'approval_required'
   | 'authority_not_allowed'
   | 'agent_unavailable'
-  | 'grant_required'
   | 'provider_failed'
   | 'idempotency_conflict';
 
@@ -94,7 +93,6 @@ export const PIN_ERROR_STATUS: Record<PinErrorCode, number> = {
   approval_required: 403,
   authority_not_allowed: 403,
   agent_unavailable: 409,
-  grant_required: 403,
   provider_failed: 502,
   idempotency_conflict: 409,
 };
@@ -723,9 +721,6 @@ export interface MessageAgentInput {
   content: string;
   idempotencyKey: string;
   conversationId?: string | null;
-  // Whether the requester may start a new session (a service needs the
-  // sessions:start grant; the owner always may).
-  mayStart: boolean;
   now?: number;
   // Called with the resolved target before anything is written (the
   // service audit target), and inside the commit.
@@ -743,7 +738,7 @@ type Resolved = { kind: 'session'; summary: SessionSummary; route: 'provider' | 
 // registered-Agent message gives up on existing sessions.
 const CANDIDATE_LIMIT = 10;
 
-async function resolveTarget(facts: AgentFacts, mayStart: boolean): Promise<Resolved> {
+async function resolveTarget(facts: AgentFacts): Promise<Resolved> {
   const agentId = facts.bot.id;
   let sawBusy = false;
   const consider = async (ref: string): Promise<{ summary: SessionSummary; route: 'provider' | 'engine' } | 'busy' | null> => {
@@ -792,9 +787,6 @@ async function resolveTarget(facts: AgentFacts, mayStart: boolean): Promise<Reso
   if (!workspace) {
     throw new PinError('workspace_required', 'This Agent has no session that can take a message, and no default workspace for a new one. Ask the owner to set a default workspace, or pin one of its sessions.');
   }
-  if (!mayStart) {
-    throw new PinError('grant_required', 'Starting a new session for this Agent needs the sessions:start grant, which only the Botmancers owner can give. Pin one of its sessions instead.');
-  }
   return { kind: 'start', workspace };
 }
 
@@ -820,7 +812,7 @@ export async function messageAgent(input: MessageAgentInput): Promise<MessageAge
   else if (input.requester.kind !== 'service') throw new PinError('invalid_request', 'conversation_id is required: the thread that holds this conversation.');
   if (bots.getById(input.agentId)) await warmAgentProvider(db, input.agentId);
   const facts = agentFacts(input.agentId);
-  const target = await resolveTarget(facts, input.mayStart);
+  const target = await resolveTarget(facts);
   const now = input.now ?? Date.now();
   if (target.kind === 'session') {
     input.onResolved?.({ agentId: input.agentId, sessionRef: target.summary.ref, resolution: target.resolution });

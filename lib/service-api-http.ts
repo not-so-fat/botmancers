@@ -1,8 +1,8 @@
-// NOT-499: the HTTP boundary of the granted service API (lib/service-api).
+// NOT-499: the HTTP boundary of the service API (lib/service-api).
 //
 // Routes (all authenticated by the /api/v0 authenticator, service
-// principals only; docs/service-grants.md):
-//   GET  /api/v0/capabilities                                 the caller's grants
+// principals only; every operation on every registered Agent, NOT-556):
+//   GET  /api/v0/capabilities                                 every registered Agent
 //   GET  /api/v0/agents                                       agents:read
 //   GET  /api/v0/agents/{agentId}                             agents:read
 //   GET  /api/v0/agents/{agentId}/sessions?status&cursor&limit sessions:read
@@ -228,7 +228,7 @@ async function serveAs(principal: Principal, op: Operation, run: Run, guard?: Se
   let outcome: AuditOutcome;
   let code: string | null = null;
   try {
-    if (principal.kind !== 'service') throw new ServiceApiError('principal_not_allowed', 'The granted service API accepts only service principals.');
+    if (principal.kind !== 'service') throw new ServiceApiError('principal_not_allowed', 'The service API accepts only service principals.');
     // NOT-517: the session-context principal can call share-current only.
     if (principal.id === SESSION_CONTEXT_SERVICE_ID && op.capability !== SHARE_CURRENT_CAPABILITY) {
       throw new ServiceApiError('principal_not_allowed', 'A session context can only share its own session (share-current).');

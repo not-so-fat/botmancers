@@ -1,8 +1,10 @@
-// NOT-499: granted service access to Agents, sessions, conversations, and
-// exchanges (docs/service-grants.md).
+// NOT-499: service access to Agents, sessions, conversations, and
+// exchanges.
 //
-// A service principal sees only what the owner granted it in the
-// service-grants document (lib/service-grants), per Agent and capability:
+// NOT-556: an authenticated service principal can use every operation on
+// every registered Agent; there is no second permission step. Each
+// operation still names the capability it uses (lib/service-grants), which
+// the audit trail records:
 //
 //   agents:read          discover the Agent
 //   sessions:read        list and read the Agent's sessions (lib/session-catalog)
@@ -18,10 +20,13 @@
 //                        own temporary ask-only shares of the Agent's
 //                        sessions (lib/session-shares)
 //
-// Every service here reads the canonical stores and writes only through
-// them; nothing is copied. A target outside the caller's grants is refused
-// with exactly the error (code and message) of a target that does not
-// exist. A view never carries a provider session or run id, a working
+// The gates that remain: the Agent's stored policy decides new sessions and
+// resume-with-edits (lib/session-pins), the owner's allowlist decides share
+// audiences (lib/session-shares), and a caller sees only its own exchanges,
+// pins, shares, and service conversations. Every service here reads the
+// canonical stores and writes only through them; nothing is copied. A
+// target the caller may not see is refused with exactly the error (code and
+// message) of a target that does not exist. A view never carries a provider session or run id, a working
 // directory, or a tool profile choice.
 import { createHash, randomUUID } from 'crypto';
 import { InvalidPageCursorError, decodePageCursor, encodePageCursor, paginateRows, type Page, type PageKey } from './page-cursor';
@@ -33,7 +38,7 @@ import { EXCHANGE_LIMITS, type SessionBinding } from './engine-store';
 import { getAgentSession, isSessionFilter, listAgentSessions, type SessionDetail, type SessionFilter, type SessionSummary } from './session-catalog';
 import { ExchangeError, cancelReasonFromBody, type CreateExchangeInput, type ExchangeMode, type ExchangeView, type SessionExchange } from './session-exchanges';
 import { apiStateOf, cancelExchangeCommand, dispatchExchange, exchanges, getExchangeView } from './agent-conversations';
-import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, loadServiceGrants, type ServiceCapability } from './service-grants';
+import { EXCHANGE_KEY_PREFIX, MESSAGE_KEY_PREFIX, SERVICE_CAPABILITIES, type ServiceCapability } from './service-grants';
 import { serviceRedactor } from './service-redaction';
 import { recoveryFor, type Recovery, type SessionActions } from './session-actions';
 import { warmAgentProvider } from './provider-sessions';
@@ -73,8 +78,6 @@ export type ServiceApiErrorCode =
   | 'unsupported_field'
   | 'authority_not_allowed'
   | 'principal_not_allowed'
-  | 'grant_required'
-  | 'grants_unavailable'
   | 'agent_not_found'
   | 'session_not_found'
   | 'conversation_not_found'
@@ -115,8 +118,6 @@ export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
   unsupported_field: 400,
   authority_not_allowed: 403,
   principal_not_allowed: 403,
-  grant_required: 403,
-  grants_unavailable: 503,
   agent_not_found: 404,
   session_not_found: 404,
   conversation_not_found: 404,
@@ -153,14 +154,14 @@ export const SERVICE_API_ERROR_STATUS: Record<ServiceApiErrorCode, number> = {
 // denied: the caller may not see or do it (a refusal indistinguishable
 // from a missing target). rejected: the input or the target state.
 const DENIED_CODES: ServiceApiErrorCode[] = [
-  'principal_not_allowed', 'grant_required', 'grants_unavailable', 'agent_not_found', 'session_not_found', 'conversation_not_found', 'exchange_not_found', 'rate_limited',
+  'principal_not_allowed', 'agent_not_found', 'session_not_found', 'conversation_not_found', 'exchange_not_found', 'rate_limited',
   'pin_not_found', 'share_not_found', 'audience_not_allowed',
 ];
 
 export class ServiceApiError extends Error {
   readonly code: ServiceApiErrorCode;
-  // Internal only (the audit trail): a refusal because of the grants,
-  // reported to the caller exactly like a missing target.
+  // Internal only (the audit trail): a refusal of a target that exists but
+  // the caller may not reach, reported exactly like a missing target.
   readonly notGranted: boolean;
   // The offending input fields, when a caller-side validation names them
   // (the MCP bridge's tool arguments).
@@ -218,43 +219,44 @@ export function serviceErrorFromExchange(error: ExchangeError): ServiceApiError 
 }
 
 // ---------------------------------------------------------------------
-// Grants
+// Access
 
 export interface ServiceContext {
   principal: Principal;
-  mode: 'granted' | 'narrow';
-  agents: ReadonlyMap<string, ReadonlySet<ServiceCapability>>;
+  // Always 'granted' (NOT-556); the contract keeps the field.
+  mode: 'granted';
+  // Whether this principal reaches the registered Agents at all. False only
+  // for the session-context principal, authorized by its context alone.
+  reachesAgents: boolean;
 }
 
-const EMPTY: ReadonlyMap<string, ReadonlySet<ServiceCapability>> = new Map();
-
-// The caller's grants. Only service principals have any. A malformed
-// document grants nothing to anyone (grants_unavailable); a missing one is
-// the narrow mode with no Agents.
+// Only service principals use this API. Every configured service principal
+// reaches every registered Agent.
 export function serviceContext(principal: Principal): ServiceContext {
   if (principal.kind !== 'service') {
-    throw new ServiceApiError('principal_not_allowed', 'The granted service API accepts only service principals.');
+    throw new ServiceApiError('principal_not_allowed', 'The service API accepts only service principals.');
   }
-  // NOT-517: the session-context principal holds no grant and needs none
-  // (its only operation, share-current, is authorized by its context).
-  if (principal.id === SESSION_CONTEXT_SERVICE_ID) return { principal, mode: 'narrow', agents: EMPTY };
-  const loaded = loadServiceGrants();
-  if (loaded.state === 'invalid') {
-    throw new ServiceApiError('grants_unavailable', 'The service grants are not available; the owner must fix the grants document.');
-  }
-  if (loaded.state === 'absent') return { principal, mode: 'narrow', agents: EMPTY };
-  return { principal, mode: 'granted', agents: loaded.grants.get(principal.id) ?? EMPTY };
+  // NOT-517: the session-context principal sees no Agents (its only
+  // operation, share-current, is authorized by its context).
+  return { principal, mode: 'granted', reachesAgents: principal.id !== SESSION_CONTEXT_SERVICE_ID };
 }
 
-// Granted and the Agent still exists.
-export function holds(ctx: ServiceContext, agentId: string | null | undefined, capability: ServiceCapability): boolean {
-  return typeof agentId === 'string' && !!ctx.agents.get(agentId)?.has(capability) && !!bots.getById(agentId);
+// The caller reaches the Agent and the Agent exists. NOT-556: there is no
+// per-capability permission; the capability an operation uses is only
+// recorded in the audit trail.
+export function holds(ctx: ServiceContext, agentId: string | null | undefined): boolean {
+  return ctx.reachesAgents && typeof agentId === 'string' && !!bots.getById(agentId);
 }
 
-function requireAgent(ctx: ServiceContext, agentId: string, capability: ServiceCapability): Bot {
+// The Agents the caller reaches, by id.
+export function reachableAgents(ctx: ServiceContext): Bot[] {
+  return ctx.reachesAgents ? bots.getAll() : [];
+}
+
+function requireAgent(ctx: ServiceContext, agentId: string): Bot {
   const bot = bots.getById(agentId);
   if (!bot) throw NOT_FOUND.agent();
-  if (!holds(ctx, agentId, capability)) throw notGranted('agent');
+  if (!holds(ctx, agentId)) throw notGranted('agent');
   return bot;
 }
 
@@ -301,9 +303,8 @@ export interface ListQuery { cursor: string | null; limit: number }
 // Capabilities and Agents
 
 export function capabilitiesView(ctx: ServiceContext) {
-  const agents = [...ctx.agents.entries()]
-    .filter(([agentId]) => !!bots.getById(agentId))
-    .map(([agentId, caps]) => ({ agent_id: agentId, capabilities: SERVICE_CAPABILITIES.filter(cap => caps.has(cap)) }))
+  const agents = reachableAgents(ctx)
+    .map(bot => ({ agent_id: bot.id, capabilities: [...SERVICE_CAPABILITIES] }))
     .sort((a, b) => (a.agent_id < b.agent_id ? -1 : a.agent_id > b.agent_id ? 1 : 0));
   return {
     principal: { kind: ctx.principal.kind, id: ctx.principal.id },
@@ -355,14 +356,13 @@ function agentActivity(bot: Bot): number {
 
 function agentView(ctx: ServiceContext, bot: Bot): ServiceAgentView {
   const resolved = resolveAgent(bot);
-  const caps = ctx.agents.get(bot.id) ?? new Set<ServiceCapability>();
   return {
     agent_id: bot.id,
     name: bot.name,
     title: bot.title,
     runtime: resolved.agent,
     available: resolved.launchable,
-    capabilities: SERVICE_CAPABILITIES.filter(cap => caps.has(cap)),
+    capabilities: holds(ctx, bot.id) ? [...SERVICE_CAPABILITIES] : [],
     messaging: agentMessagingReadiness(bot),
     created_at: bot.created_at,
     last_activity_at: agentActivity(bot),
@@ -370,14 +370,12 @@ function agentView(ctx: ServiceContext, bot: Bot): ServiceAgentView {
 }
 
 export function listServiceAgents(ctx: ServiceContext, query: ListQuery): Page<ServiceAgentView> {
-  const rows = [...ctx.agents.keys()]
-    .filter(agentId => holds(ctx, agentId, 'agents:read'))
-    .map(agentId => agentView(ctx, bots.getById(agentId) as Bot));
+  const rows = reachableAgents(ctx).map(bot => agentView(ctx, bot));
   return paginate(`agents:${ctx.principal.id}`, rows, row => ({ at: row.last_activity_at, tie: row.created_at, id: row.agent_id }), query.cursor, query.limit);
 }
 
 export function getServiceAgent(ctx: ServiceContext, agentId: string): ServiceAgentView {
-  return agentView(ctx, requireAgent(ctx, agentId, 'agents:read'));
+  return agentView(ctx, requireAgent(ctx, agentId));
 }
 
 // ---------------------------------------------------------------------
@@ -444,15 +442,15 @@ function sessionView(summary: SessionWithActions): ServiceSessionView {
   };
 }
 
-// NOT-507: after the grant check, probes the Agent's runtime so the
+// NOT-507: after the Agent check, probes the Agent's runtime so the
 // sessions' action availability reflects its real capabilities.
 export async function warmServiceAgent(ctx: ServiceContext, agentId: string): Promise<void> {
-  requireAgent(ctx, agentId, 'sessions:read');
+  requireAgent(ctx, agentId);
   await warmAgentProvider(db, agentId, { onlyWithSessions: true });
 }
 
 export function listServiceSessions(ctx: ServiceContext, agentId: string, query: ListQuery & { status: string | null }): Page<ServiceSessionView> {
-  requireAgent(ctx, agentId, 'sessions:read');
+  requireAgent(ctx, agentId);
   const status = query.status ?? 'all';
   if (!isSessionFilter(status)) throw new ServiceApiError('invalid_request', 'status must be active, ended, or all.');
   const redactor = serviceRedactor();
@@ -463,7 +461,7 @@ export function listServiceSessions(ctx: ServiceContext, agentId: string, query:
 export function getServiceSession(
   ctx: ServiceContext, agentId: string, ref: string,
 ): ServiceSessionView & { attempts: SessionDetail['attempts']; usage_samples: SessionDetail['usage_samples'] } {
-  requireAgent(ctx, agentId, 'sessions:read');
+  requireAgent(ctx, agentId);
   const detail = getAgentSession(db, agentId, ref);
   if (!detail) throw NOT_FOUND.session();
   return serviceRedactor().deep({
@@ -475,8 +473,8 @@ export function getServiceSession(
 
 // ---------------------------------------------------------------------
 // Conversations. A conversation is visible under an Agent when that Agent
-// participates, every Agent participant is granted conversations:read to
-// the caller, and no other service participates (one service never reads
+// participates, every Agent participant still exists, and no other
+// service participates (one service never reads
 // another's conversation). Provider session and run ids, working
 // directories, and credentials the runtime may have echoed into a message
 // are redacted.
@@ -516,7 +514,7 @@ function participantsOf(conversationId: string): Principal[] {
 
 function conversationVisible(ctx: ServiceContext, participants: Principal[]): boolean {
   return participants.every(p => p.kind === 'bot'
-    ? holds(ctx, p.id, 'conversations:read')
+    ? holds(ctx, p.id)
     : p.kind !== 'service' || p.id === ctx.principal.id);
 }
 
@@ -542,7 +540,7 @@ function conversationSummary(row: ConversationRow, participants: Principal[]): S
 }
 
 export function listServiceConversations(ctx: ServiceContext, agentId: string, query: ListQuery): Page<ServiceConversationSummary> {
-  requireAgent(ctx, agentId, 'conversations:read');
+  requireAgent(ctx, agentId);
   const rows = (db.prepare(CONVERSATION_SELECT).all(agentId) as ConversationRow[]).flatMap(row => {
     const participants = participantsOf(row.id);
     return conversationVisible(ctx, participants) ? [conversationSummary(row, participants)] : [];
@@ -576,7 +574,7 @@ export interface ServiceConversationDetail extends ServiceConversationSummary {
 }
 
 export function getServiceConversation(ctx: ServiceContext, agentId: string, conversationId: string, query: ListQuery): ServiceConversationDetail {
-  requireAgent(ctx, agentId, 'conversations:read');
+  requireAgent(ctx, agentId);
   const row = db.prepare(`${CONVERSATION_SELECT} WHERE c.id = ?`).get(agentId, conversationId) as ConversationRow | undefined;
   if (!row) throw NOT_FOUND.conversation();
   const participants = participantsOf(row.id);
@@ -749,12 +747,12 @@ export function sendServiceSessionMessage(
     // NOT-503: a native session (no binding) is listed but cannot take a
     // session message yet; the grant check still comes first.
     const native = db.prepare('SELECT agent_id FROM provider_sessions WHERE id = ? AND binding_id IS NULL').get(ref) as { agent_id: string } | undefined;
-    if (native && holds(ctx, native.agent_id, 'sessions:message')) {
+    if (native && holds(ctx, native.agent_id)) {
       throw new ServiceApiError('session_not_resumable', 'This session is not reachable through session messages.');
     }
     throw NOT_FOUND.session();
   }
-  if (!holds(ctx, binding.agent_id, 'sessions:message')) throw notGranted('session');
+  if (!holds(ctx, binding.agent_id)) throw notGranted('session');
   const principal = ctx.principal;
   const key = `${MESSAGE_KEY_PREFIX}${input.idempotencyKey}`;
   const { exchange, created } = createThroughStore(() => {
@@ -800,20 +798,19 @@ export function sendServiceSessionMessage(
 }
 
 // ---------------------------------------------------------------------
-// Exchanges (lib/session-exchanges): the caller's own, readable with
-// exchanges:read on every Agent involved, created and cancelled with
-// exchanges:create on every Agent involved.
+// Exchanges (lib/session-exchanges): the caller's own, readable, created,
+// and cancelled while every Agent involved still exists.
 
-function exchangeVisible(ctx: ServiceContext, row: SessionExchange, capability: ServiceCapability): boolean {
+function exchangeVisible(ctx: ServiceContext, row: SessionExchange): boolean {
   return row.requester_kind === ctx.principal.kind && row.requester_id === ctx.principal.id
-    && holds(ctx, row.source_agent_id, capability)
-    && (row.destination_agent_id === null || holds(ctx, row.destination_agent_id, capability));
+    && holds(ctx, row.source_agent_id)
+    && (row.destination_agent_id === null || holds(ctx, row.destination_agent_id));
 }
 
-function requireExchange(ctx: ServiceContext, id: string, capability: ServiceCapability): SessionExchange {
+function requireExchange(ctx: ServiceContext, id: string): SessionExchange {
   const row = exchanges.get(id);
   if (!row) throw NOT_FOUND.exchange();
-  if (!exchangeVisible(ctx, row, capability)) throw notGranted('exchange');
+  if (!exchangeVisible(ctx, row)) throw notGranted('exchange');
   return row;
 }
 
@@ -861,25 +858,24 @@ function exchangeSummary(row: SessionExchange): ServiceExchangeSummary {
   };
 }
 
-// What a create or cancel returns: the full view only to a caller that may
-// also read the exchange (exchanges:read on every Agent involved), else
-// status metadata, so exchanges:create alone never reveals an answer or a
-// handoff packet.
+// What a create or cancel returns: the full view while the caller may
+// read the exchange (every Agent involved still exists), else status
+// metadata.
 function mutationView(ctx: ServiceContext, id: string): ServiceExchangeView | ServiceExchangeSummary {
   const row = exchanges.require(id);
-  return exchangeVisible(ctx, row, 'exchanges:read') ? serviceExchangeView(getExchangeView(id), row) : exchangeSummary(row);
+  return exchangeVisible(ctx, row) ? serviceExchangeView(getExchangeView(id), row) : exchangeSummary(row);
 }
 
 export function listServiceExchanges(ctx: ServiceContext, query: ListQuery): Page<ServiceExchangeSummary> {
   const rows = (db.prepare('SELECT * FROM session_exchanges WHERE requester_kind = ? AND requester_id = ?')
     .all(ctx.principal.kind, ctx.principal.id) as SessionExchange[])
-    .filter(row => exchangeVisible(ctx, row, 'exchanges:read'))
+    .filter(row => exchangeVisible(ctx, row))
     .map(exchangeSummary);
   return paginate(`exchanges:${ctx.principal.id}`, rows, row => ({ at: row.updated_at, tie: row.created_at, id: row.id }), query.cursor, query.limit);
 }
 
 export function getServiceExchange(ctx: ServiceContext, id: string): ServiceExchangeView {
-  const row = requireExchange(ctx, id, 'exchanges:read');
+  const row = requireExchange(ctx, id);
   return serviceExchangeView(getExchangeView(row.id), row);
 }
 
@@ -930,14 +926,14 @@ export function createServiceExchange(
 ): { exchange: ServiceExchangeView | ServiceExchangeSummary; created: boolean; dispatched: Promise<void> } {
   const binding = bindingOf(input.sessionRef);
   if (!binding || (input.sourceAgentId !== null && input.sourceAgentId !== binding.agent_id)) throw NOT_FOUND.session();
-  if (!holds(ctx, binding.agent_id, 'exchanges:create')) throw notGranted('session');
+  if (!holds(ctx, binding.agent_id)) throw notGranted('session');
   if (input.mode === 'ask' && (input.destinationAgentId !== null || input.destinationConversationId !== null)) {
     throw new ServiceApiError('destination_invalid', 'An Ask returns to the origin conversation and takes no destination.');
   }
   if (input.mode === 'continue') {
     if (input.destinationAgentId === null) throw new ServiceApiError('destination_invalid', 'A Continue names destination.agent_id.');
     if (!bots.getById(input.destinationAgentId)) throw NOT_FOUND.agent();
-    if (!holds(ctx, input.destinationAgentId, 'exchanges:create')) throw notGranted('agent');
+    if (!holds(ctx, input.destinationAgentId)) throw notGranted('agent');
   }
   const principal = ctx.principal;
   const key = `${EXCHANGE_KEY_PREFIX}${input.idempotencyKey}`;
@@ -975,7 +971,7 @@ export function parseCancelBody(text: string): string | null {
 export async function cancelServiceExchange(
   ctx: ServiceContext, id: string, reason: string | null, onCommit?: CommitHook,
 ): Promise<{ exchange: ServiceExchangeView | ServiceExchangeSummary; replayed: boolean }> {
-  const row = requireExchange(ctx, id, 'exchanges:create');
+  const row = requireExchange(ctx, id);
   try {
     const { replayed } = await cancelExchangeCommand(row.id, ctx.principal, reason, onCommit);
     return { exchange: mutationView(ctx, row.id), replayed };
@@ -989,11 +985,13 @@ export async function cancelServiceExchange(
 // NOT-507: registered-Agent messaging and session pins (lib/session-pins).
 // A message to an Agent resolves its home or newest eligible session (or
 // starts one under policy) and pins it; a pin holds every follow-up on that
-// exact session until the caller detaches or switches it. Grants apply to
-// the resolved Agent and the pin's action: sessions:message for Ask
-// (read-only) pins and Agent messages, sessions:start to let an Agent
-// message start a session, sessions:resume for Resume (workspace-write)
-// pins. A pin whose grant was withdrawn answers like a missing one.
+// exact session until the caller detaches or switches it. The audit names
+// the pin's action: sessions:message for Ask (read-only) pins and Agent
+// messages, sessions:start when an Agent message starts a session (only
+// when the Agent's policy allows new sessions), sessions:resume for Resume
+// (workspace-write) pins (only when the policy allows resume with edits and
+// the call approves the write). A pin on a deleted Agent answers like a
+// missing one.
 
 const pinCapability = (action: PinAction): ServiceCapability => (action === 'resume' ? 'sessions:resume' : 'sessions:message');
 
@@ -1016,7 +1014,7 @@ function requireServicePin(ctx: ServiceContext, pinRef: string): PinRow {
   } catch (error) {
     servicePinError(error);
   }
-  if (!holds(ctx, pin.agent_id, pinCapability(pin.action))) throw notGranted('pin');
+  if (!holds(ctx, pin.agent_id)) throw notGranted('pin');
   return pin;
 }
 
@@ -1049,11 +1047,10 @@ export function parsePinBody(body: unknown, header: string | null): { action: Pi
 }
 
 export async function messageServiceAgent(ctx: ServiceContext, agentId: string, input: { content: string; idempotencyKey: string }, hooks: PinAuditHooks) {
-  requireAgent(ctx, agentId, 'sessions:message');
+  requireAgent(ctx, agentId);
   try {
     const result = await messageAgent({
       requester: ctx.principal, agentId, content: input.content, idempotencyKey: input.idempotencyKey,
-      mayStart: holds(ctx, agentId, 'sessions:start'),
       onResolved: target => hooks.onTarget({
         agentId: target.agentId, sessionRef: target.sessionRef,
         capability: target.resolution === 'started' ? 'sessions:start' : 'sessions:message',
@@ -1077,7 +1074,7 @@ export async function pinServiceSession(
   if (!agentId) throw NOT_FOUND.session();
   const capability = pinCapability(input.action);
   hooks.onTarget({ agentId, sessionRef, capability, action: input.action === 'resume' ? 'pins.resume' : 'pins.ask' });
-  if (!holds(ctx, agentId, capability)) throw notGranted('session');
+  if (!holds(ctx, agentId)) throw notGranted('session');
   if (input.replacePinRef) requireServicePin(ctx, input.replacePinRef);
   try {
     const { pin, created, replaced } = await createPin({
@@ -1222,7 +1219,7 @@ function serviceShareError(error: unknown): never {
 }
 
 function shareVisible(ctx: ServiceContext, row: ShareRow): boolean {
-  return row.creator_kind === ctx.principal.kind && row.creator_id === ctx.principal.id && holds(ctx, row.agent_id, 'shares:create');
+  return row.creator_kind === ctx.principal.kind && row.creator_id === ctx.principal.id && holds(ctx, row.agent_id);
 }
 
 function requireServiceShare(ctx: ServiceContext, shareRef: string): ShareRow {
@@ -1246,9 +1243,9 @@ export interface ShareAuditHooks {
 export async function createServiceShare(ctx: ServiceContext, sessionRef: string, input: ShareCreateInput, hooks: ShareAuditHooks) {
   const agentId = sessionOwner(sessionRef);
   hooks.onTarget({ agentId, sessionRef });
-  // Unknown, not granted, and another Agent's session answer alike (NOT-499).
+  // Unknown and another Agent's session answer alike (NOT-499).
   if (!agentId) throw NOT_FOUND.session();
-  if (!holds(ctx, agentId, 'shares:create')) throw notGranted('session');
+  if (!holds(ctx, agentId)) throw notGranted('session');
   if (input.agentId !== null && input.agentId !== agentId) throw NOT_FOUND.session();
   try {
     const { share, created } = await createShare({
@@ -1276,7 +1273,7 @@ export function listServiceShares(ctx: ServiceContext, query: ListQuery & { sess
   }
   const redactor = serviceRedactor();
   const rows = sharesCreatedBy(ctx.principal, { sessionRef: query.sessionRef })
-    .filter(row => holds(ctx, row.agent_id, 'shares:create'))
+    .filter(row => holds(ctx, row.agent_id))
     .map(row => serviceShareBody(row, redactor))
     .filter(view => query.state === null || view.state === query.state);
   return paginate(`shares:${ctx.principal.id}:${query.sessionRef ?? ''}:${query.state ?? ''}`, rows,
