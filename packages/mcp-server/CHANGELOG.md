@@ -7,6 +7,20 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-07
+
+### Changed
+
+- `botmancers_list_agents` documents `available` as a configuration check, not
+  a runtime probe. The `agent_unavailable` causes (no session provider, the
+  provider reported itself unavailable, a different runtime connection) are
+  described, and retrying will not help until the owner fixes the Agent.
+- When a provider call is unavailable, the core log now records one line with
+  the Agent id, provider code and a truncated provider message, and the
+  `agent_unavailable` error names its real cause instead of a generic one.
+- Agent chat folds runtime notices into one row, keeps failure notices
+  visible, and Config titles and conversation history are aligned.
+
 ## [0.10.2] - 2026-11-06
 
 ### Changed

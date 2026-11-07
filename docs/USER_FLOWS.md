@@ -1,6 +1,6 @@
 # Typical user flows
 
-**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-06 (botmancers 0.10.2; NOT-551 to NOT-554, NOT-556, NOT-557)
+**Status:** Living map · **Owner of:** the end-to-end journeys a person (or an agent acting for them) takes through Botmancers · **Last aligned:** 2026-11-06 (botmancers 0.10.3; NOT-551 to NOT-554, NOT-556, NOT-557)
 
 This file answers one question: *what do people actually do with Botmancers, start to finish?* Other docs own the details of each step ([core-engine.md](core-engine.md) for the engine contract, [mcp-bridge.md](mcp-bridge.md) and [service-access.md](service-access.md) for the MCP tools and service access, [session-shares.md](session-shares.md) and [slack-transport.md](slack-transport.md) for sharing and Slack, [packages/mcp-server/README.md](../packages/mcp-server/README.md) for install and commands). This file owns the **sequence**.
 

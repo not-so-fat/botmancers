@@ -1,6 +1,6 @@
 {
   "name": "botmancers",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Botmancers: the UI, core engine, and authenticated MCP bridge (contracts botmancers.mcp.v1 and botmancers.mcp.v2) as one CLI-managed product. `botmancers start` runs it all; bare `botmancers` runs the bridge only.",
   "keywords": [
     "botmancers",
