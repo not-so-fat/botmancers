@@ -7,6 +7,20 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-08
+
+### Changed
+
+- A Claude Code turn that ends with no result event and empty output now
+  fails as `Claude Code exited with no output (exit N | signal S)`, and exit 0
+  with no output has its own code, `process_exited_no_output`. The core log
+  gets a second line with the agent id, provider code, daemon and parent pid,
+  and whether the core is detached from a terminal, so an environment problem
+  can be told from a Claude Code one
+  ([`docs/claude-session-provider.md`](../../docs/claude-session-provider.md)).
+- Other `process_exited` and `incompatible_version` failures now end with the
+  last 100 characters of Claude Code's stderr, on one line.
+
 ## [0.10.3] - 2026-11-07
 
 ### Changed
