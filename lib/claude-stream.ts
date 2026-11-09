@@ -24,6 +24,7 @@ export type ClaudeFailureCode =
   | 'incompatible_version'
   | 'session_mismatch'
   | 'process_exited'
+  | 'process_exited_no_output'
   | 'cancelled'
   | 'runtime_error';
 

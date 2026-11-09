@@ -257,8 +257,26 @@ function failWith(error: ProviderError, fallback: ProviderSessionErrorCode = 'pr
   // core log so the owner can tell why a call was refused.
   const detail = String(error.message ?? '').replace(/[\r\n]+/g, ' ').slice(0, 300);
   console.error('Session provider refused a call:', `agent=${agentId ?? 'unknown'} code=${error.code} message=${detail}`);
+  if (error.no_output) logNoOutput(agentId, error.code);
   if (code === 'provider_unavailable') throw new ProviderSessionError(code, PROVIDER_UNAVAILABLE_MESSAGE);
   throw new ProviderSessionError(code, `The session provider refused the call (${error.code}).`);
+}
+
+// NOT-560: a runtime process that ended having written nothing (no stdout,
+// no stderr) failed for a reason outside its own output — likely the
+// environment Botmancers launched it from (for example a detached daemon
+// without the owner's terminal session). This line names that
+// environment so the core log alone points at the cause.
+export function noOutputProcessContext(): { daemon_pid: number; parent_pid: number; detached: boolean } {
+  // Detached: no terminal on any standard stream, as under `start --daemon`.
+  const detached = !process.stdin?.isTTY && !process.stdout?.isTTY && !process.stderr?.isTTY;
+  return { daemon_pid: process.pid, parent_pid: process.ppid, detached };
+}
+
+function logNoOutput(agentId: string | undefined, providerCode: string): void {
+  const context = noOutputProcessContext();
+  console.error('Session provider turn ended with no output:',
+    `agent=${agentId ?? 'unknown'} code=${providerCode} daemon_pid=${context.daemon_pid} parent_pid=${context.parent_pid} detached=${context.detached}`);
 }
 
 const PROVIDER_UNAVAILABLE_MESSAGE = 'The Agent’s runtime reported itself unavailable (it may not be installed, signed in, or startable). The Botmancers core log has the detail.';
@@ -1194,6 +1212,7 @@ export async function observeProviderTurn(
     if (result.error.code === 'cancelled' || result.error.code === 'timed_out') return turnView(db, requireTurn(db, agentId, turnRef));
     failWith(result.error, undefined, agentId);
   }
+  if (result.value.failure?.no_output) logNoOutput(agentId, result.value.failure.code);
   finishTurn(db, turn, result.value, input.now ?? Date.now());
   return turnView(db, requireTurn(db, agentId, turnRef));
 }

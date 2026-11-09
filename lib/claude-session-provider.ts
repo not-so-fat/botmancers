@@ -185,8 +185,21 @@ interface TurnRecord {
   pid: number | null;
   state: 'running' | 'exited' | 'cancelled' | 'spawn_failed';
   exit_code: number | null;
+  // NOT-560: the signal that ended the process, when one did (absent on
+  // records written before it was kept).
+  exit_signal?: string | null;
   created_at: number;
   finished_at: number | null;
+}
+
+// A turn failure; no_output marks a process that wrote nothing at all.
+type ClaudeTurnFailure = { code: ClaudeFailureCode; message: string; no_output?: true };
+
+// The last STDERR_TAIL characters of a turn's stderr on one line, so a
+// failure message names what the process last said.
+const STDERR_TAIL = 100;
+export function stderrTail(stderr: string): string {
+  return stderr.replace(/\s+/g, ' ').trim().slice(-STDERR_TAIL);
 }
 
 // Provider error code for each stable stream failure.
@@ -198,6 +211,7 @@ const FAILURE_TO_ERROR: Record<ClaudeFailureCode, ProviderErrorCode> = {
   incompatible_version: 'incompatible_version',
   session_mismatch: 'not_resumable',
   process_exited: 'unavailable',
+  process_exited_no_output: 'unavailable',
   cancelled: 'cancelled',
   runtime_error: 'unavailable',
 };
@@ -289,7 +303,8 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
 
   // The terminal result a turn's files already hold, or null while running.
   function terminalOf(turn: TurnRecord): ProviderTurnResult | null {
-    const summary = summarizeStream(readText(turnFile(turn.id, 'out.jsonl')));
+    const stdout = readText(turnFile(turn.id, 'out.jsonl'));
+    const summary = summarizeStream(stdout);
     const finished = turn.finished_at ?? Date.now();
     const base = { provider_session_id: turn.session_id, usage: reportedUsage(summary.result), finished_at: finished };
     if (summary.session_id !== null && summary.session_id !== turn.session_id) {
@@ -308,12 +323,29 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
     // rejects the flag set is an incompatible version.
     const stderr = readText(turnFile(turn.id, 'err.log'));
     const incompatible = /unknown option|unrecognized option|invalid option/i.test(stderr);
-    return {
-      ...base, status: 'failed', output: null,
-      failure: incompatible
-        ? { code: 'incompatible_version', message: 'The installed Claude Code rejected the non-interactive flag set.' }
-        : { code: 'process_exited', message: `Claude Code exited without a result${turn.exit_code === null ? '' : ` (exit ${turn.exit_code})`}.` },
-    };
+    if (incompatible) {
+      const tail = stderrTail(stderr);
+      return { ...base, status: 'failed', output: null, failure: { code: 'incompatible_version', message: `The installed Claude Code rejected the non-interactive flag set.${tail ? ` stderr: ${tail}` : ''}` } };
+    }
+    return { ...base, status: 'failed', output: null, failure: exitFailure(turn, stdout === '', stderr) };
+  }
+
+  // NOT-560: a process that ended without a result event. With no output
+  // at all (empty out.jsonl and err.log) the cause is outside the stream —
+  // most often the environment the process ran in — so the failure says so
+  // and is flagged no_output for the core to log its process context. An
+  // exit 0 with no output is its own code.
+  function exitFailure(turn: TurnRecord, stdoutEmpty: boolean, stderr: string): ClaudeTurnFailure {
+    const how = turn.exit_signal ? `signal ${turn.exit_signal}` : turn.exit_code === null ? 'exit status unknown' : `exit ${turn.exit_code}`;
+    if (stdoutEmpty && stderr === '' && turn.state !== 'spawn_failed') {
+      return {
+        code: turn.exit_code === 0 && !turn.exit_signal ? 'process_exited_no_output' : 'process_exited',
+        message: `Claude Code exited with no output (${how}): no result event, empty stdout and stderr.`,
+        no_output: true,
+      };
+    }
+    const tail = stderrTail(stderr);
+    return { code: 'process_exited', message: `Claude Code exited without a result (${how}).${tail ? ` stderr: ${tail}` : ''}` };
   }
 
   function claimKey(key: string): { existing: TurnRecord | null; claimed: boolean } {
@@ -353,9 +385,9 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
     child.on('error', error => { spawnError = error; });
     turn.pid = child.pid ?? null;
     writeTurn(turn);
-    child.on('exit', code => {
+    child.on('exit', (code, signal) => {
       const current = readTurn(id);
-      if (current && current.state === 'running') writeTurn({ ...current, state: 'exited', exit_code: code, finished_at: Date.now() });
+      if (current && current.state === 'running') writeTurn({ ...current, state: 'exited', exit_code: code, exit_signal: signal ?? null, finished_at: Date.now() });
     });
     child.stdin?.on('error', () => { /* the process may exit before reading */ });
     child.stdin?.end(input.prompt);
@@ -385,7 +417,9 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
       const terminal = terminalOf(current);
       if (terminal) {
         const code = terminal.failure?.code as ClaudeFailureCode | undefined;
-        return { turn: null, error: providerError(code ? FAILURE_TO_ERROR[code] ?? 'unavailable' : 'unavailable', terminal.failure?.message ?? 'Claude Code exited.') };
+        const error = providerError(code ? FAILURE_TO_ERROR[code] ?? 'unavailable' : 'unavailable', terminal.failure?.message ?? 'Claude Code exited.');
+        if ((terminal.failure as ClaudeTurnFailure | null)?.no_output) error.error.no_output = true;
+        return { turn: null, error };
       }
       if (Date.now() >= deadline) return { turn: current, error: null };
       await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, 25)));

@@ -177,7 +177,10 @@ export interface ProviderTurnResult {
   status: 'completed' | 'failed' | 'cancelled';
   provider_session_id: string;
   output: string | null;
-  failure: { code: string; message: string } | null;
+  // no_output (NOT-560): the runtime process ended having written nothing
+  // at all, so the cause is likely its environment; the core logs its own
+  // process context for it.
+  failure: { code: string; message: string; no_output?: boolean } | null;
   // What the runtime reported, never estimated: each field is null when the
   // runtime did not report it (or reported something malformed), and an
   // explicit zero stays zero; Botmancers never infers a price from tokens.
@@ -236,6 +239,8 @@ export interface ProviderError {
   code: ProviderErrorCode;
   // Internal diagnostic text; never shown verbatim to a caller.
   message: string;
+  // See ProviderTurnResult.failure.no_output.
+  no_output?: boolean;
 }
 
 export type ProviderResult<T> = { ok: true; value: T } | { ok: false; error: ProviderError };

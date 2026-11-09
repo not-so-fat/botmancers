@@ -80,7 +80,8 @@ ends the turn as `failed` with a stable `failure_code`.
 | usage cap (`api_error_status` 429, rejected `rate_limit_event`) | `usage_limit` |
 | error result with `permission_denials` | `permission_denied` |
 | Claude Code older than `MIN_CLAUDE_CODE_VERSION`, or rejecting the flag set | `incompatible_version` |
-| process ends without a result event | `process_exited` (turn) / `provider_unavailable` (call) |
+| process ends without a result event (the last 100 characters of stderr, on one line, are appended to the message) | `process_exited` (turn) / `provider_unavailable` (call) |
+| process exits 0 with no output at all (empty stdout and stderr) | `process_exited_no_output` (turn) / `provider_unavailable` (call) |
 | `claude` not runnable | `provider_unavailable` |
 
 ## Usage and cost
@@ -143,3 +144,19 @@ unavailable; only the history import is skipped.
   `claude -p`, imports it, resumes it read-only after a Botmancers restart,
   then runs one explicitly approved `workspace_write` turn, and prints a
   redacted structured transcript.
+
+## A turn with no output
+
+When a turn process ends having written nothing — no result event, an empty
+`out.jsonl` and an empty `err.log` — the cause lies outside Claude Code's own
+output, usually the environment the core launched it from. The failure message
+says `Claude Code exited with no output (exit N | signal S)` and the core log
+gets a second, distinct line with the core's own process context:
+
+```
+Session provider turn ended with no output: agent=<agent id> code=<provider code> daemon_pid=<core pid> parent_pid=<its parent pid> detached=<true|false>
+```
+
+`detached` is `true` when the core has no terminal on any standard stream, as
+under `botmancers start --daemon`. Compare with a turn run from a terminal
+(`detached=false`) to tell an environment problem from a Claude Code one.
