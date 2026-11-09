@@ -322,6 +322,12 @@ async function main() {
     `stderr's last 100 characters are appended on one line: ${noisy.refused}`);
     assert(noisy.noOutput === '', 'a turn that wrote stderr is not logged as no-output');
 
+    const rejected = await capture(`process.stderr.write('z'.repeat(150) + '\\nerror: unknown option --bogus-flag'); process.exit(1)`, 'rejected-1');
+    const rejectedTail = (rejected.refused.split(' stderr: ')[1] || '');
+    assert(/message=The installed Claude Code rejected the non-interactive flag set\. stderr: /.test(rejected.refused)
+      && rejectedTail.endsWith('error: unknown option --bogus-flag') && rejectedTail.length === 100 && !/[\r\n]/.test(rejected.refused),
+    `an incompatible-version exit also appends stderr's last 100 characters on one line: ${rejected.refused}`);
+
     // The turn-level classification: exit 0 with no output is its own code.
     const provider = claudeProvider('process.exit(0)');
     const turnsDir = path.join(claudeState, 'turns');
@@ -345,6 +351,9 @@ async function main() {
     assert(one.code === 'process_exited' && one.no_output === true && killed.code === 'process_exited' && /signal SIGKILL/.test(killed.message),
       'another exit code or a signal with no output stays process_exited, still flagged no-output');
     assert(spoke.code === 'process_exited' && !spoke.no_output && /stderr: boom$/.test(spoke.message), 'exit 0 with stderr is process_exited with the stderr tail');
+    const incompatible = await observe(writeTurn({ exit_code: 1 }, 'error: unrecognized option --x\n'));
+    assert(incompatible.code === 'incompatible_version' && /flag set\. stderr: error: unrecognized option --x$/.test(incompatible.message),
+      `an incompatible-version failure carries the stderr tail (got ${incompatible.message})`);
     registerFakes(ids);
   }
 

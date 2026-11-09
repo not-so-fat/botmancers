@@ -324,7 +324,8 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
     const stderr = readText(turnFile(turn.id, 'err.log'));
     const incompatible = /unknown option|unrecognized option|invalid option/i.test(stderr);
     if (incompatible) {
-      return { ...base, status: 'failed', output: null, failure: { code: 'incompatible_version', message: 'The installed Claude Code rejected the non-interactive flag set.' } };
+      const tail = stderrTail(stderr);
+      return { ...base, status: 'failed', output: null, failure: { code: 'incompatible_version', message: `The installed Claude Code rejected the non-interactive flag set.${tail ? ` stderr: ${tail}` : ''}` } };
     }
     return { ...base, status: 'failed', output: null, failure: exitFailure(turn, stdout === '', stderr) };
   }
