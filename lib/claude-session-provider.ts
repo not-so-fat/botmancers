@@ -393,6 +393,13 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
     child.stdin?.end(input.prompt);
     child.unref();
 
+    // A process that could not be started (bad cwd, EACCES/EPERM, ENOENT) has
+    // no pid and reports why on a later tick as an 'error' event. Without this
+    // wait the first poll below sees pid === null, takes it for an exit, and
+    // reports "exited with no output (exit status unknown)" instead of the
+    // spawn error.
+    if (turn.pid === null) await new Promise(resolve => setImmediate(resolve));
+
     // Wait for the first structured event: init (the session Claude Code is
     // running) or an early result (a refusal before any turn).
     const deadline = Date.now() + startupTimeoutMs;
@@ -401,7 +408,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
       const summary = summarizeStream(readText(turnFile(id, 'out.jsonl')));
       if (spawnError) {
         writeTurn({ ...current, state: 'spawn_failed', finished_at: Date.now() });
-        return { turn: null, error: providerError('unavailable', `Claude Code could not start: ${(spawnError as Error).message}`) };
+        return { turn: null, error: providerError('unavailable', `Claude Code could not start: ${(spawnError as Error).message} (working directory ${workspace})`) };
       }
       if (summary.session_id !== null && summary.session_id !== sessionId) {
         // Never adopt a different session (a fork or a fresh one).
@@ -519,6 +526,10 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
       if (!file) return providerError('not_found', 'Claude Code has no such session.');
       const meta = readSessionMeta({ id: input.provider_session_id, file, mtime_ms: fs.statSync(file).mtimeMs });
       if (!meta || meta.messages === 0 || !meta.workspace) return providerError('not_resumable', 'The session has no conversation to resume.');
+      // The session may have been recorded on a path this computer lacks.
+      let workspaceStat: fs.Stats | null = null;
+      try { workspaceStat = fs.statSync(meta.workspace); } catch { workspaceStat = null; }
+      if (!workspaceStat?.isDirectory()) return providerError('not_resumable', `The session's workspace (${meta.workspace}) is not a directory on this computer.`);
       if (busySessions().has(meta.id)) {
         const existing = claimKeyPeek(input.idempotency_key);
         if (existing) return providerOk({ provider_turn_id: existing.id, provider_session_id: existing.session_id });

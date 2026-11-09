@@ -328,6 +328,23 @@ async function main() {
       && rejectedTail.endsWith('error: unknown option --bogus-flag') && rejectedTail.length === 100 && !/[\r\n]/.test(rejected.refused),
     `an incompatible-version exit also appends stderr's last 100 characters on one line: ${rejected.refused}`);
 
+    // A turn that cannot be spawned (here: a working directory that vanished
+    // after the startSession check) is a spawn error, never "no output".
+    {
+      const gone = path.join(TMP, 'vanishing-ws');
+      fs.mkdirSync(gone, { recursive: true });
+      const spawnFails = claude.createClaudeSessionProvider({
+        bin: path.join(ROOT, 'test-support', 'fake-claude-cli.js'), configDir: path.join(TMP, 'claude-config'), stateDir: claudeState,
+        env: { ...process.env }, pollMs: 10, startupTimeoutMs: 10_000,
+        spawn: (command, args, options) => { fs.rmSync(gone, { recursive: true, force: true }); return require('child_process').spawn(process.execPath, ['-e', ''], { ...options, cwd: gone }); },
+      });
+      const started = await spawnFails.startSession({ workspace: gone, prompt: 'x', authority: 'read_only', idempotency_key: 'spawn-fail-1', correlation: {} });
+      const message = (started.error && started.error.message) || '';
+      assert(started.error && started.error.code === 'unavailable' && /could not start: spawn .*ENOENT/.test(message) && message.includes(gone) && !/no output|status unknown/.test(message),
+        `a spawn failure names the spawn error and working directory, not no-output: ${message}`);
+      assert(!started.error.no_output, 'a spawn failure is not flagged no_output');
+    }
+
     // The turn-level classification: exit 0 with no output is its own code.
     const provider = claudeProvider('process.exit(0)');
     const turnsDir = path.join(claudeState, 'turns');
