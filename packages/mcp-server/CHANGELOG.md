@@ -7,6 +7,17 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-09
+
+### Fixed
+
+- A Claude Code turn that cannot be spawned (a missing or unusable working
+  directory, `EACCES`, `EPERM`) is now reported as a spawn failure that names
+  the working directory. It was reported as "exited with no output (exit
+  status unknown)", which hid the real cause.
+- Sending a turn to a session whose recorded workspace is not a directory on
+  this computer is refused up front.
+
 ## [0.10.4] - 2026-11-08
 
 ### Changed
