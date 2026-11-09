@@ -267,6 +267,87 @@ async function main() {
   const loggedMessage = (line.split('message=')[1] || '');
   assert(loggedMessage.length <= 300, `the logged provider message is truncated to 300 characters (got ${loggedMessage.length})`);
 
+  console.log('\nNOT-560: a Claude Code turn that exits with no output logs the core process context');
+  {
+    const claude = jiti('./lib/claude-session-provider.ts');
+    const ws = path.join(TMP, 'silent-ws');
+    fs.mkdirSync(ws, { recursive: true });
+    const claudeState = path.join(TMP, 'claude-state');
+    // The real `claude --version` check runs against the stand-in CLI; each
+    // turn process is replaced by a plain node script.
+    const turnProcess = script => (command, args, options) => require('child_process').spawn(process.execPath, ['-e', script], options);
+    const claudeProvider = script => claude.createClaudeSessionProvider({
+      bin: path.join(ROOT, 'test-support', 'fake-claude-cli.js'), configDir: path.join(TMP, 'claude-config'), stateDir: claudeState,
+      env: { ...process.env }, pollMs: 10, startupTimeoutMs: 10_000, spawn: turnProcess(script),
+    });
+    const silentConnection = runtimeConnections.create({ provider: 'claude', label: 'Claude silent', host: 'This computer' }).id;
+    const silent = agent('Silent', silentConnection, { kind: 'workspaces', items: [ws] }, write);
+    const capture = async (script, key) => {
+      contract.registerSessionProvider({ connectionId: silentConnection }, () => claudeProvider(script));
+      const lines = [];
+      const original = console.error;
+      console.error = (...args) => { lines.push(args.map(String).join(' ')); };
+      let error = null;
+      try {
+        await ps.startProviderSession(db, silent.id, { workspace: ws, prompt: 'x', authority: 'read_only', idempotencyKey: key, requester: owner });
+      } catch (caught) { error = caught; } finally { console.error = original; }
+      return { error, lines, refused: lines.find(line => line.startsWith('Session provider refused a call:')) || '', noOutput: lines.find(line => line.startsWith('Session provider turn ended with no output:')) || '' };
+    };
+
+    const exit0 = await capture('process.exit(0)', 'silent-0');
+    const turnFiles = fs.readdirSync(path.join(claudeState, 'turns'));
+    const errLog = turnFiles.find(name => name.endsWith('.err.log'));
+    assert(errLog && fs.statSync(path.join(claudeState, 'turns', errLog)).size === 0
+      && fs.statSync(path.join(claudeState, 'turns', errLog.replace('.err.log', '.out.jsonl'))).size === 0, 'the silent turn left a zero-byte err.log and out.jsonl');
+    assert(exit0.error && exit0.error.code === 'provider_unavailable', `a silent exit 0 is provider_unavailable to the caller (got ${exit0.error && exit0.error.code})`);
+    assert(/message=Claude Code exited with no output \(exit 0\): no result event, empty stdout and stderr\./.test(exit0.refused),
+      `the refused line names the no-output case and exit 0: ${exit0.refused}`);
+    const context = ps.noOutputProcessContext();
+    assert(exit0.noOutput.includes(`agent=${silent.id}`) && exit0.noOutput.includes('code=unavailable')
+      && exit0.noOutput.includes(`daemon_pid=${process.pid}`) && exit0.noOutput.includes(`parent_pid=${process.ppid}`)
+      && exit0.noOutput.includes(`detached=${context.detached}`) && /detached=(true|false)$/.test(exit0.noOutput) && !/[\r\n]/.test(exit0.noOutput),
+    `a distinct one-line log names agent, provider code, daemon pid, parent pid and detached status: ${exit0.noOutput}`);
+    assert(exit0.lines.length === 2, `exactly two core log lines for a silent exit (got ${exit0.lines.length})`);
+
+    const exit3 = await capture('process.exit(3)', 'silent-3');
+    assert(/exited with no output \(exit 3\)/.test(exit3.refused) && exit3.noOutput.includes('daemon_pid='),
+      'a silent non-zero exit is also named no-output, with its exit code, and logs the process context');
+    const signalled = await capture("process.kill(process.pid, 'SIGTERM')", 'silent-sig');
+    assert(/exited with no output \(signal SIGTERM\)/.test(signalled.refused), `a silent signal termination names the signal: ${signalled.refused}`);
+
+    const noisy = await capture(`process.stderr.write('first line\\n' + 'y'.repeat(150) + '\\nLast words: keychain locked'); process.exit(1)`, 'noisy-1');
+    const tail = (noisy.refused.split(' stderr: ')[1] || '');
+    assert(/message=Claude Code exited without a result \(exit 1\)\. stderr: /.test(noisy.refused) && tail.endsWith('Last words: keychain locked')
+      && tail.length === 100 && !tail.includes('first line') && !/[\r\n]/.test(noisy.refused),
+    `stderr's last 100 characters are appended on one line: ${noisy.refused}`);
+    assert(noisy.noOutput === '', 'a turn that wrote stderr is not logged as no-output');
+
+    // The turn-level classification: exit 0 with no output is its own code.
+    const provider = claudeProvider('process.exit(0)');
+    const turnsDir = path.join(claudeState, 'turns');
+    const writeTurn = (fields, err = '') => {
+      const id = `ct-${require('crypto').randomUUID()}`;
+      fs.writeFileSync(path.join(turnsDir, `${id}.json`), JSON.stringify({
+        id, session_id: require('crypto').randomUUID(), kind: 'send', authority: 'read_only', workspace: ws, pid: null,
+        state: 'exited', exit_code: 0, created_at: 1, finished_at: 2, ...fields,
+      }));
+      fs.writeFileSync(path.join(turnsDir, `${id}.out.jsonl`), '');
+      fs.writeFileSync(path.join(turnsDir, `${id}.err.log`), err);
+      return id;
+    };
+    const observe = async id => (await provider.observeTurn({ provider_turn_id: id, correlation: {} })).value.failure;
+    const zero = await observe(writeTurn({ exit_code: 0 }));
+    const one = await observe(writeTurn({ exit_code: 1 }));
+    const killed = await observe(writeTurn({ exit_code: null, exit_signal: 'SIGKILL' }));
+    const spoke = await observe(writeTurn({ exit_code: 0 }, 'boom\n'));
+    assert(zero.code === 'process_exited_no_output' && zero.no_output === true && /no output \(exit 0\)/.test(zero.message),
+      `exit 0 with no output is process_exited_no_output (got ${zero.code})`);
+    assert(one.code === 'process_exited' && one.no_output === true && killed.code === 'process_exited' && /signal SIGKILL/.test(killed.message),
+      'another exit code or a signal with no output stays process_exited, still flagged no-output');
+    assert(spoke.code === 'process_exited' && !spoke.no_output && /stderr: boom$/.test(spoke.message), 'exit 0 with stderr is process_exited with the stderr tail');
+    registerFakes(ids);
+  }
+
   console.log('\nUnsupported capabilities are refused before the provider is called');
   const limitedRef = (() => {
     const id = require('crypto').randomUUID();
