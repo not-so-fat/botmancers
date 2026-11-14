@@ -25,6 +25,15 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
+// NOT-610: lets a test hold SessionShares's `creating` state (its first
+// useState) at true. Installed before the component loads, since the
+// transpiled import keeps its own copy of React's exports.
+const realUseState = React.useState;
+let forceNextState = false;
+React.useState = function (initial) {
+  if (forceNextState) { forceNextState = false; return [true, () => {}]; }
+  return realUseState.call(this, initial);
+};
 const view = jiti('./lib/share-view.ts');
 const SessionSharesModule = jiti('./app/components/SessionShares.tsx');
 const SessionShares = SessionSharesModule.default;
@@ -121,6 +130,27 @@ console.log('\nShare to Slack: offered only when the session can take an Ask and
   const checking = render(SessionShares, { row: row(), shares: [], policy: 'loading', onChanged: () => {} });
   assert(checking.includes('Checking the share policy…') && !checking.includes('data-share-action="create"') && !checking.includes('could not be loaded'),
     'while the policy loads: a loading state, never the load-failure reason');
+
+  // NOT-610: the owner opened the form, then a refresh made the row or the
+  // policy unavailable. Hold SessionShares's `creating` state at true (its
+  // first useState) and rerender with each refreshed input: the form and its
+  // open-CLI helper show only while sharing is still available.
+  const renderOpen = props => {
+    forceNextState = true;
+    try { return render(SessionShares, props); } finally { forceNextState = false; }
+  };
+  const stillOpen = renderOpen({ row: row(), shares: [], policy: policy(), onChanged: () => {} });
+  assert(stillOpen.includes('<form') && stillOpen.includes(OPEN_CLI_NOTE) && !stillOpen.includes('data-share-action="create"'),
+    'form open, still available: the form and its helper text show');
+  for (const [label, r, p, reason] of cases) {
+    const html = renderOpen({ row: r, shares: [], policy: p, onChanged: () => {} });
+    assert(!html.includes('<form') && !html.includes(OPEN_CLI_NOTE) && !html.includes('data-share-note="open-cli"') && reason.test(html),
+      `form open, refresh to ${label}: the form and helper text close, the reason shows`);
+  }
+  const reloading = renderOpen({ row: row(), shares: [], policy: 'loading', onChanged: () => {} });
+  assert(!reloading.includes('<form') && !reloading.includes(OPEN_CLI_NOTE), 'form open, policy reloading: no form until availability is known');
+  const source = fs.readFileSync(path.join(ROOT, 'app/components/SessionShares.tsx'), 'utf8');
+  assert(/if \(creating && unavailable\) setCreating\(false\)/.test(source), 'an unavailable refresh also clears the open form, so it does not reappear on its own');
 }
 
 console.log('\nHelpers: ordering, labels, request body, allowlist validation');
