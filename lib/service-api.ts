@@ -1031,8 +1031,17 @@ function pinBody(pin: PinRow) {
   return serviceRedactor().deep(pinView(pin));
 }
 
-export function parseAgentMessageBody(body: unknown, header: string | null): { content: string; idempotencyKey: string } {
-  return parseSessionMessageBody(body, header);
+export function parseAgentMessageBody(body: unknown, header: string | null): { content: string; idempotencyKey: string; freshSession: boolean } {
+  if (!isObject(body)) throw new ServiceApiError('invalid_request', 'The body must be a JSON object.');
+  // NOT-619: fresh_session is a documented field of this route only (it
+  // stays refused everywhere else via AUTHORITY_FIELDS). Deck, runtime,
+  // model, and workspace stay refused here.
+  checkFields(body, ['content', 'idempotency_key', 'fresh_session'], '');
+  if (body.fresh_session !== undefined && typeof body.fresh_session !== 'boolean') {
+    throw new ServiceApiError('invalid_request', 'fresh_session must be true or false.');
+  }
+  const idempotencyKey = idempotencyKeyOf(body, header);
+  return { content: requireText(body.content, 'content', EXCHANGE_LIMITS.instructionChars), idempotencyKey, freshSession: body.fresh_session === true };
 }
 
 export function parsePinBody(body: unknown, header: string | null): { action: PinAction; approveWrite: boolean; replacePinRef: string | null; idempotencyKey: string } {
@@ -1048,11 +1057,12 @@ export function parsePinBody(body: unknown, header: string | null): { action: Pi
   };
 }
 
-export async function messageServiceAgent(ctx: ServiceContext, agentId: string, input: { content: string; idempotencyKey: string }, hooks: PinAuditHooks) {
+export async function messageServiceAgent(ctx: ServiceContext, agentId: string, input: { content: string; idempotencyKey: string; freshSession?: boolean }, hooks: PinAuditHooks) {
   requireAgent(ctx, agentId);
   try {
     const result = await messageAgent({
       requester: ctx.principal, agentId, content: input.content, idempotencyKey: input.idempotencyKey,
+      freshSession: input.freshSession === true,
       // Any authenticated service may start a session; the Agent's policy
       // (allow_new_sessions, default workspace) remains the gate.
       mayStart: true,

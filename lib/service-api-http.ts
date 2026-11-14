@@ -457,7 +457,9 @@ export const serviceOperations = {
 
   sendToPin: (principal: Principal, pinRef: string, body: BodySource, idempotencyHeader: string | null, guard?: ServiceGuard) =>
     serveAs(principal, { operation: 'pins.send', capability: 'sessions:message', targetKind: 'session' }, async (ctx, target, commitAudit) => {
-      const input = parseAgentMessageBody(await body(), idempotencyHeader);
+      // A follow-up goes to the pinned session; fresh_session is a
+      // messageAgent field only and stays refused here.
+      const input = parseSessionMessageBody(await body(), idempotencyHeader);
       const { body: result } = await sendServicePinMessage(ctx, pinRef, input, pinHooks(target, commitAudit));
       return ok(result, result.replayed ? 200 : 202);
     }, guard),
