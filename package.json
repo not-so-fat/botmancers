@@ -1,6 +1,6 @@
 {
   "name": "botmancers",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "private": true,
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 3333",

@@ -7,6 +7,19 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-14
+
+### Fixed
+
+- A Claude Code session whose CLI is still open but idle at its prompt is no
+  longer reported as busy. It can be shared to Slack, asked and resumed. A
+  session a Claude Code process is working in (or whose status is unknown)
+  is still refused, and the refusal now says a Claude Code process is working
+  in it instead of "a turn is running".
+- The Share to Slack form reminds you not to type in a Claude Code that is
+  still open on the shared session, because it will not see the Slack
+  questions.
+
 ## [0.10.5] - 2026-11-09
 
 ### Fixed
