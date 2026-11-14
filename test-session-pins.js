@@ -206,6 +206,50 @@ async function main() {
   await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Different', idempotencyKey: 'w-start', mayStart: true }),
     'idempotency_conflict', 'the same key with different content is idempotency_conflict');
 
+  console.log('\nNOT-619: fresh_session starts a new session even when an eligible one exists');
+  // Default behaviour first (before fresh starts add newer sessions): the
+  // flag omitted or false still resolves the newest eligible session.
+  const stillNewest = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Usual?', idempotencyKey: 'w-usual', mayStart: true });
+  await stillNewest.settled;
+  const stillFalse = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Usual?', idempotencyKey: 'w-usual-f', mayStart: true, freshSession: false });
+  await stillFalse.settled;
+  assert(stillNewest.resolution === 'newest' && stillFalse.resolution === 'newest'
+    && [pin1, pin2, started.pin.session_ref].includes(stillNewest.pin.session_ref)
+    && [pin1, pin2, started.pin.session_ref].includes(stillFalse.pin.session_ref),
+    'flag omitted or false: the newest eligible session is still chosen');
+  const freshStarts = fake.providerCalls(STATE, 'startSession');
+  // Writer has eligible sessions: fresh_session skips them all.
+  const fresh1 = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Fresh eyes?', idempotencyKey: 'w-fresh-1', mayStart: true, freshSession: true });
+  await fresh1.settled;
+  const fresh2 = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Fresh eyes?', idempotencyKey: 'w-fresh-2', mayStart: true, freshSession: true });
+  await fresh2.settled;
+  const freshCall = fake.loadFakeState(STATE).calls.filter(call => call.op === 'startSession').pop();
+  assert(fresh1.resolution === 'started' && fresh2.resolution === 'started'
+    && fresh1.pin.session_ref !== pin1 && fresh1.pin.session_ref !== pin2
+    && fresh2.pin.session_ref !== pin1 && fresh2.pin.session_ref !== pin2
+    && fresh1.pin.session_ref !== fresh2.pin.session_ref
+    && fresh1.pin.authority === 'read_only' && fresh2.pin.authority === 'read_only'
+    && freshCall.authority === 'read_only' && freshCall.workspace === '/work/a'
+    && fake.providerCalls(STATE, 'startSession') === freshStarts + 2,
+    'fresh_session twice: two different new read-only session_refs in the default workspace, neither reuses pin-1 or pin-2');
+  // Every start-branch gate still applies to a fresh session.
+  await rejects(pins.messageAgent({ requester: grok, agentId: reader.id, content: 'x', idempotencyKey: 'fresh-nopolicy', mayStart: true, freshSession: true }),
+    'no_eligible_session', 'fresh + policy forbids new sessions -> no_eligible_session (the busy session is skipped, not waited on)');
+  await rejects(pins.messageAgent({ requester: grok, agentId: nowhere.id, content: 'x', idempotencyKey: 'fresh-nowhere', mayStart: true, freshSession: true }),
+    'workspace_required', 'fresh + no default workspace -> workspace_required');
+  const scoped = agent('Scoped', connectionId, write, { defaultWorkspace: '/work/a' });
+  db.prepare('UPDATE bots SET session_scope_kind = ?, session_scope_items = ? WHERE id = ?').run('sessions', JSON.stringify(['pinned-ref']), scoped.id);
+  await rejects(pins.messageAgent({ requester: grok, agentId: scoped.id, content: 'x', idempotencyKey: 'fresh-scoped', mayStart: true, freshSession: true }),
+    'no_eligible_session', 'fresh + sessions-kind scope -> no_eligible_session');
+  // The flag is part of the idempotency hash.
+  const idem = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Same?', idempotencyKey: 'w-idem', mayStart: true, freshSession: true });
+  await idem.settled;
+  await rejects(pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Same?', idempotencyKey: 'w-idem', mayStart: true, freshSession: false }),
+    'idempotency_conflict', 'the same key with a different fresh_session value is idempotency_conflict');
+  const idemReplay = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Same?', idempotencyKey: 'w-idem', mayStart: true, freshSession: true });
+  assert(idemReplay.replayed && idemReplay.pin.id === idem.pin.id && fake.providerCalls(STATE, 'startSession') === freshStarts + 3,
+    'the same key with the same flag replays and starts nothing');
+
   console.log('\nExact-session pins: follow-ups stay on the same ref');
   const created = await pins.createPin({ requester: grok, sessionRef: pin1, action: 'ask', idempotencyKey: 'p1' });
   const pinRef = created.pin.id;
@@ -381,6 +425,16 @@ async function main() {
   assert(msg.status === 202 && msg.body.pin.session.ref === oldRef && audit.outcome === 'allowed' && audit.operation === 'agents.message'
     && audit.capability === 'sessions:message' && audit.target_kind === 'session' && audit.target_ref === oldRef && audit.agent_id === homeAgent.id,
   'allowed: audit names the resolved Agent, session, capability, and action');
+  const freshSvc = await serviceOperations.messageAgent(grok, writer.id, () => ({ content: 'Fresh review?', idempotency_key: 'svc-fresh', fresh_session: true }), null);
+  audit = lastAudit();
+  assert(freshSvc.status === 202 && freshSvc.body.resolution === 'started' && !freshSvc.body.replayed
+    && freshSvc.body.pin.session.ref !== pin1 && freshSvc.body.pin.session.ref !== pin2
+    && freshSvc.body.pin.authority === 'read_only' && audit.outcome === 'allowed' && audit.capability === 'sessions:start' && audit.operation === 'agents.message.start',
+    'NOT-619: the service route accepts fresh_session and starts a new read-only session, audited as sessions:start');
+  const deckSvc = await serviceOperations.messageAgent(grok, writer.id, () => ({ content: 'Hello', idempotency_key: 'svc-deck', deck_id: 'x' }), null);
+  assert(deckSvc.status === 403 && deckSvc.body.error.code === 'authority_not_allowed', 'NOT-619: deck_id on the message route is still refused');
+  const badFresh = await serviceOperations.messageAgent(grok, writer.id, () => ({ content: 'Hello', idempotency_key: 'svc-badfresh', fresh_session: 'yes' }), null);
+  assert(badFresh.status === 400 && badFresh.body.error.code === 'invalid_request', 'NOT-619: a non-boolean fresh_session is invalid_request');
   const forbiddenStart = await serviceOperations.messageAgent(grok, nowhere.id, () => ({ content: 'Hello', idempotency_key: 'svc-2' }), null);
   assert(forbiddenStart.status === 409 && forbiddenStart.body.error.code === 'workspace_required' && forbiddenStart.body.error.recovery === 'ask_owner'
     && lastAudit().outcome === 'rejected' && lastAudit().code === 'workspace_required', 'workspace_required: structured recovery, audited as rejected');
@@ -405,7 +459,7 @@ async function main() {
   assert(foreign.status === 404 && foreign.body.error.code === 'pin_not_found' && lastAudit().outcome === 'denied',
     'another service cannot use the pin (pin_not_found), audited as denied');
   const auditRows = db.prepare('SELECT * FROM service_audit_events WHERE id > ?').all(auditBefore);
-  assert(auditRows.length === 10, `every call appended exactly one audit row (${auditRows.length})`);
+  assert(auditRows.length === 13, `every call appended exactly one audit row (${auditRows.length})`);
   const everything = JSON.stringify([auditRows, sessionsList.body, agentView.body, msg.body, svcPin.body, svcSend.body,
     db.prepare('SELECT * FROM session_pins').all(), db.prepare('SELECT * FROM session_pin_events').all(), db.prepare('SELECT * FROM session_pin_turns').all()]);
   assert(!SECRET.test(everything) && !everything.includes('/work/a'), 'no provider id or workspace path in any view, row, event, or audit');
@@ -434,6 +488,12 @@ async function main() {
   assert(authority.error.code === 'authority_not_allowed', 'a caller-chosen runtime is refused');
   const workspaceMcp = await call('botmancers_message_agent', { agent_id: nowhere.id, content: 'Hi', idempotency_key: 'mcp-7' });
   assert(workspaceMcp.error.code === 'workspace_required' && workspaceMcp.error.recovery === 'ask_owner', 'message_agent: workspace_required with recovery');
+  const freshMcp = await call('botmancers_message_agent', { agent_id: writer.id, content: 'Fresh review?', idempotency_key: 'mcp-fresh', fresh_session: true });
+  assert(freshMcp.data.resolution === 'started' && freshMcp.data.pin.authority === 'read_only'
+    && freshMcp.data.pin.session.ref !== pin1 && freshMcp.data.pin.session.ref !== pin2,
+    'NOT-619: message_agent with fresh_session: true starts a new read-only session');
+  const deckMcp = await call('botmancers_message_agent', { agent_id: writer.id, content: 'Hi', idempotency_key: 'mcp-deck', deck_id: 'x' });
+  assert(deckMcp.error.code === 'authority_not_allowed', 'NOT-619: message_agent with deck_id is still refused');
   const detachMcp = await call('botmancers_detach_pin', { pin_ref: mResume.data.pin.pin_ref });
   const afterDetach = await call('botmancers_send_to_pin', { pin_ref: mResume.data.pin.pin_ref, content: 'x', idempotency_key: 'mcp-8' });
   assert(detachMcp.data.pin.state === 'detached' && afterDetach.error.code === 'pin_detached' && afterDetach.error.recovery === 'pin_again', 'detach, then pin_detached with pin_again');

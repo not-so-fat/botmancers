@@ -10,6 +10,8 @@
 //     Agent's policy allows new sessions and a default (or the single
 //     explicitly selected) workspace exists. Without one the answer is
 //     workspace_required: a missing workspace never means unrestricted.
+//     With freshSession (NOT-619) the home and newest steps are skipped and
+//     the start branch runs even when an eligible session exists.
 //
 // Every later turn (sendPinTurn) goes to the pinned session_ref and nowhere
 // else, across Botmancers restarts (the pin is a row), until the requester
@@ -737,6 +739,9 @@ export interface MessageAgentInput {
   // message. The Agent's policy and default workspace still decide; the
   // authenticated service path opts in with true.
   mayStart: boolean;
+  // NOT-619: when true, skip the home and newest-session resolution and go
+  // straight to the start branch (same gates, same read-only authority).
+  freshSession?: boolean;
   now?: number;
   // Called with the resolved target before anything is written (the
   // service audit target), and inside the commit.
@@ -754,38 +759,42 @@ type Resolved = { kind: 'session'; summary: SessionSummary; route: 'provider' | 
 // registered-Agent message gives up on existing sessions.
 const CANDIDATE_LIMIT = 10;
 
-async function resolveTarget(facts: AgentFacts, mayStart: boolean): Promise<Resolved> {
+async function resolveTarget(facts: AgentFacts, mayStart: boolean, freshSession: boolean): Promise<Resolved> {
   const agentId = facts.bot.id;
-  let sawBusy = false;
-  const consider = async (ref: string): Promise<{ summary: SessionSummary; route: 'provider' | 'engine' } | 'busy' | null> => {
-    const summary = await freshSummary(facts, ref);
-    if (!summary) return null;
-    const ctx = contextFor(facts, summary);
-    const ask = sessionActions(summary, ctx).ask;
-    if (ask.available) return { summary, route: ctx.route as 'provider' | 'engine' };
-    return ask.code === 'source_session_busy' ? 'busy' : null;
-  };
-  const home = facts.bot.home_session_id;
-  if (home && getAgentSession(db, agentId, home)) {
-    const chosen = await consider(home);
-    // The configured home session is busy: wait for it, never go around it.
-    if (chosen === 'busy') throw new PinError('source_session_busy', 'The Agent’s home session has a turn in progress; send again when it finishes.');
-    if (chosen) return { kind: 'session', ...chosen, resolution: 'home' };
-  }
-  const candidates = listAgentSessions(db, agentId, 'all')
-    .filter(summary => summary.ref !== home)
-    .filter(summary => {
+  // NOT-619: a fresh session skips home and newest-session resolution and
+  // goes straight to the start branch below; every gate there still applies.
+  if (!freshSession) {
+    let sawBusy = false;
+    const consider = async (ref: string): Promise<{ summary: SessionSummary; route: 'provider' | 'engine' } | 'busy' | null> => {
+      const summary = await freshSummary(facts, ref);
+      if (!summary) return null;
       const ctx = contextFor(facts, summary);
       const ask = sessionActions(summary, ctx).ask;
-      return ask.available || ask.code === 'source_session_busy' || (ctx.route === 'provider' && summary.state.resumable === null);
-    })
-    .slice(0, CANDIDATE_LIMIT);
-  for (const candidate of candidates) {
-    const chosen = await consider(candidate.ref);
-    if (chosen === 'busy') sawBusy = true;
-    else if (chosen) return { kind: 'session', ...chosen, resolution: 'newest' };
+      if (ask.available) return { summary, route: ctx.route as 'provider' | 'engine' };
+      return ask.code === 'source_session_busy' ? 'busy' : null;
+    };
+    const home = facts.bot.home_session_id;
+    if (home && getAgentSession(db, agentId, home)) {
+      const chosen = await consider(home);
+      // The configured home session is busy: wait for it, never go around it.
+      if (chosen === 'busy') throw new PinError('source_session_busy', 'The Agent’s home session has a turn in progress; send again when it finishes.');
+      if (chosen) return { kind: 'session', ...chosen, resolution: 'home' };
+    }
+    const candidates = listAgentSessions(db, agentId, 'all')
+      .filter(summary => summary.ref !== home)
+      .filter(summary => {
+        const ctx = contextFor(facts, summary);
+        const ask = sessionActions(summary, ctx).ask;
+        return ask.available || ask.code === 'source_session_busy' || (ctx.route === 'provider' && summary.state.resumable === null);
+      })
+      .slice(0, CANDIDATE_LIMIT);
+    for (const candidate of candidates) {
+      const chosen = await consider(candidate.ref);
+      if (chosen === 'busy') sawBusy = true;
+      else if (chosen) return { kind: 'session', ...chosen, resolution: 'newest' };
+    }
+    if (sawBusy) throw new PinError('source_session_busy', 'Every eligible session of this Agent has a turn in progress; send again when one finishes.');
   }
-  if (sawBusy) throw new PinError('source_session_busy', 'Every eligible session of this Agent has a turn in progress; send again when one finishes.');
   // No eligible session: start one only under policy, with a workspace.
   if (!facts.policy?.allow_new_sessions) {
     throw new PinError('no_eligible_session', 'This Agent has no session that can take a message, and its policy does not allow new sessions. Pin one of its sessions, or ask the owner to allow new sessions.');
@@ -814,7 +823,8 @@ export async function messageAgent(input: MessageAgentInput): Promise<MessageAge
   const pinKey = `agent:${keyText}`;
   const turnKey = `agent:${keyText}`;
   const content = checkContent(input.content);
-  const hash = sha256(['agent', input.agentId, content, input.conversationId ?? null]);
+  const freshSession = input.freshSession === true;
+  const hash = sha256(['agent', input.agentId, content, input.conversationId ?? null, freshSession]);
   const replay = pinByKey(input.requester, pinKey);
   if (replay) {
     if (replay.request_hash !== hash) throw new PinError('idempotency_conflict', 'That idempotency key was used for a different message.');
@@ -831,7 +841,7 @@ export async function messageAgent(input: MessageAgentInput): Promise<MessageAge
   else if (input.requester.kind !== 'service') throw new PinError('invalid_request', 'conversation_id is required: the thread that holds this conversation.');
   if (bots.getById(input.agentId)) await warmAgentProvider(db, input.agentId);
   const facts = agentFacts(input.agentId);
-  const target = await resolveTarget(facts, input.mayStart);
+  const target = await resolveTarget(facts, input.mayStart, freshSession);
   const now = input.now ?? Date.now();
   if (target.kind === 'session') {
     input.onResolved?.({ agentId: input.agentId, sessionRef: target.summary.ref, resolution: target.resolution });
