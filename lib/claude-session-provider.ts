@@ -533,7 +533,7 @@ export function createClaudeSessionProvider(options: ClaudeProviderOptions = {})
       if (busySessions().has(meta.id)) {
         const existing = claimKeyPeek(input.idempotency_key);
         if (existing) return providerOk({ provider_turn_id: existing.id, provider_session_id: existing.session_id });
-        return providerError('busy', 'The session is open in a running Claude Code process.');
+        return providerError('busy', 'The session is busy in a running Claude Code process.');
       }
       return beginTurn('send', input, meta.id, meta.workspace);
     },

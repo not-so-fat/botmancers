@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { SessionRow } from '@/lib/session-view';
 import {
   SHARE_DURATIONS,
+  SHARE_OPEN_CLI_NOTE,
   SHARE_STATUS_LABELS,
   audienceLabel,
   createdByLabel,
@@ -157,7 +158,7 @@ function ShareItem({ share, onChanged }: { share: OwnerShare; onChanged: () => v
   );
 }
 
-function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: SessionRow; policy: SharePolicy; onCancel: () => void; onCreated: () => void }) {
+export function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: SessionRow; policy: SharePolicy; onCancel: () => void; onCreated: () => void }) {
   const ids = { channel: useId(), duration: useId(), turns: useId() };
   const [audience, setAudience] = useState(0);
   const [ttl, setTtl] = useState(policy.limits.ttl_seconds.default);
@@ -193,6 +194,7 @@ function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: SessionRow
       <p className="session-share-note">
         Shares <strong>{row.title}</strong> ({row.agent.name}) as a read-only Ask: Slack replies in the share’s thread ask exactly this session.
       </p>
+      <p className="session-share-note" data-share-note="open-cli">{SHARE_OPEN_CLI_NOTE}</p>
       <label htmlFor={ids.channel}>Slack channel</label>
       <select id={ids.channel} value={audience} onChange={e => setAudience(Number(e.target.value))} disabled={busy}>
         {policy.audiences.map((entry, i) => <option key={`${entry.team_id}:${entry.channel_id}`} value={i}>{audienceLabel(entry)}</option>)}

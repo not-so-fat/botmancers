@@ -99,8 +99,9 @@ function installStore() {
   }
   for (const extra of ['alpha/new', 'alpha/hold', 'alpha/new2']) fs.mkdirSync(path.join(WS, extra), { recursive: true });
   fs.mkdirSync(path.join(CONFIG, 'sessions'), { recursive: true });
-  // A live interactive process holds a4; a1's entry belongs to a dead pid.
-  fs.writeFileSync(path.join(CONFIG, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: ID.a4, cwd: path.join(WS, 'alpha'), status: 'idle' }));
+  // A live interactive process is working in a4 (status "shell", not
+  // "idle"); a1's entry belongs to a dead pid.
+  fs.writeFileSync(path.join(CONFIG, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: ID.a4, cwd: path.join(WS, 'alpha'), status: 'shell' }));
   fs.writeFileSync(path.join(CONFIG, 'sessions', '2147483.json'), JSON.stringify({ pid: 2147483, sessionId: ID.a1, cwd: path.join(WS, 'alpha/parser'), status: 'busy' }));
   fs.writeFileSync(path.join(CONFIG, 'sessions', 'broken.json'), '{');
 }
@@ -161,6 +162,28 @@ async function main() {
   assert(JSON.stringify([...store.liveSessionIds(CONFIG, pid => pid === process.pid)]) === JSON.stringify([ID.a4]), 'live sessions: only entries whose process is alive');
   assert(store.findSessionFile(CONFIG, '../../etc/passwd') === null, 'a non-uuid session id never becomes a path');
 
+  console.log('\nLive sessions: an idle interactive CLI is not working in its session (NOT-610)');
+  {
+    const dir = path.join(TMP, 'live-status');
+    fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+    const statuses = { idle: 'idle', shell: 'shell', other: 'busy', absent: undefined, number: 7, nul: null, object: { s: 'idle' } };
+    const sid = n => `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, '0')}`;
+    const keys = Object.keys(statuses);
+    keys.forEach((key, i) => {
+      const entry = { pid: 1000 + i, sessionId: sid(i), kind: 'interactive', updatedAt: NOW, statusUpdatedAt: NOW };
+      if (statuses[key] !== undefined) entry.status = statuses[key];
+      fs.writeFileSync(path.join(dir, 'sessions', `${1000 + i}.json`), JSON.stringify(entry));
+      // The same status on a dead pid.
+      fs.writeFileSync(path.join(dir, 'sessions', `${2000 + i}.json`), JSON.stringify({ ...entry, pid: 2000 + i, sessionId: sid(100 + i) }));
+    });
+    const live = store.liveSessionIds(dir, pid => pid < 2000);
+    const has = key => live.has(sid(keys.indexOf(key)));
+    assert(!has('idle'), 'a live entry with status "idle" is excluded');
+    assert(has('shell') && has('other') && has('absent') && has('number') && has('nul') && has('object'),
+      'a live entry with status "shell", another string, absent or non-string still counts (fails closed)');
+    assert(keys.every((_, i) => !live.has(sid(100 + i))) && live.size === keys.length - 1, 'a dead pid is excluded whatever its status');
+  }
+
   console.log('\nProvider conformance (direct)');
   const direct = claude.createClaudeSessionProvider(providerOptions());
   const caps = contract.normalizeCapabilities(direct.capabilities());
@@ -203,6 +226,41 @@ async function main() {
     && argOf(sendCall, '--tools') === 'Read,Glob,Grep,Edit,Write,NotebookEdit' && sendCall.cwd === path.join(WS, 'alpha/parser'),
   'workspace_write resume: --resume of the exact id, acceptEdits with edit tools only, in the session\'s recorded workspace');
   assert((await direct.observeTurn({ provider_turn_id: sent.value.provider_turn_id, correlation })).value.status === 'completed', 'the resumed turn completes');
+
+  console.log('\nAn idle interactive CLI does not make its session busy; a working one does (NOT-610)');
+  {
+    // An isolated store holding a copy of a4, so the resume below cannot
+    // touch the main fixtures.
+    const config2 = path.join(TMP, 'claude-config-idle');
+    const calls2 = path.join(TMP, 'claude-calls-idle.jsonl');
+    const slug = store.projectSlug(path.join(WS, 'alpha'));
+    fs.mkdirSync(path.join(config2, 'projects', slug), { recursive: true });
+    fs.mkdirSync(path.join(config2, 'sessions'), { recursive: true });
+    fs.copyFileSync(store.findSessionFile(CONFIG, ID.a4), path.join(config2, 'projects', slug, `${ID.a4}.jsonl`));
+    const pidFile = path.join(config2, 'sessions', `${process.pid}.json`);
+    const holdWith = status => fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid, sessionId: ID.a4, cwd: path.join(WS, 'alpha'), kind: 'interactive', status, updatedAt: NOW, statusUpdatedAt: NOW }));
+    const idleProvider = claude.createClaudeSessionProvider(providerOptions({
+      configDir: config2, stateDir: path.join(TMP, 'provider-state-idle'), env: { ...providerEnv, CLAUDE_CONFIG_DIR: config2, FAKE_CLAUDE_LOG: calls2 },
+    }));
+    const calls2List = () => (fs.existsSync(calls2) ? fs.readFileSync(calls2, 'utf8').split('\n').filter(Boolean) : []);
+
+    holdWith('shell');
+    const shellRecord = await idleProvider.getSession({ provider_session_id: ID.a4, correlation });
+    assert(shellRecord.ok && shellRecord.value.busy === true, 'a live CLI with status "shell": the session is busy');
+    const refused = await idleProvider.sendTurn({ provider_session_id: ID.a4, prompt: 'Shared question', authority: 'read_only', idempotency_key: 'k-shell', correlation });
+    assert(!refused.ok && refused.error.code === 'busy' && refused.error.message === 'The session is busy in a running Claude Code process.' && calls2List().length === 0,
+      'send to a session a working CLI holds: busy, with the new wording, and no process started');
+
+    holdWith('idle');
+    const idleRecord = await idleProvider.getSession({ provider_session_id: ID.a4, correlation });
+    const idleList = await idleProvider.listSessions({ scope: { kind: 'sessions', workspaces: [], provider_session_ids: [ID.a4] }, limit: 5, correlation });
+    assert(idleRecord.ok && idleRecord.value.busy === false && idleList.value.items[0].busy === false, 'a live CLI with status "idle": the session reports busy: false');
+    const idleSent = await idleProvider.sendTurn({ provider_session_id: ID.a4, prompt: 'Shared question', authority: 'read_only', idempotency_key: 'k-idle', correlation });
+    const idleCall = calls2List().map(line => JSON.parse(line))[0];
+    assert(idleSent.ok && idleCall && argOf(idleCall, '--resume') === ID.a4 && !idleCall.argv.includes('--session-id'), 'send to a session an idle CLI holds starts a resume turn of the exact id');
+    const idleDone = await idleProvider.observeTurn({ provider_turn_id: idleSent.value.provider_turn_id, correlation });
+    assert(idleDone.ok && idleDone.value.status === 'completed' && idleDone.value.output === 'fake claude: Shared question', 'the turn is answered');
+  }
 
   console.log('\nSpawn boundary: cancellation');
   const held = await direct.startSession({ workspace: path.join(WS, 'alpha/hold'), prompt: '[hold] long task', authority: 'read_only', idempotency_key: 'k-hold', correlation });

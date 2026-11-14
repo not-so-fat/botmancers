@@ -132,6 +132,10 @@ export function shareCreateAvailability(row: Pick<SessionRow, 'status' | 'resuma
   return { available: true };
 }
 
+// NOT-610: an idle Claude Code CLI open on the session does not block a
+// share, but a share question appends to the transcript it has open.
+export const SHARE_OPEN_CLI_NOTE = "If Claude Code is still open on this session, don't type in it while the share is live. It won't see the Slack questions.";
+
 export const SHARE_DURATIONS: { label: string; seconds: number }[] = [
   { label: '5 minutes', seconds: 300 },
   { label: '1 hour', seconds: 3600 },
