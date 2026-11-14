@@ -30,6 +30,12 @@ Every row of an Agent's Sessions drawer has a **Slack share** section.
   reason. The form names the exact session and Agent and asks for a channel
   from the allowlist, a duration (5 minutes, 1 hour, 8 hours, 24 hours), and
   how many questions are allowed (1–100, default 20).
+  Busy means a Claude Code process is working in the session (*a Claude
+  Code process is working in this session*). A Claude Code CLI that is
+  still open on the session but idle at its prompt does not block sharing;
+  the open form says so in one line: "If Claude Code is still open on this
+  session, don't type in it while the share is live. It won't see the Slack
+  questions."
 - Each share shows its **status**, expiry, questions used, the Slack channel
   and workspace ids, whether its Slack thread has been posted, its
   reference, and who made it. Status is one of:

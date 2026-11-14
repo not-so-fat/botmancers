@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { SessionRow } from '@/lib/session-view';
 import {
   SHARE_DURATIONS,
+  SHARE_OPEN_CLI_NOTE,
   SHARE_STATUS_LABELS,
   audienceLabel,
   createdByLabel,
@@ -51,6 +52,12 @@ export default function SessionShares({ row, shares, policy, onChanged }: {
   const loaded = policy === 'loading' ? null : policy;
   const availability = loadingPolicy ? null : shareCreateAvailability(row, loaded);
   const visibleEnded = showEnded ? ended : ended.slice(0, live.length ? 0 : ENDED_SHOWN);
+  // NOT-610: the form (and its open-CLI helper) shows only while sharing is
+  // available. A refresh that makes the session busy or ended, or empties the
+  // allowlist, closes it rather than leaving it under the unavailable reason.
+  const unavailable = availability !== null && !availability.available;
+  const formOpen = creating && loaded !== null && availability?.available === true;
+  if (creating && unavailable) setCreating(false);
   return (
     <section className="session-shares" aria-labelledby={headingId} data-session-shares={row.ref}>
       <div className="session-shares-head">
@@ -68,11 +75,11 @@ export default function SessionShares({ row, shares, policy, onChanged }: {
           {availability.configHref ? <Link className="session-link" href={availability.configHref}>Open Config</Link> : null}
         </p>
       ) : null}
-      {creating && loaded ? (
+      {formOpen && loaded ? (
         <ShareCreateForm row={row} policy={loaded} onCancel={() => setCreating(false)} onCreated={() => { setCreating(false); onChanged(); }} />
       ) : null}
       {shares === null ? <p className="session-share-note" role="status">Loading shares…</p> : null}
-      {shares !== null && mine.length === 0 && !creating ? <p className="session-share-note">Not shared.</p> : null}
+      {shares !== null && mine.length === 0 && !formOpen ? <p className="session-share-note">Not shared.</p> : null}
       {live.length + visibleEnded.length > 0 ? (
         <ul className="session-share-list" aria-label={`Slack shares of ${row.title}`}>
           {[...live, ...visibleEnded].map(share => <ShareItem key={share.share_ref} share={share} onChanged={onChanged} />)}
@@ -157,7 +164,7 @@ function ShareItem({ share, onChanged }: { share: OwnerShare; onChanged: () => v
   );
 }
 
-function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: SessionRow; policy: SharePolicy; onCancel: () => void; onCreated: () => void }) {
+export function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: SessionRow; policy: SharePolicy; onCancel: () => void; onCreated: () => void }) {
   const ids = { channel: useId(), duration: useId(), turns: useId() };
   const [audience, setAudience] = useState(0);
   const [ttl, setTtl] = useState(policy.limits.ttl_seconds.default);
@@ -193,6 +200,7 @@ function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: SessionRow
       <p className="session-share-note">
         Shares <strong>{row.title}</strong> ({row.agent.name}) as a read-only Ask: Slack replies in the share’s thread ask exactly this session.
       </p>
+      <p className="session-share-note" data-share-note="open-cli">{SHARE_OPEN_CLI_NOTE}</p>
       <label htmlFor={ids.channel}>Slack channel</label>
       <select id={ids.channel} value={audience} onChange={e => setAudience(Number(e.target.value))} disabled={busy}>
         {policy.audiences.map((entry, i) => <option key={`${entry.team_id}:${entry.channel_id}`} value={i}>{audienceLabel(entry)}</option>)}

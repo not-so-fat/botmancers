@@ -250,7 +250,9 @@ export function readTranscriptEntries(file: string, id: string): TranscriptEntry
   return entries;
 }
 
-// Session ids a live Claude Code process holds right now.
+// Session ids a live Claude Code process is working in right now. An
+// interactive CLI waiting at its prompt reports status "idle" and is not
+// working; any other, missing or unknown status counts (fails closed).
 export function liveSessionIds(configDir: string, isAlive: (pid: number) => boolean): Set<string> {
   const live = new Set<string>();
   const dir = path.join(configDir, 'sessions');
@@ -258,6 +260,7 @@ export function liveSessionIds(configDir: string, isAlive: (pid: number) => bool
     if (!/^\d+\.json$/.test(name)) continue;
     try {
       const entry = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')) as Rec;
+      if (entry.status === 'idle') continue;
       if (isClaudeSessionId(entry.sessionId) && typeof entry.pid === 'number' && isAlive(entry.pid)) live.add(entry.sessionId);
     } catch {
       // Malformed or removed while reading.

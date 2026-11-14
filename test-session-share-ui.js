@@ -25,8 +25,19 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
+// NOT-610: lets a test hold SessionShares's `creating` state (its first
+// useState) at true. Installed before the component loads, since the
+// transpiled import keeps its own copy of React's exports.
+const realUseState = React.useState;
+let forceNextState = false;
+React.useState = function (initial) {
+  if (forceNextState) { forceNextState = false; return [true, () => {}]; }
+  return realUseState.call(this, initial);
+};
 const view = jiti('./lib/share-view.ts');
-const SessionShares = jiti('./app/components/SessionShares.tsx').default;
+const SessionSharesModule = jiti('./app/components/SessionShares.tsx');
+const SessionShares = SessionSharesModule.default;
+const { ShareCreateForm } = SessionSharesModule;
 const SharePolicyCard = jiti('./app/components/SharePolicyCard.tsx').default;
 
 let failures = 0;
@@ -36,6 +47,7 @@ function assert(condition, label) {
   return condition;
 }
 const render = (Component, props) => renderToStaticMarkup(React.createElement(Component, props));
+const OPEN_CLI_NOTE = "If Claude Code is still open on this session, don&#x27;t type in it while the share is live. It won&#x27;t see the Slack questions.";
 const PRIVATE = /SECRET|\/work\/|\/Users\/|deck-|codex-direct|claude-code|xoxb|xapp|bmsc_/;
 
 const NOW = Date.now();
@@ -90,10 +102,10 @@ console.log('\nShare to Slack: offered only when the session can take an Ask and
 {
   const offered = render(SessionShares, { row: row(), shares: [], policy: policy(), onChanged: () => {} });
   assert(offered.includes('data-share-action="create"') && offered.includes('Not shared.'), 'askable session, allowlisted channel: Share to Slack offered');
-  const busy = row({ actions: actions({ available: false, code: 'source_session_busy', reason: 'Ask from this context is unavailable: a turn is running in this session. Try again when it finishes.', recovery: 'retry_later' }) });
+  const busy = row({ actions: actions({ available: false, code: 'source_session_busy', reason: 'Ask from this context is unavailable: a Claude Code process is working in this session. Try again when it finishes.', recovery: 'retry_later' }) });
   const ended = row({ status: 'ended', actions: actions({ available: false, code: 'session_ended', reason: 'Ask from this context is unavailable: this session has ended. Its history stays here.', recovery: 'choose_session' }) });
   const cases = [
-    ['a busy session', busy, policy(), /Share to Slack is unavailable: a turn is running/],
+    ['a busy session', busy, policy(), /Share to Slack is unavailable: a Claude Code process is working in this session\. Try again when it finishes\./],
     ['an ended session', ended, policy(), /Share to Slack is unavailable: this session has ended/],
     ['no allowlisted channel', row(), policy({ audiences: [] }), /needs a Slack channel on the share allowlist/],
     ['an invalid policy file', row(), policy({ state: 'invalid', reason: 'bad', audiences: [] }), /share policy file is invalid/],
@@ -102,7 +114,15 @@ console.log('\nShare to Slack: offered only when the session can take an Ask and
   for (const [label, r, p, reason] of cases) {
     const html = render(SessionShares, { row: r, shares: [], policy: p, onChanged: () => {} });
     assert(!html.includes('data-share-action="create"') && reason.test(html), `${label}: no Share to Slack, says why`);
+    assert(!html.includes(OPEN_CLI_NOTE) && !html.includes('data-share-note="open-cli"'), `${label}: no open-CLI helper text`);
   }
+  // NOT-610: the open form warns that an idle Claude Code still open on the
+  // session won't see the Slack questions.
+  const OPEN_CLI_TEXT = "If Claude Code is still open on this session, don't type in it while the share is live. It won't see the Slack questions.";
+  assert(view.SHARE_OPEN_CLI_NOTE === OPEN_CLI_TEXT, 'the open-CLI helper text reads exactly as specified');
+  assert(!offered.includes(OPEN_CLI_NOTE), 'offered row, form closed: no helper text yet');
+  const form = render(ShareCreateForm, { row: row(), policy: policy(), onCancel: () => {}, onCreated: () => {} });
+  assert(form.includes('<form') && form.includes(OPEN_CLI_NOTE) && form.split(OPEN_CLI_NOTE).length === 2, 'offered row, form open: the helper text shows once');
   const allowlist = render(SessionShares, { row: row(), shares: [], policy: policy({ audiences: [] }), onChanged: () => {} });
   assert(allowlist.includes('href="/agents/agent-dev/config#session-sharing"'), 'the allowlist reason links to Session sharing on Agent Config');
   const loading = render(SessionShares, { row: row(), shares: null, policy: policy(), onChanged: () => {} });
@@ -110,6 +130,27 @@ console.log('\nShare to Slack: offered only when the session can take an Ask and
   const checking = render(SessionShares, { row: row(), shares: [], policy: 'loading', onChanged: () => {} });
   assert(checking.includes('Checking the share policy…') && !checking.includes('data-share-action="create"') && !checking.includes('could not be loaded'),
     'while the policy loads: a loading state, never the load-failure reason');
+
+  // NOT-610: the owner opened the form, then a refresh made the row or the
+  // policy unavailable. Hold SessionShares's `creating` state at true (its
+  // first useState) and rerender with each refreshed input: the form and its
+  // open-CLI helper show only while sharing is still available.
+  const renderOpen = props => {
+    forceNextState = true;
+    try { return render(SessionShares, props); } finally { forceNextState = false; }
+  };
+  const stillOpen = renderOpen({ row: row(), shares: [], policy: policy(), onChanged: () => {} });
+  assert(stillOpen.includes('<form') && stillOpen.includes(OPEN_CLI_NOTE) && !stillOpen.includes('data-share-action="create"'),
+    'form open, still available: the form and its helper text show');
+  for (const [label, r, p, reason] of cases) {
+    const html = renderOpen({ row: r, shares: [], policy: p, onChanged: () => {} });
+    assert(!html.includes('<form') && !html.includes(OPEN_CLI_NOTE) && !html.includes('data-share-note="open-cli"') && reason.test(html),
+      `form open, refresh to ${label}: the form and helper text close, the reason shows`);
+  }
+  const reloading = renderOpen({ row: row(), shares: [], policy: 'loading', onChanged: () => {} });
+  assert(!reloading.includes('<form') && !reloading.includes(OPEN_CLI_NOTE), 'form open, policy reloading: no form until availability is known');
+  const source = fs.readFileSync(path.join(ROOT, 'app/components/SessionShares.tsx'), 'utf8');
+  assert(/if \(creating && unavailable\) setCreating\(false\)/.test(source), 'an unavailable refresh also clears the open form, so it does not reappear on its own');
 }
 
 console.log('\nHelpers: ordering, labels, request body, allowlist validation');

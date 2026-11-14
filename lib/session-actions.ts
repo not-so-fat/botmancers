@@ -113,7 +113,7 @@ function reachable(action: SessionAction, row: SessionActionRow, route: SessionR
       return refuse(action, 'session_not_resumable', `Botmancers can’t resume this session under ${row.agent.name}’s current runtime.`);
     }
   }
-  if (row.state.busy) return refuse(action, 'source_session_busy', 'a turn is running in this session. Try again when it finishes.');
+  if (row.state.busy) return refuse(action, 'source_session_busy', 'a Claude Code process is working in this session. Try again when it finishes.');
   return { available: true };
 }
 
