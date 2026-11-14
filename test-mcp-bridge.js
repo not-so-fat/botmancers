@@ -943,6 +943,27 @@ async function child() {
       'REST /api/v0/sessions/{ref}/messages replays the same durable exchange: MCP and API share one record');
   }
 
+  section('NOT-619: message_agent fresh_session starts past validation; Deck fields stay refused');
+  {
+    const messageAgent = tools.find(t => t.name === 'botmancers_message_agent');
+    const props = messageAgent.inputSchema.properties;
+    check(props.fresh_session && props.fresh_session.type === 'boolean' && props.fresh_session.default === false
+      && JSON.stringify(messageAgent.inputSchema.required) === '["agent_id","content","idempotency_key"]'
+      && !('deck_id' in props) && !('deck' in props) && !('workspace' in props),
+      'schema: message_agent offers optional fresh_session (default false), no Deck or workspace field');
+    // Sage is an engine-route Agent whose runtime cannot start sessions, so
+    // a fresh request reaches the start branch and its gate refuses it: the
+    // field parsed and routed. A Deck field never gets that far.
+    const fresh = await v2call('botmancers_message_agent', { agent_id: sage.id, content: 'Review this with fresh eyes', idempotency_key: 'fresh-1', fresh_session: true });
+    check(errorOf(fresh)?.code === 'no_eligible_session', `fresh_session: true reaches the start gate (got ${errorOf(fresh) ? errorOf(fresh).code : 'accepted'})`);
+    const deck = await v2call('botmancers_message_agent', { agent_id: sage.id, content: 'hi', idempotency_key: 'fresh-2', deck_id: 'x' });
+    check(errorOf(deck)?.code === 'authority_not_allowed' && JSON.stringify(errorOf(deck).fields) === '["deck_id"]', 'deck_id on message_agent -> authority_not_allowed naming it');
+    const badType = await v2call('botmancers_message_agent', { agent_id: sage.id, content: 'hi', idempotency_key: 'fresh-3', fresh_session: 'yes' });
+    check(errorOf(badType)?.code === 'invalid_arguments', 'non-boolean fresh_session -> invalid_arguments');
+    const elsewhere = await v2call('botmancers_send_to_session', { session_ref: sageActive.binding.id, content: 'hi', idempotency_key: 'fresh-4', fresh_session: true });
+    check(errorOf(elsewhere)?.code === 'authority_not_allowed', 'fresh_session on any other tool stays refused (authority_not_allowed)');
+  }
+
   section('v2 act (exchange): Ask and Continue through the canonical exchange store');
   {
     const before = v2counts();
