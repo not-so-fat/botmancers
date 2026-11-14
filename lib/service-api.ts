@@ -1148,6 +1148,9 @@ const SHARE_REFUSED_FIELDS = [...new Set([...AUTHORITY_FIELDS, ...SHARE_SELECTOR
 function checkShareFields(body: Record<string, unknown>, allowed: string[], where: string): void {
   for (const key of Object.keys(body)) {
     if (allowed.includes(key)) continue;
+    if (key === 'tool_access') {
+      throw new ServiceApiError('authority_not_allowed', `${where}tool_access is set only by the owner, in Botmancers Sessions; a service share is read-only.`);
+    }
     if (SHARE_REFUSED_FIELDS.includes(key)) {
       throw new ServiceApiError('authority_not_allowed', `${where}${key} cannot select or describe a session; name it by session_ref only.`);
     }

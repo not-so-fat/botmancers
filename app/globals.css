@@ -5075,6 +5075,39 @@ button.avatar-pic {
   border-color: var(--danger);
 }
 
+.session-share-access {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.session-share-access legend {
+  padding: 0;
+  color: var(--ink-muted);
+}
+
+.session-share-access label {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--ink);
+}
+
+.session-share-form .session-share-access input[type="radio"] {
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: var(--accent);
+}
+
+.session-share-warning {
+  border-left: 3px solid var(--danger);
+  padding-left: 8px;
+}
+
 .session-share-form select:focus-visible,
 .session-share-form input:focus-visible,
 .agent-sessions-page a:focus-visible {

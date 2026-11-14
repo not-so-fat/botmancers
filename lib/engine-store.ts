@@ -26,10 +26,12 @@ import { recordAttemptUsageSample } from './usage-samples';
 // NOT-466: Agent Wakes are recorded in wakes and create theirs through
 // lib/wake-router.
 //
-// Foreign keys are enforced by triggers because the shared connection
-// runs with PRAGMA foreign_keys off (legacy tables were never written
-// under enforcement). The declared FOREIGN KEY clauses document the same
-// relations and also hold if enforcement is ever switched on.
+// Foreign keys are also enforced by triggers, written when the shared
+// connection was assumed to run with PRAGMA foreign_keys off. It does not:
+// better-sqlite3 turns enforcement on by default and lib/db.ts never turns
+// it off, so the declared FOREIGN KEY clauses are enforced too (a migration
+// that drops a referenced table must hold its children aside; see
+// rebuildTableSql).
 
 export { TOOL_PROFILE_FOR_KIND };
 export type { ExecutionKind, ToolProfile };
@@ -1935,7 +1937,98 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // A Slack share the owner opens with full access runs its turns with
+    // the full_access authority (edits, shell, network): an ask pin may carry
+    // it (always owner-approved), and provider turns record it. SQLite cannot
+    // alter a CHECK, so both tables are rebuilt from their live definitions
+    // (keeping columns later migrations added), with their indexes and
+    // triggers, and the triggers of other tables that name them.
+    version: 22,
+    name: 'full_access_authority',
+    up: db => {
+      rebuildTableSql(db, 'provider_session_turns', [
+        ["CHECK (authority IN ('read_only', 'workspace_write'))", "CHECK (authority IN ('read_only', 'workspace_write', 'full_access'))"],
+      ]);
+      rebuildTableSql(db, 'session_pins', [
+        ["CHECK (authority IN ('read_only', 'workspace_write'))", "CHECK (authority IN ('read_only', 'workspace_write', 'full_access'))"],
+        [
+          "CHECK (authority = CASE action WHEN 'ask' THEN 'read_only' ELSE 'workspace_write' END)",
+          "CHECK ((action = 'ask' AND authority IN ('read_only', 'full_access')) OR (action = 'resume' AND authority = 'workspace_write')),\n          CHECK (authority <> 'full_access' OR approved_at IS NOT NULL)",
+        ],
+      ]);
+    },
+  },
 ];
+
+// Rebuilds one table with its CREATE statement edited by exact replacements
+// (each must match once, or the migration fails rather than guess), copying
+// every row, then restores its indexes and triggers and the triggers of
+// other tables whose body names it.
+//
+// The connection enforces foreign keys (better-sqlite3's default), and a
+// migration runs inside a transaction where PRAGMA foreign_keys cannot be
+// changed, so dropping a table that other tables REFERENCE would fail once
+// they hold rows. Those child tables are therefore held aside (rows copied
+// out, table dropped) and recreated unchanged after the rebuild; a child
+// that is itself referenced is refused rather than handled half-way.
+function rebuildTableSql(db: Db, table: string, replacements: [string, string][]): void {
+  const references = (name: string) => (db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name <> ? AND sql IS NOT NULL").all(name) as { name: string; sql: string }[])
+    .filter(row => new RegExp(`REFERENCES\\s+"?${name}"?\\s*\\(`).test(row.sql));
+  const children = references(table);
+  for (const child of children) {
+    if (references(child.name).length > 0) throw new Error(`rebuildTableSql: ${child.name} references ${table} and is referenced itself`);
+  }
+  const objectsOf = (name: string) => db.prepare(`
+    SELECT type, name, sql FROM sqlite_master
+    WHERE sql IS NOT NULL AND type IN ('index', 'trigger') AND (tbl_name = ? OR (type = 'trigger' AND sql LIKE '%' || ? || '%'))
+  `).all(name, name) as { type: 'index' | 'trigger'; name: string; sql: string }[];
+  const held = new Map<string, { type: 'index' | 'trigger'; name: string; sql: string }>();
+  for (const child of children) for (const object of objectsOf(child.name)) held.set(object.name, object);
+  for (const object of held.values()) db.exec(`DROP ${object.type.toUpperCase()} ${object.name}`);
+  for (const child of children) {
+    db.exec(`CREATE TABLE ${child.name}_hold AS SELECT * FROM ${child.name}`);
+    db.exec(`DROP TABLE ${child.name}`);
+  }
+  rebuildOne(db, table, replacements);
+  for (const child of children) {
+    db.exec(child.sql);
+    db.exec(`INSERT INTO ${child.name} SELECT * FROM ${child.name}_hold`);
+    db.exec(`DROP TABLE ${child.name}_hold`);
+  }
+  for (const object of held.values()) {
+    if (!db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(object.name)) db.exec(object.sql);
+  }
+  for (const child of children) {
+    if ((db.prepare(`PRAGMA foreign_key_check(${child.name})`).all() as unknown[]).length > 0) {
+      throw new Error(`rebuildTableSql: ${child.name} rows lost their ${table} parent`);
+    }
+  }
+}
+
+function rebuildOne(db: Db, table: string, replacements: [string, string][]): void {
+  const original = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined)?.sql;
+  if (!original) throw new Error(`rebuildTableSql: no table ${table}`);
+  let next = original;
+  for (const [from, to] of replacements) {
+    if (next.split(from).length !== 2) throw new Error(`rebuildTableSql: ${table} does not contain exactly one ${from}`);
+    next = next.replace(from, to);
+  }
+  const temp = `${table}_rebuild`;
+  // A table renamed by an earlier rebuild is stored with a quoted name.
+  const head = new RegExp(`^CREATE TABLE "?${table}"?(?=[\\s(])`);
+  if (!head.test(next)) throw new Error(`rebuildTableSql: unexpected definition of ${table}`);
+  const dependents = (db.prepare(`
+    SELECT type, name, sql FROM sqlite_master
+    WHERE sql IS NOT NULL AND type IN ('index', 'trigger') AND (tbl_name = ? OR (type = 'trigger' AND sql LIKE '%' || ? || '%'))
+  `).all(table, table) as { type: 'index' | 'trigger'; name: string; sql: string }[]);
+  for (const object of dependents) db.exec(`DROP ${object.type.toUpperCase()} ${object.name}`);
+  db.exec(next.replace(head, `CREATE TABLE ${temp}`));
+  db.exec(`INSERT INTO ${temp} SELECT * FROM ${table}`);
+  db.exec(`DROP TABLE ${table}`);
+  db.exec(`ALTER TABLE ${temp} RENAME TO ${table}`);
+  for (const object of dependents) db.exec(object.sql);
+}
 
 // The runtime connection a Session Binding's Agent uses: its registered
 // connection (NOT-502), else the local connection for the binding's

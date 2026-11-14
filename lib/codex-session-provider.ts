@@ -209,14 +209,16 @@ function finalAnswer(items: unknown[] | undefined): string | null {
   return final ?? last;
 }
 
+// full_access is the workspace-write sandbox with network access on: the
+// shell runs, writes stay inside the workspace.
 function sandboxMode(authority: SessionAuthority): 'read-only' | 'workspace-write' {
-  return authority === 'workspace_write' ? 'workspace-write' : 'read-only';
+  return authority === 'read_only' ? 'read-only' : 'workspace-write';
 }
 
 function sandboxPolicy(authority: SessionAuthority, cwd: string): Record<string, unknown> {
-  return authority === 'workspace_write'
-    ? { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
-    : { type: 'readOnly', networkAccess: false };
+  return authority === 'read_only'
+    ? { type: 'readOnly', networkAccess: false }
+    : { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: authority === 'full_access', excludeTmpdirEnvVar: false, excludeSlashTmp: false };
 }
 
 function isMissing(result: RpcResult<unknown>): boolean {
@@ -268,7 +270,7 @@ export class CodexRuntime {
       start: startAs || fallback,
       cancel: m['turn/interrupt'] || (fallback && (!startAs || !resumeAs)),
       usage: !!probe,
-      authorities: probe ? ['read_only', 'workspace_write'] : [],
+      authorities: probe ? ['read_only', 'workspace_write', 'full_access'] : [],
       max_page_size: PAGE_SIZE,
     };
   }
@@ -798,6 +800,7 @@ export class CodexRuntime {
     const context = input.session_context?.mint({ kind: 'codex_exec', ref: runId }) ?? null;
     const config = [
       '-c', `sandbox_mode="${sandboxMode(input.authority)}"`, '-c', 'approval_policy="never"',
+      ...(input.authority === 'full_access' ? ['-c', 'sandbox_workspace_write.network_access=true'] : []),
       ...(context ? codexExecMcpArgs(context) : []),
     ];
     const env = withoutSessionContextEnv(this.env);

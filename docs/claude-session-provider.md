@@ -31,10 +31,14 @@ claude -p --output-format stream-json --verbose --input-format text \
   | --- | --- | --- |
   | `read_only` | `dontAsk` | `Read,Glob,Grep` |
   | `workspace_write` | `acceptEdits` | `Read,Glob,Grep,Edit,Write,NotebookEdit` |
+  | `full_access` | `acceptEdits` | `Read,Glob,Grep,Edit,Write,NotebookEdit,Bash` |
 
-  No shell, web, or MCP tool is available in either mode
-  (`--strict-mcp-config` with no config), and `--permission-prompts none`
-  denies anything that would still prompt.
+  `read_only` and `workspace_write` have no shell, web, or MCP tool.
+  `full_access` adds `Bash` (and through it the network); only the owner
+  grants it, on one Slack share ([session-shares.md](session-shares.md)).
+  No mode has an MCP server beyond the turn's own share-current entry
+  (`--strict-mcp-config`), and `--permission-prompts none` denies anything
+  that would still prompt.
 - Output is read as structured stream events only (`lib/claude-stream.ts`):
   the `system`/`init` event's `session_id`, the first `result` event, and
   `rate_limit_event`s. Terminal text is never interpreted. The only stderr

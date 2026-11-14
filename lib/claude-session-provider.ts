@@ -77,11 +77,14 @@ export const CLAUDE_AUTHORITY_MODES: Record<SessionAuthority, { permission_mode:
   read_only: { permission_mode: 'dontAsk', tools: ['Read', 'Glob', 'Grep'] },
   // File edits inside the working directory, still no shell, web, or MCP.
   workspace_write: { permission_mode: 'acceptEdits', tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit'] },
+  // File edits plus shell (and through it the network); still no MCP
+  // server beyond the turn's own share-current entry.
+  full_access: { permission_mode: 'acceptEdits', tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit', 'Bash'] },
 };
 
 const CAPABILITIES: SessionProviderCapabilities = {
   list: true, search: true, read: true, resume: true, start: true, cancel: true, usage: true,
-  authorities: ['read_only', 'workspace_write'], max_page_size: 25,
+  authorities: ['read_only', 'workspace_write', 'full_access'], max_page_size: 25,
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
 

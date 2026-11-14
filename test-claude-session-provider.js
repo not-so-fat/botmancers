@@ -188,7 +188,18 @@ async function main() {
   const direct = claude.createClaudeSessionProvider(providerOptions());
   const caps = contract.normalizeCapabilities(direct.capabilities());
   assert(direct.kind === 'claude-code' && contract.SESSION_PROVIDER_CAPABILITIES.every(key => caps[key] === true)
-    && JSON.stringify(caps.authorities) === '["read_only","workspace_write"]' && caps.max_page_size === 25, 'capabilities: every operation, both authority modes, page bound 25');
+    && JSON.stringify(caps.authorities) === '["read_only","workspace_write","full_access"]' && caps.max_page_size === 25, 'capabilities: every operation, all three authority modes, page bound 25');
+  {
+    const toolsOf = authority => {
+      const args = claude.claudeTurnArgs(authority, { resume: 'x' });
+      return { tools: args[args.indexOf('--tools') + 1].split(','), allowed: args[args.indexOf('--allowedTools') + 1].split(',') };
+    };
+    const ro = toolsOf('read_only');
+    const ww = toolsOf('workspace_write');
+    const full = toolsOf('full_access');
+    assert(!ro.tools.includes('Bash') && !ww.tools.includes('Bash') && full.tools.includes('Bash') && full.allowed.includes('Bash') && full.tools.includes('Edit')
+      && !full.tools.some(t => t.startsWith('mcp__')), 'only full_access launches with Bash (allowed, no prompt) beside the edit tools; no other MCP tool');
+  }
   const scopeAlpha = { kind: 'workspaces', workspaces: [path.join(WS, 'alpha')], provider_session_ids: [] };
   const page = await direct.listSessions({ scope: scopeAlpha, limit: 25, correlation });
   const byId = Object.fromEntries(page.value.items.map(item => [item.provider_session_id, item]));

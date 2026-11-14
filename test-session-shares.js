@@ -284,13 +284,13 @@ async function main() {
   {
     const before = snapshot();
     const refused = ['provider_session_id', 'external_session_id', 'claude_session_id', 'codex_thread_id', 'cursor_chat_id', 'cwd', 'workspace',
-      'latest', 'most_recent', 'title', 'title_match', 'active_since', 'runtime', 'deck', 'deck_id', 'model', 'tool_profile', 'session_id', 'grants', 'principal'];
+      'latest', 'most_recent', 'title', 'title_match', 'active_since', 'runtime', 'deck', 'deck_id', 'model', 'tool_profile', 'session_id', 'grants', 'principal', 'tool_access'];
     const accepted = [];
     for (const field of refused) {
       const res = await serviceOperations.createShare(grok, s2, () => ({ audience, idempotency_key: `heur-${field}`, [field]: 'x' }), null);
       if (!(res.status === 403 && res.body.error.code === 'authority_not_allowed')) accepted.push(field);
     }
-    assert(accepted.length === 0, `${refused.length} provider-id, cwd/workspace, title, latest, runtime, Deck, model, and tool-profile fields -> 403 authority_not_allowed${accepted.length ? ` (accepted: ${accepted.join(', ')})` : ''}`);
+    assert(accepted.length === 0, `${refused.length} provider-id, cwd/workspace, title, latest, runtime, Deck, model, tool-profile, and tool_access (owner only) fields -> 403 authority_not_allowed${accepted.length ? ` (accepted: ${accepted.join(', ')})` : ''}`);
     const nested = await serviceOperations.createShare(grok, s2, () => ({ audience: { ...audience, workspace: '/work/share' }, idempotency_key: 'heur-nested' }), null);
     assert(nested.status === 403 && nested.body.error.code === 'authority_not_allowed' && !JSON.stringify(nested.body).includes('/work/share'), 'a selector nested in audience is refused too, and never echoed');
     const missing = await serviceOperations.createShare(grok, 'no-such-session', () => ({ audience, idempotency_key: 'nf-1' }), null);

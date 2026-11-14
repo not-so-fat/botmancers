@@ -24,8 +24,11 @@ export const SESSION_PROVIDER_CAPABILITIES = ['list', 'search', 'read', 'resume'
 export type SessionProviderCapability = (typeof SESSION_PROVIDER_CAPABILITIES)[number];
 
 // The authority a turn runs with. Always explicit on every start/send; a
-// provider never infers it from the runtime or the workspace.
-export const SESSION_AUTHORITIES = ['read_only', 'workspace_write'] as const;
+// provider never infers it from the runtime or the workspace. full_access
+// (file edits, shell, and network) is granted only by the owner on one
+// Slack share (lib/session-shares); a provider that cannot enforce it does
+// not list it in its capabilities.
+export const SESSION_AUTHORITIES = ['read_only', 'workspace_write', 'full_access'] as const;
 export type SessionAuthority = (typeof SESSION_AUTHORITIES)[number];
 
 export interface SessionProviderCapabilities {

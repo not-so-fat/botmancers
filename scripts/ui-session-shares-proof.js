@@ -205,7 +205,16 @@ async function run() {
     await click(`${sharesOf(TITLES.open)}.querySelector('[data-share-action="create"]')`);
     await waitFor(`${sharesOf(TITLES.open)}.querySelector('.session-share-form')`, 'share form');
     const form = await evaluate(`${sharesOf(TITLES.open)}.querySelector('.session-share-form').innerText`);
-    check(form.includes(TITLES.open) && form.includes('Forge') && /read-only Ask/.test(form), 'the form names the exact session and Agent, read-only');
+    check(form.includes(TITLES.open) && form.includes('Forge') && /Tool access/.test(form)
+      && await evaluate(`${sharesOf(TITLES.open)}.querySelector('input[data-share-tool-access="read_only"]').checked`),
+    'the form names the exact session and Agent; tool access defaults to Read only');
+    await click(`${sharesOf(TITLES.open)}.querySelector('input[data-share-tool-access="full_access"]')`);
+    await waitFor(`${sharesOf(TITLES.open)}.querySelector('[data-share-note="full-access"]')`, 'the full-access note');
+    check(/edit files, run shell commands, and use the network/.test(await evaluate(`${sharesOf(TITLES.open)}.querySelector('[data-share-note="full-access"]').innerText`)),
+      'choosing Full access (a Codex Agent) shows what it grants before anything is created');
+    await layout('share form with full access', '.sessions-drawer');
+    await shot(vp, 'share-create-form-full-access', sharesOf(TITLES.open));
+    await click(`${sharesOf(TITLES.open)}.querySelector('input[data-share-tool-access="read_only"]')`);
     await setValue(`${sharesOf(TITLES.open)}.querySelectorAll('.session-share-form select')[0]`, '1');
     await setValue(`${sharesOf(TITLES.open)}.querySelectorAll('.session-share-form select')[1]`, '28800');
     await setValue(`${sharesOf(TITLES.open)}.querySelector('.session-share-form input')`, '0');

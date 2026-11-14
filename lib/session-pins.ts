@@ -20,7 +20,10 @@
 // Actions (lib/session-actions): an ask pin runs read_only turns; a resume
 // pin runs workspace_write turns, created only when the runtime enforces
 // that authority, the Agent's policy allows resuming with edits, and the
-// requester explicitly approved (approved_at). A turn reaches the session
+// requester explicitly approved (approved_at). An ask pin created for an
+// owner's full-access Slack share (fullAccess, lib/session-shares only;
+// never a route or MCP input) runs full_access turns instead: provider route
+// only, the runtime must enforce it, and it is recorded as approved. A turn reaches the session
 // through the Agent's SessionProvider (route 'provider', lib/provider-sessions)
 // or, for a Botmancers binding without one, as an Ask exchange (route
 // 'engine', lib/session-exchanges). Hand off stays an exchange (Continue).
@@ -124,7 +127,7 @@ export interface PinRow {
   agent_id: string;
   session_ref: string;
   action: PinAction;
-  authority: 'read_only' | 'workspace_write';
+  authority: 'read_only' | 'workspace_write' | 'full_access';
   resolution: PinResolution;
   route: 'provider' | 'engine';
   conversation_id: string;
@@ -474,6 +477,8 @@ export interface CreatePinInput {
   action: PinAction;
   // Explicit approval of workspace-write turns; required for resume.
   approveWrite?: boolean;
+  // Internal: the owner granted full access on a Slack share (ask only).
+  fullAccess?: boolean;
   idempotencyKey: string;
   // The owner names the thread that holds the turns; a service gets a
   // conversation of its own (null).
@@ -498,9 +503,10 @@ function requireAction(facts: AgentFacts, summary: SessionSummary, action: PinAc
 
 function insertPin(fields: {
   requester: Principal; key: string; hash: string; agentId: string; sessionRef: string; action: PinAction; resolution: PinResolution;
-  route: 'provider' | 'engine'; conversationId: string; approved: boolean; now: number;
+  route: 'provider' | 'engine'; conversationId: string; approved: boolean; now: number; fullAccess?: boolean;
 }): PinRow {
   const id = randomUUID();
+  const authority = fields.fullAccess ? 'full_access' : fields.action === 'ask' ? 'read_only' : 'workspace_write';
   db.prepare(`
     INSERT INTO session_pins (
       id, requester_kind, requester_id, idempotency_key, request_hash, agent_id, session_ref, action, authority, resolution, route,
@@ -508,12 +514,12 @@ function insertPin(fields: {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'attached', ?, ?)
   `).run(
     id, fields.requester.kind, fields.requester.id, fields.key, fields.hash, fields.agentId, fields.sessionRef, fields.action,
-    fields.action === 'ask' ? 'read_only' : 'workspace_write', fields.resolution, fields.route, fields.conversationId,
+    authority, fields.resolution, fields.route, fields.conversationId,
     fields.approved ? fields.now : null, fields.now, fields.now,
   );
   event(id, 'created', {
     agent_id: fields.agentId, session_ref: fields.sessionRef, action: fields.action, resolution: fields.resolution, route: fields.route,
-    authority: fields.action === 'ask' ? 'read_only' : 'workspace_write', approved: fields.approved,
+    authority, approved: fields.approved,
   }, fields.now);
   return pinRow(id) as PinRow;
 }
@@ -527,7 +533,10 @@ function detachRow(pin: PinRow, reason: 'detached' | 'switched', replacedBy: str
 export async function createPin(input: CreatePinInput): Promise<{ pin: PinRow; created: boolean; replaced: PinRow | null }> {
   const key = `pin:${checkKey(input.idempotencyKey)}`;
   if (input.action !== 'ask' && input.action !== 'resume') throw new PinError('invalid_request', 'action must be "ask" or "resume".');
-  const hash = sha256(['pin', input.sessionRef, input.agentId ?? null, input.action, input.approveWrite === true, input.conversationId ?? null, input.replacePinRef ?? null]);
+  const fullAccess = input.fullAccess === true;
+  if (fullAccess && input.action !== 'ask') throw new PinError('invalid_request', 'Full access applies to an ask pin only.');
+  const hash = sha256(['pin', input.sessionRef, input.agentId ?? null, input.action, input.approveWrite === true, input.conversationId ?? null, input.replacePinRef ?? null,
+    ...(fullAccess ? ['full_access'] : [])]);
   const replay = pinByKey(input.requester, key);
   if (replay) {
     if (replay.request_hash !== hash) throw new PinError('idempotency_conflict', 'That idempotency key was used for a different pin.');
@@ -540,6 +549,9 @@ export async function createPin(input: CreatePinInput): Promise<{ pin: PinRow; c
   const summary = await freshSummary(facts, input.sessionRef);
   if (!summary) throw new PinError('session_not_found', 'No session with that reference.');
   const route = requireAction(facts, summary, input.action);
+  if (fullAccess && (route !== 'provider' || !facts.provider?.authorities.includes('full_access'))) {
+    throw new PinError('authority_not_allowed', 'This session\'s runtime cannot run turns with full access (file edits, shell, and network). Claude Code and Codex sessions can.');
+  }
   if (input.action === 'resume' && input.approveWrite !== true) {
     throw new PinError('approval_required', 'Resume work here runs with workspace-write authority. Ask the person you act for to approve edits, then pin again with approve_write: true.');
   }
@@ -554,7 +566,7 @@ export async function createPin(input: CreatePinInput): Promise<{ pin: PinRow; c
     const pin = insertPin({
       requester: input.requester, key, hash, agentId, sessionRef: summary.ref, action: input.action, resolution: 'exact',
       route: route as 'provider' | 'engine', conversationId: input.conversationId ?? openConversation(input.requester, agentId, now),
-      approved: input.action === 'resume', now,
+      approved: input.action === 'resume' || fullAccess, now, fullAccess,
     });
     if (replacing) detachRow(replacing, 'switched', pin.id, now);
     input.onCommit?.(pin);

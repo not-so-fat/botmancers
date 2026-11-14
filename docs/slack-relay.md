@@ -38,7 +38,9 @@ start the transport), `stop`, `bindShare(shareRef)`, `handleEnvelope`,
 ## Binding: one anchor thread per share
 
 `bindShare(shareRef)` posts one top-level anchor message in the share's
-allowlisted channel (fixed text, metadata
+allowlisted channel (fixed text: the read-only wording, or, for a share the
+owner gave full access, one that says the session can edit files, run shell
+commands, and use the network; metadata
 `{ event_type: "botmancers_share", event_payload: { share_ref } }`) and
 records `slack_share_threads (share_ref → session_ref, team_id, channel_id,
 thread_ts)`. Binding again returns the same row and posts nothing; an unknown,
