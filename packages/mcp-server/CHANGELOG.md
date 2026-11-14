@@ -7,6 +7,17 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+### Added
+
+- `botmancers_message_agent` (and `POST /api/v0/agents/:agentId/pins`) takes
+  an optional `fresh_session` flag (default `false`). When `true`, the
+  message skips the Agent's home and newest sessions and starts a brand-new
+  read-only session with no prior context (`resolution: "started"`); the
+  Agent's policy and default workspace still gate the start. The flag is
+  part of the idempotency hash. The collaboration skill and
+  `docs/mcp-bridge.md` document the "ask another Agent to review a PR"
+  message convention that uses it.
+
 ## [0.10.6] - 2026-11-14
 
 ### Fixed

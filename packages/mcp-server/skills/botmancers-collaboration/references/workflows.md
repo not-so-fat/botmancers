@@ -15,6 +15,7 @@ up. Codex and Grok are example Agent names.
 - [Ask](#ask)
 - [Continue](#continue)
 - [Message a registered Agent](#message-a-registered-agent)
+- [Ask another Agent to review a PR](#ask-another-agent-to-review-a-pr)
 - [Pinned session](#pinned-session)
 - [Resume work here](#resume-work-here)
 - [Detach or switch](#detach-or-switch)
@@ -126,6 +127,30 @@ choose the destination session, Deck, runtime, model, or tool profile.
 no default workspace for a new one; `no_eligible_session` means its policy
 does not allow a new one. Both are for the owner (`recovery: ask_owner`).
 Tell the user; do not try another Agent.
+
+## Ask another Agent to review a PR
+
+"Ask Grok to review PR 123." A review needs a clean session with no prior
+context, so pass `fresh_session: true`. This is a message convention, not
+a separate API.
+
+1. `botmancers_message_agent { "agent_id": "<agent_id of Grok>", "content": "Review PR 123: <one-line ask>", "fresh_session": true, "idempotency_key": "<new key>" }`.
+   `resolution` is `started`: a brand-new read-only session.
+2. Poll `botmancers_get_pin { "pin_ref": "<pin_ref>" }` until the turn is not
+   `running`; the reply is the turn's `answer`.
+3. Follow-ups go to the same session with `botmancers_send_to_pin`.
+
+Write the message from this template:
+
+> Review PR <number> (<PR URL>) for merge into the base branch <base
+> branch>. Head SHA: <head SHA>. Read the diff with
+> `git diff origin/main...<head SHA>` (the read-only sandbox has no
+> network, so `gh pr diff` will not work). Intent: <what the PR is for, or
+> its acceptance criteria>. Block only on <correctness, security, or
+> data-loss issues>; note anything else as non-blocking.
+
+The Agent's default workspace must be a checkout that contains the pushed
+branch. The reply is advice only: it posts nothing to the PR.
 
 ## Pinned session
 

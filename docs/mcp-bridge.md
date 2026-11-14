@@ -112,7 +112,7 @@ and the Agent's stored configuration.
 | 4 act, exchange | `botmancers_create_exchange` | `exchanges:create` | `mode` (`ask`, `continue`), `source` (`session_ref`, optional `agent_id`), `destination` (`agent_id`, optional `conversation_id`; Continue only), optional `origin_conversation_id`, `instruction`, `idempotency_key` | `exchange` (full view while every Agent involved exists, else status metadata), `replayed`, `terminal` |
 | 5 observe | `botmancers_get_exchange` | `exchanges:read` | `exchange_id` | `exchange` (state, `answer`, `packet`, `failure`, `events`), `terminal`, `content_trust: "untrusted"` |
 | 5 observe | `botmancers_list_exchanges` | `exchanges:read` | `cursor`, `limit` | `items` (status metadata, session messages included), `next_cursor` |
-| 4 act, registered Agent | `botmancers_message_agent` | `sessions:message` (a new session also `sessions:start`) | `agent_id`, `content`, `idempotency_key` | `pin`, `turn`, `resolution` (`home`, `newest`, `started`), `replayed` |
+| 4 act, registered Agent | `botmancers_message_agent` | `sessions:message` (a new session also `sessions:start`) | `agent_id`, `content`, `idempotency_key`, optional `fresh_session` | `pin`, `turn`, `resolution` (`home`, `newest`, `started`), `replayed` |
 | 4 act, exact session | `botmancers_pin_session` | `sessions:message` (`ask`) or `sessions:resume` (`resume`) | `session_ref`, `action` (`ask`, `resume`), `approve_write`, optional `replace_pin_ref`, `idempotency_key` | `pin`, `replaced_pin_ref`, `replayed` |
 | 4 act, pinned | `botmancers_send_to_pin` | the pin's | `pin_ref`, `content`, `idempotency_key` | `pin`, `turn`, `replayed` |
 | 5 observe | `botmancers_get_pin` | the pin's | `pin_ref` | `pin`, `turns` (state, `answer`), `content_trust: "untrusted"` |
@@ -138,7 +138,9 @@ and the Agent's stored configuration.
   Agent without a session: Botmancers resolves its home session, else its
   newest eligible session, else (policy, default workspace, and
   `sessions:start`) a new read-only one, or answers `workspace_required` /
-  `no_eligible_session`. `botmancers_pin_session` pins an exact session for
+  `no_eligible_session`. With `fresh_session: true` (NOT-619) it skips the
+  home and newest sessions and starts a brand-new read-only session with no
+  prior context. `botmancers_pin_session` pins an exact session for
   **Ask from this context** (`action: "ask"`, read-only) or **Resume work
   here** (`action: "resume"`, workspace write, `approve_write: true` after
   the user's explicit approval). Every `botmancers_send_to_pin` goes to the
@@ -301,6 +303,28 @@ and Grok (`tools/call` arguments shown):
 A retry of step 4 or 6 with the same key and arguments returns the same
 exchange. An ended `s-123` would answer `session_ended`; choose another
 session from step 3.
+
+## Ask another Agent to review a PR
+
+A documented message convention (NOT-619), not a separate API: while still
+working on a PR, call `botmancers_message_agent` with `fresh_session: true`
+so the reviewer starts in a brand-new read-only session with no prior
+context (`resolution: "started"`):
+
+`botmancers_message_agent { "agent_id": "a-grok", "content": "<the review request below>", "fresh_session": true, "idempotency_key": "review-pr-123-1" }`
+
+Write the content from this template:
+
+> Review PR 123 (https://github.com/example/repo/pull/123) for merge into
+> the base branch `main`. Head SHA: `<head SHA>`. Read the diff with
+> `git diff origin/main...<head SHA>` (the read-only sandbox has no
+> network, so `gh pr diff` will not work). Intent: <what the PR is for, or
+> its acceptance criteria>. Block only on <correctness, security, or
+> data-loss issues>; note anything else as non-blocking.
+
+The Agent's default workspace must be a checkout that contains the pushed
+branch. The reply is advice only: it posts nothing to the PR. Follow-ups go
+to the same session with `botmancers_send_to_pin`.
 
 ## Versioning
 

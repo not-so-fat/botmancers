@@ -824,7 +824,9 @@ export async function messageAgent(input: MessageAgentInput): Promise<MessageAge
   const turnKey = `agent:${keyText}`;
   const content = checkContent(input.content);
   const freshSession = input.freshSession === true;
-  const hash = sha256(['agent', input.agentId, content, input.conversationId ?? null, freshSession]);
+  // The flag is part of the hash, appended only when true so the default
+  // path hashes exactly as before.
+  const hash = sha256(['agent', input.agentId, content, input.conversationId ?? null, ...(freshSession ? ['fresh'] : [])]);
   const replay = pinByKey(input.requester, pinKey);
   if (replay) {
     if (replay.request_hash !== hash) throw new PinError('idempotency_conflict', 'That idempotency key was used for a different message.');

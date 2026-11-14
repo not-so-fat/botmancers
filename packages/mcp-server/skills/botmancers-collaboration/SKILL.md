@@ -69,6 +69,7 @@ Check the rows in order and use the first one that fits:
 - A share is read-only and names one session by its `ref` only; never by
   title, workspace, or "latest". See
   [share a session](references/workflows.md#share-a-session).
+- To ask another Agent to review a PR, message it with `fresh_session: true` (a clean read-only session): see [ask another Agent to review a PR](references/workflows.md#ask-another-agent-to-review-a-pr).
 
 ## 3. Observe
 
