@@ -28,8 +28,21 @@ Every row of an Agent's Sessions drawer has a **Slack share** section.
   or busy) and the allowlist names at least one channel. Otherwise the
   section says why, and links to Agent Config when the allowlist is the
   reason. The form names the exact session and Agent and asks for a channel
-  from the allowlist, a duration (5 minutes, 1 hour, 8 hours, 24 hours), and
-  how many questions are allowed (1–100, default 20).
+  from the allowlist, a duration (5 minutes, 1 hour, 8 hours, 24 hours), how
+  many questions are allowed (1–100, default 20), and **Tool access**:
+  - **Read only** (default): the session reads files and answers.
+  - **Full access**: the session's turns may edit files, run shell commands,
+    and use the network on this computer, as the owner. Offered only for
+    Claude Code and Codex Agents (the runtime must enforce it; otherwise the
+    option is disabled with the reason). The form shows what is being
+    granted before it is created. It is fixed for the share's lifetime: to
+    change it, revoke and share again.
+
+  Only the owner sets tool access, here. A service (`/api/v0/shares`, MCP
+  `botmancers_create_share`) or a turn sharing its own session gets
+  `403 authority_not_allowed` for `tool_access`; those shares are always
+  read-only. The Agent's launch policy is not consulted: the share is the
+  owner's explicit grant for that one session.
   Busy means a Claude Code process is working in the session (*a Claude
   Code process is working in this session*). A Claude Code CLI that is
   still open on the session but idle at its prompt does not block sharing;
@@ -99,11 +112,11 @@ use `/api/v0/shares` and see only their own shares.
 | `GET /api/shares?session_ref&agent_id&state&cursor&limit` | every share, newest first; `limit` 1–100 (default 50); opaque `next_cursor` |
 | `POST /api/shares/{share_ref}/revoke` | idempotent: `200 { share, replayed }`; `404 share_not_found` |
 | `GET /api/bots/{id}/sessions/{ref}/shares` | that session's shares (`state`, `cursor`, `limit` only) |
-| `POST /api/bots/{id}/sessions/{ref}/shares` | `{ audience: { team_id, channel_id }, ttl_seconds?, max_turns?, idempotency_key }` → `201`; exact replay `200`; same key, other body `409 idempotency_conflict`; off the allowlist `403 audience_not_allowed`; unknown or another Agent's session `404 session_not_found` |
+| `POST /api/bots/{id}/sessions/{ref}/shares` | `{ audience: { team_id, channel_id }, ttl_seconds?, max_turns?, tool_access?: "read_only" \| "full_access", idempotency_key }` → `201`; exact replay `200`; same key, other body `409 idempotency_conflict`; off the allowlist `403 audience_not_allowed`; full access on a runtime that cannot enforce it `403 authority_not_allowed`; unknown or another Agent's session `404 session_not_found` |
 | `GET` / `PUT /api/bots/{id}/share-policy` | the policy view / `{ revision, share_from_turn?, audiences? }` |
 
 The owner view: `share_ref, agent { id, name }, session_ref, authority,
-state, status, audience, created_via, created_by, created_at, expires_at,
+tool_access, state, status, audience, created_via, created_by, created_at, expires_at,
 revoked_at, max_turns, turns_used, thread { posted, posted_at }`. Owner-made
 shares are created by `person:local-owner`.
 

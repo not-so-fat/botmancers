@@ -177,7 +177,7 @@ async function main() {
   assert((await probeRt.ready()).ok && probeRt.probe.cli_version === '0.157.1' && Object.values(probeRt.probe.methods).every(Boolean),
     'a current Codex is ready: CLI version read, every app-server method detected');
   const caps = probeRt.capabilities();
-  assert(caps.list && caps.search && caps.read && caps.resume && caps.start && caps.cancel && caps.usage && caps.authorities.join() === 'read_only,workspace_write',
+  assert(caps.list && caps.search && caps.read && caps.resume && caps.start && caps.cancel && caps.usage && caps.authorities.join() === 'read_only,workspace_write,full_access',
     'capabilities reflect the probe');
   assert(JSON.stringify(probeRt.selection()) === JSON.stringify({ start: 'app-server', resume: 'app-server' }), 'start and resume select the app-server');
   const probeCalls = loadState(STATE.main).calls;
@@ -293,6 +293,11 @@ async function main() {
   const writeResume = await ps.sendProviderTurn(db, dev.id, parserRef, { prompt: 'Fix it', authority: 'workspace_write', idempotencyKey: 'r2', requester: owner });
   assert(lastCall(STATE.main, 'thread/resume').params.sandbox === 'workspace-write' && lastCall(STATE.main, 'turn/start').params.sandboxPolicy.type === 'workspaceWrite'
     && (await ps.observeProviderTurn(db, dev.id, writeResume.turn.turn_ref)).state === 'completed', 'an approved workspace-write resume runs with the workspace-write sandbox');
+  const fullTurn = await ps.sendProviderTurn(db, reader.id, refOf(reader.id, 'thr-parser-SECRET'), { prompt: 'curl it', authority: 'full_access', idempotencyKey: 'r-full', requester: owner });
+  const fullPolicy = lastCall(STATE.main, 'turn/start').params.sandboxPolicy;
+  assert(lastCall(STATE.main, 'thread/resume').params.sandbox === 'workspace-write' && fullPolicy.type === 'workspaceWrite' && fullPolicy.networkAccess === true
+    && (await ps.observeProviderTurn(db, reader.id, fullTurn.turn.turn_ref)).state === 'completed',
+    'a full_access turn (granted by an owner share, not the Agent policy) runs workspace-write with network access on, even for a read-only Agent');
   await rejects(ps.sendProviderTurn(db, reader.id, refOf(reader.id, 'thr-parser-SECRET'), { prompt: 'x', authority: 'workspace_write', idempotencyKey: 'r3', requester: owner }),
     'authority_not_allowed', 'a read-only Agent cannot resume with write authority');
   const archivedTurn = await ps.sendProviderTurn(db, dev.id, archived.id, { prompt: 'Revive', authority: 'read_only', idempotencyKey: 'r4', requester: owner });

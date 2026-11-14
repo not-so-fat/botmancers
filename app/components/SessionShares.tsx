@@ -4,6 +4,7 @@ import { useId, useState } from 'react';
 import Link from 'next/link';
 import type { SessionRow } from '@/lib/session-view';
 import {
+  FULL_ACCESS_NOTE,
   SHARE_DURATIONS,
   SHARE_OPEN_CLI_NOTE,
   SHARE_STATUS_LABELS,
@@ -19,6 +20,7 @@ import {
   turnsLabel,
   type OwnerShare,
   type SharePolicy,
+  type ShareToolAccess,
 } from '@/lib/share-view';
 
 // NOT-519: the Slack share section of one Sessions row. Shows the
@@ -139,7 +141,8 @@ function ShareItem({ share, onChanged }: { share: OwnerShare; onChanged: () => v
         <div><dt>Questions</dt><dd>{turnsLabel(share)}</dd></div>
         <div><dt>Thread</dt><dd>{threadLabel(share)}</dd></div>
         <div><dt>Reference</dt><dd><code className="session-share-ref">{share.share_ref}</code></dd></div>
-        <div><dt>Origin</dt><dd>{createdByLabel(share)} · read-only Ask</dd></div>
+        <div><dt>Origin</dt><dd>{createdByLabel(share)} · Ask</dd></div>
+        <div><dt>Tool access</dt><dd data-share-tool-access={share.tool_access}>{share.tool_access === 'full_access' ? 'Full access: edits, shell, network' : 'Read only'}</dd></div>
       </dl>
       <p className="session-share-note">{shareStatusNote(share)}</p>
       <div className="session-actions" role="group" aria-label="Share actions">
@@ -165,8 +168,10 @@ function ShareItem({ share, onChanged }: { share: OwnerShare; onChanged: () => v
 }
 
 export function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: SessionRow; policy: SharePolicy; onCancel: () => void; onCreated: () => void }) {
-  const ids = { channel: useId(), duration: useId(), turns: useId() };
+  const ids = { channel: useId(), duration: useId(), turns: useId(), access: useId() };
   const [audience, setAudience] = useState(0);
+  const [toolAccess, setToolAccess] = useState<ShareToolAccess>('read_only');
+  const fullAccess = policy.agent.full_access;
   const [ttl, setTtl] = useState(policy.limits.ttl_seconds.default);
   const [turns, setTurns] = useState(String(policy.limits.max_turns.default));
   const [key] = useState(newKey);
@@ -183,7 +188,7 @@ export function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: Ses
     try {
       const res = await fetch(`/api/bots/${encodeURIComponent(row.agent.id)}/sessions/${encodeURIComponent(row.ref)}/shares`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(shareCreateBody(policy.audiences[audience], ttl, turnsValue, key)),
+        body: JSON.stringify(shareCreateBody(policy.audiences[audience], ttl, turnsValue, key, toolAccess)),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) setError(typeof body?.error?.message === 'string' ? body.error.message : 'The share could not be created.');
@@ -198,7 +203,7 @@ export function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: Ses
   return (
     <form className="session-share-form" onSubmit={e => { void submit(e); }} aria-label={`Share ${row.title} to Slack`}>
       <p className="session-share-note">
-        Shares <strong>{row.title}</strong> ({row.agent.name}) as a read-only Ask: Slack replies in the share’s thread ask exactly this session.
+        Shares <strong>{row.title}</strong> ({row.agent.name}) as an Ask: Slack replies in the share’s thread ask exactly this session.
       </p>
       <p className="session-share-note" data-share-note="open-cli">{SHARE_OPEN_CLI_NOTE}</p>
       <label htmlFor={ids.channel}>Slack channel</label>
@@ -214,6 +219,21 @@ export function ShareCreateForm({ row, policy, onCancel, onCreated }: { row: Ses
         id={ids.turns} type="number" inputMode="numeric" min={policy.limits.max_turns.min} max={policy.limits.max_turns.max}
         value={turns} onChange={e => setTurns(e.target.value)} disabled={busy} aria-invalid={!turnsValid}
       />
+      <fieldset className="session-share-access" disabled={busy}>
+        <legend id={ids.access}>Tool access</legend>
+        {(['read_only', 'full_access'] as const).map(value => (
+          <label key={value}>
+            <input
+              type="radio" name={ids.access} value={value} checked={toolAccess === value}
+              disabled={value === 'full_access' && !fullAccess.supported}
+              onChange={() => setToolAccess(value)} data-share-tool-access={value}
+            />
+            {value === 'read_only' ? ' Read only: it can read files and answer' : ' Full access: it can edit files, run shell commands, and use the network'}
+          </label>
+        ))}
+        {!fullAccess.supported && fullAccess.reason ? <p className="session-share-note">{fullAccess.reason}</p> : null}
+        {toolAccess === 'full_access' ? <p className="session-share-note session-share-warning" role="note" data-share-note="full-access">{FULL_ACCESS_NOTE}</p> : null}
+      </fieldset>
       {!turnsValid ? <p className="delete-error">Questions allowed must be a whole number from {policy.limits.max_turns.min} to {policy.limits.max_turns.max}.</p> : null}
       {error ? <p className="delete-error" role="alert">{error}</p> : null}
       <div className="session-actions">

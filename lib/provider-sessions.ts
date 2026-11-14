@@ -929,9 +929,9 @@ export interface TurnInput {
 function checkTurnInput(input: TurnInput): void {
   if (typeof input.prompt !== 'string' || !input.prompt.trim()) throw new ProviderSessionError('invalid_input', 'prompt is required.');
   if (input.prompt.length > PROMPT_LIMIT) throw new ProviderSessionError('invalid_input', `prompt is longer than ${PROMPT_LIMIT} characters.`);
-  if (input.authority !== 'read_only' && input.authority !== 'workspace_write') {
+  if (input.authority !== 'read_only' && input.authority !== 'workspace_write' && input.authority !== 'full_access') {
     // Never defaulted: the caller states the authority every time.
-    throw new ProviderSessionError('invalid_input', 'authority must be read_only or workspace_write.');
+    throw new ProviderSessionError('invalid_input', 'authority must be read_only, workspace_write, or full_access.');
   }
   if (typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > KEY_LIMIT) {
     throw new ProviderSessionError('invalid_input', 'idempotencyKey is required.');

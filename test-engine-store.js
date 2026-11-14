@@ -137,7 +137,7 @@ function runFresh() {
   assert(hasUnique('work_attempts', 'request_id', true), 'work_attempts: at most one open attempt per request (partial unique)');
   assert(hasUnique('session_bindings', 'agent_id,adapter,expr,expr', true), 'session_bindings: one active binding per scope (partial unique)');
   const migrations = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
-  assert(migrations.map(m => m.version).join(',') === '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21' && store.ENGINE_SCHEMA_VERSION === 21, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
+  assert(migrations.map(m => m.version).join(',') === '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22' && store.ENGINE_SCHEMA_VERSION === 22, `schema_migrations records versions 1..${store.ENGINE_SCHEMA_VERSION}`);
   const edges = sqlite.prepare('SELECT from_state || \'>\' || to_state AS e FROM work_request_transitions').all().map(row => row.e);
   assert(edges.includes('queued>running') && !edges.includes('completed>running'), 'transition table seeded from WORK_REQUEST_TRANSITIONS');
 
@@ -481,18 +481,47 @@ function runFresh() {
   if (legacyRun.stderr) process.stderr.write(legacyRun.stderr);
   assert(legacyRun.status === 0, `legacy scenario exited 0 (status ${legacyRun.status})`);
 
+  checkFullAccessUpgrade(store);
   finish();
 }
 
-function runLegacy() {
-  const { createHash } = require('crypto');
-  const sha = value => createHash('sha256').update(value).digest('hex');
-  // A pre-NOT-463 database: legacy bots columns (pre agent/deck
-  // migrations), UI and agent conversations, messages, processing_queue,
-  // and agent_requests in every legacy state, including rows whose
-  // conversation, target agent, or accepted message is gone.
-  const legacy = new Database(DB_PATH);
-  legacy.exec(`
+// Migration 22 on a populated schema-21 database, with foreign keys
+// enforced as the product connection does (better-sqlite3's default): pins
+// referenced by pin turns survive the rebuild, and the new checks hold.
+function checkFullAccessUpgrade(store) {
+  console.log('\nMigration 22 (full_access) on a populated schema-21 database');
+  const file = `${DB_PATH}-v21`;
+  removeDb(file);
+  const raw = new Database(file);
+  assert(raw.pragma('foreign_keys', { simple: true }) === 1, 'the upgrade runs with foreign keys enforced, like the product');
+  raw.exec(legacyBaseSchema());
+  store.migrateEngineSchema(raw, { through: 21 });
+  raw.prepare(`INSERT INTO session_pins (id, requester_kind, requester_id, idempotency_key, request_hash, agent_id, session_ref, action, authority, resolution, route, conversation_id, approved_at, state, created_at, updated_at)
+    VALUES ('pin-1', 'service', 'svc', 'k1', 'h', 'agent-1', 'ses-1', 'ask', 'read_only', 'exact', 'provider', 'conv-1', NULL, 'attached', 1, 1)`).run();
+  raw.prepare(`INSERT INTO session_pin_turns (id, pin_id, seq, requester_kind, requester_id, idempotency_key, request_hash, content, exchange_id, provider_turn_ref, created_at)
+    VALUES ('turn-1', 'pin-1', 1, 'service', 'svc', 't1', 'h', 'q', NULL, 'ptr-1', 1)`).run();
+  const before = raw.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name IN ('session_pins', 'session_pin_turns', 'provider_session_turns') ORDER BY name").all();
+  store.migrateEngineSchema(raw);
+  const after = raw.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name IN ('session_pins', 'session_pin_turns', 'provider_session_turns') ORDER BY name").all();
+  assert(raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === 22 && raw.prepare("SELECT COUNT(*) AS n FROM session_pin_turns WHERE pin_id = 'pin-1'").get().n === 1
+    && raw.pragma('foreign_key_check').length === 0 && JSON.stringify(before) === JSON.stringify(after),
+    'pins and the pin turns that reference them survive; indexes and triggers are restored');
+  const insert = (id, action, authority, approved) => () => raw.prepare(`INSERT INTO session_pins (id, requester_kind, requester_id, idempotency_key, request_hash, agent_id, session_ref, action, authority, resolution, route, conversation_id, approved_at, state, created_at, updated_at)
+    VALUES (?, 'service', 'svc', ?, 'h', 'agent-1', 'ses-1', ?, ?, 'exact', 'provider', 'conv-1', ?, 'attached', 1, 1)`).run(id, id, action, authority, approved);
+  insert('pin-full', 'ask', 'full_access', 5)();
+  assert(raw.prepare("SELECT authority FROM session_pins WHERE id = 'pin-full'").get().authority === 'full_access', 'an approved ask pin may carry full_access');
+  throwsMatching(insert('pin-unapproved', 'ask', 'full_access', null), /CHECK constraint/, 'an unapproved full_access pin is refused');
+  throwsMatching(insert('pin-resume-full', 'resume', 'full_access', 5), /CHECK constraint/, 'a resume pin cannot carry full_access');
+  throwsMatching(insert('pin-ask-write', 'ask', 'workspace_write', 5), /CHECK constraint/, 'an ask pin still cannot carry workspace_write');
+  throwsMatching(() => raw.prepare("UPDATE session_pins SET authority = 'full_access' WHERE id = 'pin-1'").run(), /immutable/, 'a pin\'s authority stays immutable');
+  raw.close();
+  removeDb(file);
+}
+
+// The pre-NOT-463 base tables (lib/db.ts's oldest shape) the engine
+// migrations build on.
+function legacyBaseSchema() {
+  return `
     CREATE TABLE bots (id TEXT PRIMARY KEY, name TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, avatar TEXT, created_at INTEGER NOT NULL);
     CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL);
     CREATE TABLE group_members (group_id TEXT NOT NULL, bot_id TEXT NOT NULL, PRIMARY KEY (group_id, bot_id));
@@ -508,7 +537,18 @@ function runLegacy() {
     );
     CREATE UNIQUE INDEX idx_agent_requests_idempotency ON agent_requests(principal_kind, principal_id, operation, idempotency_key);
     CREATE TABLE agent_request_events (id TEXT PRIMARY KEY, request_id TEXT NOT NULL, type TEXT NOT NULL, data TEXT, created_at INTEGER NOT NULL);
-  `);
+`;
+}
+
+function runLegacy() {
+  const { createHash } = require('crypto');
+  const sha = value => createHash('sha256').update(value).digest('hex');
+  // A pre-NOT-463 database: legacy bots columns (pre agent/deck
+  // migrations), UI and agent conversations, messages, processing_queue,
+  // and agent_requests in every legacy state, including rows whose
+  // conversation, target agent, or accepted message is gone.
+  const legacy = new Database(DB_PATH);
+  legacy.exec(legacyBaseSchema());
   const t = 1_700_000_000_000;
   legacy.prepare('INSERT INTO bots VALUES (?, ?, ?, ?, NULL, ?)').run('bot-codex', 'Codex', 't', 'd', t);
   legacy.prepare('INSERT INTO bots VALUES (?, ?, ?, ?, NULL, ?)').run('bot-claude', 'Claude', 't', 'd', t + 1);

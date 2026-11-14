@@ -66,7 +66,7 @@ const row = (extra = {}) => ({
 const policy = (extra = {}) => ({
   state: 'loaded', reason: null, revision: 'rev-1',
   audiences: [{ kind: 'slack', team_id: 'T0OWNER01', channel_id: 'C0OWNER01' }, { kind: 'slack', team_id: 'T0OWNER01', channel_id: 'C0OWNER02' }],
-  agent: { id: 'agent-dev', share_from_turn: true, share_current: { supported: true, reason: null }, live_contexts: 1 },
+  agent: { id: 'agent-dev', share_from_turn: true, share_current: { supported: true, reason: null }, full_access: { supported: true, reason: null }, live_contexts: 1 },
   limits: { ttl_seconds: { min: 300, default: 3600, max: 86400 }, max_turns: { min: 1, default: 20, max: 100 }, audiences: 512 },
   ...extra,
 });
@@ -165,8 +165,9 @@ console.log('\nHelpers: ordering, labels, request body, allowlist validation');
   assert(view.expiryLabel({ state: 'active', expires_at: NOW + 90 * 60_000, revoked_at: null }, NOW).endsWith('(in 1 h 30 min)'), 'expiry: relative time remaining');
   assert(view.threadLabel({ state: 'active', thread: { posted: false, posted_at: null } }) === 'Waiting for the Slack relay to post the thread', 'thread not posted yet');
   const body = view.shareCreateBody(policy().audiences[0], 3600, 5, 'k-1');
-  assert(JSON.stringify(Object.keys(body)) === JSON.stringify(['audience', 'ttl_seconds', 'max_turns', 'idempotency_key']) && !('kind' in body.audience),
-    'the create body names only audience, ttl_seconds, max_turns, idempotency_key (the owner route\'s fields)');
+  assert(JSON.stringify(Object.keys(body)) === JSON.stringify(['audience', 'ttl_seconds', 'max_turns', 'tool_access', 'idempotency_key']) && !('kind' in body.audience)
+    && body.tool_access === 'read_only' && view.shareCreateBody(policy().audiences[0], 3600, 5, 'k-2', 'full_access').tool_access === 'full_access',
+    'the create body names only the owner route\'s fields, read_only unless full access is chosen');
   const existing = policy().audiences;
   assert(view.audienceInputError('T0OWNER01', 'C0NEW0001', existing) === null, 'a new exact channel passes');
   assert(/Workspace ID/.test(view.audienceInputError('*', 'C0NEW0001', existing)) && /Channel ID/.test(view.audienceInputError('T0OWNER01', 'general', existing))

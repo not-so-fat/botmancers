@@ -197,7 +197,8 @@ per-turn seam of the Work Request engine.
 
 - **Contract.** `capabilities()` reports `list`, `search`, `read`, `resume`,
   `start`, `cancel`, `usage`, the enforceable authority modes (`read_only`,
-  `workspace_write`), and `max_page_size`. Operations: bounded
+  `workspace_write`, and `full_access` for Claude Code and Codex), and
+  `max_page_size`. Operations: bounded
   `listSessions` (scope, optional query, cursor, limit), `getSession`
   (`null` means missing), paged `readTranscript`, `startSession` (explicit
   absolute workspace), `sendTurn` (exact session), `observeTurn` (to a
@@ -227,8 +228,11 @@ per-turn seam of the Work Request engine.
   `resume`, a session the provider reports available, resumable, and idle,
   and (for native sessions) still in scope. `workspace_write` requires the
   provider to support it and the Agent's `workspace_write` policy (plus
-  `allow_resume_with_edits` for a send); authority is never inferred from the
-  provider or workspace. An unsupported capability is refused before the
+  `allow_resume_with_edits` for a send). `full_access` (edits, shell,
+  network) is not an Agent policy: it reaches a provider only through the ask
+  pin of a Slack share the owner created with full access (engine migration
+  22 lets an approved ask pin and a provider turn record it); authority is
+  never inferred from the provider or workspace. An unsupported capability is refused before the
   provider is called. Turns are replayed by idempotency key (a different body
   is `idempotency_conflict`), observed from the persisted provider turn id
   (also after a restart), and a repeated cancel is `already_terminal`.

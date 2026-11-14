@@ -33,12 +33,14 @@ import {
   shareInflight,
   shareRow,
   shareState,
+  shareToolAccess,
   sweepExpiredShares,
   isSlackAudience,
   SessionSharesConfigError,
   SESSION_SHARES_VERSION,
   type ShareRow,
   type ShareState,
+  type ShareToolAccess,
   type SlackAudience,
 } from './session-shares';
 import { revokeAgentSessionContexts } from './session-context';
@@ -87,6 +89,8 @@ export interface OwnerShareView {
   agent: { id: string; name: string | null };
   session_ref: string;
   authority: 'ask';
+  // read_only, or full_access (edits, shell, network) the owner granted.
+  tool_access: ShareToolAccess;
   state: ShareState;
   status: OwnerShareStatus;
   audience: SlackAudience;
@@ -121,6 +125,7 @@ export function ownerShareView(row: ShareRow, now?: number): OwnerShareView {
     agent: { id: row.agent_id, name: bots.getById(row.agent_id)?.name ?? null },
     session_ref: row.session_ref,
     authority: 'ask',
+    tool_access: shareToolAccess(row),
     state: shareState(row, now),
     status: ownerShareStatus(row, now),
     audience: { kind: 'slack', team_id: row.audience_team_id, channel_id: row.audience_channel_id },
@@ -203,7 +208,7 @@ export function requireOwnerShare(shareRef: string): ShareRow {
 // ---------------------------------------------------------------------
 // Create and revoke.
 
-const CREATE_FIELDS = ['audience', 'ttl_seconds', 'max_turns', 'idempotency_key'];
+const CREATE_FIELDS = ['audience', 'ttl_seconds', 'max_turns', 'tool_access', 'idempotency_key'];
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -225,10 +230,14 @@ export async function createOwnerShare(agentId: string, sessionRef: string, body
     throw new OwnerShareError('invalid_request', 'audience must be { team_id: "T…", channel_id: "C…" } from the share allowlist.', 400);
   }
   const key = typeof body.idempotency_key === 'string' ? body.idempotency_key : '';
+  const toolAccess = body.tool_access ?? 'read_only';
+  if (toolAccess !== 'read_only' && toolAccess !== 'full_access') {
+    throw new OwnerShareError('invalid_request', 'tool_access must be "read_only" or "full_access".', 400);
+  }
   const { share, created } = await createShare({
     creator: UI_OWNER_PRINCIPAL, sessionRef, agentId, audience,
     ttlSeconds: optionalInteger(body.ttl_seconds, 'ttl_seconds'), maxTurns: optionalInteger(body.max_turns, 'max_turns'),
-    idempotencyKey: key, createdVia: 'session_ref',
+    toolAccess, idempotencyKey: key, createdVia: 'session_ref',
   });
   return { share: ownerShareView(share), replayed: !created };
 }
@@ -257,6 +266,8 @@ export interface SharePolicyView {
     id: string;
     share_from_turn: boolean;
     share_current: { supported: boolean; reason: string | null };
+    // Whether a share of this Agent's sessions can be given full access.
+    full_access: { supported: boolean; reason: string | null };
     live_contexts: number;
   };
   limits: { ttl_seconds: typeof SHARE_LIMITS.ttl; max_turns: typeof SHARE_LIMITS.turns; audiences: number };
@@ -291,6 +302,18 @@ function shareCurrentSupport(agentId: string): { supported: boolean; reason: str
   };
 }
 
+function fullAccessSupport(agentId: string): { supported: boolean; reason: string | null } {
+  let authorities: readonly string[] = [];
+  try {
+    authorities = agentProviderCapabilities(db, agentId)?.authorities ?? [];
+  } catch {
+    authorities = [];
+  }
+  return authorities.includes('full_access')
+    ? { supported: true, reason: null }
+    : { supported: false, reason: 'This runtime cannot run shared turns with full access. Claude Code and Codex Agents can.' };
+}
+
 function liveContexts(agentId: string): number {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_contexts'").get()) return 0;
   return (db.prepare("SELECT COUNT(*) AS n FROM session_contexts WHERE agent_id = ? AND state = 'live'").get(agentId) as { n: number }).n;
@@ -309,6 +332,7 @@ export function sharePolicyView(agentId: string): SharePolicyView {
       id: agentId,
       share_from_turn: loaded.state === 'loaded' && loaded.config.shareFromTurn.has(agentId),
       share_current: shareCurrentSupport(agentId),
+      full_access: fullAccessSupport(agentId),
       live_contexts: liveContexts(agentId),
     },
     limits: { ttl_seconds: SHARE_LIMITS.ttl, max_turns: SHARE_LIMITS.turns, audiences: MAX_AUDIENCES },

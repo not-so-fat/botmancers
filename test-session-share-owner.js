@@ -345,7 +345,7 @@ async function main() {
     const sessionBad = await call(routes.session.GET, `${createUrl(ref('own-1'))}?agent_id=${other.id}`, { params: { id: dev.id, ref: ref('own-1') } });
     assert(sessionBad.status === 400, 'the session route cannot be widened to another Agent');
     const fields = Object.keys(all.body.shares[0]).sort().join(',');
-    assert(fields === 'agent,audience,authority,created_at,created_by,created_via,expires_at,max_turns,revoked_at,session_ref,share_ref,state,status,thread,turns_used',
+    assert(fields === 'agent,audience,authority,created_at,created_by,created_via,expires_at,max_turns,revoked_at,session_ref,share_ref,state,status,thread,tool_access,turns_used',
       `the owner view has only the safe fields (${fields})`);
     assert(!leaks(all.body), 'no provider session id, workspace, home path, or token in the list');
   }
@@ -512,6 +512,62 @@ async function main() {
     shares.setSessionShareClock(null);
     assert(swept.swept.includes(short.share_ref) && out3.outcome === 'refused' && out3.code === 'share_expired' && slack.state.posts.at(-1).text === relayLib.NOTICES.share_expired,
       'an expired, swept share: the next thread question gets the fixed share_expired notice');
+    await relay.stop();
+  }
+
+  console.log('\nFull access: the owner grants it per share; a runtime that cannot enforce it is refused');
+  {
+    // The Dev Agent's fake runtime declares read_only and workspace_write only.
+    const plain = await getPolicy(dev.id);
+    const before = counts();
+    const refusedRuntime = await create(ref('own-9'), { audience, tool_access: 'full_access', idempotency_key: 'full-refused' });
+    const badValue = await create(ref('own-9'), { audience, tool_access: 'root', idempotency_key: 'full-bad' });
+    assert(plain.body.policy.agent.full_access.supported === false && /Claude Code and Codex/.test(plain.body.policy.agent.full_access.reason),
+      'the policy view says this runtime cannot take full access, and which can');
+    assert(refusedRuntime.status === 403 && refusedRuntime.body.error.code === 'authority_not_allowed' && badValue.status === 400 && same(before, counts()),
+      'full access on a runtime without it: 403 authority_not_allowed; an unknown value: 400; nothing written');
+    const readOnly = (await create(ref('own-9'), { audience, idempotency_key: 'full-default' })).body.share;
+    assert(readOnly.tool_access === 'read_only'
+      && db.prepare('SELECT authority FROM session_pins WHERE id = (SELECT pin_ref FROM session_shares WHERE id = ?)').get(readOnly.share_ref).authority === 'read_only',
+      'without tool_access a share stays read-only (its pin is read_only)');
+
+    // A runtime that enforces full_access (as Claude Code and Codex do).
+    const FULL_STATE = path.join(TMP, 'provider-full.json');
+    const fullConnection = dbModule.runtimeConnections.create({ provider: 'codex', label: 'Full', host: 'This computer' }).id;
+    contract.registerSessionProvider({ connectionId: fullConnection }, () => fake.createFakeSessionProvider({
+      statePath: FULL_STATE, ignoreScope: true, capabilities: { authorities: ['read_only', 'workspace_write', 'full_access'] },
+    }));
+    fake.seedFakeProvider(FULL_STATE, [{ id: 'full-1-SECRET', title: 'Full', workspace: '/work/full' }]);
+    const fullAgent = mkAgent('FullDev', 'codex', fullConnection);
+    await ps.syncAgentSessions(db, fullAgent.id, {});
+    const fullRef = refOf(fullAgent, 'full-1');
+    const policy = await getPolicy(fullAgent.id);
+    const created = await create(fullRef, { audience, tool_access: 'full_access', idempotency_key: 'full-a' }, fullAgent.id);
+    const share = created.body.share;
+    const pin = db.prepare('SELECT action, authority, approved_at FROM session_pins WHERE id = (SELECT pin_ref FROM session_shares WHERE id = ?)').get(share.share_ref);
+    assert(policy.body.policy.agent.full_access.supported === true && created.status === 201 && share.tool_access === 'full_access'
+      && pin.action === 'ask' && pin.authority === 'full_access' && typeof pin.approved_at === 'number',
+      'owner create with tool_access full_access: 201, the share reads full_access, its ask pin carries full_access, recorded approved');
+    const replay = await create(fullRef, { audience, tool_access: 'full_access', idempotency_key: 'full-a' }, fullAgent.id);
+    const flipped = await create(fullRef, { audience, idempotency_key: 'full-a' }, fullAgent.id);
+    assert(replay.status === 200 && replay.body.share.share_ref === share.share_ref && flipped.status === 409 && flipped.body.error.code === 'idempotency_conflict',
+      'exact replay: 200; the same key without full access: 409 idempotency_conflict');
+
+    const slack = createFakeSlackTransport({ anchors: ['1761400000.000900'] });
+    const relay = relayLib.createSlackRelay({ transport: slack.transport, botUserId: 'U0BOTOWNER' });
+    await relay.start();
+    const bound = await relay.bindShare(share.share_ref);
+    assert(slack.state.posts[0].text === relayLib.FULL_ACCESS_ANCHOR_TEXT && /shell commands/.test(relayLib.FULL_ACCESS_ANCHOR_TEXT),
+      'the Slack anchor tells askers this share can edit files, run shell commands, and use the network');
+    const out = await relay.handleEnvelope({
+      envelope_id: 'env-full-1', type: 'events_api', accepts_response_payload: false, retry_attempt: 0, retry_reason: '',
+      payload: { team_id: audience.team_id, api_app_id: 'A0OWNER', event_id: 'EvFull1', event_time: 1761400100, type: 'event_callback',
+        event: { type: 'message', channel: audience.channel_id, user: 'U0ALICE01', text: 'Move one task and read it back', ts: '1761400100.000901', thread_ts: bound.thread.thread_ts } },
+    });
+    await relay.idle();
+    const sent = fake.loadFakeState(FULL_STATE).calls.filter(c => c.op === 'sendTurn');
+    assert(out.outcome === 'dispatched' && sent.length === 1 && sent[0].authority === 'full_access',
+      'a Slack question on the share reaches the runtime as a full_access turn');
     await relay.stop();
   }
 }

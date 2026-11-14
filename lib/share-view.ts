@@ -15,11 +15,14 @@ export interface SlackAudience {
   channel_id: string;
 }
 
+export type ShareToolAccess = 'read_only' | 'full_access';
+
 export interface OwnerShare {
   share_ref: string;
   agent: { id: string; name: string | null };
   session_ref: string;
   authority: 'ask';
+  tool_access: ShareToolAccess;
   state: 'active' | 'expired' | 'revoked';
   status: OwnerShareStatus;
   audience: SlackAudience;
@@ -42,6 +45,7 @@ export interface SharePolicy {
     id: string;
     share_from_turn: boolean;
     share_current: { supported: boolean; reason: string | null };
+    full_access: { supported: boolean; reason: string | null };
     live_contexts: number;
   };
   limits: { ttl_seconds: { min: number; default: number; max: number }; max_turns: { min: number; default: number; max: number }; audiences: number };
@@ -143,9 +147,15 @@ export const SHARE_DURATIONS: { label: string; seconds: number }[] = [
   { label: '24 hours', seconds: 86400 },
 ];
 
-export function shareCreateBody(audience: SlackAudience, ttlSeconds: number, maxTurns: number, idempotencyKey: string) {
-  return { audience: { team_id: audience.team_id, channel_id: audience.channel_id }, ttl_seconds: ttlSeconds, max_turns: maxTurns, idempotency_key: idempotencyKey };
+export function shareCreateBody(audience: SlackAudience, ttlSeconds: number, maxTurns: number, idempotencyKey: string, toolAccess: ShareToolAccess = 'read_only') {
+  return {
+    audience: { team_id: audience.team_id, channel_id: audience.channel_id }, ttl_seconds: ttlSeconds, max_turns: maxTurns,
+    tool_access: toolAccess, idempotency_key: idempotencyKey,
+  };
 }
+
+// What the owner is granting with full access, shown before they create it.
+export const FULL_ACCESS_NOTE = 'Anyone in the channel can then make this session edit files, run shell commands, and use the network on this computer, as you, until the share expires or you revoke it.';
 
 // Client-side check of one allowlist entry (the server validates the whole
 // document again before writing it).

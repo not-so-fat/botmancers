@@ -37,7 +37,7 @@ import { createHash } from 'crypto';
 import db from './db';
 import { serviceRedactor } from './service-redaction';
 import {
-  SHARE_LIMITS, ShareAskError, ShareError, askShare, audienceAllowed, shareAnswer, shareRow, shareState,
+  SHARE_LIMITS, ShareAskError, ShareError, askShare, audienceAllowed, shareAnswer, shareRow, shareState, shareToolAccess,
 } from './session-shares';
 
 // ---------------------------------------------------------------------
@@ -82,6 +82,8 @@ export const NOTICE_EVENT_TYPE = 'botmancers_share_notice';
 export const ANCHOR_EVENT_TYPE = 'botmancers_share';
 
 export const ANCHOR_TEXT = 'A coding-agent session was shared here (read-only). Reply in this thread to ask it a question.';
+// A share the owner gave full access: askers are told what their questions can make it do.
+export const FULL_ACCESS_ANCHOR_TEXT = 'A coding-agent session was shared here with full access: it can edit files, run shell commands, and use the network. Reply in this thread to ask it something.';
 export const FAILED_TEXT = 'The shared session could not answer this question.';
 export const NOTICES: Readonly<Record<string, string>> = Object.freeze({
   share_expired: 'This shared session is no longer available (the share expired).',
@@ -368,7 +370,7 @@ export function createSlackRelay(options: SlackRelayOptions): SlackRelay {
       const audience = { kind: 'slack' as const, team_id: row.audience_team_id, channel_id: row.audience_channel_id };
       if (!audienceAllowed(audience)) throw new ShareError('audience_not_allowed', 'That Slack channel is not on the share allowlist. Add it in Agent Config, under Session sharing.');
       const posted = await transport.post({
-        channel: audience.channel_id, thread_ts: null, text: ANCHOR_TEXT,
+        channel: audience.channel_id, thread_ts: null, text: shareToolAccess(row) === 'full_access' ? FULL_ACCESS_ANCHOR_TEXT : ANCHOR_TEXT,
         metadata: { event_type: ANCHOR_EVENT_TYPE, event_payload: { share_ref: row.id } },
       });
       if (typeof posted?.ts !== 'string' || !SLACK_TS.test(posted.ts)) throw new Error('The transport returned no message ts for the anchor.');

@@ -28,8 +28,11 @@ never read.
 
 Every `turn/start` carries the explicit `cwd` and a sandbox policy derived
 only from the caller's authority: `read_only` → `readOnly`; `workspace_write`
-→ `workspaceWrite` with the workspace as the only writable root. Network
-access is off and `approvalPolicy` is `never`; any approval request the
+→ `workspaceWrite` with the workspace as the only writable root;
+`full_access` (granted only by the owner on one Slack share) → the same
+`workspaceWrite` policy with network access on (`exec` fallback:
+`sandbox_workspace_write.network_access=true`). Network access is otherwise
+off and `approvalPolicy` is `never`; any approval request the
 server still sends is declined, never approved, so a turn cannot widen its
 authority. `clientUserMessageId` carries Botmancers' hashed idempotency key.
 

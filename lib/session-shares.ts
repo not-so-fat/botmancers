@@ -1,9 +1,13 @@
 // NOT-515: durable temporary session shares (docs/service-access.md,
 // Session shares; docs/design/2026-10-24-session-share-preflight.md).
 //
-// A share is one read-only Ask pin (NOT-507, lib/session-pins) on exactly
-// one Botmancers session_ref, with a TTL, a turn limit, one allowlisted
-// audience, and revocation. The pin's requester is the reserved engine
+// A share is one Ask pin (NOT-507, lib/session-pins) on exactly one
+// Botmancers session_ref, with a TTL, a turn limit, one allowlisted
+// audience, and revocation. Its turns are read-only, unless the owner
+// created it from the UI with tool access full_access (file edits, shell,
+// network; Claude Code and Codex only): the pin then carries that authority,
+// which is the only record of it. A service or a turn (share-current)
+// cannot ask for it. The pin's requester is the reserved engine
 // principal service:botmancers-session-share, which holds no Agent grant
 // (lib/service-grants refuses it in the grants document): the share itself
 // is the only authority its turns have, so a share never broadens a
@@ -97,6 +101,7 @@ export interface SlackAudience {
 }
 
 export type ShareState = 'active' | 'expired' | 'revoked';
+export type ShareToolAccess = 'read_only' | 'full_access';
 export type ShareCreatedVia = 'session_ref' | 'current_session';
 
 export interface ShareRow {
@@ -429,6 +434,12 @@ export function shareView(row: ShareRow, now = clock()): ShareView {
   };
 }
 
+// What the share's turns may do: its pin's authority.
+export function shareToolAccess(row: Pick<ShareRow, 'pin_ref'>): ShareToolAccess {
+  const pin = db.prepare('SELECT authority FROM session_pins WHERE id = ?').get(row.pin_ref) as { authority: string } | undefined;
+  return pin?.authority === 'full_access' ? 'full_access' : 'read_only';
+}
+
 function appendEvent(shareRef: string, type: ShareEvent['type'], at: number, extra: { turnRef?: string | null; code?: string | null } = {}): void {
   db.prepare(`
     INSERT INTO session_share_events (share_ref, sequence, type, turn_ref, code, at)
@@ -463,6 +474,8 @@ export interface CreateShareInput {
   maxTurns?: number | null;
   idempotencyKey: string;
   createdVia?: ShareCreatedVia;
+  // Owner only (lib/session-share-owner): default read_only.
+  toolAccess?: ShareToolAccess;
   // Runs inside the commit that creates the share (the service audit's
   // allowed event), and for an exact replay.
   onCommit?: (row: ShareRow) => void;
@@ -493,7 +506,10 @@ export async function createShare(input: CreateShareInput): Promise<{ share: Sha
   const ttl = bounded(input.ttlSeconds, SHARE_LIMITS.ttl, 'ttl_seconds');
   const maxTurns = bounded(input.maxTurns, SHARE_LIMITS.turns, 'max_turns');
   const createdVia = input.createdVia ?? 'session_ref';
-  const hash = sha256(['share', input.sessionRef, input.agentId ?? null, input.audience.team_id, input.audience.channel_id, ttl, maxTurns, createdVia]);
+  const toolAccess = input.toolAccess ?? 'read_only';
+  if (toolAccess !== 'read_only' && toolAccess !== 'full_access') throw new ShareError('invalid_request', 'tool_access must be "read_only" or "full_access".');
+  const hash = sha256(['share', input.sessionRef, input.agentId ?? null, input.audience.team_id, input.audience.channel_id, ttl, maxTurns, createdVia,
+    ...(toolAccess === 'full_access' ? ['full_access'] : [])]);
   const replay = shareByKey(input.creator, key);
   if (replay) {
     if (replay.request_hash !== hash) throw new ShareError('idempotency_conflict', 'That idempotency key was used for a different share.');
@@ -511,6 +527,7 @@ export async function createShare(input: CreateShareInput): Promise<{ share: Sha
   // created event, and the caller's audit event commit with it.
   const { pin } = await createPin({
     requester: SHARE_PRINCIPAL, sessionRef: input.sessionRef, agentId, action: 'ask', idempotencyKey: pinKeyOf(input.creator, key),
+    fullAccess: toolAccess === 'full_access',
     onCommit: pinRow => {
       const now = clock();
       const shareRef = newShareRef();
