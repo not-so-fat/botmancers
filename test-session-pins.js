@@ -249,6 +249,27 @@ async function main() {
   const idemReplay = await pins.messageAgent({ requester: grok, agentId: writer.id, content: 'Same?', idempotencyKey: 'w-idem', mayStart: true, freshSession: true });
   assert(idemReplay.replayed && idemReplay.pin.id === idem.pin.id && fake.providerCalls(STATE, 'startSession') === freshStarts + 3,
     'the same key with the same flag replays and starts nothing');
+  // An Agent with a configured home session: fresh_session skips the home
+  // branch too, even when the home session is busy (which otherwise throws
+  // before newest resolution or a start). Home borrows a default workspace
+  // for the start; everything is restored below so later sections still
+  // see Home with no default workspace and oldRef as the newest session.
+  db.prepare('UPDATE bots SET default_workspace = ? WHERE id = ?').run('/work/a', homeAgent.id);
+  fake.mutateFakeProvider(STATE, state => { state.sessions['home-1-SECRET'].deleted = false; state.sessions['home-1-SECRET'].busy = true; });
+  await rejects(pins.messageAgent({ requester: grok, agentId: homeAgent.id, content: 'Still there?', idempotencyKey: 'h-busy', mayStart: true }),
+    'source_session_busy', 'control: without the flag, a busy home session throws source_session_busy');
+  const freshHome = await pins.messageAgent({ requester: grok, agentId: homeAgent.id, content: 'Fresh eyes?', idempotencyKey: 'h-fresh', mayStart: true, freshSession: true });
+  await freshHome.settled;
+  assert(freshHome.resolution === 'started' && freshHome.pin.authority === 'read_only'
+    && freshHome.pin.session_ref !== homeRef && freshHome.pin.session_ref !== oldRef,
+    'fresh_session on an Agent with a home session: started, a read-only ref different from the home and newest sessions');
+  db.prepare('UPDATE bots SET default_workspace = NULL WHERE id = ?').run(homeAgent.id);
+  db.prepare('DELETE FROM provider_session_turns WHERE session_ref = ?').run(freshHome.pin.session_ref);
+  db.prepare('DELETE FROM provider_sessions WHERE id = ?').run(freshHome.pin.session_ref);
+  fake.mutateFakeProvider(STATE, state => { state.sessions['home-1-SECRET'].deleted = true; state.sessions['home-1-SECRET'].busy = false; });
+  await ps.refreshProviderSession(db, homeAgent.id, homeRef);
+  assert(db.prepare('SELECT availability FROM provider_sessions WHERE id = ?').get(homeRef).availability === 'missing',
+    'restored: the home session is recorded missing again');
 
   console.log('\nExact-session pins: follow-ups stay on the same ref');
   const created = await pins.createPin({ requester: grok, sessionRef: pin1, action: 'ask', idempotencyKey: 'p1' });
