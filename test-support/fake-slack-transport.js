@@ -7,7 +7,8 @@
 //   envelope ids whose ack throws before / after Slack received it (the
 //   relay process "dies" there).
 // - post(message) records the message and answers a deterministic ts: the
-//   next of `anchors` for a top-level post, a counter otherwise.
+//   next of `anchors` for a top-level post, a counter otherwise. Like
+//   chat.postMessage, an empty text is refused (no_text) and not recorded.
 'use strict';
 
 function createFakeSlackTransport(options = {}) {
@@ -29,6 +30,7 @@ function createFakeSlackTransport(options = {}) {
       if (crashAfterAck.has(envelopeId)) throw new Error(`fake crash after ack of ${envelopeId}`);
     },
     async post(message) {
+      if (typeof message.text !== 'string' || message.text.trim() === '') throw new Error('Slack chat.postMessage failed (no_text).');
       counter += 1;
       const ts = message.thread_ts === null && anchors.length > 0 ? anchors.shift() : `1761309999.${String(counter).padStart(6, '0')}`;
       state.posts.push({ ...message, ts });

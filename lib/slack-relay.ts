@@ -457,7 +457,10 @@ export function createSlackRelay(options: SlackRelayOptions): SlackRelay {
       try {
         const turn = await shareAnswer(q.share_ref, q.turn_ref);
         if (!turn) return null;
-        text = turn.state === 'completed' && turn.answer !== null ? formatReply(turn.answer) : FAILED_TEXT;
+        // An answer that is empty once formatted cannot be posted (Slack
+        // refuses an empty text): it is reported as the fixed failure.
+        const reply = turn.state === 'completed' && turn.answer !== null ? formatReply(turn.answer) : '';
+        text = reply.trim() ? reply : FAILED_TEXT;
       } catch (error) {
         if (!(error instanceof ShareError)) throw error;
         text = FAILED_TEXT;

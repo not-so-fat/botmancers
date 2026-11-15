@@ -136,6 +136,10 @@ async function main() {
   const malformed = stream.summarizeStream(fixture('malformed'));
   assert(JSON.stringify(stream.reportedUsage(malformed.result)) === JSON.stringify({ input_tokens: null, output_tokens: null, total_cost_usd: null })
     && malformed.malformed === 1 && malformed.result.result === 'ok', 'malformed: a string cost, negative or fractional tokens are null; terminal text is counted, not read; only the first result counts');
+  const notified = stream.summarizeStream(fixture('task-notification'));
+  assert(notified.result && notified.result.result === 'the answer' && notified.result.result_index === 1
+    && JSON.stringify(stream.reportedUsage(notified.result)) === JSON.stringify({ input_tokens: 8, output_tokens: 3734, total_cost_usd: 43.6 }),
+  'task-notification: the CLI\'s own empty result for orphaned background tasks is not the prompt\'s result');
   assert(JSON.stringify(usageOf('camel')) === JSON.stringify({ input_tokens: 33, output_tokens: 4, total_cost_usd: 0.002 }), 'Agent Dealer-shaped camelCase usage is accepted');
   assert(JSON.stringify(stream.reportedUsage(null)) === JSON.stringify({ input_tokens: null, output_tokens: null, total_cost_usd: null }), 'no result event: nothing reported');
   const partialLine = stream.parseStreamText('{"type":"system","subtype":"init","session_id":"x"}\n{"type":"res');
@@ -467,6 +471,23 @@ async function main() {
   const secondDone = await ps.observeProviderTurn(db, dev.id, second.turn.turn_ref);
   assert(firstDone.state === 'completed' && secondDone.state === 'completed' && calls().length === lingerCalls + 2,
     'observe returns once the process has exited, so the next resume is not refused as busy');
+
+  console.log('\nResume with orphaned background tasks: the CLI\'s own turn finishes first');
+  const notifiedTurn = await send('a2', '[task-notification] what does the check validate', 'task-notification-1');
+  // The pin read path observes with a 25 ms deadline, again and again,
+  // through the CLI's pause between its task-notification result and the
+  // prompt's. The first view that is no longer running is the one recorded.
+  const expected = 'fake claude: [task-notification] what does the check validate';
+  let finished = null;
+  let shortObserves = 0;
+  while (!finished && shortObserves < 400) {
+    const view = await ps.observeProviderTurn(db, dev.id, notifiedTurn.turn.turn_ref, { deadlineAt: Date.now() + 25 });
+    shortObserves++;
+    if (view.state !== 'running') finished = view;
+    else await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert(shortObserves > 1 && finished && finished.state === 'completed' && finished.output === expected && finished.usage.output_tokens === 3734,
+    `short observes during the pause never finish the turn with the empty task-notification result; it completes with the prompt's own answer and usage (got: ${finished ? `${finished.state} ${JSON.stringify(finished.output)}` : 'running'} after ${shortObserves} observes)`);
 
   console.log('\nDocumentation contract');
   const docs = fs.readFileSync(path.join(ROOT_DIR, 'docs/claude-session-provider.md'), 'utf8');

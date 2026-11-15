@@ -384,6 +384,14 @@ async function main() {
     const amp = f(`${'x'.repeat(2997)}&&&`);
     assert(amp.length <= 3000 && !/&(a|am|amp)?…$/.test(amp) && amp === `${'x'.repeat(2997)}…`, 'escapes are never cut in half');
     assert(f('broken \uD83D tail') === 'broken  tail', 'a lone surrogate from upstream truncation is dropped');
+    // End to end: a turn that completed with an empty answer. Slack refuses
+    // an empty text, so posting it as is would fail on every flush.
+    fake.mutateFakeProvider(STATE, state => { state.results = ['']; });
+    const blank = await step('a turn that completed with an empty answer', envelope({ thread_ts: ANCHOR_D, text: 'Anything?' }), { outcome: 'dispatched', dispatch: 1, audit: 1, questions: 1 });
+    const blankPosted = await blank.out.replied;
+    const blankRow = db.prepare('SELECT state, reply_ts FROM slack_questions WHERE turn_ref = ?').get(blank.out.turn_ref);
+    assert(blankPosted && slack.state.posts.at(-1).text === relayLib.FAILED_TEXT && blankRow.state === 'replied' && blankRow.reply_ts === blankPosted.ts
+      && await relay.flushReplies() === 0, 'an empty answer posts the fixed failure text once and the question is replied, not retried');
     // End to end: an oversized Unicode answer through askShare.
     const uni = await step('an oversized Unicode answer', envelope({ thread_ts: ANCHOR_D, text: `${'日本'.repeat(1000)}${'😀'.repeat(900)}` }), { outcome: 'dispatched', dispatch: 1, audit: 1, questions: 1 });
     await uni.out.replied;

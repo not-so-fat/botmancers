@@ -41,7 +41,10 @@ claude -p --output-format stream-json --verbose --input-format text \
   that would still prompt.
 - Output is read as structured stream events only (`lib/claude-stream.ts`):
   the `system`/`init` event's `session_id`, the first `result` event, and
-  `rate_limit_event`s. Terminal text is never interpreted. The only stderr
+  `rate_limit_event`s. A resume whose session holds orphaned background
+  tasks first runs a turn of the CLI's own (its `result` carries
+  `origin.kind: "task-notification"` and an empty answer); that result is
+  skipped, and the prompt's own `result` is the turn's outcome. Terminal text is never interpreted. The only stderr
   check is for a CLI that rejects the flag set (an incompatible version).
 
 The process is detached. Its stdout/stderr and a small turn record (pid,

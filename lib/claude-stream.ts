@@ -2,9 +2,16 @@
 //
 // Only structured events count: one JSON object per line. The `system`
 // `init` event names the session the process is actually running, the first
-// `result` event is the turn's outcome, a `rate_limit_event` with status
+// `result` event of the prompt is the turn's outcome, a `rate_limit_event` with status
 // `rejected` is a usage cap. Anything that is not a JSON object is counted
 // as malformed and otherwise ignored; terminal text is never interpreted.
+//
+// A resumed session can hold background tasks orphaned by an earlier
+// process. Claude Code (2.1.322) reports them first in a turn of its own,
+// whose `result` carries `origin.kind: "task-notification"` and an empty
+// answer, then runs the prompt (a second `init`, then the prompt's own
+// `result`). That task-notification result is not the turn's outcome and
+// is skipped.
 //
 // Usage follows Agent Dealer's coordinator/usage.ts semantics for the same
 // stream (the first `result` event's `usage.input_tokens` /
@@ -41,6 +48,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+// A result for a turn the CLI started itself, not for the prompt.
+function isTaskNotificationResult(event: ClaudeEvent): boolean {
+  return isObject(event.origin) && event.origin.kind === 'task-notification';
+}
+
 // Splits complete lines only: a trailing partial line (the process is still
 // writing it) is left for the next read.
 export function parseStreamText(text: string): { events: ClaudeEvent[]; malformed: number } {
@@ -67,7 +79,7 @@ export function summarizeStream(text: string): ClaudeStreamSummary {
     if (event.type === 'system' && event.subtype === 'init' && summary.session_id === null) {
       if (typeof event.session_id === 'string') summary.session_id = event.session_id;
       if (typeof event.claude_code_version === 'string') summary.claude_code_version = event.claude_code_version;
-    } else if (event.type === 'result' && summary.result === null) {
+    } else if (event.type === 'result' && summary.result === null && !isTaskNotificationResult(event)) {
       summary.result = event;
     } else if (event.type === 'rate_limit_event' && isObject(event.rate_limit_info) && event.rate_limit_info.status === 'rejected') {
       summary.rate_limit_rejected = true;
