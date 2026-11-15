@@ -7,8 +7,16 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-15
+
 ### Added
 
+- The owner can give one Slack share full access: sharing from Sessions
+  offers Tool access: Full access, and that share's turns run with a new
+  `full_access` authority (file edits, shell, network) on Claude Code and
+  Codex. Other shares, services and share-current stay read-only, and the
+  Slack anchor tells askers what the share can do. Migration 22 rebuilds
+  `session_pins` and `provider_session_turns` for the new authority.
 - `botmancers_message_agent` (and `POST /api/v0/agents/:agentId/pins`) takes
   an optional `fresh_session` flag (default `false`). When `true`, the
   message skips the Agent's home and newest sessions and starts a brand-new
@@ -17,6 +25,14 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
   part of the idempotency hash. The collaboration skill and
   `docs/mcp-bridge.md` document the "ask another Agent to review a PR"
   message convention that uses it.
+
+### Fixed
+
+- A resumed Claude Code session with orphaned background tasks is answered
+  with the prompt's own result. Botmancers took the empty result of the
+  task-notification turn that runs first as the answer, so a Slack share
+  question got an empty reply that Slack refused and retried forever. An
+  answer that is empty once formatted now posts the fixed failure text.
 
 ## [0.10.6] - 2026-11-14
 
