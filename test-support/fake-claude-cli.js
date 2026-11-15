@@ -21,6 +21,10 @@
 //   [usage-cap]       init, a rejected rate-limit event, a usage-limit result
 //   [permission]      init, an error result with permission denials
 //   [stream:<name>]   replays test-support/fixtures/claude-code/stream/<name>.jsonl
+//   [task-notification] like a resume with orphaned background tasks
+//                     (Claude Code 2.1.322): init, an empty result for the
+//                     CLI's own task-notification turn, a pause, then a
+//                     second init and the prompt's own result
 // Environment knobs: FAKE_CLAUDE_VERSION (default 2.1.302),
 // FAKE_CLAUDE_REJECT_FLAG (exit like an older CLI that lacks that flag),
 // FAKE_CLAUDE_FORGET (a session id the CLI claims not to know).
@@ -157,6 +161,19 @@ function run() {
     const lines = fs.readFileSync(fixture, 'utf8').split('\n').filter(line => line.trim() && !/"subtype":"init"/.test(line));
     for (const line of lines) process.stdout.write(`${line.split('{{SESSION_ID}}').join(sessionId)}\n`);
     process.exit(0);
+  }
+  if (scenario === 'task-notification') {
+    emit({ type: 'system', subtype: 'task_notification', task_id: 'bzw27xxh2', status: 'stopped', summary: 'Orphaned by a previous Claude Code process exit and reported in an aggregate summary.', session_id: sessionId });
+    emit(result(sessionId, { result: '', num_turns: 0, duration_ms: 95, origin: { kind: 'task-notification' }, result_index: 0 }));
+    setTimeout(() => {
+      init(sessionId);
+      const reply = `fake claude: ${stdin.trim()}`;
+      emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: reply }] }, session_id: sessionId });
+      append(sessionId, [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }]);
+      emit(result(sessionId, { result: reply, result_index: 1, usage: { input_tokens: 8, output_tokens: 3734 } }));
+      process.exit(0);
+    }, 600);
+    return;
   }
   if (scenario === 'linger') {
     // Like the real CLI: the session stays registered as live

@@ -91,7 +91,8 @@ finished meanwhile. The question text is kept only while `pending`.
   and nothing else. The text passes through the service redactor, is escaped
   for Slack (`&`, `<`, `>`: no mention or broadcast), drops lone surrogates,
   and is cut at 3000 characters without splitting a surrogate pair or an
-  escape. A failed turn posts a fixed failure text with the same metadata.
+  escape. A failed turn, or one whose answer is empty once formatted (Slack refuses
+  an empty text), posts a fixed failure text with the same metadata.
 - **Refusal:** `share_expired`, `share_revoked`, `share_turn_limit`,
   `share_turn_in_progress`, `source_session_busy` (and a generic text for any
   other code) post a fixed notice with
