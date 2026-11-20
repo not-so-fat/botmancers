@@ -9,7 +9,7 @@ versioned separately: `botmancers.mcp.v1` (frozen) and `botmancers.mcp.v2`.
 
 ## [0.11.1] - 2026-11-20
 
-- Publish botmancers to npm from GitHub Actions with trusted publishing and provenance; releases are now tagged vX.Y.Z and get a GitHub Release
+- Publish botmancers to npm from GitHub Actions with npm trusted publishing (no npm credential anywhere); releases are now tagged vX.Y.Z and get a GitHub Release
 
 ## [0.11.0] - 2026-11-15
 

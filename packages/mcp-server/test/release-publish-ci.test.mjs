@@ -2,7 +2,7 @@
 // injected through NPM_BIN (a stub npm on PATH) and the release check through
 // GH_BIN (a stub gh), so no network is needed: version already published ->
 // publish skipped but the GitHub Release still ensured; registry 404 -> would
-// publish (and the live path publishes with provenance, then creates the
+// publish (and the live path publishes, then creates the
 // release); any other registry error -> fail closed with no publish.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -107,8 +107,8 @@ test('extractChangelogNotes: body without the header, null when missing', () => 
   assert.equal(extractChangelogNotes('# Changelog\n\n## [Unreleased]\n', version), null);
 });
 
-test('the publish command carries provenance and the latest dist-tag, with no credential flag', () => {
-  assert.deepEqual(PUBLISH_ARGS, ['publish', '--provenance', '--tag', 'latest', '--loglevel', 'verbose']);
+test('the publish command carries the latest dist-tag, no forced provenance, and no credential flag', () => {
+  assert.deepEqual(PUBLISH_ARGS, ['publish', '--tag', 'latest', '--loglevel', 'verbose']);
   assert.ok(!PUBLISH_ARGS.some(arg => /otp|token|auth/i.test(arg)));
 });
 
@@ -142,13 +142,13 @@ test('registry 404 + --dry -> would publish and would create the release, exit 0
   const ran = run(['--tag', tag, '--dry'], { npmBin: npm.stub, ghBin: gh.stub });
   assert.equal(ran.status, 0, ran.stderr);
   assert.match(ran.stdout, new RegExp(`would publish botmancers@${version.replace(/\./g, '\\.')}`));
-  assert.match(ran.stdout, /--provenance --tag latest/);
+  assert.match(ran.stdout, /publish --tag latest/);
   assert.match(ran.stdout, new RegExp(`would create the GitHub Release ${tag.replace(/\./g, '\\.')}`));
   assert.ok(!calls(npm.log).some(line => line.startsWith('publish')), 'dry run never publishes');
   assert.deepEqual(calls(gh.log), []);
 });
 
-test('registry 404 -> publishes with provenance, then creates the release', () => {
+test('registry 404 -> publishes, then creates the release', () => {
   const npm = stubNpm('missing');
   const gh = stubGh('missing');
   const ran = run(['--tag', tag], { npmBin: npm.stub, ghBin: gh.stub });

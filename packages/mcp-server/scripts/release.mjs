@@ -224,8 +224,12 @@ step('publish configuration', () => {
   assert(!/--otp/.test(code), 'release workflow must not use --otp: trusted publishing needs no second factor');
   assert(!/registry-url/.test(code), 'release workflow must not set registry-url (it implies a credential-based auth setup)');
   assert(!/secrets\./.test(code), 'release workflow must not read secrets: trusted publishing needs no credential');
-  assert(PUBLISH_ARGS.includes('--provenance') && PUBLISH_ARGS.includes('--tag') && PUBLISH_ARGS.includes('latest'),
-    'release-publish-ci.mjs must publish with --provenance --tag latest');
+  assert(PUBLISH_ARGS.includes('--tag') && PUBLISH_ARGS.includes('latest'),
+    'release-publish-ci.mjs must publish with --tag latest');
+  // A private source repository cannot carry a provenance bundle (npm answers E422);
+  // npm adds provenance on its own under trusted publishing when the repository is public.
+  assert(!PUBLISH_ARGS.some(arg => arg.startsWith('--provenance')),
+    'release-publish-ci.mjs must not force --provenance: the registry rejects it for a private repository');
   return 'publishConfig public with no tag, repository matches origin, workflow checks the tag then publishes from the npm environment with OIDC and no credential';
 });
 

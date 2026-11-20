@@ -11,7 +11,11 @@
 // botmancers@X.Y.Z is already on the registry it skips the publish but still
 // ensures the GitHub Release exists, so re-running the workflow finishes the
 // rest. When the registry answers 404 it publishes with
-// `npm publish --provenance --tag latest --loglevel verbose`. Any other
+// `npm publish --tag latest --loglevel verbose`. No explicit --provenance:
+// under trusted publishing npm attaches provenance by itself when the source
+// repository is public, and the registry rejects a provenance bundle from a
+// private repository (E422 "Unsupported GitHub Actions source repository
+// visibility"), which is what botmancers is today. Any other
 // registry answer fails closed: no publish, nonzero exit.
 //
 // NPM_BIN overrides the npm executable and GH_BIN the gh executable (tests
@@ -24,7 +28,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PACKAGE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
-export const PUBLISH_ARGS = ['publish', '--provenance', '--tag', 'latest', '--loglevel', 'verbose'];
+export const PUBLISH_ARGS = ['publish', '--tag', 'latest', '--loglevel', 'verbose'];
 const POLL_ATTEMPTS = 24;
 const POLL_SLEEP_SECONDS = 5;
 
