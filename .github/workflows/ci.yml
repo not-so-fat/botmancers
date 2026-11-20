@@ -1,7 +1,7 @@
-# Runs the same release gate as release-botmancers.yml on every pull request
+# Runs the same release gate as release.yml on every pull request
 # that touches the app or the package, on the release runner (Linux, Node 24),
 # so a failure shows up before a tag is pushed. It never publishes.
-name: ci-botmancers
+name: ci
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ on:
       - 'scripts/slack-relay-smoke.js'
       - 'instrumentation.ts'
       - 'next.config.ts'
-      - '.github/workflows/*botmancers.yml'
+      - '.github/workflows/*.yml'
   workflow_dispatch:
 
 concurrency:

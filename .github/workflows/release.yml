@@ -1,15 +1,16 @@
-# Releases botmancers to npm from a botmancers-v<version> tag pushed by
-# `npm run release:tag:push`. Job check runs the release gate (version,
+# Releases botmancers to npm from a v<version> tag pushed by
+# `npm run release:finish`. Job check runs the release gate (version,
 # changelog, app build, tests, package contents, canary installs of the exact
 # tarball); job publish then publishes packages/mcp-server with npm trusted
-# publishing (OIDC, no credential). `npm run release:publish` stays as the
-# documented manual fallback (RELEASING.md).
-name: release-botmancers
+# publishing (OIDC, no credential) and creates the GitHub Release from the
+# CHANGELOG entry. `npm run publish:packages` stays as the documented manual
+# fallback (docs/PUBLISHING.md).
+name: release
 
 on:
   push:
     tags:
-      - 'botmancers-v*'
+      - 'v*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -84,8 +85,12 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Build the tarball from the tagged commit
         run: npm run build && npm run build:app
-      - name: Publish botmancers to npm (trusted publishing)
+      - name: Publish botmancers to npm and create the GitHub Release
         # No credential is configured: npm exchanges the job's OIDC identity
-        # for a short-lived publish grant. Already on npm -> skip, so a
-        # re-run finishes cleanly; any other registry error fails closed.
-        run: npm run release:publish:ci -- --tag "$GITHUB_REF_NAME"
+        # for a short-lived publish grant. Already on npm -> skip the publish
+        # but still ensure the GitHub Release exists, so a re-run finishes
+        # cleanly; any other registry error fails closed. GH_TOKEN (the job's
+        # own GITHUB_TOKEN, contents: write) lets gh create the GitHub Release.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-publish-ci.mjs --tag "$GITHUB_REF_NAME"

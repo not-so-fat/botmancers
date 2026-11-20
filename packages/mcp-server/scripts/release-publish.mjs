@@ -1,14 +1,14 @@
 // Manual fallback: publishes the tagged release to npm (dist-tag latest) from a fresh
 // clone of the tag, so the tarball is built from exactly the tagged commit, never from
-// a working tree. The normal path is release-botmancers.yml, which publishes with
+// a working tree. The normal path is release.yml, which publishes with
 // trusted publishing once its tag check is green; use this script only when CI cannot
 // publish. Run it from the repository root:
 //
-//   npm run release:publish                     publish; npm prints a link to approve in the browser (passkey/web login)
-//   npm run release:publish -- --otp 123456     publish with an authenticator code instead
-//   npm run release:publish -- --dry            do everything except publish
+//   npm run publish:packages                     publish; npm prints a link to approve in the browser (passkey/web login)
+//   npm run publish:packages -- --otp 123456     publish with an authenticator code instead
+//   npm run publish:packages -- --dry            do everything except publish
 //
-// The tag is botmancers-v<version of origin/main>, the one `npm run release:tag:push` created.
+// The tag is v<version of origin/main>, the one `npm run release:finish` created.
 // It refuses when that tag is not on the remote or the version is already on the registry.
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -20,7 +20,7 @@ const dry = args.includes('--dry');
 const otpAt = args.indexOf('--otp');
 const otp = otpAt >= 0 ? args[otpAt + 1] : null;
 const fail = message => {
-  process.stderr.write(`release:publish: ${message}\n`);
+  process.stderr.write(`publish:packages: ${message}\n`);
   process.exit(1);
 };
 if (otpAt >= 0 && !/^\d{6,8}$/.test(otp ?? '')) fail('--otp needs the 6 to 8 digit code from your authenticator');
@@ -33,9 +33,9 @@ const run = (command, commandArgs, cwd) => {
 
 out('git', ['fetch', '--tags', 'origin', 'main'], process.cwd());
 const version = JSON.parse(out('git', ['show', 'origin/main:packages/mcp-server/package.json'], process.cwd())).version;
-const tag = `botmancers-v${version}`;
+const tag = `v${version}`;
 const origin = out('git', ['remote', 'get-url', 'origin'], process.cwd());
-if (!out('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`], process.cwd())) fail(`${tag} is not on origin; run npm run release:tag:push first`);
+if (!out('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`], process.cwd())) fail(`${tag} is not on origin; run npm run release:finish first`);
 let published = '';
 try {
   published = out('npm', ['view', `botmancers@${version}`, 'version'], process.cwd());

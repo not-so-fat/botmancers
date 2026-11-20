@@ -143,7 +143,7 @@ try {
 
   test('Overview entry and release check include the Agent Slack page', () => {
     const overview = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/page.tsx'), 'utf8');
-    const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci-botmancers.yml'), 'utf8');
+    const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci.yml'), 'utf8');
     assert.match(overview, /Share a session to Slack/);
     assert.match(overview, /\/agents\/\$\{encodeURIComponent\(id\)\}\/slack/);
     assert.match(workflow, /npm run test:agent-slack-page/);

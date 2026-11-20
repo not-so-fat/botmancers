@@ -428,7 +428,7 @@ bundled tool, naming exactly what is missing: a v1-only server ("it serves
 only botmancers.mcp.v1"), missing v2 tools, or a `botmancers_get_conversation`
 without the v2 `agent_id` path.
 Release steps are in
-[`packages/mcp-server/RELEASING.md`](../packages/mcp-server/RELEASING.md).
+[`docs/PUBLISHING.md`](PUBLISHING.md).
 
 For Codex, Cursor, and Claude Code, `botmancers setup --client
 codex|cursor|claude` writes the MCP connection and installs the optional

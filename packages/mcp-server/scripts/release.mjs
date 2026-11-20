@@ -2,7 +2,7 @@
 // verifies, then prints the operator's publish steps.
 //
 //   node scripts/release.mjs                  full check (requires a clean git tree)
-//   node scripts/release.mjs --tag <tag>      also require the git tag to be botmancers-v<version> (CI)
+//   node scripts/release.mjs --tag <tag>      also require the git tag to be v<version> (CI)
 //   node scripts/release.mjs --allow-dirty    skip the clean-tree check (local iteration only)
 //   node scripts/release.mjs --out file       also save the transcript
 //
@@ -36,7 +36,7 @@ const outAt = args.indexOf('--out');
 const outFile = outAt >= 0 ? args[outAt + 1] : null;
 
 const REPO_ROOT = join(PACKAGE_DIR, '..', '..');
-const WORKFLOW = join(REPO_ROOT, '.github/workflows/release-botmancers.yml');
+const WORKFLOW = join(REPO_ROOT, '.github/workflows/release.yml');
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 
 const pkg = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'));
@@ -113,7 +113,7 @@ step('version consistency', () => {
   assert(pins.length > 0 && pins.every(pin => pin === version), `README pinned examples (${pins.join(', ') || 'none'}) must all be ${version}`);
   const cliVersion = run(process.execPath, ['dist/cli.js', '--version']).trim();
   assert(cliVersion === version, `built CLI reports ${cliVersion}; run npm run build`);
-  if (gitTag) assert(gitTag === `botmancers-v${version}`, `git tag ${gitTag} does not match botmancers-v${version}`);
+  if (gitTag) assert(gitTag === `v${version}`, `git tag ${gitTag} does not match v${version}`);
   return `package.json, CHANGELOG, README pin, CLI${gitTag ? `, tag ${gitTag}` : ''} all ${version}`;
 });
 
@@ -211,12 +211,12 @@ step('publish configuration', () => {
   const remote = run('git', ['remote', 'get-url', 'origin'], { cwd: REPO_ROOT }).trim().replace(/\.git$/, '').replace(/^git@github\.com:/, 'https://github.com/');
   const declared = pkg.repository.url.replace(/^git\+/, '').replace(/\.git$/, '');
   assert(declared === remote, `repository.url ${declared} must match origin ${remote}`);
-  assert(existsSync(WORKFLOW), 'release workflow .github/workflows/release-botmancers.yml is missing');
+  assert(existsSync(WORKFLOW), 'release workflow .github/workflows/release.yml is missing');
   const workflow = readFileSync(WORKFLOW, 'utf8');
   const code = workflow.replace(/^\s*#.*$/gm, '');
   assert(/release:check[^\n]*--tag/.test(code), 'release workflow must run release:check against the tag');
   assert(!/npm publish/.test(code), 'release workflow must publish only through scripts/release-publish-ci.mjs (skip-if-published, fail closed), not an inline npm publish');
-  assert(/release:publish:ci[^\n]*--tag/.test(code), 'release workflow must publish the tagged commit through release:publish-ci');
+  assert(/release-publish-ci\.mjs[^\n]*--tag/.test(code), 'release workflow must publish the tagged commit through scripts/release-publish-ci.mjs');
   assert(/needs:\s*check/.test(code), 'release workflow publish job must run after the check (needs: check)');
   assert(/environment:\s*npm/.test(code), 'release workflow publish job must run in the npm environment');
   assert(/id-token:\s*write/.test(code), 'release workflow publish job needs id-token: write for trusted publishing');
@@ -275,11 +275,11 @@ if (failed) {
 }
 print(`
 Release check PASSED for botmancers@${version}. Nothing was published.
-Operator steps (see packages/mcp-server/RELEASING.md):
-  1. npm run release:tag:push   (repository root; after the release PR is merged)
-     -> CI re-runs this check against the tag, then publishes to npm with trusted publishing
-  2. watch the release-botmancers run to the end, then npm view botmancers@${version} version
-     (manual fallback only: npm run release:publish from the repository root)
+Operator steps (see docs/PUBLISHING.md):
+  1. npm run release:finish -- <pr-number>   (repository root; merges the release PR, tags v${version}, pushes the tag)
+     -> CI re-runs this check against the tag, then publishes to npm with trusted publishing and creates the GitHub Release
+  2. watch the release run to the end, then npm view botmancers@${version} version
+     (manual fallback only: npm run publish:packages from the repository root)
   3. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
      node packages/mcp-server/scripts/smoke-product-install.mjs --registry ${version}
      BOTMANCERS_VERSION=${version} bash scripts/install.sh   (managed install from the registry, clean account)
