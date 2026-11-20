@@ -52,7 +52,7 @@ Adjacent, not owned here: Agent Deck is no longer part of execution as of 0.7.0 
 
 - **Success:** `botmancers status` reports `healthy` with the core and bridge on the same version.
 - **Common failures:** a port in use (`start` exits 6), `~/.local/bin` not on `PATH`, no provider CLI installed (warning; Agents cannot launch until one is).
-- **Owner docs:** [packages/mcp-server/README.md](../packages/mcp-server/README.md), [RELEASING.md](../packages/mcp-server/RELEASING.md).
+- **Owner docs:** [packages/mcp-server/README.md](../packages/mcp-server/README.md), [PUBLISHING.md](PUBLISHING.md).
 
 ## F2. Register an Agent over your local sessions
 
