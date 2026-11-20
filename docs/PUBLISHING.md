@@ -50,8 +50,12 @@ the npm package.
 A release is published once, straight to `latest`, by `release.yml`: after
 the `check` job passes on the tag, the `publish` job publishes
 `packages/mcp-server` with npm trusted publishing (OIDC, no credential) as
-`npm publish --provenance --tag latest`, then creates the GitHub Release
-`vX.Y.Z` from the CHANGELOG entry. Nobody logs in to npm anywhere, and no
+`npm publish --tag latest`, then creates the GitHub Release
+`vX.Y.Z` from the CHANGELOG entry. There is no explicit `--provenance`: the
+repository is private, and npm rejects a provenance bundle from a private
+repository (`E422 ... Unsupported GitHub Actions source repository
+visibility: "private"`). Under trusted publishing npm attaches provenance on
+its own if the repository is ever made public. Nobody logs in to npm anywhere, and no
 npm credential lives in GitHub secrets or on any machine. There is no canary
 dist-tag. The `botmancers` trusted publisher on npmjs.com (GitHub Actions,
 `not-so-fat` / `botmancers`, workflow `release.yml`, environment `npm`) is
