@@ -1,7 +1,9 @@
-# Runs the release gate (version, changelog, app build, tests, package contents,
-# canary installs of the exact tarball) against a botmancers-v<version> tag pushed
-# by `npm run release:tag:push`. It never publishes: the operator runs
-# `npm run release:publish` (2FA) after this check is green.
+# Releases botmancers to npm from a botmancers-v<version> tag pushed by
+# `npm run release:tag:push`. Job check runs the release gate (version,
+# changelog, app build, tests, package contents, canary installs of the exact
+# tarball); job publish then publishes packages/mcp-server with npm trusted
+# publishing (OIDC, no credential). `npm run release:publish` stays as the
+# documented manual fallback (RELEASING.md).
 name: release-botmancers
 
 on:
@@ -48,3 +50,42 @@ jobs:
         # restart, rollback). A tarball missing the launcher/updater code, the
         # UI/core runtime, the bridge, or the native SQLite driver fails here.
         run: npm run build && npm run build:app && npm run release:check -- --tag "$GITHUB_REF_NAME"
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      id-token: write
+    environment: npm
+    defaults:
+      run:
+        working-directory: packages/mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Ensure npm supports trusted publishing
+        # Trusted publishing needs npm 11.5.1 or newer (Node 24 ships one);
+        # upgrade only when the runner is older.
+        run: |
+          if [ "$(printf '%s\n%s\n' "$(npm --version)" '11.5.1' | sort -V | head -n 1)" = '11.5.1' ]; then
+            echo "npm $(npm --version) supports trusted publishing"
+          else
+            npm install -g npm@11
+          fi
+      - name: Install the app's locked dependencies (repository root)
+        # Same as check: the package bundles the Next.js app built from the
+        # repository root, so the tarball is built from the tagged commit.
+        working-directory: .
+        run: npm ci --no-audit --no-fund
+      - name: Install the locked package-local build tools
+        run: npm ci --no-audit --no-fund
+      - name: Build the tarball from the tagged commit
+        run: npm run build && npm run build:app
+      - name: Publish botmancers to npm (trusted publishing)
+        # No credential is configured: npm exchanges the job's OIDC identity
+        # for a short-lived publish grant. Already on npm -> skip, so a
+        # re-run finishes cleanly; any other registry error fails closed.
+        run: npm run release:publish:ci -- --tag "$GITHUB_REF_NAME"
