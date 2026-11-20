@@ -26,6 +26,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PACKAGE_DIR, checkManifest, packManifest } from './check-pack.mjs';
 
+const { PUBLISH_ARGS } = await import('./release-publish-ci.mjs');
+
 const args = process.argv.slice(2);
 const tagAt = args.indexOf('--tag');
 const gitTag = tagAt >= 0 ? args[tagAt + 1] : null;
@@ -211,9 +213,20 @@ step('publish configuration', () => {
   assert(declared === remote, `repository.url ${declared} must match origin ${remote}`);
   assert(existsSync(WORKFLOW), 'release workflow .github/workflows/release-botmancers.yml is missing');
   const workflow = readFileSync(WORKFLOW, 'utf8');
-  assert(!/npm publish/.test(workflow.replace(/^\s*#.*$/gm, '')), 'release workflow must not publish: the operator runs npm run release:publish with a 2FA code');
-  assert(/release:check[^\n]*--tag/.test(workflow), 'release workflow must run release:check against the tag');
-  return 'publishConfig public with no tag, repository matches origin, workflow checks the tag and does not publish';
+  const code = workflow.replace(/^\s*#.*$/gm, '');
+  assert(/release:check[^\n]*--tag/.test(code), 'release workflow must run release:check against the tag');
+  assert(!/npm publish/.test(code), 'release workflow must publish only through scripts/release-publish-ci.mjs (skip-if-published, fail closed), not an inline npm publish');
+  assert(/release:publish:ci[^\n]*--tag/.test(code), 'release workflow must publish the tagged commit through release:publish-ci');
+  assert(/needs:\s*check/.test(code), 'release workflow publish job must run after the check (needs: check)');
+  assert(/environment:\s*npm/.test(code), 'release workflow publish job must run in the npm environment');
+  assert(/id-token:\s*write/.test(code), 'release workflow publish job needs id-token: write for trusted publishing');
+  assert(!/NODE_AUTH_TOKEN/.test(code), 'release workflow must not use NODE_AUTH_TOKEN: trusted publishing needs no credential');
+  assert(!/--otp/.test(code), 'release workflow must not use --otp: trusted publishing needs no second factor');
+  assert(!/registry-url/.test(code), 'release workflow must not set registry-url (it implies a credential-based auth setup)');
+  assert(!/secrets\./.test(code), 'release workflow must not read secrets: trusted publishing needs no credential');
+  assert(PUBLISH_ARGS.includes('--provenance') && PUBLISH_ARGS.includes('--tag') && PUBLISH_ARGS.includes('latest'),
+    'release-publish-ci.mjs must publish with --provenance --tag latest');
+  return 'publishConfig public with no tag, repository matches origin, workflow checks the tag then publishes from the npm environment with OIDC and no credential';
 });
 
 step('managed install entry point', () => {
@@ -264,8 +277,9 @@ print(`
 Release check PASSED for botmancers@${version}. Nothing was published.
 Operator steps (see packages/mcp-server/RELEASING.md):
   1. npm run release:tag:push   (repository root; after the release PR is merged)
-     -> CI re-runs this check against the tag (it does not publish)
-  2. npm run release:publish   (operator; approve the npm login link or pass --otp <code>; publishes to latest from a clean clone of the tag)
+     -> CI re-runs this check against the tag, then publishes to npm with trusted publishing
+  2. watch the release-botmancers run to the end, then npm view botmancers@${version} version
+     (manual fallback only: npm run release:publish from the repository root)
   3. node packages/mcp-server/scripts/smoke-install.mjs --registry ${version}
      node packages/mcp-server/scripts/smoke-product-install.mjs --registry ${version}
      BOTMANCERS_VERSION=${version} bash scripts/install.sh   (managed install from the registry, clean account)

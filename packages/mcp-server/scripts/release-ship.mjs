@@ -1,7 +1,7 @@
-// Merges the release PR, tags the merge commit, and waits for release-botmancers.yml.
-// Run it as `npm run release:ship -- <pr-number>` from the repository root once the PR's
-// checks are green. Only the npm publish (`npm run release:publish`, browser login) is left
-// for the maintainer.
+// Merges the release PR, tags the merge commit, and waits for release-botmancers.yml
+// to check the tag and publish it to npm with trusted publishing. Run it as
+// `npm run release:ship -- <pr-number>` from the repository root once the PR's
+// checks are green. No npm login is needed anywhere.
 //
 //   npm run release:ship -- 109          merge, tag, push, wait for the tag check
 //   npm run release:ship -- 109 --dry    print what it would do; merges nothing
@@ -54,5 +54,5 @@ for (let attempt = 0; attempt < 20 && !runId; attempt++) {
 if (!runId) fail(`no release-botmancers run appeared for ${tag}; check the Actions tab`);
 say(`watching release-botmancers run ${runId} (about 4 minutes)`);
 const watched = spawnSync('gh', ['run', 'watch', runId, '--exit-status', '--interval', '30'], { stdio: ['ignore', 'ignore', 'inherit'] });
-if (watched.status !== 0) fail(`release-botmancers failed for ${tag}; do not move the tag, release a new version instead`);
-say(`release-botmancers is green for ${tag}. Next, the maintainer runs: npm run release:publish`);
+if (watched.status !== 0) fail(`release-botmancers failed for ${tag}; while botmancers@${version} is not on npm, fix and re-push the same tag (RELEASING.md step 4)`);
+say(`release-botmancers is green for ${tag}; botmancers@${version} is on npm. Verify: npm view botmancers@${version} version`);
