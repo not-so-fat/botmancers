@@ -29,8 +29,11 @@ import { fileURLToPath } from 'node:url';
 
 export const PACKAGE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const PUBLISH_ARGS = ['publish', '--tag', 'latest', '--loglevel', 'verbose'];
-const POLL_ATTEMPTS = 24;
-const POLL_SLEEP_SECONDS = 5;
+// The package is ~16 MB; npm took about 5 minutes to show botmancers@0.11.1
+// after the PUT was accepted (202), so 120 seconds failed a good publish.
+// Wait up to 15 minutes (the publish job's timeout is 25).
+const POLL_ATTEMPTS = 90;
+const POLL_SLEEP_SECONDS = 10;
 
 // status/output of `npm view botmancers@<version> version` -> decision.
 // A 200 whose body is not exactly the version is unexpected (fail closed);
