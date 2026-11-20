@@ -89,5 +89,8 @@ jobs:
         # No credential is configured: npm exchanges the job's OIDC identity
         # for a short-lived publish grant. Already on npm -> skip the publish
         # but still ensure the GitHub Release exists, so a re-run finishes
-        # cleanly; any other registry error fails closed.
+        # cleanly; any other registry error fails closed. GH_TOKEN (the job's
+        # own GITHUB_TOKEN, contents: write) lets gh create the GitHub Release.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/release-publish-ci.mjs --tag "$GITHUB_REF_NAME"
