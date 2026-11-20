@@ -1,6 +1,8 @@
-// Publishes the tagged release to npm (dist-tag latest) from a fresh clone of the tag,
-// so the tarball is built from exactly the tagged commit, never from a working tree.
-// Run it from the repository root once release-botmancers.yml is green on the tag:
+// Manual fallback: publishes the tagged release to npm (dist-tag latest) from a fresh
+// clone of the tag, so the tarball is built from exactly the tagged commit, never from
+// a working tree. The normal path is release-botmancers.yml, which publishes with
+// trusted publishing once its tag check is green; use this script only when CI cannot
+// publish. Run it from the repository root:
 //
 //   npm run release:publish                     publish; npm prints a link to approve in the browser (passkey/web login)
 //   npm run release:publish -- --otp 123456     publish with an authenticator code instead

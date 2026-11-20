@@ -33,15 +33,36 @@ private Botmancers app, which has the same name and `"private": true`.
 
 ## Publishing
 
-A release is published once, straight to `latest`, by the maintainer from a
-fresh clone of the tag, with npm 2FA (`npm run release:publish`). There
-is no canary dist-tag and no CI publish, so nothing needs configuring on
-npmjs.com. The safety net is before the publish: `release:check` installs the
+A release is published once, straight to `latest`, by
+`release-botmancers.yml`: after the `check` job passes on the tag, the
+`publish` job publishes this directory with npm trusted publishing (OIDC, no
+credential) as `npm publish --provenance --tag latest`. An agent runs the
+whole release: it prepares and merges, pushes the tag with
+`npm run release:tag:push`, then watches `release-botmancers.yml` to the end
+and checks `npm view botmancers@X.Y.Z version`. Nobody logs in to npm
+anywhere, and no npm credential lives in GitHub secrets or on any machine.
+There is no canary dist-tag. The `botmancers` trusted publisher on npmjs.com
+(GitHub Actions, `not-so-fat` / `botmancers`, workflow
+`release-botmancers.yml`, environment `npm`) is configured once by the owner
+and never touched per release; only the owner can change it. The safety net
+is before the publish: `release:check` installs the
 exact tarball into clean projects (bridge-only, full product)
 and `release-botmancers.yml` runs the same check on the tag, on the release
 runner. The managed install path (`scripts/install.sh`, the launcher, staged
 upgrades, rollback) is covered by `npm test`'s managed suite instead of an
-exact-tarball smoke.
+exact-tarball smoke. `npm run release:publish` (from the repository root, a
+fresh clone of the tag, the maintainer's npm login) stays as the documented
+manual fallback for when CI cannot publish.
+
+Two rules:
+
+- A failed release keeps its version. While `botmancers@X.Y.Z` is not on npm,
+  fix the problem, merge, delete the tag locally and on the remote, and
+  re-push the same tag on the fixed commit (step 4). Only a version that is
+  already on npm is immutable.
+- An OIDC `package not found` failure (followed by `ENEEDAUTH`) means the
+  npmjs.com trusted publisher entry is wrong or missing, which only the owner
+  changes on npmjs.com. No repository change fixes it.
 
 ## Procedure
 
@@ -107,18 +128,47 @@ exact-tarball smoke.
    instead of tagging by hand.
 
    The `release-botmancers` workflow then runs `release:check --tag ...` on
-   the tag. It never publishes. Wait for it to be green.
-4. **Publish** (maintainer, needs your npm 2FA), from the repository root:
+   the tag in the `check` job, and the `publish` job publishes to npm once
+   the check is green. Wait for the run to finish (step 4).
+4. **Publish (automatic).** The `publish` job runs only after `check`
+   passes and publishes with `npm publish --provenance --tag latest`; nobody
+   logs in to npm anywhere. Watch the `release-botmancers` run to the end,
+   then verify from any machine:
 
    ```sh
-   npm run release:publish                    # npm prints a link to approve in the browser
-   npm run release:publish -- --otp 123456    # or use an authenticator code
+   npm view botmancers@X.Y.Z version
    ```
 
-   It clones the tag into a temporary directory, installs, builds,
-   re-runs `release:check --tag`, and runs `npm publish` (to `latest`). It
-   refuses when the tag is not on `origin` or the version is already on the
-   registry. `-- --dry` does everything except the publish.
+   If the publish step finds `botmancers@X.Y.Z` already on npm it skips, so
+   re-running the workflow finishes the rest. If the run fails before the
+   version is on npm, the release keeps its version: fix the problem, merge,
+   delete the tag locally and on the remote, and re-push the same tag on the
+   fixed commit:
+
+   ```sh
+   git tag -d botmancers-vX.Y.Z && git push origin :botmancers-vX.Y.Z
+   npm run release:tag:push    # re-pushes the same tag on the fixed origin/main
+   ```
+
+   Only a version that is already on npm is immutable: a bad published
+   version gets the next patch version (and `npm deprecate`), never a moved
+   tag. If the publish step fails with an OIDC `package not found` error
+   (followed by `ENEEDAUTH`), the npmjs.com trusted publisher entry is wrong
+   or missing; only the owner can fix it on npmjs.com, no repository change
+   helps.
+
+   Preview what the publish step would do without publishing (it reports
+   "already on npm; skipping publish" for a shipped version):
+
+   ```sh
+   cd packages/mcp-server
+   npm run release:publish:ci -- --tag botmancers-vX.Y.Z --dry
+   ```
+
+   Manual fallback only: `npm run release:publish` from the repository root
+   publishes from a fresh clone of the tag with the maintainer's npm login.
+   It refuses when the tag is not on `origin` or the version is already on
+   the registry.
 5. **Registry smoke**, from any machine:
 
    ```sh
@@ -163,5 +213,5 @@ exact-tarball smoke.
 If a published version is bad, do not move its tag. Fix the problem and
 release the next patch version. Run `npm deprecate botmancers@X.Y.Z "<reason>"`
 for a version that has already reached users. Unpublishing is a last resort.
-A release that fails on the runner before the publish is fixed the same way:
-with a new version, because the tag stays where it is.
+A release that fails before its version is on npm keeps the version instead:
+fix, merge, delete and re-push the same tag on the fixed commit (step 4).

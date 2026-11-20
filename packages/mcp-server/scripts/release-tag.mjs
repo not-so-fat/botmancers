@@ -1,6 +1,6 @@
 // Tags the merged release and pushes the tag, which starts release-botmancers.yml
-// (the release check; it does not publish). Run it as `npm run release:tag:push` from the
-// repository root, after the release PR is merged.
+// (the release check, then the npm publish with trusted publishing). Run it as
+// `npm run release:tag:push` from the repository root, after the release PR is merged.
 //
 //   npm run release:tag:push            tag origin/main and push botmancers-v<version>
 //   npm run release:tag:push -- --dry   print what it would do
@@ -35,4 +35,4 @@ process.stdout.write(`${dry ? 'would tag' : 'tagging'} ${tag} at ${sha.slice(0, 
 if (dry) process.exit(0);
 if (!local) git('tag', tag, sha);
 git('push', 'origin', tag);
-process.stdout.write(`pushed ${tag}; watch release-botmancers, then the maintainer runs npm run release:publish\n`);
+process.stdout.write(`pushed ${tag}; watch the release-botmancers run to the end, then check npm view botmancers@${version} version\n`);
