@@ -62,6 +62,7 @@
     "smoke:install": "node scripts/smoke-install.mjs",
     "smoke:product": "node scripts/smoke-product-install.mjs",
     "release:check": "node scripts/release.mjs",
+    "release:publish:ci": "node scripts/release-publish-ci.mjs",
     "prepack": "npm run build && npm run build:app"
   },
   "devDependencies": {
