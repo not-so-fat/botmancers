@@ -8,11 +8,15 @@
 //   node scripts/not-514-identity-probe.js mcp-stdio
 //       A minimal stdio MCP server with one tool, `identity_probe`, that
 //       returns the same report as seen by the MCP subprocess. Register it
-//       in Claude Code, Codex, or Cursor and call the tool once per case in
-//       tests/fixtures/session-share-preflight/probe-results.md (new session, exact resume,
-//       implicit continue, clear/reset, client restart, launched outside
-//       Botmancers). With NOT514_PROBE_OUT set, the report seen at
-//       `initialize` is also appended to that file as one JSON line.
+//       in Claude Code, Codex, or Cursor and call the tool once per case
+//       listed in the historical fixture
+//       tests/fixtures/session-share-preflight/probe-results.md (new session,
+//       exact resume, implicit continue, clear/reset, client restart,
+//       launched outside Botmancers). That fixture is frozen test input; never
+//       write new runs into it. With NOT514_PROBE_OUT set to a path outside
+//       the repository (e.g. /tmp/not514-probe.jsonl), the report seen at
+//       `initialize` is appended to that path as one JSON line; attach new
+//       run output to CI artifacts or release attachments, not git.
 //
 // Each watched variable is reported as { present, shape, length,
 // fingerprint }. `fingerprint` is the first 12 hex digits of
