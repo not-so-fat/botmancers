@@ -1,5 +1,12 @@
 # Real Cursor Grok Bot smoke: operator record (NOT-493)
 
+> **Historical record (NOT-493, botmancers@0.1.0 era; labelled in NOT-650).**
+> Kept as a linked reference only. Do not fill this file in or commit new
+> runs: new operator smoke records go to a GitHub Release attachment or a CI
+> artifact (see [docs/PUBLISHING.md](../../../PUBLISHING.md)). The current
+> package pin is in [`../README.md`](../README.md); the 0.1.0 steps below are
+> as written at the time.
+
 Status: **pending operator run**. The real Cursor Grok Bot smoke needs a
 human operator with a Cursor Grok Bot workspace and an authenticated HTTPS or
 private-network route to the bridge. The automated builder sandbox has neither,
