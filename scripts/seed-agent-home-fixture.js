@@ -15,7 +15,7 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
 const db = jiti('../lib/db.ts');
 const { writeSkillForBot } = jiti('../lib/skills.ts');
-const { seedSessionCatalog } = require('../test-support/session-catalog-fixture');
+const { seedSessionCatalog } = require('../tests/support/session-catalog-fixture');
 const fixture = seedSessionCatalog(db);
 db.bots.updateIdentity(fixture.agents.dev.id, 'Dev', 'Release implementer', 'Own release implementation.\nKeep changes scoped and prove the user path.');
 writeSkillForBot('Dev', '# Implementation skill\nBuild coherent slices and report evidence.');

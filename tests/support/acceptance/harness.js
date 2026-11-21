@@ -24,7 +24,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const ROOT_PREFIX = 'botmancers-acceptance-';
 
 // The state a normal Botmancers install reads and writes, including any

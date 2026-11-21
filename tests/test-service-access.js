@@ -30,7 +30,7 @@ const path = require('path');
 const { createHash } = require('crypto');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const CHILD = process.env.ACCESS_SCENARIO === 'restart-child';
 const DB_PATH = process.env.ACCESS_DB || path.join(os.tmpdir(), `botmancers-access-${process.pid}.db`);
 if (!CHILD) for (const suffix of ['', '-shm', '-wal']) fs.rmSync(DB_PATH + suffix, { force: true });
@@ -54,17 +54,17 @@ process.env.BOTMANCERS_SERVICE_TOKENS = `grok-bot=${digest(TOKENS.grok)},ci-bot=
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const capabilitiesLib = jiti('./lib/service-grants.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const mcp = jiti('./lib/mcp-bridge-v2.ts');
-const { SESSION_CONTEXT_PRINCIPAL } = jiti('./lib/session-context.ts');
-const fake = require('./test-support/fake-session-provider');
-const http = jiti('./lib/service-api-http.ts');
-const agentApi = jiti('./lib/agent-api.ts');
+const dbModule = jiti('../lib/db.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const capabilitiesLib = jiti('../lib/service-grants.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const mcp = jiti('../lib/mcp-bridge-v2.ts');
+const { SESSION_CONTEXT_PRINCIPAL } = jiti('../lib/session-context.ts');
+const fake = require('./support/fake-session-provider');
+const http = jiti('../lib/service-api-http.ts');
+const agentApi = jiti('../lib/agent-api.ts');
 
 const raw = dbModule.default;
 const { engine, bots, conversations, serviceAudit, UI_OWNER_PRINCIPAL: OWNER } = dbModule;
@@ -338,13 +338,13 @@ async function main() {
     const ctxList = await http.serviceOperations.listAgents(SESSION_CONTEXT_PRINCIPAL, { cursor: null, limit: null });
     const ctxCaps = await http.serviceOperations.capabilities(SESSION_CONTEXT_PRINCIPAL);
     const ctxAgent = await http.serviceOperations.getAgent(SESSION_CONTEXT_PRINCIPAL, codex.id);
-    const serviceApi = jiti('./lib/service-api.ts');
+    const serviceApi = jiti('../lib/service-api.ts');
     const ctxInner = serviceApi.serviceContext(SESSION_CONTEXT_PRINCIPAL);
     const innerList = serviceApi.listServiceAgents(ctxInner, { cursor: null, limit: 20 });
     assert([ctxList, ctxCaps, ctxAgent].every(r => r.status === 403 && r.body.error.code === 'principal_not_allowed')
       && innerList.items.length === 0 && serviceApi.capabilitiesView(ctxInner).agents.length === 0 && !serviceApi.holds(ctxInner, codex.id),
     'the session-context principal cannot list Agents (refused at the boundary, and reaches no Agent underneath)');
-    const { RESERVED_SERVICE_IDS, parseServiceTokens } = jiti('./lib/service-token-auth.ts');
+    const { RESERVED_SERVICE_IDS, parseServiceTokens } = jiti('../lib/service-token-auth.ts');
     const engineReach = [];
     for (const id of RESERVED_SERVICE_IDS) {
       const ctx = serviceApi.serviceContext({ kind: 'service', id });
@@ -882,7 +882,7 @@ async function main() {
 
     // The redactor's reference exemption is explicit: a Botmancers id passes,
     // the provider's own run and session ids (whatever their key) do not.
-    const { serviceRedactor } = jiti('./lib/service-redaction.ts');
+    const { serviceRedactor } = jiti('../lib/service-redaction.ts');
     const shown = serviceRedactor().deep({
       request_id: 'req-1', originConversationId: 'conv-1', sender_id: 'bot-1',
       data: { phase: 'runtime_started', external_run_id: SECRETS.run, externalSessionId: SECRETS.codex, runId: SECRETS.run, resumeSessionId: SECRETS.codexOld },

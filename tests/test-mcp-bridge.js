@@ -40,7 +40,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { createHash } = require('crypto');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const CONTRACT_FILE = path.join(ROOT, 'docs', 'contracts', 'mcp-bridge-v1.tools.json');
 const CONTRACT_V2_FILE = path.join(ROOT, 'docs', 'contracts', 'mcp-bridge-v2.tools.json');
 // The v1 capture is frozen: its bytes never change.
@@ -67,7 +67,7 @@ if (process.env.BOTMANCERS_MCP_BRIDGE_TEST_CHILD) {
 }
 
 async function parent() {
-  const harnessLib = require('./test-support/acceptance/harness.js');
+  const harnessLib = require('./support/acceptance/harness.js');
   const harness = harnessLib.createHarness('mcp-bridge');
   const run = await new Promise(resolve => {
     const proc = spawn(process.execPath, [__filename, ...process.argv.slice(2)], {
@@ -101,7 +101,7 @@ async function waitFor(predicate, label, timeoutMs = 10_000) {
 }
 
 async function child() {
-  const { createContext } = require('./test-support/acceptance/engine-context.js');
+  const { createContext } = require('./support/acceptance/engine-context.js');
   const ctx = createContext('mcp-bridge');
   const { engine, raw, bots } = ctx;
   let failures = 0;
@@ -506,7 +506,7 @@ async function child() {
   section('AC6 status snapshots: pending, running, succeeded, failed, cancelled');
   {
     const start = async (objective, key) => record(await call('botmancers_start_task', { coordinator: 'Holder', objective, idempotency_key: key })).data;
-    const fakeDirect = require('./test-support/fake-session-provider.js');
+    const fakeDirect = require('./support/fake-session-provider.js');
     const holderState = path.join(ctx.providerDir, `${holder.id}.provider.json`);
     const running = await start('HOLD-ME: long analysis', 'status-running');
     await waitFor(() => ctx.attemptsOf(running.request_id).some(a => a.external_run_id && a.finished_at === null), 'the held turn to start');

@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const rail = fs.readFileSync(path.join(ROOT, 'app/components/AgentRail.tsx'), 'utf8');
 const home = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
 const shell = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/AgentShell.tsx'), 'utf8');

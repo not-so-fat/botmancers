@@ -24,8 +24,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
-const harnessLib = require('./test-support/acceptance/harness.js');
-const guard = require('./test-support/acceptance/smoke-guard.js');
+const harnessLib = require('./support/acceptance/harness.js');
+const guard = require('./support/acceptance/smoke-guard.js');
+const ROOT = require('./support/repo-root');
 
 let failures = 0;
 function assert(condition, label) {
@@ -34,7 +35,7 @@ function assert(condition, label) {
   return condition;
 }
 
-function run(command, args, env, cwd = __dirname) {
+function run(command, args, env, cwd = ROOT) {
   return new Promise(resolve => {
     const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -85,7 +86,7 @@ async function main() {
   // they start (each would create a marker file if it ran).
   const marker = path.join(harness.root, 'forbidden-ran');
   const probe = `
-    const { createContext } = require(${JSON.stringify(path.join(__dirname, 'test-support/acceptance/engine-context.js'))});
+    const { createContext } = require(${JSON.stringify(path.join(__dirname, 'support/acceptance/engine-context.js'))});
     const cp = require('child_process');
     const ctx = createContext('selftest-guards');
     const marker = ${JSON.stringify(marker)};
@@ -137,12 +138,12 @@ async function main() {
     HERMES_API_SERVER_KEY: 'hermes_hostile_should_never_be_used',
   };
   const beforePass = rootsOf('talk-answer');
-  const passed = await run(process.execPath, ['test-acceptance-engine.js', 'talk-answer'], hostileEnv);
+  const passed = await run(process.execPath, [path.join(ROOT, 'tests', 'test-acceptance-engine.js'), 'talk-answer'], hostileEnv);
   assert(passed.code === 0 && /TEST RESULT: PASS/.test(passed.out), `talk-answer passes under a hostile parent environment (exit ${passed.code})`);
   assert(JSON.stringify(rootsOf('talk-answer')) === JSON.stringify(beforePass), 'the passing scenario left no harness root behind');
   assert(!/hostile_should_never_be_used/.test(passed.out + passed.err), 'no inherited secret reached the scenario output');
 
-  const failed = await run(process.execPath, ['test-acceptance-engine.js', 'self-test-failure'], process.env);
+  const failed = await run(process.execPath, [path.join(ROOT, 'tests', 'test-acceptance-engine.js'), 'self-test-failure'], process.env);
   const preserved = (/artifacts preserved at (\S+)/.exec(failed.out) || [])[1];
   assert(failed.code === 1 && /TEST RESULT: FAIL/.test(failed.out), `a failing scenario fails the run (exit ${failed.code})`);
   const failedNote = preserved && fs.existsSync(path.join(preserved, 'FAILED.txt')) ? fs.readFileSync(path.join(preserved, 'FAILED.txt'), 'utf8') : '';
@@ -150,7 +151,7 @@ async function main() {
     && /deliberate failure/.test(failedNote), `the failing root is preserved with its database, logs, and the failed assertion (${preserved})`);
   if (preserved) fs.rmSync(preserved, { recursive: true, force: true });
 
-  const listed = await run(process.execPath, ['test-acceptance-engine.js', '--list'], process.env);
+  const listed = await run(process.execPath, [path.join(ROOT, 'tests', 'test-acceptance-engine.js'), '--list'], process.env);
   const names = ['talk-answer', 'duplicate-wake', 'unavailable-target', 'restart-recovery', 'composed-review', 'lifecycle-controls', 'safety-denial'];
   assert(listed.code === 0 && names.every(name => listed.out.includes(`${name}\n`)), '--list names every core scenario with its fixtures');
 
@@ -158,7 +159,7 @@ async function main() {
   console.log('\nClean environment: the default suite needs no server, network, credentials, or coding runtime');
   const emptyHome = scratchDir('home');
   const cleanEnv = { PATH: [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter), HOME: emptyHome, TMPDIR: os.tmpdir() };
-  const clean = await run(process.execPath, ['test-acceptance-engine.js'], cleanEnv);
+  const clean = await run(process.execPath, [path.join(ROOT, 'tests', 'test-acceptance-engine.js')], cleanEnv);
   const summary = clean.out.slice(clean.out.indexOf('Acceptance summary'));
   console.log(summary.split('\n').map(line => `    ${line}`).join('\n'));
   assert(clean.code === 0 && names.every(name => new RegExp(`PASS ${name}`).test(summary)), `full default suite passes in a stripped environment (exit ${clean.code})`);

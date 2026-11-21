@@ -20,17 +20,17 @@ process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 const SAVED_MARKET_URL = process.env.CLONE_MARKET_URL;
 delete process.env.CLONE_MARKET_URL;
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const handoff = jiti('./lib/market-handoff.ts');
-const skills = jiti('./lib/skills.ts');
-const draftLib = jiti('./lib/draft.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const handoff = jiti('../lib/market-handoff.ts');
+const skills = jiti('../lib/skills.ts');
+const draftLib = jiti('../lib/draft.ts');
 
-const handoffRoute = jiti('./app/api/marketplace-handoff/route.ts');
-const handoffStatusRoute = jiti('./app/api/marketplace-handoff/status/route.ts');
+const handoffRoute = jiti('../app/api/marketplace-handoff/route.ts');
+const handoffStatusRoute = jiti('../app/api/marketplace-handoff/status/route.ts');
 
 const { bots, conversations, messages } = db;
 
@@ -72,7 +72,7 @@ async function drain(cap = 20) {
 
 async function ask(bot, conv, text) {
   messages.create(conv.id, 'user', text);
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
   await drain();
   return messages.getByConversation(conv.id);
 }
@@ -316,7 +316,7 @@ async function main() {
   assert(!/group/i.test(page), 'app/page.tsx has no group type, state, loader, row, mention, or thread branch');
   assert((page.match(/>\s*New agent\s*</g) || []).length === 1 && !/New Group|setKind|member-picks/.test(page), 'New opens one New agent panel with no kind switch or member picker');
   assert(/const mentionItems = mentionOpen\s*\?\s*bots\.filter/.test(page), 'composer mentions suggest agents only');
-  const deleteCopy = jiti('./lib/bot-deletion.ts');
+  const deleteCopy = jiti('../lib/bot-deletion.ts');
   assert(!/group/i.test(deleteCopy.DELETE_REMOVES_COPY + deleteCopy.DELETE_KEEPS_COPY), 'delete confirmation copy names no groups');
   const css = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
   assert(!/\.(group-error|member-picks|delete-groups)\b/.test(css), 'no Group-only styles remain');

@@ -19,7 +19,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-agent-names-test-${process.pid}.db`);
 const LEGACY_DB_PATH = path.join(os.tmpdir(), `botmancers-agent-names-legacy-${process.pid}.db`);
 const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-names-home-'));
@@ -34,12 +34,12 @@ process.env.HOME = HOME_DIR;
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const names = jiti('./lib/agent-names.ts');
-const db = jiti('./lib/db.ts');
-const birth = jiti('./lib/birth.ts');
-const botsRoute = jiti('./app/api/bots/route.ts');
-const importRoute = jiti('./app/api/bots/import/route.ts');
-const migrationsRoute = jiti('./app/api/bots/name-migrations/route.ts');
+const names = jiti('../lib/agent-names.ts');
+const db = jiti('../lib/db.ts');
+const birth = jiti('../lib/birth.ts');
+const botsRoute = jiti('../app/api/bots/route.ts');
+const importRoute = jiti('../app/api/bots/import/route.ts');
+const migrationsRoute = jiti('../app/api/bots/name-migrations/route.ts');
 
 const sqlite = db.default;
 const { bots, conversations, messages, wakeTargets, resolveWakeTarget } = db;
@@ -141,7 +141,7 @@ async function main() {
   assert(recaseRes.status === 200 && recased.name === 'REVIEWER', 'an Agent may re-case its own name (trimmed on save)', JSON.stringify(recased));
 
   const importBody = {
-    schema_version: jiti('./app/api/import-capabilities/route.ts').IMPORT_SCHEMA_VERSION,
+    schema_version: jiti('../app/api/import-capabilities/route.ts').IMPORT_SCHEMA_VERSION,
     operation_id: `op-names-${process.pid}`,
     source_provider: 'marketplace',
     template_id: 'tmpl-names',

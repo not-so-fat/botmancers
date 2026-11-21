@@ -20,7 +20,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-session-catalog-${process.pid}.db`);
 function removeDb() {
   for (const suffix of ['', '-shm', '-wal']) {
@@ -35,10 +35,10 @@ process.env.BOTMANCERS_CODEX_PROVIDER = 'off';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const { startRouteHost } = require('./test-support/acceptance/route-host');
-const { BASE, MIN, EXTERNAL_IDS, seedSessionCatalog } = require('./test-support/session-catalog-fixture');
+const dbModule = jiti('../lib/db.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const { startRouteHost } = require('./support/acceptance/route-host');
+const { BASE, MIN, EXTERNAL_IDS, seedSessionCatalog } = require('./support/session-catalog-fixture');
 
 const db = dbModule.default;
 let failures = 0;
@@ -181,9 +181,9 @@ async function main() {
   console.log('\nNOT-503: native sessions and independent state');
   // A separate Agent on its own runtime connection with a fake direct
   // provider, so the fixture's Dev/Scout counts above stay fixed.
-  const contract = jiti('./lib/session-provider.ts');
-  const ps = jiti('./lib/provider-sessions.ts');
-  const fake = require('./test-support/fake-session-provider');
+  const contract = jiti('../lib/session-provider.ts');
+  const ps = jiti('../lib/provider-sessions.ts');
+  const fake = require('./support/fake-session-provider');
   const statePath = path.join(os.tmpdir(), `botmancers-session-catalog-provider-${process.pid}.json`);
   fs.rmSync(statePath, { force: true });
   const connection = dbModule.runtimeConnections.create({ provider: 'codex', label: 'Codex native', host: 'This computer' });
@@ -255,7 +255,7 @@ async function main() {
   }
   // The service API view is additive and redacted; its message path refuses
   // a native reference without disclosing anything.
-  const serviceApi = jiti('./lib/service-api.ts');
+  const serviceApi = jiti('../lib/service-api.ts');
   const ctx = serviceApi.serviceContext({ kind: 'service', id: 'svc-native' });
   const servicePage = serviceApi.listServiceSessions(ctx, nat.id, { cursor: null, limit: 2, status: 'all' });
   const servicePage2 = serviceApi.listServiceSessions(ctx, nat.id, { cursor: servicePage.next_cursor, limit: 10, status: 'all' });
@@ -294,7 +294,7 @@ async function main() {
   const externalMentions = panel.split('\n').filter(line => /external_session_id/.test(line));
   assert(externalMentions.length === 2 && externalMentions.every(line => /debug/.test(line)), 'the provider session id is read only by the debug disclosure');
   assert(/<summary>Local debug: provider session ID<\/summary>/.test(panel) && /navigator\.clipboard\.writeText/.test(panel), 'the debug disclosure is explicitly labeled and has a Copy action');
-  const view = jiti('./lib/session-view.ts');
+  const view = jiti('../lib/session-view.ts');
   const sample = all.find(s => s.ref === implementation.id);
   assert(view.runtimeLabel(sample) === 'codex · agent-deck' && view.workRequestLabel(sample) === 'Implementation · completed'
     && view.statusLabel(byRef[replaced.id]) === 'Ended', 'row labels for runtime, origin request, and state');

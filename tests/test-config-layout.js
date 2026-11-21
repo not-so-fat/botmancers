@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const src = fs.readFileSync(path.join(ROOT, 'app/agents/[id]/config/page.tsx'), 'utf8');
 
 let failures = 0;

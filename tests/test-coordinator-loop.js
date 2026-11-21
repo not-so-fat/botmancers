@@ -29,7 +29,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const SCENARIO = process.env.COORDINATOR_LOOP_SCENARIO || 'main';
 const DB_PATH = process.env.COORDINATOR_LOOP_DB || path.join(os.tmpdir(), `botmancers-coordinator-loop-${process.pid}.db`);
 function removeDb(file) {
@@ -46,11 +46,11 @@ delete process.env.HERMES_API_SERVER_KEY;
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 
-const db = jiti('./lib/db.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const router = jiti('./lib/wake-router.ts');
-const loop = jiti('./lib/coordinator-loop.ts');
+const db = jiti('../lib/db.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const router = jiti('../lib/wake-router.ts');
+const loop = jiti('../lib/coordinator-loop.ts');
 const raw = db.default;
 const { bots, engine, projector } = db;
 
@@ -182,7 +182,7 @@ async function runMain() {
   raw.prepare('UPDATE bots SET session_scope_kind = NULL, session_scope_items = NULL WHERE id = ?').run(idle.id);
   // NOT-475: the owner already allowed Tank's edit Wakes to Dev
   // (test-wake-safety.js covers the first-use approval).
-  const safety = jiti('./lib/wake-safety.ts');
+  const safety = jiti('../lib/wake-safety.ts');
   safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: dev.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
 
   let devSessions = 0;

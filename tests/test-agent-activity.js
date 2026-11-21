@@ -9,7 +9,7 @@ const path = require('path');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-activity-'));
 process.env.BOTMANCERS_DB_PATH = path.join(temp, 'activity.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
@@ -17,19 +17,19 @@ process.env.BOTMANCERS_CODEX_PROVIDER = 'off';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
-const dbModule = jiti('./lib/db.ts');
-jiti('./lib/session-shares.ts'); // install the canonical share tables
-jiti('./lib/slack-relay.ts'); // install the canonical Slack thread ledger
+const dbModule = jiti('../lib/db.ts');
+jiti('../lib/session-shares.ts'); // install the canonical share tables
+jiti('../lib/slack-relay.ts'); // install the canonical Slack thread ledger
 const raw = dbModule.default;
 const { bots, conversations, engine } = dbModule;
-const activity = jiti('./lib/agent-activity.ts');
+const activity = jiti('../lib/agent-activity.ts');
 const {
   ActivityList,
   ActivityResults,
   activityPageReducer,
   agentActivityUrl,
   initialActivityPageState,
-} = jiti('./app/agents/[id]/activity/AgentActivityPage.tsx');
+} = jiti('../app/agents/[id]/activity/AgentActivityPage.tsx');
 
 const SECRET = {
   provider: 'provider-session-SENTINEL-553',

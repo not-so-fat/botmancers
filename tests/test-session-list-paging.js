@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-548: the paged, searchable owner session list. Proves over the
-// deterministic 788-row fixture (test-support/session-list-fixture.js):
+// deterministic 788-row fixture (tests/support/session-list-fixture.js):
 // GET /api/bots/:id/sessions accepts limit (default 50, clamped to 200),
 // cursor, q (a case-insensitive title substring), and workspace (an exact
 // path), and answers next_cursor; status filtering and the newest-activity
@@ -14,7 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-session-list-paging-${process.pid}.db`);
 function removeDb() {
   for (const suffix of ['', '-shm', '-wal']) {
@@ -29,10 +29,10 @@ process.env.BOTMANCERS_CODEX_PROVIDER = 'off';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const { startRouteHost } = require('./test-support/acceptance/route-host');
-const { COUNT, WORKSPACES, seedSessionList } = require('./test-support/session-list-fixture');
+const dbModule = jiti('../lib/db.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const { startRouteHost } = require('./support/acceptance/route-host');
+const { COUNT, WORKSPACES, seedSessionList } = require('./support/session-list-fixture');
 
 const db = dbModule.default;
 let failures = 0;

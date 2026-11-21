@@ -38,14 +38,14 @@ process.env.HERMES_API_SERVER_KEY = 'test-key';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const hermes = jiti('./lib/hermes.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const hermes = jiti('../lib/hermes.ts');
 
 const { bots, conversations, messages, launchSnapshots } = db;
-const { uiTurns } = jiti('./lib/ui-turns.ts');
-const providerContract = jiti('./lib/session-provider.ts');
-const fake = require('./test-support/fake-session-provider.js');
+const { uiTurns } = jiti('../lib/ui-turns.ts');
+const providerContract = jiti('../lib/session-provider.ts');
+const fake = require('./support/fake-session-provider.js');
 const providerTurns = () => db.default.prepare('SELECT COUNT(*) AS n FROM provider_session_turns').get().n;
 
 let failures = 0;

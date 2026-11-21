@@ -23,7 +23,7 @@ const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 function assertIsolatedEnvironment() {
   const root = process.env.BOTMANCERS_ACCEPTANCE_ROOT;
@@ -83,7 +83,7 @@ function createContext(scenarioName, options = {}) {
   installGuards(options.allowHosts);
 
   const { createJiti } = require('jiti');
-  const jiti = createJiti(path.join(REPO_ROOT, 'test-acceptance-engine.js'), { alias: { '@': REPO_ROOT } });
+  const jiti = createJiti(path.join(REPO_ROOT, 'tests', 'test-acceptance-engine.js'), { alias: { '@': REPO_ROOT } });
   const lib = name => jiti(path.join(REPO_ROOT, 'lib', name));
   const db = lib('db.ts');
   const service = lib('agent-conversations.ts');

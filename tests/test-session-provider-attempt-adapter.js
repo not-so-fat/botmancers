@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT542_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-sp-attempt-${TAG}`);
@@ -45,14 +45,14 @@ globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const attemptLib = jiti('./lib/session-provider-attempt.ts');
-const promptLib = jiti('./lib/attempt-prompt.ts');
-const adapterContract = jiti('./lib/attempt-adapter.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const fake = require('./test-support/fake-session-provider');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const attemptLib = jiti('../lib/session-provider-attempt.ts');
+const promptLib = jiti('../lib/attempt-prompt.ts');
+const adapterContract = jiti('../lib/attempt-adapter.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const fake = require('./support/fake-session-provider');
 
 const db = dbModule.default;
 let failures = 0;

@@ -27,7 +27,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const TMP = path.join(os.tmpdir(), `botmancers-session-share-${process.pid}`);
 fs.rmSync(TMP, { recursive: true, force: true });
 fs.mkdirSync(TMP, { recursive: true });
@@ -40,15 +40,15 @@ globalThis.fetch = async () => { throw new Error('network disabled in this test'
 const STATE = path.join(TMP, 'provider.json');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const pins = jiti('./lib/session-pins.ts');
-const { serviceRedactor } = jiti('./lib/service-redaction.ts');
-const { serviceOperations } = jiti('./lib/service-api-http.ts');
-const fake = require('./test-support/fake-session-provider');
-const model = require('./test-support/session-share-model');
-const probe = require('./scripts/not-514-identity-probe');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const pins = jiti('../lib/session-pins.ts');
+const { serviceRedactor } = jiti('../lib/service-redaction.ts');
+const { serviceOperations } = jiti('../lib/service-api-http.ts');
+const fake = require('./support/fake-session-provider');
+const model = require('./support/session-share-model');
+const probe = require('../scripts/not-514-identity-probe');
 
 const db = dbModule.default;
 let failures = 0;

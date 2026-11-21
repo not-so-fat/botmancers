@@ -6,15 +6,15 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 
-const { selectCapacityChips, capacitySeverity } = jiti('./lib/capacity/present.ts');
-const { parseClaudeCachedUtilization, extractClaudeCacheSubtree } = jiti('./lib/capacity/claude.ts');
-const { parseCodexRateLimits } = jiti('./lib/capacity/codex.ts');
-const { isCursorIndividualExperimentalEnabled, cursorBillingWindow } = jiti('./lib/capacity/cursor.ts');
-const { capacityEntryForRuntime } = jiti('./lib/capacity/service-client.ts');
+const { selectCapacityChips, capacitySeverity } = jiti('../lib/capacity/present.ts');
+const { parseClaudeCachedUtilization, extractClaudeCacheSubtree } = jiti('../lib/capacity/claude.ts');
+const { parseCodexRateLimits } = jiti('../lib/capacity/codex.ts');
+const { isCursorIndividualExperimentalEnabled, cursorBillingWindow } = jiti('../lib/capacity/cursor.ts');
+const { capacityEntryForRuntime } = jiti('../lib/capacity/service-client.ts');
 
 let passed = 0;
 function test(name, fn) {

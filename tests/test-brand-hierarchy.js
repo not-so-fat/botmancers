@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const page = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
 const css = fs.readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8');
 

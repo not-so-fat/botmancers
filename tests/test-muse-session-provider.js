@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // NOT-508: the direct Muse Code SessionProvider (lib/muse-session-provider)
 // against a fake `muse serve` speaking stable MSP v1 over stdio
-// (test-support/fake-muse-serve), without Agent Deck.
+// (tests/support/fake-muse-serve), without Agent Deck.
 // Proves: structured normalization (session rows, transcripts, usage,
 // errors, versions) on fixtures adapted from Agent Dealer's Muse parsers;
 // the capability/version probe and unsupported, auth, and missing-binary
@@ -19,12 +19,12 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT508_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-muse-provider-${TAG}`);
 const DB_PATH = path.join(TMP, 'botmancers.db');
-const FAKE = path.join(ROOT, 'test-support/fake-muse-serve.js');
+const FAKE = path.join(ROOT, 'tests/support/fake-muse-serve.js');
 if (!RESTART) {
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
@@ -37,12 +37,12 @@ globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const muse = jiti('./lib/muse-session-provider.ts');
-const fakeMuse = require('./test-support/fake-muse-serve');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const muse = jiti('../lib/muse-session-provider.ts');
+const fakeMuse = require('./support/fake-muse-serve');
 
 const db = dbModule.default;
 let failures = 0;

@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const schema = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs/contracts/wake-v1.schema.json'), 'utf8'));
 const fixtures = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs/contracts/wake-v1.fixtures.json'), 'utf8'));
 

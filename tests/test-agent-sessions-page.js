@@ -9,7 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-sessions-page-'));
 process.env.BOTMANCERS_DB_PATH = path.join(temp, 'sessions.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
@@ -19,11 +19,11 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
-const dbModule = jiti('./lib/db.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const view = jiti('./lib/session-view.ts');
-const { SessionScanRow, SessionDetail } = jiti('./app/components/SessionsPanel.tsx');
-const { seedSessionCatalog, EXTERNAL_IDS } = require('./test-support/session-catalog-fixture');
+const dbModule = jiti('../lib/db.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const view = jiti('../lib/session-view.ts');
+const { SessionScanRow, SessionDetail } = jiti('../app/components/SessionsPanel.tsx');
+const { seedSessionCatalog, EXTERNAL_IDS } = require('./support/session-catalog-fixture');
 
 let passed = 0;
 function test(name, fn) {
@@ -156,7 +156,7 @@ try {
     // next page, and that page-2 row is absent from a fresh page-1. Exact-ref
     // fallback is skipped while a filter is active, so a list refetch on
     // ?session= would clear selection — the panel must keep accumulated rows.
-    const { seedSessionList, WORKSPACES } = require('./test-support/session-list-fixture');
+    const { seedSessionList, WORKSPACES } = require('./support/session-list-fixture');
     // Four rotating workspaces → need >200 rows so one workspace exceeds the
     // default page size of 50 and yields a Load-more cursor.
     const paging = seedSessionList(dbModule, { count: 220 });

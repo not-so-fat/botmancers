@@ -19,8 +19,8 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const harnessLib = require('./test-support/acceptance/harness.js');
-const { SCENARIOS } = require('./test-support/acceptance/scenarios.js');
+const harnessLib = require('./support/acceptance/harness.js');
+const { SCENARIOS } = require('./support/acceptance/scenarios.js');
 
 const CHILD_SCENARIO = process.env.BOTMANCERS_ACCEPTANCE_SCENARIO;
 
@@ -41,7 +41,7 @@ if (CHILD_SCENARIO) {
 async function runScenarioChild(name) {
   const scenario = SCENARIOS.find(entry => entry.name === name);
   if (!scenario) throw new Error(`unknown scenario ${name}`);
-  const { createContext } = require('./test-support/acceptance/engine-context.js');
+  const { createContext } = require('./support/acceptance/engine-context.js');
   const ctx = createContext(name);
   console.log(`[${name}] ${scenario.title}`);
   await scenario.run(ctx);

@@ -10,7 +10,7 @@
 // snapshot records the null connection.
 
 const assert = require('node:assert');
-const { buildSnapshotInput, canonicalJson, hashSnapshot } = require('./lib/snapshot');
+const { buildSnapshotInput, canonicalJson, hashSnapshot } = require('../lib/snapshot');
 
 function bot(overrides = {}) {
   return {
@@ -166,10 +166,10 @@ async function main() {
 
   const { createJiti } = require('jiti');
   const jiti = createJiti(__filename);
-  const db = jiti('./lib/db.ts');
-  const agent = jiti('./lib/agent.ts');
-  const providerContract = jiti('./lib/session-provider.ts');
-  const fake = require('./test-support/fake-session-provider.js');
+  const db = jiti('../lib/db.ts');
+  const agent = jiti('../lib/agent.ts');
+  const providerContract = jiti('../lib/session-provider.ts');
+  const fake = require('./support/fake-session-provider.js');
 
   const providerTurns = () => db.default.prepare('SELECT COUNT(*) AS n FROM provider_session_turns').get().n;
   const launches = [];
@@ -192,7 +192,7 @@ async function main() {
   const heraldConv = db.conversations.getByBotId(herald.id);
   assert.ok(heraldConv, 'herald thread exists');
   db.messages.create(heraldConv.id, 'user', 'Hello Herald.');
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(heraldConv.id, herald.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(heraldConv.id, herald.id);
   let processed = 0;
   while (processed < 20 && await agent.processNextUiTurn()) processed += 1;
   assert.strictEqual(hermesStubCalls, 1, 'Hermes direct-dispatch assertion: ordinary Hermes message uses the Hermes session');
@@ -244,7 +244,7 @@ async function main() {
   const relayConv = db.conversations.getByBotId(relay.id);
   assert.ok(relayConv, 'relay thread exists');
   db.messages.create(relayConv.id, 'user', 'Build the widget.');
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(relayConv.id, relay.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(relayConv.id, relay.id);
   processed = 0;
   while (processed < 20 && await agent.processNextUiTurn()) processed += 1;
   assert.strictEqual(launches.length, 1, 'direct-dispatch assertion: ordinary message launches one provider turn');
@@ -274,7 +274,7 @@ async function main() {
   db.default.prepare('UPDATE bots SET runtime_connection_id = NULL WHERE id = ?').run(migrated.id);
   const migratedConv = db.conversations.getByBotId(migrated.id);
   db.messages.create(migratedConv.id, 'user', 'Build the widget.');
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(migratedConv.id, migrated.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(migratedConv.id, migrated.id);
   processed = 0;
   while (processed < 20 && await agent.processNextUiTurn()) processed += 1;
   assert.strictEqual(providerTurns(), turnsBefore, 'unconfigured row launches no provider turn');

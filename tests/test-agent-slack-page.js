@@ -13,7 +13,7 @@ const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const { createJiti } = require('jiti');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-slack-'));
 const env = {
   ...process.env,
@@ -28,10 +28,10 @@ if (seeded.status !== 0) throw new Error(seeded.stderr || seeded.stdout);
 Object.assign(process.env, env);
 const fixture = JSON.parse(seeded.stdout.trim().split('\n').at(-1));
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
-const db = jiti('./lib/db.ts').default;
-const { listOwnerShares } = jiti('./lib/session-share-owner.ts');
-const view = jiti('./lib/agent-slack-view.ts');
-const { AgentSlackView } = jiti('./app/agents/[id]/slack/AgentSlackPage.tsx');
+const db = jiti('../lib/db.ts').default;
+const { listOwnerShares } = jiti('../lib/session-share-owner.ts');
+const view = jiti('../lib/agent-slack-view.ts');
+const { AgentSlackView } = jiti('../app/agents/[id]/slack/AgentSlackPage.tsx');
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log(`ok - ${name}`); }

@@ -34,7 +34,7 @@ const path = require('path');
 const { createHash } = require('crypto');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT516_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-slack-relay-${TAG}`);
@@ -56,14 +56,14 @@ globalThis.fetch = async () => { throw new Error('network disabled in this test'
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const shares = jiti('./lib/session-shares.ts');
-const relayLib = jiti('./lib/slack-relay.ts');
-const { serviceOperations } = jiti('./lib/service-api-http.ts');
-const fake = require('./test-support/fake-session-provider');
-const { createFakeSlackTransport } = require('./test-support/fake-slack-transport');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const shares = jiti('../lib/session-shares.ts');
+const relayLib = jiti('../lib/slack-relay.ts');
+const { serviceOperations } = jiti('../lib/service-api-http.ts');
+const fake = require('./support/fake-session-provider');
+const { createFakeSlackTransport } = require('./support/fake-slack-transport');
 
 const db = dbModule.default;
 const fixtures = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs/contracts/slack-relay-v0.fixtures.json'), 'utf8'));

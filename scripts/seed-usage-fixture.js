@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-509: seed an isolated DB with the session-usage fixture
-// (test-support/session-usage-fixture.js): Ledger's past sessions with a
+// (tests/support/session-usage-fixture.js): Ledger's past sessions with a
 // complete-cost Claude session, a token-only Codex session, a partial
 // session with an interrupted run, a reported $0.00 session, and one from
 // before usage was recorded. Written through the canonical engine store and
@@ -25,7 +25,7 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
 const db = jiti('../lib/db.ts');
 const executor = jiti('../lib/attempt-executor.ts');
-const { seedSessionUsage } = require('../test-support/session-usage-fixture');
+const { seedSessionUsage } = require('../tests/support/session-usage-fixture');
 
 const fixture = seedSessionUsage(db, executor);
 console.log(`Seeded ${DB_PATH}: Ledger ${fixture.agent.id}, ${Object.keys(fixture.sessions).length} sessions with reported usage states.`);

@@ -24,7 +24,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT519_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-share-owner-${TAG}`);
@@ -45,23 +45,23 @@ globalThis.fetch = async () => { throw new Error('network disabled in this test'
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const shares = jiti('./lib/session-shares.ts');
-const owner = jiti('./lib/session-share-owner.ts');
-const sc = jiti('./lib/session-context.ts');
-const relayLib = jiti('./lib/slack-relay.ts');
-const { ownerBoundaryRefusalFor } = jiti('./lib/owner-boundary.ts');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const shares = jiti('../lib/session-shares.ts');
+const owner = jiti('../lib/session-share-owner.ts');
+const sc = jiti('../lib/session-context.ts');
+const relayLib = jiti('../lib/slack-relay.ts');
+const { ownerBoundaryRefusalFor } = jiti('../lib/owner-boundary.ts');
 const routes = {
-  list: jiti('./app/api/shares/route.ts'),
-  revoke: jiti('./app/api/shares/[shareRef]/revoke/route.ts'),
-  session: jiti('./app/api/bots/[id]/sessions/[ref]/shares/route.ts'),
-  policy: jiti('./app/api/bots/[id]/share-policy/route.ts'),
-  current: jiti('./app/api/v0/shares/current/route.ts'),
+  list: jiti('../app/api/shares/route.ts'),
+  revoke: jiti('../app/api/shares/[shareRef]/revoke/route.ts'),
+  session: jiti('../app/api/bots/[id]/sessions/[ref]/shares/route.ts'),
+  policy: jiti('../app/api/bots/[id]/share-policy/route.ts'),
+  current: jiti('../app/api/v0/shares/current/route.ts'),
 };
-const fake = require('./test-support/fake-session-provider');
-const { createFakeSlackTransport } = require('./test-support/fake-slack-transport');
+const fake = require('./support/fake-session-provider');
+const { createFakeSlackTransport } = require('./support/fake-slack-transport');
 
 const db = dbModule.default;
 let failures = 0;
@@ -113,9 +113,9 @@ function registerProviders(connectionId, claudeConnection) {
   contract.clearSessionProviders({ builtins: true });
   contract.registerSessionProvider({ connectionId }, () => fake.createFakeSessionProvider({ statePath: STATE, ignoreScope: true }));
   if (claudeConnection) {
-    const claude = jiti('./lib/claude-session-provider.ts');
+    const claude = jiti('../lib/claude-session-provider.ts');
     contract.registerSessionProvider({ connectionId: claudeConnection }, () => claude.createClaudeSessionProvider({
-      bin: path.join(ROOT, 'test-support', 'fake-claude-cli.js'), configDir: CLAUDE.config, stateDir: CLAUDE.state, env: { ...process.env, CLAUDE_CONFIG_DIR: CLAUDE.config }, pollMs: 20, startupTimeoutMs: 20_000,
+      bin: path.join(ROOT, 'tests', 'support', 'fake-claude-cli.js'), configDir: CLAUDE.config, stateDir: CLAUDE.state, env: { ...process.env, CLAUDE_CONFIG_DIR: CLAUDE.config }, pollMs: 20, startupTimeoutMs: 20_000,
     }));
   }
 }

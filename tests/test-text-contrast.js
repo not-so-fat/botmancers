@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const css = fs.readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8');
 const AA = 4.5;
 

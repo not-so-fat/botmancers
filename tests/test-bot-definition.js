@@ -29,7 +29,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-bot-definition-test-${process.pid}.db`);
 const MIGRATION_DB_PATH = path.join(os.tmpdir(), `botmancers-agent-migration-test-${process.pid}.db`);
 function removeDb(file) {
@@ -46,12 +46,12 @@ process.env.HERMES_BASE_URL = 'http://127.0.0.1:65530';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const def = jiti('./lib/bot-definition.ts');
-const reg = jiti('./lib/agent-registration.ts');
-const probe = jiti('./lib/runtime-probe.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const botsRoute = jiti('./app/api/bots/route.ts');
+const db = jiti('../lib/db.ts');
+const def = jiti('../lib/bot-definition.ts');
+const reg = jiti('../lib/agent-registration.ts');
+const probe = jiti('../lib/runtime-probe.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const botsRoute = jiti('../app/api/bots/route.ts');
 const raw = db.default;
 
 let failures = 0;
@@ -102,8 +102,8 @@ async function main() {
   // The obsolete Agent Deck execution/configuration surface is deleted,
   // not deprecated: modules, routes, UI, harness, and commands.
   for (const file of ['lib/agent-deck-api.ts', 'lib/agent-deck-attempt.ts', 'lib/agent-deck-run.ts', 'lib/agent-deck-finalization.ts',
-    'lib/agent-deck-settings.ts', 'lib/finalize-decision.ts', 'app/components/AgentDeckRuntime.tsx', 'test-support/fake-agent-deck-api.js',
-    'test-agent-deck-run.js', 'test-agent-deck-finalization.js', 'test-agent-deck-settings.js', 'docs/claude-via-deck.md']) {
+    'lib/agent-deck-settings.ts', 'lib/finalize-decision.ts', 'app/components/AgentDeckRuntime.tsx', 'tests/support/fake-agent-deck-api.js',
+    'tests/test-agent-deck-run.js', 'tests/test-agent-deck-finalization.js', 'tests/test-agent-deck-settings.js', 'docs/claude-via-deck.md']) {
     check(`${file} is deleted`, !fs.existsSync(path.join(ROOT, file)));
   }
   check('app/api/agent-deck routes are deleted', !fs.existsSync(path.join(ROOT, 'app/api/agent-deck')));

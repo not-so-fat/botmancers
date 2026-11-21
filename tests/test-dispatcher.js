@@ -30,7 +30,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const SCENARIO = process.env.DISPATCH_SCENARIO || 'main';
 const DB_PATH = process.env.DISPATCH_DB || path.join(os.tmpdir(), `botmancers-dispatcher-${process.pid}.db`);
 function removeDb(file) {
@@ -48,15 +48,15 @@ process.env.HERMES_API_SERVER_KEY = 'fixture-hermes-key';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const executor = jiti('./lib/attempt-executor.ts');
-const intake = jiti('./lib/conversation-intake.ts');
-const lib = jiti('./lib/dispatcher.ts');
-const providerContract = jiti('./lib/session-provider.ts');
-const sessions = jiti('./lib/provider-sessions.ts');
-const fake = require('./test-support/fake-session-provider');
+const db = jiti('../lib/db.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const executor = jiti('../lib/attempt-executor.ts');
+const intake = jiti('../lib/conversation-intake.ts');
+const lib = jiti('../lib/dispatcher.ts');
+const providerContract = jiti('../lib/session-provider.ts');
+const sessions = jiti('../lib/provider-sessions.ts');
+const fake = require('./support/fake-session-provider');
 const raw = db.default;
 const { bots, engine } = db;
 
@@ -759,7 +759,7 @@ async function crashChild() {
   if (process.env.DISPATCH_SCENARIO === 'crash-launch') {
     service.configureDispatcher({ config: { maxGlobal: 10, maxPerTarget: 10 } });
     const kill = () => process.kill(process.pid, 'SIGKILL');
-    if (point !== 'after_accept') jiti('./lib/dispatcher.ts').setDispatchFaultHook(at => { if (at === point) kill(); });
+    if (point !== 'after_accept') jiti('../lib/dispatcher.ts').setDispatchFaultHook(at => { if (at === point) kill(); });
     const accepted = service.acceptAgentMessage(PERSON, { agentId: process.env.CRASH_BOT, content: `Crash ${point}`, idempotencyKey: `crash-${point}` });
     await accepted.dispatched;
     process.stdout.write('NOT-KILLED');

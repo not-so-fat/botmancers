@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT507_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-session-pins-${TAG}`);
@@ -40,14 +40,14 @@ globalThis.fetch = async () => { throw new Error('network disabled in this test'
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const pins = jiti('./lib/session-pins.ts');
-const actions = jiti('./lib/session-actions.ts');
-const { serviceOperations, resetServiceApiRateLimits } = jiti('./lib/service-api-http.ts');
-const mcp = jiti('./lib/mcp-bridge-v2.ts');
-const fake = require('./test-support/fake-session-provider');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const pins = jiti('../lib/session-pins.ts');
+const actions = jiti('../lib/session-actions.ts');
+const { serviceOperations, resetServiceApiRateLimits } = jiti('../lib/service-api-http.ts');
+const mcp = jiti('../lib/mcp-bridge-v2.ts');
+const fake = require('./support/fake-session-provider');
 
 const db = dbModule.default;
 let failures = 0;
@@ -324,8 +324,8 @@ async function main() {
     'authority_not_allowed', 'a read-only Agent policy refuses resume even with approval');
 
   console.log('\nOwner routes: the Sessions drawer');
-  const ownerPinRoute = jiti('./app/api/bots/[id]/sessions/[ref]/pins/route.ts');
-  const ownerListRoute = jiti('./app/api/bots/[id]/sessions/route.ts');
+  const ownerPinRoute = jiti('../app/api/bots/[id]/sessions/[ref]/pins/route.ts');
+  const ownerListRoute = jiti('../app/api/bots/[id]/sessions/route.ts');
   const ownerConv = dbModule.conversations.getByBotId(writer.id).id;
   const ownerPost = (ref, body) => ownerPinRoute.POST(
     new Request('http://local/x', { method: 'POST', body: JSON.stringify(body) }),

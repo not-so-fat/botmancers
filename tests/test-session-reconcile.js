@@ -17,7 +17,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const TAG = process.env.NOT546_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-session-reconcile-${TAG}`);
 const DB_PATH = path.join(TMP, 'botmancers.db');
@@ -30,12 +30,12 @@ globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const sessionsRoute = jiti('./app/api/bots/[id]/sessions/route.ts');
-const fake = require('./test-support/fake-session-provider');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const sessionsRoute = jiti('../app/api/bots/[id]/sessions/route.ts');
+const fake = require('./support/fake-session-provider');
 
 const db = dbModule.default;
 const { bots, runtimeConnections, engine, conversations } = dbModule;

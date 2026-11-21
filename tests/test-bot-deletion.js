@@ -14,7 +14,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-bot-deletion-test-${process.pid}.db`);
 for (const suffix of ['', '-shm', '-wal']) {
   try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* fresh start */ }
@@ -24,15 +24,15 @@ process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const botsRoute = jiti('./app/api/bots/route.ts');
-const previewRoute = jiti('./app/api/bots/delete-preview/route.ts');
-const manageRoute = jiti('./app/api/bots/manage/route.ts');
-const deletion = jiti('./lib/bot-deletion.ts');
+const db = jiti('../lib/db.ts');
+const botsRoute = jiti('../app/api/bots/route.ts');
+const previewRoute = jiti('../app/api/bots/delete-preview/route.ts');
+const manageRoute = jiti('../app/api/bots/manage/route.ts');
+const deletion = jiti('../lib/bot-deletion.ts');
 
 const sqlite = db.default;
 const { bots, groups, conversations, messages, memories, oneShots, routines, launchSnapshots, approvals } = db;
-const { uiTurns } = jiti('./lib/ui-turns.ts');
+const { uiTurns } = jiti('../lib/ui-turns.ts');
 
 let failures = 0;
 function assert(condition, label) {

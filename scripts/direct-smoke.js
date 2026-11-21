@@ -9,7 +9,7 @@
 //
 // The workdir guardrails (disposable marker, clean Git root, outside the
 // repo/home/data) and evidence rules come from
-// test-support/acceptance/smoke-guard.js. BOTMANCERS_SMOKE_PROVIDER=fake
+// tests/support/acceptance/smoke-guard.js. BOTMANCERS_SMOKE_PROVIDER=fake
 // (test-only) swaps the real CLIs for scripted in-process providers; the
 // operator run uses the real installed, signed-in CLIs.
 'use strict';
@@ -21,8 +21,8 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const guard = require('../test-support/acceptance/smoke-guard.js');
-const harnessLib = require('../test-support/acceptance/harness.js');
+const guard = require('../tests/support/acceptance/smoke-guard.js');
+const harnessLib = require('../tests/support/acceptance/harness.js');
 
 function usage() {
   return [
@@ -140,7 +140,7 @@ async function main() {
   const adaptersUsed = [];
   let fakeStates = null;
   if (FAKE) {
-    const fake = require('../test-support/fake-session-provider.js');
+    const fake = require('../tests/support/fake-session-provider.js');
     const { registerSessionProvider } = lib('session-provider.ts');
     fakeStates = {
       fake,

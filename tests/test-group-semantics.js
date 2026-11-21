@@ -20,18 +20,18 @@ for (const suffix of ['', '-shm', '-wal']) {
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const groupsRoute = jiti('./app/api/groups/route.ts');
-const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
-const botsRoute = jiti('./app/api/bots/route.ts');
-const conversationsRoute = jiti('./app/api/conversations/route.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const groupsRoute = jiti('../app/api/groups/route.ts');
+const messagesRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
+const botsRoute = jiti('../app/api/bots/route.ts');
+const conversationsRoute = jiti('../app/api/conversations/route.ts');
 
 const { bots, conversations, messages, groups } = db;
-const { uiTurns } = jiti('./lib/ui-turns.ts');
+const { uiTurns } = jiti('../lib/ui-turns.ts');
 
 let failures = 0;
 

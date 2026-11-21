@@ -23,7 +23,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const SCENARIO = process.env.ENGINE_STORE_SCENARIO || 'fresh';
 const DB_PATH = path.join(os.tmpdir(), `botmancers-engine-store-${SCENARIO}-${process.pid}.db`);
 function removeDb(file) {
@@ -75,8 +75,8 @@ if (SCENARIO === 'legacy') runLegacy();
 else runFresh();
 
 function runFresh() {
-  const db = jiti('./lib/db.ts');
-  const store = jiti('./lib/engine-store.ts');
+  const db = jiti('../lib/db.ts');
+  const store = jiti('../lib/engine-store.ts');
   const sqlite = db.default;
   const { engine, bots, conversations } = db;
   const { EngineStoreError } = store;
@@ -598,7 +598,7 @@ function runLegacy() {
   // The last supported legacy database: the previous release's engine
   // schema (13) on top, with live canonical history (a request that already
   // holds legacy key k-3, its Attempt, Session Binding, and events).
-  const store = jiti('./lib/engine-store.ts');
+  const store = jiti('../lib/engine-store.ts');
   store.migrateEngineSchema(legacy, { through: 13 });
   const previous = store.createEngineStore(legacy);
   // A request as the schema-13 intake wrote it (the current store also
@@ -698,7 +698,7 @@ function runLegacy() {
   console.log('Open the legacy database through lib/db.ts (migrations 14 and 15)');
   let db;
   try {
-    db = jiti('./lib/db.ts');
+    db = jiti('../lib/db.ts');
   } catch (error) {
     assert(false, `legacy database opens (${error.message})`);
     return finish();
@@ -773,12 +773,12 @@ function runLegacy() {
   assert(crashed.state === 'queued' && crashed.executor === 'ui_message', 'a queued UI intake request with no queue row is owned by the UI turn executor');
   const apiPending = reconciled(apiQueued.id);
   assert(apiPending.state === 'queued' && apiPending.executor === 'dispatcher', 'the equivalent queued /api/v0 request stays dispatcher-owned');
-  const { uiTurns } = jiti('./lib/ui-turns.ts');
+  const { uiTurns } = jiti('../lib/ui-turns.ts');
   const uiQueued = sqlite.prepare("SELECT id FROM work_requests WHERE state = 'queued' AND executor IN ('ui_message', 'ui_continuation') ORDER BY created_at, rowid").all().map(row => row.id);
   assert(uiQueued.includes(uiCrashed.id) && uiTurns.get(uiCrashed.id) && uiTurns.get(uiCrashed.id).kind === 'message',
     'the UI turn executor recovers it as a message turn');
   assert(!uiTurns.get(apiQueued.id), 'the UI turn executor never picks up the /api/v0 request');
-  const dispatcherProbe = jiti('./lib/dispatcher.ts').createDispatcher(sqlite, engine);
+  const dispatcherProbe = jiti('../lib/dispatcher.ts').createDispatcher(sqlite, engine);
   const offered = [];
   dispatcherProbe.claim = id => { offered.push(id); return { ok: false, reason: 'not_queued' }; };
   dispatcherProbe.claimNext();
@@ -828,7 +828,7 @@ function runLegacy() {
   assert(count('SELECT COUNT(*) AS n FROM work_attempts WHERE request_id IN (SELECT id FROM work_requests WHERE legacy_agent_request_id IS NOT NULL)') === 0, 'no attempts are synthesized for legacy rows');
 
   console.log('\nThe /api/v0 surface reads only canonical tables');
-  const api = jiti('./lib/agent-conversations.ts');
+  const api = jiti('../lib/agent-conversations.ts');
   const svc = { kind: 'service', id: 'svc-1' };
   const view = api.getAgentRequest(svc, 'req-completed');
   assert(view.requestId === 'req-completed' && view.state === 'completed' && view.reply && view.reply.messageId === 'm-1r', 'a pre-NOT-465 request id still reads, with its reply');

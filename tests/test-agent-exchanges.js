@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const CHILD = process.env.EXCHANGE_SCENARIO === 'restart-child';
 const DB_PATH = process.env.EXCHANGE_DB || path.join(os.tmpdir(), `botmancers-exchanges-${process.pid}.db`);
 if (!CHILD) {
@@ -36,12 +36,12 @@ process.env.HERMES_API_SERVER_KEY = 'fixture-hermes-key';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const engineStore = jiti('./lib/engine-store.ts');
-const lib = jiti('./lib/session-exchanges.ts');
-const { startRouteHost } = require('./test-support/acceptance/route-host');
+const dbModule = jiti('../lib/db.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const engineStore = jiti('../lib/engine-store.ts');
+const lib = jiti('../lib/session-exchanges.ts');
+const { startRouteHost } = require('./support/acceptance/route-host');
 
 const raw = dbModule.default;
 const { engine, bots, conversations, UI_OWNER_PRINCIPAL: OWNER } = dbModule;
@@ -477,7 +477,7 @@ async function main() {
   console.log('\n[4b] real Hermes adapter boundary: the destination never lands in its stable per-Agent gateway session');
   let scoutStableSession;
   {
-    const hermes = jiti('./lib/hermes.ts');
+    const hermes = jiti('../lib/hermes.ts');
     const config = hermes.loadHermesConfig();
     scoutStableSession = hermes.hermesSessionIdForBot(scout.id, config);
     const requests = [];
@@ -517,7 +517,7 @@ async function main() {
 
       // The adapter contract itself: a fresh-session input never resumes,
       // and without freshSession the stable session is what it would use.
-      const adapter = jiti('./lib/hermes-attempt.ts').createHermesAttemptAdapter({ fetchImpl: (url, init) => {
+      const adapter = jiti('../lib/hermes-attempt.ts').createHermesAttemptAdapter({ fetchImpl: (url, init) => {
         requests.push({ kind: 'direct', session: init.headers['X-Hermes-Session-Id'], body: init.body });
         return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 }));
       } });

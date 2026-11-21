@@ -20,7 +20,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const SCENARIO = process.env.PROJECTION_SCENARIO || 'main';
 const DB_PATH = process.env.PROJECTION_DB || path.join(os.tmpdir(), `botmancers-projection-${process.pid}.db`);
 function removeDb(file) {
@@ -45,7 +45,7 @@ function assert(condition, label) {
   return condition;
 }
 
-const db = jiti('./lib/db.ts');
+const db = jiti('../lib/db.ts');
 const raw = db.default;
 const { bots, conversations, messages, engine, projector, UI_OWNER_PRINCIPAL } = db;
 
@@ -65,11 +65,11 @@ if (SCENARIO === 'reopen') runReopen();
 else runMain().catch(error => { console.error(error); process.exit(1); });
 
 async function runMain() {
-  const router = jiti('./lib/wake-router.ts');
-  const executor = jiti('./lib/attempt-executor.ts');
-  const api = jiti('./lib/agent-api.ts');
-  const uiRoute = jiti('./app/api/conversations/[id]/route.ts');
-  const engineStore = jiti('./lib/engine-store.ts');
+  const router = jiti('../lib/wake-router.ts');
+  const executor = jiti('../lib/attempt-executor.ts');
+  const api = jiti('../lib/agent-api.ts');
+  const uiRoute = jiti('../app/api/conversations/[id]/route.ts');
+  const engineStore = jiti('../lib/engine-store.ts');
 
   router.setWakeAvailabilityProbe(() => ({ available: true }));
   const tank = bots.create({ name: 'Tank', title: 'Coordinator', description: 'Coordinates.', agent: 'hermes' });
@@ -88,7 +88,7 @@ async function runMain() {
     intent: ask.content, executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: 'ask-1',
   });
   // NOT-475: the owner already allowed Tank's edit Wakes to Dev.
-  const safety = jiti('./lib/wake-safety.ts');
+  const safety = jiti('../lib/wake-safety.ts');
   safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: dev.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
 
   console.log('Wake accepted and blocked');
@@ -277,7 +277,7 @@ async function runMain() {
   fs.copyFileSync(DB_PATH, copyPath);
   const copy = new Database(copyPath);
   copy.exec('DELETE FROM conversation_events; DELETE FROM conversation_projection_cursors;');
-  const rebuilt = jiti('./lib/conversation-projection.ts').createConversationProjector(copy);
+  const rebuilt = jiti('../lib/conversation-projection.ts').createConversationProjector(copy);
   for (const id of [conversation.id, thread.id]) {
     assert(JSON.stringify(rebuilt.listConversationEvents(id)) === JSON.stringify(projector.listConversationEvents(id)), `rebuilt projection equals the live one (${id === thread.id ? 'interleaved' : 'main'})`);
   }

@@ -9,7 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-home-'));
 process.env.BOTMANCERS_DB_PATH = path.join(temp, 'agent-home.db');
 process.env.BOTMANCERS_SKILLS_ROOT = path.join(temp, 'skills');
@@ -18,10 +18,10 @@ process.env.BOTMANCERS_CODEX_PROVIDER = 'off';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const { seedSessionCatalog, EXTERNAL_IDS } = require('./test-support/session-catalog-fixture');
-const { writeSkillForBot } = jiti('./lib/skills.ts');
-const { getAgentOverview, summarizeInstruction } = jiti('./lib/agent-overview.ts');
+const dbModule = jiti('../lib/db.ts');
+const { seedSessionCatalog, EXTERNAL_IDS } = require('./support/session-catalog-fixture');
+const { writeSkillForBot } = jiti('../lib/skills.ts');
+const { getAgentOverview, summarizeInstruction } = jiti('../lib/agent-overview.ts');
 
 let passed = 0;
 function test(name, fn) {

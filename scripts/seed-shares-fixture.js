@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // NOT-519: seed an isolated DB for the session-share proof
 // (scripts/ui-session-shares-proof.js). A Codex Agent "Forge" on the
-// deterministic fake codex binary (test-support/fake-codex.js) with an open
+// deterministic fake codex binary (tests/support/fake-codex.js) with an open
 // session, an archived one, and one the runtime no longer has; an owner
 // share policy (config/session-shares.json: two Slack channels, Forge's
 // share_from_turn on); and shares in the ended and degraded states created
@@ -27,7 +27,7 @@ fs.mkdirSync(path.dirname(SHARES), { recursive: true, mode: 0o700 });
 for (const suffix of ['', '-shm', '-wal']) fs.rmSync(DB_PATH + suffix, { force: true });
 fs.rmSync(STATE, { force: true });
 fs.rmSync(SHARES, { force: true });
-fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.resolve(__dirname, '..', 'test-support', 'fake-codex.js')}' "$@"\n`);
+fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.resolve(__dirname, '..', 'tests', 'support', 'fake-codex.js')}' "$@"\n`);
 fs.chmodSync(BIN, 0o755);
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
@@ -35,7 +35,7 @@ process.env.BOTMANCERS_CODEX_BIN = BIN;
 process.env.FAKE_CODEX_STATE = STATE;
 process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES;
 
-const { seedFakeCodex } = require('../test-support/fake-codex');
+const { seedFakeCodex } = require('../tests/support/fake-codex');
 seedFakeCodex(STATE, [
   { id: 'thr-uploader-SECRET', cwd: WORK, name: 'Fix the uploader retry', turns: [['Fix the uploader retry', 'Retry now backs off; tests pending'], ['Which tests?', 'upload.test.ts']] },
   { id: 'thr-spike-SECRET', cwd: WORK, name: 'Archived parser spike', archived: true, turns: [['Spike the parser', 'Spike notes saved']] },

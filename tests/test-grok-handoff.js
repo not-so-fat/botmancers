@@ -30,7 +30,7 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 const { createHash } = require('crypto');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const TEMPLATE_DIR = path.join(ROOT, 'docs', 'integrations', 'grok-bot');
 const PACKAGE_DIR = path.join(ROOT, 'packages', 'mcp-server');
 const TOOL_NAMES = ['botmancers_start_task', 'botmancers_get_request', 'botmancers_get_conversation', 'botmancers_health'];
@@ -138,7 +138,7 @@ async function parent() {
   check(server && /^https:\/\/<[A-Z_]+>\/mcp$/.test(server.url) && server.headers.Authorization === 'Bearer ${env:BOTMANCERS_MCP_TOKEN}' && Object.keys(server).sort().join(',') === 'headers,url',
     'Grok Bot client template: HTTPS URL placeholder and an env-referenced bearer header, nothing else');
 
-  const harnessLib = require('./test-support/acceptance/harness.js');
+  const harnessLib = require('./support/acceptance/harness.js');
   const harness = harnessLib.createHarness('grok-handoff');
   const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-grok-bridge-'));
   let run = { code: 1, err: '' };
@@ -311,7 +311,7 @@ function grokClient(url, token) {
 }
 
 async function child() {
-  const { createContext } = require('./test-support/acceptance/engine-context.js');
+  const { createContext } = require('./support/acceptance/engine-context.js');
   const ctx = createContext('grok-handoff');
   const { raw, engine } = ctx;
   const cli = process.env.BOTMANCERS_GROK_BRIDGE_CLI;

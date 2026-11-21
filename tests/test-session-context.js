@@ -3,8 +3,8 @@
 // (lib/session-context, docs/service-access.md "Share the current session",
 // docs/design/2026-10-24-session-share-preflight.md §2). Proves against the
 // real store, an isolated SQLite file, the real Claude Code and Codex
-// providers (driven through test-support/fake-claude-cli.js and
-// test-support/fake-codex.js), the real Cursor provider (fake cursor-agent),
+// providers (driven through tests/support/fake-claude-cli.js and
+// tests/support/fake-codex.js), the real Cursor provider (fake cursor-agent),
 // and the real REST and MCP handlers:
 //   - minting: bmsc_ + 256 random bits, only the SHA-256 stored, one
 //     (Agent, session_ref, launch) per context, nothing minted while the
@@ -40,7 +40,7 @@ const os = require('os');
 const path = require('path');
 const { createHash } = require('crypto');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const TAG = process.env.NOT517_TAG || `${process.pid}`;
 const TMP = fs.realpathSync(os.tmpdir()) + `/botmancers-session-context-${TAG}`;
 fs.rmSync(TMP, { recursive: true, force: true });
@@ -53,7 +53,7 @@ const CLAUDE = { config: path.join(TMP, 'claude-config'), state: path.join(TMP, 
 const CODEX = { main: path.join(TMP, 'codex-main.json'), exec: path.join(TMP, 'codex-exec.json'), runs: path.join(TMP, 'codex-runs') };
 const CURSOR = { bin: path.join(TMP, 'bin', 'cursor-agent'), fake: path.join(TMP, 'cursor-fake'), state: path.join(TMP, 'cursor-state') };
 for (const dir of [HOME_DIR, WS, CLAUDE.config, CLAUDE.state, CODEX.runs, path.dirname(CURSOR.bin), CURSOR.fake, CURSOR.state]) fs.mkdirSync(dir, { recursive: true });
-fs.writeFileSync(CURSOR.bin, `#!/bin/sh\nexec "${process.execPath}" "${path.join(ROOT, 'test-support', 'fake-cursor-cli.js')}" "$@"\n`, { mode: 0o755 });
+fs.writeFileSync(CURSOR.bin, `#!/bin/sh\nexec "${process.execPath}" "${path.join(ROOT, 'tests', 'support', 'fake-cursor-cli.js')}" "$@"\n`, { mode: 0o755 });
 
 const digest = token => `sha256:${createHash('sha256').update(token, 'utf8').digest('hex')}`;
 const GROK_TOKEN = 'grok-token-NOT517';
@@ -72,22 +72,22 @@ globalThis.fetch = async () => { throw new Error('network disabled in this test'
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const tokenAuth = jiti('./lib/service-token-auth.ts');
-const sc = jiti('./lib/session-context.ts');
-const launch = jiti('./lib/session-context-launch.ts');
-const claude = jiti('./lib/claude-session-provider.ts');
-const codex = jiti('./lib/codex-session-provider.ts');
-const cursor = jiti('./lib/cursor-session-provider.ts');
-const { serviceOperations } = jiti('./lib/service-api-http.ts');
-const { handleMcpPost } = jiti('./lib/mcp-http.ts');
-const mcpBridge = jiti('./lib/mcp-bridge.ts');
-const currentRoute = jiti('./app/api/v0/shares/current/route.ts');
-const agentsRoute = jiti('./app/api/v0/agents/route.ts');
-const fake = require('./test-support/fake-session-provider');
-const { seedFakeCodex, FAKE_CODEX } = require('./test-support/fake-codex');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const tokenAuth = jiti('../lib/service-token-auth.ts');
+const sc = jiti('../lib/session-context.ts');
+const launch = jiti('../lib/session-context-launch.ts');
+const claude = jiti('../lib/claude-session-provider.ts');
+const codex = jiti('../lib/codex-session-provider.ts');
+const cursor = jiti('../lib/cursor-session-provider.ts');
+const { serviceOperations } = jiti('../lib/service-api-http.ts');
+const { handleMcpPost } = jiti('../lib/mcp-http.ts');
+const mcpBridge = jiti('../lib/mcp-bridge.ts');
+const currentRoute = jiti('../app/api/v0/shares/current/route.ts');
+const agentsRoute = jiti('../app/api/v0/agents/route.ts');
+const fake = require('./support/fake-session-provider');
+const { seedFakeCodex, FAKE_CODEX } = require('./support/fake-codex');
 
 const db = dbModule.default;
 let failures = 0;
@@ -203,7 +203,7 @@ async function main() {
   contract.registerSessionProvider({ connectionId: fakeConnection }, () => fake.createFakeSessionProvider({ statePath: STATE, ignoreScope: true }));
   const claudeEnv = { ...process.env, CLAUDE_CONFIG_DIR: CLAUDE.config, FAKE_CLAUDE_LOG: CLAUDE.calls, FAKE_CLAUDE_MCP_OUT: CLAUDE.mcp };
   contract.registerSessionProvider({ connectionId: claudeConnection }, () => claude.createClaudeSessionProvider({
-    bin: path.join(ROOT, 'test-support', 'fake-claude-cli.js'), configDir: CLAUDE.config, stateDir: CLAUDE.state, env: claudeEnv, pollMs: 20, startupTimeoutMs: 20_000,
+    bin: path.join(ROOT, 'tests', 'support', 'fake-claude-cli.js'), configDir: CLAUDE.config, stateDir: CLAUDE.state, env: claudeEnv, pollMs: 20, startupTimeoutMs: 20_000,
   }));
   seedFakeCodex(CODEX.main, []);
   seedFakeCodex(CODEX.exec, [], { missingMethods: ['thread/start', 'thread/resume', 'turn/start'] });
@@ -338,7 +338,7 @@ async function main() {
 
   console.log('\nThe reserved principal: share-current only; reaches no Agent; refused in token configuration');
   {
-    const serviceApi = jiti('./lib/service-api.ts');
+    const serviceApi = jiti('../lib/service-api.ts');
     const ctxView = serviceApi.serviceContext(sc.SESSION_CONTEXT_PRINCIPAL);
     assert(!serviceApi.holds(ctxView, dev.id) && serviceApi.listServiceAgents(ctxView, { cursor: null, limit: 20 }).items.length === 0,
       'service:botmancers-session-context reaches no Agent through the service API (NOT-556: there are no grants to name it in)');

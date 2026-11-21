@@ -18,18 +18,18 @@ for (const suffix of ['', '-shm', '-wal']) {
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const runLib = jiti('./lib/run.ts');
-const runChild = jiti('./lib/run-child.ts');
-const commands = jiti('./lib/commands.ts');
-const engine = jiti('./lib/approvals.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const runLib = jiti('../lib/run.ts');
+const runChild = jiti('../lib/run-child.ts');
+const commands = jiti('../lib/commands.ts');
+const engine = jiti('../lib/approvals.ts');
 
-const stopRoute = jiti('./app/api/conversations/[id]/stop/route.ts');
-const messageStopRoute = jiti('./app/api/conversations/[id]/messages/[messageId]/stop/route.ts');
+const stopRoute = jiti('../app/api/conversations/[id]/stop/route.ts');
+const messageStopRoute = jiti('../app/api/conversations/[id]/messages/[messageId]/stop/route.ts');
 
 const { bots, conversations, messages } = db;
 
@@ -267,7 +267,7 @@ async function main() {
   // Case 8: chief-of-staff prints a word end to end through the queue.
   log('\nCase 8: chief-of-staff command run end to end');
   messages.create(conv.id, 'user', 'Print the word boxmint8 and wait 1 second');
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, cos.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, cos.id);
   await drain();
   const thread8 = messages.getByConversation(conv.id);
   const run8 = [...thread8].reverse().find(m => m.sender_type === 'bot' && runLib.parseRun(m.content));

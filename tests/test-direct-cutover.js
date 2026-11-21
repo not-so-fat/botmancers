@@ -21,7 +21,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-direct-cutover-${process.pid}.db`);
 const TMP = path.join(os.tmpdir(), `botmancers-direct-cutover-states-${process.pid}`);
 function removeAll() {
@@ -45,13 +45,13 @@ globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const executor = jiti('./lib/attempt-executor.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const fake = require('./test-support/fake-session-provider');
+const dbModule = jiti('../lib/db.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const executor = jiti('../lib/attempt-executor.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const fake = require('./support/fake-session-provider');
 
 const db = dbModule.default;
 const { bots, conversations, engine, projector } = dbModule;

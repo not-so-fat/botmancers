@@ -35,15 +35,15 @@ const HERMES_KEY = 'hermes-secret-key-must-not-leak';
 process.env.HERMES_API_SERVER_KEY = HERMES_KEY;
 
 const { createJiti } = require('jiti');
-const jiti = createJiti(__filename, { alias: { '@': __dirname } });
-const directAttempt = jiti('./lib/session-provider-attempt.ts');
-const hermesAttempt = jiti('./lib/hermes-attempt.ts');
-const contract = jiti('./lib/attempt-adapter.ts');
-const executor = jiti('./lib/attempt-executor.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const dbModule = jiti('./lib/db.ts');
-const providerContract = jiti('./lib/session-provider.ts');
-const fake = require('./test-support/fake-session-provider');
+const jiti = createJiti(__filename, { alias: { '@': require('./support/repo-root') } });
+const directAttempt = jiti('../lib/session-provider-attempt.ts');
+const hermesAttempt = jiti('../lib/hermes-attempt.ts');
+const contract = jiti('../lib/attempt-adapter.ts');
+const executor = jiti('../lib/attempt-executor.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const dbModule = jiti('../lib/db.ts');
+const providerContract = jiti('../lib/session-provider.ts');
+const fake = require('./support/fake-session-provider');
 const { bots, conversations, engine } = dbModule;
 const sqlite = dbModule.default;
 

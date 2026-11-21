@@ -27,16 +27,16 @@ for (const suffix of ['', '-shm', '-wal']) {
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
-const db = jiti('./lib/db.ts');
-const state = jiti('./lib/thread-state.ts');
-const ThreadState = jiti('./app/components/ThreadState.tsx').default;
-const conversationRoute = jiti('./app/api/conversations/route.ts');
-const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
+const db = jiti('../lib/db.ts');
+const state = jiti('../lib/thread-state.ts');
+const ThreadState = jiti('../app/components/ThreadState.tsx').default;
+const conversationRoute = jiti('../app/api/conversations/route.ts');
+const messagesRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
 
 let failures = 0;
 function assert(condition, label) {

@@ -20,7 +20,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-direct-migration-${process.pid}.db`);
 const GRANTS_PATH = path.join(os.tmpdir(), `botmancers-migration-grants-${process.pid}.json`);
 const MIGWS = path.join(os.tmpdir(), `botmancers-migration-ws-${process.pid}`);
@@ -40,8 +40,8 @@ execFileSync(process.execPath, ['-e', `
   process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
   const { createJiti } = require('jiti');
   const jiti = createJiti(${JSON.stringify(path.join(ROOT, 'seed.js'))}, { alias: { '@': ${JSON.stringify(ROOT)} } });
-  const db = jiti('./lib/db.ts');
-  const { seedSessionCatalog } = require('./test-support/session-catalog-fixture.js');
+  const db = jiti('../lib/db.ts');
+  const { seedSessionCatalog } = require('./support/session-catalog-fixture.js');
   seedSessionCatalog(db);
   const raw = db.default;
   const t = Date.now();
@@ -103,10 +103,10 @@ pre.close();
 // The parent's own database load runs the one-way cutover migration.
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const def = jiti('./lib/bot-definition.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const botsRoute = jiti('./app/api/bots/route.ts');
+const db = jiti('../lib/db.ts');
+const def = jiti('../lib/bot-definition.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const botsRoute = jiti('../app/api/bots/route.ts');
 const raw = db.default;
 
 function jsonRequest(method, body) {

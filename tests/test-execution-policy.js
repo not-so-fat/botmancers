@@ -22,7 +22,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-execution-policy-${process.pid}.db`);
 for (const suffix of ['', '-shm', '-wal']) {
   try { fs.rmSync(DB_PATH + suffix, { force: true }); } catch { /* fresh start */ }
@@ -50,14 +50,14 @@ function throwsCode(fn, code, label) {
   return assert(false, `${label} (did not throw)`);
 }
 
-const db = jiti('./lib/db.ts');
-const policy = jiti('./lib/execution-policy.ts');
-const router = jiti('./lib/wake-router.ts');
-const conversationsApi = jiti('./lib/agent-conversations.ts');
-const providerContract = jiti('./lib/session-provider.ts');
-const agent = jiti('./lib/agent.ts');
-const uiRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
-const fake = require('./test-support/fake-session-provider.js');
+const db = jiti('../lib/db.ts');
+const policy = jiti('../lib/execution-policy.ts');
+const router = jiti('../lib/wake-router.ts');
+const conversationsApi = jiti('../lib/agent-conversations.ts');
+const providerContract = jiti('../lib/session-provider.ts');
+const agent = jiti('../lib/agent.ts');
+const uiRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
+const fake = require('./support/fake-session-provider.js');
 const raw = db.default;
 const { bots, conversations, messages, engine } = db;
 
@@ -155,7 +155,7 @@ async function main() {
     assert(policy.TOOL_PROFILE_FOR_KIND[kind] === profile, `${kind} -> ${profile}`);
   }
   assert(Object.keys(policy.TOOL_PROFILE_FOR_KIND).length === 4 && Object.isFrozen(policy.TOOL_PROFILE_FOR_KIND), 'exactly four kinds, frozen');
-  assert(engine && jiti('./lib/engine-store.ts').TOOL_PROFILE_FOR_KIND === policy.TOOL_PROFILE_FOR_KIND, 'engine store uses the same central map');
+  assert(engine && jiti('../lib/engine-store.ts').TOOL_PROFILE_FOR_KIND === policy.TOOL_PROFILE_FOR_KIND, 'engine store uses the same central map');
 
   // ---------------------------------------------------------------
   console.log('\nSelection table: entry point x syntax x kind');
@@ -325,7 +325,7 @@ async function main() {
   // owner message in this conversation. The owner already allowed Tank's
   // edit Wakes to Dev; Dev's self-addressed implementation is the
   // owner-direct self-wake exemption.
-  const safety = jiti('./lib/wake-safety.ts');
+  const safety = jiti('../lib/wake-safety.ts');
   safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: dev.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
   const turns = new Map();
   const turnOf = sender => {

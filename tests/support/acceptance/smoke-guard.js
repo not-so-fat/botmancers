@@ -19,7 +19,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const DISPOSABLE_MARKER = '.botmancers-disposable';
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 class GuardError extends Error {
   constructor(code, message) {

@@ -18,17 +18,17 @@ for (const suffix of ['', '-shm', '-wal']) {
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const engine = jiti('./lib/approvals.ts');
-const draftLib = jiti('./lib/draft.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const engine = jiti('../lib/approvals.ts');
+const draftLib = jiti('../lib/draft.ts');
 
-const approveRoute = jiti('./app/api/conversations/[id]/approve/route.ts');
-const denyRoute = jiti('./app/api/conversations/[id]/deny/route.ts');
-const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
+const approveRoute = jiti('../app/api/conversations/[id]/approve/route.ts');
+const denyRoute = jiti('../app/api/conversations/[id]/deny/route.ts');
+const messagesRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
 
 const { bots, conversations, messages } = db;
 
@@ -99,7 +99,7 @@ function writeSkill(botName, contents) {
 
 async function ask(bot, conv, text) {
   messages.create(conv.id, 'user', text);
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
   await drain();
   return messages.getByConversation(conv.id);
 }

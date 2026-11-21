@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
@@ -34,11 +34,11 @@ React.useState = function (initial) {
   if (forceNextState) { forceNextState = false; return [true, () => {}]; }
   return realUseState.call(this, initial);
 };
-const view = jiti('./lib/share-view.ts');
-const SessionSharesModule = jiti('./app/components/SessionShares.tsx');
+const view = jiti('../lib/share-view.ts');
+const SessionSharesModule = jiti('../app/components/SessionShares.tsx');
 const SessionShares = SessionSharesModule.default;
 const { ShareCreateForm } = SessionSharesModule;
-const SharePolicyCard = jiti('./app/components/SharePolicyCard.tsx').default;
+const SharePolicyCard = jiti('../app/components/SharePolicyCard.tsx').default;
 
 let failures = 0;
 function assert(condition, label) {

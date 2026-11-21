@@ -27,18 +27,18 @@ process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 delete process.env.CLONE_MARKET_URL;
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
-const handoff = jiti('./lib/market-handoff.ts');
-const view = jiti('./app/components/MarketplaceImport.tsx');
-const handoffRoute = jiti('./app/api/marketplace-handoff/route.ts');
-const statusRoute = jiti('./app/api/marketplace-handoff/status/route.ts');
-const importRoute = jiti('./app/api/bots/import/route.ts');
-const configRoute = jiti('./app/api/bots/[id]/config/route.ts');
-const { bots } = jiti('./lib/db.ts');
+const handoff = jiti('../lib/market-handoff.ts');
+const view = jiti('../app/components/MarketplaceImport.tsx');
+const handoffRoute = jiti('../app/api/marketplace-handoff/route.ts');
+const statusRoute = jiti('../app/api/marketplace-handoff/status/route.ts');
+const importRoute = jiti('../app/api/bots/import/route.ts');
+const configRoute = jiti('../app/api/bots/[id]/config/route.ts');
+const { bots } = jiti('../lib/db.ts');
 
 const ORIGIN = 'http://localhost:43123';
 const MARKET = 'https://market.example.test/botmancers/import';

@@ -29,17 +29,17 @@ process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 process.env.HERMES_API_SERVER_KEY = 'test-hermes-key';
 process.env.HERMES_BASE_URL = 'http://127.0.0.1:65530';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
-const db = jiti('./lib/db.ts');
-const ui = jiti('./lib/bot-runtime-ui.ts');
-const regUi = jiti('./lib/agent-registration-ui.ts');
-const reg = jiti('./lib/agent-registration.ts');
-const view = jiti('./app/components/AgentRegistration.tsx');
-const botsRoute = jiti('./app/api/bots/route.ts');
+const db = jiti('../lib/db.ts');
+const ui = jiti('../lib/bot-runtime-ui.ts');
+const regUi = jiti('../lib/agent-registration-ui.ts');
+const reg = jiti('../lib/agent-registration.ts');
+const view = jiti('../app/components/AgentRegistration.tsx');
+const botsRoute = jiti('../app/api/bots/route.ts');
 
 let failures = 0;
 function assert(condition, label, detail) {
@@ -161,7 +161,7 @@ async function main() {
   assert(focusCss.includes(':focus-visible'), 'visible focus styling exists');
 
   console.log('\n(5) Desktop and narrow layouts');
-  const dialog = jiti('./lib/new-agent-dialog.ts');
+  const dialog = jiti('../lib/new-agent-dialog.ts');
   const desktop = dialog.newAgentDialogPlacement({ left: 24, bottom: 120 }, { width: 1440, height: 900 });
   const narrow = dialog.newAgentDialogPlacement({ left: 24, bottom: 120 }, { width: 390, height: 800 });
   assert(desktop.maxHeight > 0 && narrow.left >= dialog.DIALOG_INSET && narrow.maxHeight <= 800 - 2 * dialog.DIALOG_INSET, 'dialog stays inside the viewport at 1440x900 and 390x800 (body scrolls)');

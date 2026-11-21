@@ -32,7 +32,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-request-control-${process.pid}.db`);
 function removeDb(file) {
   for (const suffix of ['', '-shm', '-wal']) {
@@ -51,18 +51,18 @@ for (const name of Object.values({
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const executor = jiti('./lib/attempt-executor.ts');
-const intake = jiti('./lib/conversation-intake.ts');
-const policy = jiti('./lib/request-policy.ts');
-const control = jiti('./lib/work-request-control.ts');
-const lib = jiti('./lib/dispatcher.ts');
-const adapterLib = jiti('./lib/attempt-adapter.ts');
-const providerContract = jiti('./lib/session-provider.ts');
-const sessions = jiti('./lib/provider-sessions.ts');
-const fake = require('./test-support/fake-session-provider.js');
+const db = jiti('../lib/db.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const executor = jiti('../lib/attempt-executor.ts');
+const intake = jiti('../lib/conversation-intake.ts');
+const policy = jiti('../lib/request-policy.ts');
+const control = jiti('../lib/work-request-control.ts');
+const lib = jiti('../lib/dispatcher.ts');
+const adapterLib = jiti('../lib/attempt-adapter.ts');
+const providerContract = jiti('../lib/session-provider.ts');
+const sessions = jiti('../lib/provider-sessions.ts');
+const fake = require('./support/fake-session-provider.js');
 const raw = db.default;
 const { bots, engine, projector } = db;
 

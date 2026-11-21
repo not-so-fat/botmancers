@@ -26,7 +26,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const SCENARIO = process.env.WAKE_SAFETY_SCENARIO || 'main';
 const DB_PATH = process.env.WAKE_SAFETY_DB || path.join(os.tmpdir(), `botmancers-wake-safety-${process.pid}.db`);
 function removeDb(file) {
@@ -74,15 +74,15 @@ async function runMain() {
     exercised.add(name);
     return found;
   };
-  const db = jiti('./lib/db.ts');
-  const router = jiti('./lib/wake-router.ts');
-  const loop = jiti('./lib/coordinator-loop.ts');
-  const safety = jiti('./lib/wake-safety.ts');
-  const intake = jiti('./lib/conversation-intake.ts');
-  const api = jiti('./lib/agent-api.ts');
-  const dispatcherLib = jiti('./lib/dispatcher.ts');
-  const boundary = jiti('./lib/owner-boundary.ts');
-  const wakeNotice = jiti('./lib/wake-notice.ts');
+  const db = jiti('../lib/db.ts');
+  const router = jiti('../lib/wake-router.ts');
+  const loop = jiti('../lib/coordinator-loop.ts');
+  const safety = jiti('../lib/wake-safety.ts');
+  const intake = jiti('../lib/conversation-intake.ts');
+  const api = jiti('../lib/agent-api.ts');
+  const dispatcherLib = jiti('../lib/dispatcher.ts');
+  const boundary = jiti('../lib/owner-boundary.ts');
+  const wakeNotice = jiti('../lib/wake-notice.ts');
   const raw = db.default;
   const { bots, conversations, messages, engine, projector, UI_OWNER_PRINCIPAL } = db;
 
@@ -285,7 +285,7 @@ async function runMain() {
     assert(response.status === fixture('api_authentication_fails').expect.http.status && body.error.code === 'unauthenticated' && same(counts(), snapshot), '[api_authentication_fails] 401, nothing persisted');
     api.setAgentApiAuthenticator(null);
 
-    const { proxy } = jiti('./proxy.ts');
+    const { proxy } = jiti('../proxy.ts');
     const { NextRequest } = require('next/server');
     const given = fixture('ui_route_from_foreign_origin').given;
     snapshot = counts();
@@ -828,8 +828,8 @@ async function runMain() {
 // One routing process of the race: waits for the shared start time, then
 // routes its reply on the shared root.
 function runRaceChild() {
-  const db = jiti('./lib/db.ts');
-  const router = jiti('./lib/wake-router.ts');
+  const db = jiti('../lib/db.ts');
+  const router = jiti('../lib/wake-router.ts');
   router.setWakeAvailabilityProbe(() => ({ available: true }));
   const startAt = Number(process.env.RACE_START);
   while (Date.now() < startAt) { /* barrier */ }
@@ -840,8 +840,8 @@ function runRaceChild() {
 }
 
 function runReplayChild() {
-  jiti('./lib/db.ts');
-  const router = jiti('./lib/wake-router.ts');
+  jiti('../lib/db.ts');
+  const router = jiti('../lib/wake-router.ts');
   router.setWakeAvailabilityProbe(() => ({ available: true }));
   const sources = JSON.parse(process.env.RACE_SOURCES);
   const fresh = sources.flatMap(source => router.routeAgentWakes({ sourceEventId: source, parentRequestId: process.env.RACE_PARENT })).filter(entry => entry.created);
@@ -854,7 +854,7 @@ function runReplayChild() {
 // opened by this release.
 function runLegacy() {
   const Database = require('better-sqlite3');
-  const store = jiti('./lib/engine-store.ts');
+  const store = jiti('../lib/engine-store.ts');
   const legacy = new Database(DB_PATH);
   // As the app's shared connection: foreign keys enforced by triggers only.
   legacy.pragma('foreign_keys = OFF');
@@ -936,12 +936,12 @@ function runLegacy() {
   assert(version === 12 && before.length === 12, 'legacy fixture: schema 12 with twelve requests');
 
   // Upgrade: this release opens the database.
-  const db = jiti('./lib/db.ts');
+  const db = jiti('../lib/db.ts');
   const raw = db.default;
-  const router = jiti('./lib/wake-router.ts');
-  const dispatcherLib = jiti('./lib/dispatcher.ts');
+  const router = jiti('../lib/wake-router.ts');
+  const dispatcherLib = jiti('../lib/dispatcher.ts');
   const { engine } = db;
-  assert(raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === jiti('./lib/engine-store.ts').ENGINE_SCHEMA_VERSION, 'migrated to the current schema');
+  assert(raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get().v === jiti('../lib/engine-store.ts').ENGINE_SCHEMA_VERSION, 'migrated to the current schema');
   assert(raw.prepare('SELECT COUNT(*) AS n FROM wake_grants').get().n === 0, 'no grants are seeded from history');
   const after = Object.fromEntries(raw.prepare('SELECT * FROM work_requests ORDER BY id').all().map(row => [row.id, row]));
   const unchanged = ['state', 'policy_snapshot', 'request_hash', 'depth', 'state_reason', 'result', 'version', 'terminal_at'];
@@ -978,7 +978,7 @@ function runLegacy() {
   raw.prepare("UPDATE work_requests SET state_reason = ? || substr(state_reason, instr(state_reason, ':')) WHERE id = 'r3'").run(RETIRED);
   raw.prepare('DELETE FROM schema_migrations WHERE version = 21').run();
   const eventsBefore = engine.listEvents('r3').length;
-  jiti('./lib/engine-store.ts').migrateEngineSchema(raw);
+  jiti('../lib/engine-store.ts').migrateEngineSchema(raw);
   const recodedWake = router.getWake('w3');
   const recodedRequest = engine.getWorkRequest('r3');
   const reblock = engine.listEvents('r3').slice(eventsBefore);
@@ -988,14 +988,14 @@ function runLegacy() {
     'migration 21 recodes a blocked Wake with the retired reason code, its request reason, and appends one wake_reblocked event');
   const rerun = engine.listEvents('r3').length;
   raw.prepare('DELETE FROM schema_migrations WHERE version = 21').run();
-  jiti('./lib/engine-store.ts').migrateEngineSchema(raw);
+  jiti('../lib/engine-store.ts').migrateEngineSchema(raw);
   assert(engine.listEvents('r3').length === rerun && router.getWake('w3').reason_code === 'edit_approval_required', 'migration 21 is a no-op when no retired code remains');
   const ownerDecision = router.decideWakeGrant({ wakeId: 'w3', decision: 'deny', caller: { category: 'human_owner', principal: db.UI_OWNER_PRINCIPAL } });
   assert(ownerDecision.wake.reason_code === 'grant_denied', 'the owner can still decide a recoded Wake');
   const second = spawnSync(process.execPath, ['-e', `
     process.env.BOTMANCERS_DB_PATH = ${JSON.stringify(DB_PATH)}; process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
     const { createJiti } = require('jiti'); const jiti = createJiti(${JSON.stringify(__filename)}, { alias: { '@': ${JSON.stringify(ROOT)} } });
-    const raw = jiti('./lib/db.ts').default;
+    const raw = jiti('../lib/db.ts').default;
     process.stdout.write(String(raw.prepare('SELECT COUNT(*) AS n FROM wake_safety_decisions').get().n));
   `], { encoding: 'utf8', env: process.env });
   assert(second.status === 0 && Number(second.stdout) === raw.prepare('SELECT COUNT(*) AS n FROM wake_safety_decisions').get().n, 'reopening applies nothing again');

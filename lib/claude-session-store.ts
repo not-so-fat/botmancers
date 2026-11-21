@@ -1,6 +1,6 @@
 // NOT-506: read-only access to Claude Code's local session store, the one
 // place that parses its on-disk format (versioned fixtures:
-// test-support/fixtures/claude-code/).
+// tests/support/fixtures/claude-code/).
 //
 // Format CLAUDE_STORE_FORMAT, as written by Claude Code 2.1.x:
 //   $CLAUDE_CONFIG_DIR (default ~/.claude)

@@ -31,7 +31,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-exchange-ui-${process.pid}.db`);
 for (const suffix of ['', '-shm', '-wal']) fs.rmSync(DB_PATH + suffix, { force: true });
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
@@ -43,17 +43,17 @@ const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
-const dbModule = jiti('./lib/db.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const ledger = jiti('./lib/exchange-ledger.ts');
-const view = jiti('./lib/exchange-view.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const exchangeLib = jiti('./lib/session-exchanges.ts');
-const ExchangeCard = jiti('./app/components/ExchangeCard.tsx').default;
-const ExchangeDialog = jiti('./app/components/ExchangeDialog.tsx').default;
-const ExchangesPage = jiti('./app/exchanges/page.tsx').default;
-const { startRouteHost } = require('./test-support/acceptance/route-host');
+const dbModule = jiti('../lib/db.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const ledger = jiti('../lib/exchange-ledger.ts');
+const view = jiti('../lib/exchange-view.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const exchangeLib = jiti('../lib/session-exchanges.ts');
+const ExchangeCard = jiti('../app/components/ExchangeCard.tsx').default;
+const ExchangeDialog = jiti('../app/components/ExchangeDialog.tsx').default;
+const ExchangesPage = jiti('../app/exchanges/page.tsx').default;
+const { startRouteHost } = require('./support/acceptance/route-host');
 
 const raw = dbModule.default;
 const { engine, bots, groups, conversations, UI_OWNER_PRINCIPAL: OWNER } = dbModule;
@@ -360,8 +360,8 @@ async function main() {
   assert(view.sessionDialogMode('handoff') === 'continue' && view.sessionDialogMode('ask') === 'ask' && view.sessionDialogMode('resume') === 'resume', 'Hand off to… keeps the Continue exchange semantics');
 
   // NOT-507: row actions and tags per runtime state.
-  const actionsLib = jiti('./lib/session-actions.ts');
-  const sessionView = jiti('./lib/session-view.ts');
+  const actionsLib = jiti('../lib/session-actions.ts');
+  const sessionView = jiti('../lib/session-view.ts');
   const baseState = { availability: 'available', lifecycle: 'open', resumable: true, busy: false };
   const ctxFull = { route: 'provider', provider: { resume: true, authorities: ['read_only', 'workspace_write'] }, policy: { mode: 'workspace_write', allow_resume_with_edits: true } };
   const stateRow = (state, extra = {}) => {

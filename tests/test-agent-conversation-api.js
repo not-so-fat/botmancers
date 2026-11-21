@@ -29,13 +29,13 @@ const DB_PATH = REOPEN
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 
 if (REOPEN) {
   // Fresh process, fresh module graph: only what is on disk survives.
-  const service = jiti('./lib/agent-conversations.ts');
+  const service = jiti('../lib/agent-conversations.ts');
   const spec = JSON.parse(process.argv[4]);
   const out = spec.map(entry => ({
     label: entry.label,
@@ -88,11 +88,11 @@ const LEGACY = {
   raw.close();
 }
 
-const db = jiti('./lib/db.ts');
-const api = jiti('./lib/agent-api.ts');
-const service = jiti('./lib/agent-conversations.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const providerContract = jiti('./lib/session-provider.ts');
+const db = jiti('../lib/db.ts');
+const api = jiti('../lib/agent-api.ts');
+const service = jiti('../lib/agent-conversations.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const providerContract = jiti('../lib/session-provider.ts');
 
 const raw = db.default;
 const { bots } = db;
@@ -121,7 +121,7 @@ dispatch.setAgentDispatchHermesFetch(async (url, init) => {
 // NOT-543: canonical coding turns go through the direct SessionProvider
 // adapter against a scripted in-process fake; its state file captures
 // every start.
-const fake = require('./test-support/fake-session-provider.js');
+const fake = require('./support/fake-session-provider.js');
 const WORKROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-agent-api-work-'));
 const STATE = path.join(os.tmpdir(), `botmancers-agent-api-provider-${process.pid}.json`);
 fs.rmSync(STATE, { force: true });
@@ -391,14 +391,14 @@ async function main() {
 }
 
 async function phaseTwo(ctx) {
-  const agent = jiti('./lib/agent.ts');
-  const uiRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
+  const agent = jiti('../lib/agent.ts');
+  const uiRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
   const uiIdRoutes = {
-    conversation: jiti('./app/api/conversations/[id]/route.ts'),
-    draft: jiti('./app/api/conversations/[id]/draft/route.ts'),
-    stop: jiti('./app/api/conversations/[id]/stop/route.ts'),
-    approve: jiti('./app/api/conversations/[id]/approve/route.ts'),
-    deny: jiti('./app/api/conversations/[id]/deny/route.ts'),
+    conversation: jiti('../app/api/conversations/[id]/route.ts'),
+    draft: jiti('../app/api/conversations/[id]/draft/route.ts'),
+    stop: jiti('../app/api/conversations/[id]/stop/route.ts'),
+    approve: jiti('../app/api/conversations/[id]/approve/route.ts'),
+    deny: jiti('../app/api/conversations/[id]/deny/route.ts'),
   };
   return phaseTwoRun(ctx, { db, api, service, agent, uiRoute, uiIdRoutes });
 }

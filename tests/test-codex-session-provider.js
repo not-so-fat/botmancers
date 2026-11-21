@@ -2,7 +2,7 @@
 // NOT-504: the direct Codex SessionProvider (lib/codex-session-provider)
 // over the app-server protocol, driven end to end through the
 // provider-session registry (lib/provider-sessions) against a fake `codex`
-// binary (test-support/fake-codex.js) that speaks the app-server JSON-RPC
+// binary (tests/support/fake-codex.js) that speaks the app-server JSON-RPC
 // subset and the `codex exec --json` stream. No Agent Deck, no network.
 // Proves: the installed-version probe and its structured failures
 // (unavailable, unsupported, auth_required); scoped, idempotent discovery of
@@ -20,7 +20,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT504_TAG || `${process.pid}`;
 const TMP = path.join(fs.realpathSync(os.tmpdir()), `botmancers-codex-provider-${TAG}`);
@@ -46,13 +46,13 @@ globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const codex = jiti('./lib/codex-session-provider.ts');
-const usage = jiti('./lib/codex-usage.ts');
-const { seedFakeCodex, FAKE_CODEX } = require('./test-support/fake-codex');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const codex = jiti('../lib/codex-session-provider.ts');
+const usage = jiti('../lib/codex-usage.ts');
+const { seedFakeCodex, FAKE_CODEX } = require('./support/fake-codex');
 
 const db = dbModule.default;
 let failures = 0;
@@ -144,7 +144,7 @@ function fatal(error) {
 
 async function main() {
   console.log('\nUsage normalization from structured events (fixtures adapted from Agent Dealer)');
-  const fixture = name => usage.parseCodexJsonl(fs.readFileSync(path.join(ROOT, 'test-support/codex-fixtures', name), 'utf8'));
+  const fixture = name => usage.parseCodexJsonl(fs.readFileSync(path.join(ROOT, 'tests/support/codex-fixtures', name), 'utf8'));
   const cached = usage.execRunFacts(fixture('turn-completed-cached.jsonl'));
   assert(JSON.stringify(cached.usage) === JSON.stringify({ input_tokens: 24763, output_tokens: 122, cached_input_tokens: 24448, cost_usd: null })
     && cached.terminal === 'completed' && cached.output === 'The parser lives in src/parse.ts.' && cached.thread_id === '0199a213-81c0-7800-8aa1-bbab2a035a53',

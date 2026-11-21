@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // NOT-503: the SessionProvider boundary (lib/session-provider), the
 // provider-session registry (engine migration 17, lib/provider-sessions),
-// and a deterministic fake direct provider (test-support/fake-session-provider)
+// and a deterministic fake direct provider (tests/support/fake-session-provider)
 // driven end to end without Agent Deck.
 // Proves: the contract's capability discovery and conformance (supported
 // and unsupported capabilities, authority modes); the registry backfills
@@ -20,7 +20,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT503_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-session-provider-${TAG}`);
@@ -39,11 +39,11 @@ globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const fake = require('./test-support/fake-session-provider');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const fake = require('./support/fake-session-provider');
 
 const db = dbModule.default;
 let failures = 0;
@@ -176,7 +176,7 @@ async function main() {
     DELETE FROM schema_migrations WHERE version = 17;
   `);
   const bindingsBefore = old.prepare('SELECT id, agent_id, external_session_id FROM session_bindings ORDER BY id').all();
-  const store = jiti('./lib/engine-store.ts');
+  const store = jiti('../lib/engine-store.ts');
   store.migrateEngineSchema(old);
   const backfilled = old.prepare('SELECT * FROM provider_sessions ORDER BY id').all();
   assert(bindingsBefore.length >= 1 && backfilled.length === bindingsBefore.length
@@ -269,7 +269,7 @@ async function main() {
 
   console.log('\nNOT-560: a Claude Code turn that exits with no output logs the core process context');
   {
-    const claude = jiti('./lib/claude-session-provider.ts');
+    const claude = jiti('../lib/claude-session-provider.ts');
     const ws = path.join(TMP, 'silent-ws');
     fs.mkdirSync(ws, { recursive: true });
     const claudeState = path.join(TMP, 'claude-state');
@@ -277,7 +277,7 @@ async function main() {
     // turn process is replaced by a plain node script.
     const turnProcess = script => (command, args, options) => require('child_process').spawn(process.execPath, ['-e', script], options);
     const claudeProvider = script => claude.createClaudeSessionProvider({
-      bin: path.join(ROOT, 'test-support', 'fake-claude-cli.js'), configDir: path.join(TMP, 'claude-config'), stateDir: claudeState,
+      bin: path.join(ROOT, 'tests', 'support', 'fake-claude-cli.js'), configDir: path.join(TMP, 'claude-config'), stateDir: claudeState,
       env: { ...process.env }, pollMs: 10, startupTimeoutMs: 10_000, spawn: turnProcess(script),
     });
     const silentConnection = runtimeConnections.create({ provider: 'claude', label: 'Claude silent', host: 'This computer' }).id;
@@ -334,7 +334,7 @@ async function main() {
       const gone = path.join(TMP, 'vanishing-ws');
       fs.mkdirSync(gone, { recursive: true });
       const spawnFails = claude.createClaudeSessionProvider({
-        bin: path.join(ROOT, 'test-support', 'fake-claude-cli.js'), configDir: path.join(TMP, 'claude-config'), stateDir: claudeState,
+        bin: path.join(ROOT, 'tests', 'support', 'fake-claude-cli.js'), configDir: path.join(TMP, 'claude-config'), stateDir: claudeState,
         env: { ...process.env }, pollMs: 10, startupTimeoutMs: 10_000,
         spawn: (command, args, options) => { fs.rmSync(gone, { recursive: true, force: true }); return require('child_process').spawn(process.execPath, ['-e', ''], { ...options, cwd: gone }); },
       });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // NOT-506: the direct Claude Code SessionProvider (lib/claude-session-provider)
-// against a stand-in `claude` executable (test-support/fake-claude-cli.js) and
-// versioned local-store and stream fixtures (test-support/fixtures/claude-code).
+// against a stand-in `claude` executable (tests/support/fake-claude-cli.js) and
+// versioned local-store and stream fixtures (tests/support/fixtures/claude-code).
 // Proves: the spawn boundary (argv, environment, cwd, stdin, cancellation,
 // structured events only); scoped, idempotent discovery of pre-existing
 // sessions across workspaces with malformed records and removed sessions;
@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT_DIR = __dirname;
+const ROOT_DIR = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT506_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-claude-provider-${TAG}`);
@@ -32,8 +32,8 @@ const WS = path.join(REAL, 'ws');
 const CONFIG = path.join(TMP, 'claude-config');
 const STATE = path.join(TMP, 'provider-state');
 const CALLS = path.join(TMP, 'claude-calls.jsonl');
-const FAKE_BIN = path.join(ROOT_DIR, 'test-support', 'fake-claude-cli.js');
-const FIXTURES = path.join(ROOT_DIR, 'test-support', 'fixtures', 'claude-code');
+const FAKE_BIN = path.join(ROOT_DIR, 'tests', 'support', 'fake-claude-cli.js');
+const FIXTURES = path.join(ROOT_DIR, 'tests', 'support', 'fixtures', 'claude-code');
 const NOW = Date.parse('2026-10-18T12:00:00.000Z');
 
 process.env.BOTMANCERS_DB_PATH = path.join(TMP, 'botmancers.db');
@@ -44,14 +44,14 @@ globalThis.fetch = async () => { fetchCalls++; throw new Error('network disabled
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT_DIR } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const claude = jiti('./lib/claude-session-provider.ts');
-const store = jiti('./lib/claude-session-store.ts');
-const stream = jiti('./lib/claude-stream.ts');
-const botsRoute = jiti('./app/api/bots/route.ts');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const claude = jiti('../lib/claude-session-provider.ts');
+const store = jiti('../lib/claude-session-store.ts');
+const stream = jiti('../lib/claude-stream.ts');
+const botsRoute = jiti('../app/api/bots/route.ts');
 const db = dbModule.default;
 
 let failures = 0;

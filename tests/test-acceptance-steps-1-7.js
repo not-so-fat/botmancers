@@ -7,6 +7,7 @@
 
 const http = require('http');
 const fs = require('fs');
+const ROOT = require('./support/repo-root');
 
 const PORT = Number(process.env.BOTMANCERS_TEST_PORT) || 43123;
 const BASE_URL = `http://localhost:${PORT}`;
@@ -66,7 +67,7 @@ async function stubPeerWake() {
     process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
     delete process.env.HERMES_API_SERVER_KEY;
     const jiti = require('jiti').createJiti(${JSON.stringify(__filename)});
-    const db = jiti('./lib/db.ts'); const agent = jiti('./lib/agent.ts');
+    const db = jiti('../lib/db.ts'); const agent = jiti('../lib/agent.ts');
     (async () => {
       const alice = db.bots.create({ deck_id: 'deck-test', name: 'Alice', title: 'Research Assistant', description: 'Researches, then WAKE Bob.' });
       const bob = db.bots.create({ deck_id: 'deck-test', name: 'Bob', title: 'Code Reviewer', description: 'Reviews handoffs.' });
@@ -76,7 +77,7 @@ async function stubPeerWake() {
         ? 'Brief research on AI agents. WAKE Bob: Please review my research on AI agents.'
         : 'Bob: reviewed, looks good.');
       db.messages.create(conv.id, 'user', '@Alice can you research best practices for AI agents and hand off to Bob for review?');
-      jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, alice.id);
+      jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, alice.id);
       for (let i = 0; i < 40 && await agent.processNextUiTurn(); i++) await new Promise(r => setTimeout(r, 3));
       const thread = db.messages.getByConversation(conv.id);
       const handoff = thread.find(m => m.sender_id === alice.id && m.content.includes('[Handing off to Bob]'));
@@ -86,7 +87,7 @@ async function stubPeerWake() {
     })().catch(e => { console.error(e); process.exit(1); });
   `;
   try {
-    const out = JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: __dirname, encoding: 'utf8' }).trim().split('\n').pop());
+    const out = JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').pop());
     if (out.handoff && out.reply) {
       console.log('\n✓ PEER WAKE CONFIRMED (deterministic stub, no Hermes key)');
       console.log(`  Alice: "${out.handoff.substring(0, 150)}"`);

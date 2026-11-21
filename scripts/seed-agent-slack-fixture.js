@@ -17,7 +17,7 @@ fs.mkdirSync(WORK, { recursive: true });
 fs.mkdirSync(path.dirname(POLICY), { recursive: true, mode: 0o700 });
 for (const suffix of ['', '-shm', '-wal']) fs.rmSync(DB_PATH + suffix, { force: true });
 for (const file of [STATE, POLICY]) fs.rmSync(file, { force: true });
-fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.resolve(__dirname, '..', 'test-support', 'fake-codex.js')}' "$@"\n`);
+fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.resolve(__dirname, '..', 'tests', 'support', 'fake-codex.js')}' "$@"\n`);
 fs.chmodSync(BIN, 0o755);
 Object.assign(process.env, {
   BOTMANCERS_DB_PATH: DB_PATH,
@@ -32,7 +32,7 @@ const sessions = [
   ['exhausted', 'Answer migration questions'], ['expired', 'Audit old dependencies'], ['revoked', 'Retired rollout thread'],
   ['other', 'Other Agent private session'],
 ].map(([id, name]) => ({ id: `slack-${id}-SECRET`, cwd: WORK, name, turns: [[name, 'Fixture answer']] }));
-require('../test-support/fake-codex').seedFakeCodex(STATE, sessions);
+require('../tests/support/fake-codex').seedFakeCodex(STATE, sessions);
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': path.resolve(__dirname, '..') } });

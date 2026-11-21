@@ -20,16 +20,16 @@ process.env.CLONE_MARKET_URL = 'https://market.example';
 const realFetch = global.fetch;
 global.fetch = () => { throw new Error('network disabled in test:cos-birth'); };
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const birth = jiti('./lib/birth.ts');
-const skills = jiti('./lib/skills.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const birth = jiti('../lib/birth.ts');
+const skills = jiti('../lib/skills.ts');
 
 const { bots, conversations, messages, oneShots, routines } = db;
-const { uiTurns } = jiti('./lib/ui-turns.ts');
+const { uiTurns } = jiti('../lib/ui-turns.ts');
 
 let failures = 0;
 const skillNames = [];

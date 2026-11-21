@@ -19,13 +19,13 @@ process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const providerContract = jiti('./lib/session-provider.ts');
-const fake = require('./test-support/fake-session-provider');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const providerContract = jiti('../lib/session-provider.ts');
+const fake = require('./support/fake-session-provider');
 
 const { bots, conversations, messages } = db;
-const { uiTurns } = jiti('./lib/ui-turns.ts');
+const { uiTurns } = jiti('../lib/ui-turns.ts');
 
 let failures = 0;
 

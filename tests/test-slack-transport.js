@@ -31,7 +31,7 @@ const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const TMP = path.join(os.tmpdir(), `botmancers-slack-transport-${process.pid}`);
 fs.rmSync(TMP, { recursive: true, force: true });
 fs.mkdirSync(TMP, { recursive: true });
@@ -64,17 +64,17 @@ for (const method of ['log', 'warn', 'error', 'info', 'debug']) {
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const shares = jiti('./lib/session-shares.ts');
-const relayLib = jiti('./lib/slack-relay.ts');
-const transportLib = jiti('./lib/slack-transport.ts');
-const runtimeLib = jiti('./lib/slack-runtime.ts');
-const { serviceRedactor } = jiti('./lib/service-redaction.ts');
-const { serviceOperations } = jiti('./lib/service-api-http.ts');
-const fake = require('./test-support/fake-session-provider');
-const { createFakeSlackServer } = require('./test-support/fake-slack-server');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const shares = jiti('../lib/session-shares.ts');
+const relayLib = jiti('../lib/slack-relay.ts');
+const transportLib = jiti('../lib/slack-transport.ts');
+const runtimeLib = jiti('../lib/slack-runtime.ts');
+const { serviceRedactor } = jiti('../lib/service-redaction.ts');
+const { serviceOperations } = jiti('../lib/service-api-http.ts');
+const fake = require('./support/fake-session-provider');
+const { createFakeSlackServer } = require('./support/fake-slack-server');
 
 const db = dbModule.default;
 const fixtures = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs/contracts/slack-relay-v0.fixtures.json'), 'utf8'));
@@ -512,7 +512,7 @@ async function main() {
   {
     const redactor = serviceRedactor();
     assert(redactor.text(`a ${APP_TOKEN} b ${BOT_TOKEN} c`) === 'a [redacted] b [redacted] c', 'serviceRedactor (CREDENTIAL_ENV) redacts both Slack token values');
-    const product = jiti('./packages/mcp-server/src/product.ts');
+    const product = jiti('../packages/mcp-server/src/product.ts');
     const home = path.join(TMP, 'product-home');
     const pEnv = { PATH: process.env.PATH, HOME: path.join(TMP, 'user'), BOTMANCERS_HOME: home, BOTMANCERS_SLACK_APP_TOKEN: APP_TOKEN, BOTMANCERS_SLACK_BOT_TOKEN: BOT_TOKEN };
     const ctx = product.productContext(pEnv, { stdout: () => {}, stderr: () => {} });
@@ -520,7 +520,7 @@ async function main() {
     assert(envs.core.BOTMANCERS_SLACK_APP_TOKEN === APP_TOKEN && envs.core.BOTMANCERS_SLACK_BOT_TOKEN === BOT_TOKEN && !Object.values(envs.bridge).some(leaks),
       'the managed start gives the tokens to the core process only; the MCP bridge env holds neither');
     assert(!leaks(ctx.redact(`log ${APP_TOKEN} ${BOT_TOKEN}`)), 'the CLI\'s output redactor knows both Slack tokens');
-    const health = jiti('./app/api/health/route.ts');
+    const health = jiti('../app/api/health/route.ts');
     const res = await health.GET();
     const body = await res.text();
     assert(JSON.parse(body).slack.state === 'stopped' && !leaks(body), `/api/health reports the Slack state and no token (${JSON.stringify(JSON.parse(body).slack)})`);

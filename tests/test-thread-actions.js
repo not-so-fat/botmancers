@@ -18,21 +18,21 @@ for (const suffix of ['', '-shm', '-wal']) {
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const draftLib = jiti('./lib/draft.ts');
-const approvalsEngine = jiti('./lib/approvals.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const draftLib = jiti('../lib/draft.ts');
+const approvalsEngine = jiti('../lib/approvals.ts');
 
-const draftRoute = jiti('./app/api/conversations/[id]/draft/route.ts');
-const approveRoute = jiti('./app/api/conversations/[id]/approve/route.ts');
-const denyRoute = jiti('./app/api/conversations/[id]/deny/route.ts');
-const filesRoute = jiti('./app/api/files/[name]/route.ts');
-const betweenRoute = jiti('./app/api/messages/[id]/between/route.ts');
-const groupsRoute = jiti('./app/api/groups/route.ts');
-const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
+const draftRoute = jiti('../app/api/conversations/[id]/draft/route.ts');
+const approveRoute = jiti('../app/api/conversations/[id]/approve/route.ts');
+const denyRoute = jiti('../app/api/conversations/[id]/deny/route.ts');
+const filesRoute = jiti('../app/api/files/[name]/route.ts');
+const betweenRoute = jiti('../app/api/messages/[id]/between/route.ts');
+const groupsRoute = jiti('../app/api/groups/route.ts');
+const messagesRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
 
 const { bots, conversations, groups, messages, draftActions } = db;
 
@@ -262,9 +262,9 @@ async function main() {
     `[file] ${hookFile}\n\`\`\`text\nartifact-bytes\n\`\`\`\nPlease approve using the code hook99 to continue.`
   );
   messages.create(conv.id, 'user', 'Produce a file and an approval request.');
-  const hookCount = jiti('./lib/ui-turns.ts').uiTurns.countPending(conv.id);
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, drafter.id);
-  assert(jiti('./lib/ui-turns.ts').uiTurns.countPending(conv.id) === hookCount + 1, 'hook turn queued');
+  const hookCount = jiti('../lib/ui-turns.ts').uiTurns.countPending(conv.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, drafter.id);
+  assert(jiti('../lib/ui-turns.ts').uiTurns.countPending(conv.id) === hookCount + 1, 'hook turn queued');
   await drain();
   const hookThread = messages.getByConversation(conv.id);
   const hookMsg = hookThread.find(m => m.sender_type === 'bot' && m.content.includes('[file]'));
@@ -276,7 +276,7 @@ async function main() {
   assert(hookApprove.status === 200, `agent-recorded approval approves once (got ${hookApprove.status})`);
   agent.setDelegationChatStub(() => `[file] ../../evil-${process.pid}.txt\n\`\`\`text\nnope\n\`\`\``);
   messages.create(conv.id, 'user', 'Produce an unsafe file marker.');
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, drafter.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, drafter.id);
   await drain();
   assert(!fs.existsSync(path.join(process.cwd(), `evil-${process.pid}.txt`)), 'unsafe [file] name never written');
   assert(!fs.existsSync(path.join(process.cwd(), 'files', `evil-${process.pid}.txt`)), 'unsafe [file] name never materialized');
@@ -292,13 +292,13 @@ async function main() {
   const hookBot = bots.create({ deck_id: 'deck-test', name: 'HookDrafter', title: '', description: 'Draft hook.' });
   const hookConv = conversations.getByBotId(hookBot.id);
   messages.create(hookConv.id, 'user', 'Please email Alice that says hello there');
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(hookConv.id, hookBot.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(hookConv.id, hookBot.id);
   await drain();
   const hookDrafts = messages.getByConversation(hookConv.id).filter(m => draftLib.parseDraft(m.content));
   assert(hookDrafts.length === 1, 'email ask creates exactly one draft card');
   assert(hookDrafts[0] && draftLib.parseDraft(hookDrafts[0].content).body.includes('hello there'), 'draft body comes from the ask');
   assert(stubCalls === 0, 'draft hook answers without calling the model');
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(hookConv.id, hookBot.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(hookConv.id, hookBot.id);
   await drain();
   assert(messages.getByConversation(hookConv.id).filter(m => draftLib.parseDraft(m.content)).length === 1, 'draft hook never fires twice for the same ask');
   agent.setDelegationChatStub(null);

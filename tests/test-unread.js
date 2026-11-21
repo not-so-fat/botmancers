@@ -19,7 +19,7 @@ process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
-const db = jiti('./lib/db.ts');
+const db = jiti('../lib/db.ts');
 
 const { bots, conversations, messages } = db;
 

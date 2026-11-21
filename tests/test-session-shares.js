@@ -30,7 +30,7 @@ const path = require('path');
 const { createHash } = require('crypto');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT515_TAG || `${process.pid}`;
 const TMP = path.join(os.tmpdir(), `botmancers-session-shares-${TAG}`);
@@ -53,15 +53,15 @@ globalThis.fetch = async () => { throw new Error('network disabled in this test'
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const grantsLib = jiti('./lib/service-grants.ts');
-const shares = jiti('./lib/session-shares.ts');
-const { serviceRedactor } = jiti('./lib/service-redaction.ts');
-const { serviceOperations } = jiti('./lib/service-api-http.ts');
-const mcp = jiti('./lib/mcp-bridge-v2.ts');
-const fake = require('./test-support/fake-session-provider');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const grantsLib = jiti('../lib/service-grants.ts');
+const shares = jiti('../lib/session-shares.ts');
+const { serviceRedactor } = jiti('../lib/service-redaction.ts');
+const { serviceOperations } = jiti('../lib/service-api-http.ts');
+const mcp = jiti('../lib/mcp-bridge-v2.ts');
+const fake = require('./support/fake-session-provider');
 
 const db = dbModule.default;
 let failures = 0;
@@ -175,7 +175,7 @@ async function main() {
   {
     assert(grantsLib.SERVICE_CAPABILITIES.includes('shares:create') && grantsLib.isServiceCapability('shares:create'), 'shares:create is in the capability vocabulary');
     assert(!grantsLib.isServiceCapability('shares:ask') && !grantsLib.isServiceCapability('shares:*'), 'shares:ask (audit only) and wildcards are not capabilities');
-    const { parseServiceTokens } = jiti('./lib/service-token-auth.ts');
+    const { parseServiceTokens } = jiti('../lib/service-token-auth.ts');
     const refuse = service => {
       try {
         parseServiceTokens(`${service}=${digest('x')}`);
@@ -488,10 +488,10 @@ async function main() {
   console.log('\nREST routes and MCP tools over the same operations');
   {
     const routes = {
-      create: jiti('./app/api/v0/sessions/[ref]/shares/route.ts'),
-      list: jiti('./app/api/v0/shares/route.ts'),
-      get: jiti('./app/api/v0/shares/[shareRef]/route.ts'),
-      revoke: jiti('./app/api/v0/shares/[shareRef]/revoke/route.ts'),
+      create: jiti('../app/api/v0/sessions/[ref]/shares/route.ts'),
+      list: jiti('../app/api/v0/shares/route.ts'),
+      get: jiti('../app/api/v0/shares/[shareRef]/route.ts'),
+      revoke: jiti('../app/api/v0/shares/[shareRef]/revoke/route.ts'),
     };
     const auth = { authorization: `Bearer ${TOKENS.grok}`, 'content-type': 'application/json' };
     const json = async res => ({ status: res.status, body: await res.json() });
@@ -511,7 +511,7 @@ async function main() {
     assert(revoked.status === 200 && revoked.body.share.state === 'revoked', 'POST /api/v0/shares/{ref}/revoke -> 200 revoked');
     // NOT-517 serves /api/v0/shares/current (test-session-context.js); a
     // service token there is refused, never a share.
-    const currentRoute = jiti('./app/api/v0/shares/current/route.ts');
+    const currentRoute = jiti('../app/api/v0/shares/current/route.ts');
     const viaToken = await json(await currentRoute.POST(new Request('http://local/api/v0/shares/current', {
       method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ audience, idempotency_key: 'tok-current' }),
     })));

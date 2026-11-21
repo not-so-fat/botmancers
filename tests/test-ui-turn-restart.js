@@ -32,7 +32,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const PHASE = process.env.UI_RESTART_PHASE || 'main';
 const DB_PATH = process.env.UI_RESTART_DB || path.join(os.tmpdir(), `botmancers-ui-restart-${process.pid}.db`);
 
@@ -54,10 +54,10 @@ function load() {
   delete process.env.HERMES_API_SERVER_KEY;
   const jiti = require('jiti').createJiti(__filename);
   return {
-    db: jiti('./lib/db.ts'),
-    agent: jiti('./lib/agent.ts'),
-    ui: jiti('./lib/ui-turns.ts'),
-    conversations: jiti('./lib/agent-conversations.ts'),
+    db: jiti('../lib/db.ts'),
+    agent: jiti('../lib/agent.ts'),
+    ui: jiti('../lib/ui-turns.ts'),
+    conversations: jiti('../lib/agent-conversations.ts'),
   };
 }
 

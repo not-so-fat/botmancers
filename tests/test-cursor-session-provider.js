@@ -2,8 +2,8 @@
 // NOT-505: the direct Cursor CLI/SDK SessionProvider
 // (lib/cursor-session-provider) behind the NOT-503 registry
 // (lib/provider-sessions), driven through a fake `cursor-agent`
-// (test-support/fake-cursor-cli.js) and a fake SDK module
-// (test-support/fake-cursor-sdk.mjs). No network, no Agent Deck, no real
+// (tests/support/fake-cursor-cli.js) and a fake SDK module
+// (tests/support/fake-cursor-sdk.mjs). No network, no Agent Deck, no real
 // Cursor.
 // Proves: the structured stream parser on real-shaped fixtures (complete,
 // partial, missing, malformed, repeated, error, half-written); installed
@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const RESTART = process.argv[2] === 'restart';
 const TAG = process.env.NOT505_TAG || `${process.pid}`;
 const TMP = fs.realpathSync(os.tmpdir()) + `/botmancers-cursor-provider-${TAG}`;
@@ -36,12 +36,12 @@ const DIRS = {
   beta: path.join(TMP, 'work', 'beta'),
 };
 const BIN = path.join(DIRS.bin, 'cursor-agent');
-const SDK = path.join(ROOT, 'test-support', 'fake-cursor-sdk.mjs');
+const SDK = path.join(ROOT, 'tests', 'support', 'fake-cursor-sdk.mjs');
 if (!RESTART) {
   fs.rmSync(TMP, { recursive: true, force: true });
   for (const dir of Object.values(DIRS)) fs.mkdirSync(dir, { recursive: true });
   for (const sub of ['app', 'app2', 'new', 'sdk']) fs.mkdirSync(path.join(DIRS.alpha, sub), { recursive: true });
-  fs.writeFileSync(BIN, `#!/bin/sh\nexec "${process.execPath}" "${path.join(ROOT, 'test-support', 'fake-cursor-cli.js')}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(BIN, `#!/bin/sh\nexec "${process.execPath}" "${path.join(ROOT, 'tests', 'support', 'fake-cursor-cli.js')}" "$@"\n`, { mode: 0o755 });
   // Decoys where Cursor keeps its own data: nothing may open them.
   fs.mkdirSync(path.join(DIRS.home, '.cursor', 'chats', 'x'), { recursive: true });
   fs.writeFileSync(path.join(DIRS.home, '.cursor', 'chats', 'x', 'store.db'), 'decoy');
@@ -72,10 +72,10 @@ for (const name of ['readFileSync', 'readdirSync', 'openSync', 'existsSync', 'st
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const contract = jiti('./lib/session-provider.ts');
-const ps = jiti('./lib/provider-sessions.ts');
-const cursor = jiti('./lib/cursor-session-provider.ts');
+const dbModule = jiti('../lib/db.ts');
+const contract = jiti('../lib/session-provider.ts');
+const ps = jiti('../lib/provider-sessions.ts');
+const cursor = jiti('../lib/cursor-session-provider.ts');
 
 const db = dbModule.default;
 let failures = 0;
@@ -142,7 +142,7 @@ function fatal(error) {
 
 async function main() {
   console.log('\nParser: real-shaped stream-json fixtures');
-  const fixture = name => fs.readFileSync(path.join(ROOT, 'test-support', 'cursor-stream-fixtures', name), 'utf8');
+  const fixture = name => fs.readFileSync(path.join(ROOT, 'tests', 'support', 'cursor-stream-fixtures', name), 'utf8');
   const complete = cursor.parseCursorStream(fixture('complete.jsonl'), true);
   assert(complete.init.session_id === 'chat-REDACTED' && complete.init.cwd === '/work/alpha' && complete.result.ok && complete.result.text === 'PINEAPPLE'
     && complete.steps.length === 1 && complete.steps[0].role === 'assistant', 'complete: init, assistant step, success result');

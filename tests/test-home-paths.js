@@ -11,10 +11,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const home = jiti('./lib/home.ts');
+const home = jiti('../lib/home.ts');
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-home-paths-')));
 const cwdA = path.join(tmp, 'cwd-a');

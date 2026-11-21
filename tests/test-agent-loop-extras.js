@@ -20,11 +20,11 @@ process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
 
 const { bots, conversations, messages, memories, oneShots, routines, launchSnapshots } = db;
-const { uiTurns } = jiti('./lib/ui-turns.ts');
+const { uiTurns } = jiti('../lib/ui-turns.ts');
 
 let failures = 0;
 

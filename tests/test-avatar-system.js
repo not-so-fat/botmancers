@@ -17,11 +17,12 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const ROOT = require('./support/repo-root');
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename);
-const avatar = jiti('./lib/avatar.ts');
-const snapshot = require('./lib/snapshot');
+const avatar = jiti('../lib/avatar.ts');
+const snapshot = require('../lib/snapshot');
 
 const {
   AVATAR_COLORS,
@@ -393,8 +394,8 @@ check('validateAvatarInput rejects unknown option ids', () => {
   process.env.BOTMANCERS_DB_PATH = DB_PATH;
   process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-  const db = jiti('./lib/db.ts');
-  const def = jiti('./lib/bot-definition.ts');
+  const db = jiti('../lib/db.ts');
+  const def = jiti('../lib/bot-definition.ts');
 
   const created = db.bots.create({ deck_id: 'deck-test',
     name: 'Relay',
@@ -532,8 +533,8 @@ check('option sheet artifact is generated', () => {
 (function choiceGroups() {
   const React = require('react');
   const { renderToStaticMarkup } = require('react-dom/server');
-  const uiJiti = createJiti(__filename, { alias: { '@': __dirname }, jsx: { runtime: 'automatic' } });
-  const AvatarChoiceGroup = uiJiti('./app/components/AvatarChoiceGroup.tsx').default;
+  const uiJiti = createJiti(__filename, { alias: { '@': ROOT }, jsx: { runtime: 'automatic' } });
+  const AvatarChoiceGroup = uiJiti('../app/components/AvatarChoiceGroup.tsx').default;
 
   const GROUPS = [
     { attribute: 'color', label: 'Color', options: AVATAR_COLORS },
@@ -628,7 +629,7 @@ check('option sheet artifact is generated', () => {
   }
 
   check('config page renders the four avatar choice groups (no toggle buttons)', () => {
-    const source = fs.readFileSync(path.join(__dirname, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
+    const source = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
     assert.ok(!source.includes('aria-pressed'), 'config page must not use aria-pressed avatar toggles');
     for (const group of GROUPS) {
       assert.ok(
@@ -636,7 +637,7 @@ check('option sheet artifact is generated', () => {
         `config page must render the ${group.label} choice group`
       );
     }
-    const css = fs.readFileSync(path.join(__dirname, 'app', 'globals.css'), 'utf8');
+    const css = fs.readFileSync(path.join(ROOT, 'app', 'globals.css'), 'utf8');
     assert.ok(css.includes('.avatar-opt:has(.avatar-opt-input:checked)'), 'selected card styling keys off :checked');
     assert.ok(css.includes('.avatar-opt:has(.avatar-opt-input:focus-visible)'), 'focused card shows a focus ring');
   });

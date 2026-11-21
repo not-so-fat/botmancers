@@ -33,7 +33,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-agent-registration-test-${process.pid}.db`);
 const MIGRATION_DB_PATH = path.join(os.tmpdir(), `botmancers-registration-migration-test-${process.pid}.db`);
 const GRANTS_PATH = path.join(os.tmpdir(), `botmancers-registration-grants-${process.pid}.json`);
@@ -54,13 +54,13 @@ process.env.HERMES_BASE_URL = 'http://127.0.0.1:65530';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const def = jiti('./lib/bot-definition.ts');
-const reg = jiti('./lib/agent-registration.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const agentLoop = jiti('./lib/agent.ts');
-const botsRoute = jiti('./app/api/bots/route.ts');
-const connectionsRoute = jiti('./app/api/runtime-connections/route.ts');
+const db = jiti('../lib/db.ts');
+const def = jiti('../lib/bot-definition.ts');
+const reg = jiti('../lib/agent-registration.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const agentLoop = jiti('../lib/agent.ts');
+const botsRoute = jiti('../app/api/bots/route.ts');
+const connectionsRoute = jiti('../app/api/runtime-connections/route.ts');
 const raw = db.default;
 
 let failures = 0;
@@ -355,8 +355,8 @@ async function main() {
     process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
     const { createJiti } = require('jiti');
     const jiti = createJiti(${JSON.stringify(path.join(ROOT, 'seed.js'))}, { alias: { '@': ${JSON.stringify(ROOT)} } });
-    const db = jiti('./lib/db.ts');
-    const { seedSessionCatalog } = require('./test-support/session-catalog-fixture.js');
+    const db = jiti('../lib/db.ts');
+    const { seedSessionCatalog } = require('./support/session-catalog-fixture.js');
     seedSessionCatalog(db);
     const raw = db.default;
     const t = Date.now();

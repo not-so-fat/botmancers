@@ -29,16 +29,16 @@ const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-intake-home-'
 process.env.HOME = HOME_DIR;
 process.env.HERMES_API_SERVER_KEY = 'intake-test-key';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
 
-const db = jiti('./lib/db.ts');
-const intake = jiti('./lib/conversation-intake.ts');
-const api = jiti('./lib/agent-api.ts');
-const dispatch = jiti('./lib/agent-dispatch.ts');
-const agent = jiti('./lib/agent.ts');
-const uiRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
+const db = jiti('../lib/db.ts');
+const intake = jiti('../lib/conversation-intake.ts');
+const api = jiti('../lib/agent-api.ts');
+const dispatch = jiti('../lib/agent-dispatch.ts');
+const agent = jiti('../lib/agent.ts');
+const uiRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
 
 const raw = db.default;
 const { bots, conversations, groups } = db;

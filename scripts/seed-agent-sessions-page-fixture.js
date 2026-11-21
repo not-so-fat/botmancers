@@ -18,7 +18,7 @@ fs.mkdirSync(WORK, { recursive: true });
 fs.mkdirSync(path.dirname(SHARES), { recursive: true, mode: 0o700 });
 for (const suffix of ['', '-shm', '-wal']) fs.rmSync(DB_PATH + suffix, { force: true });
 for (const file of [STATE, SHARES]) fs.rmSync(file, { force: true });
-fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.join(ROOT, 'test-support', 'fake-codex.js')}' "$@"\n`);
+fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.join(ROOT, 'tests', 'support', 'fake-codex.js')}' "$@"\n`);
 fs.chmodSync(BIN, 0o755);
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
@@ -26,7 +26,7 @@ process.env.BOTMANCERS_CODEX_BIN = BIN;
 process.env.FAKE_CODEX_STATE = STATE;
 process.env.BOTMANCERS_SESSION_SHARES_PATH = SHARES;
 
-const { seedFakeCodex } = require('../test-support/fake-codex');
+const { seedFakeCodex } = require('../tests/support/fake-codex');
 seedFakeCodex(STATE, [
   { id: 'thr-review-open-SECRET', cwd: WORK, name: 'Prepare release review', turns: [['Prepare release review', 'Review notes are ready']] },
   { id: 'thr-review-ended-SECRET', cwd: WORK, name: 'Archived migration notes', archived: true, turns: [['Review migration', 'Archived notes']] },

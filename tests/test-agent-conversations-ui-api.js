@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'botmancers-owner-conversations-'));
 process.env.BOTMANCERS_DB_PATH = path.join(temp, 'conversations.db');
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
@@ -16,12 +16,12 @@ process.env.NOT551_TEST_TOKEN = 'not551-owner-secret-value';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const dbModule = jiti('./lib/db.ts');
-const projection = jiti('./lib/owner-conversations.ts');
-const listRoute = jiti('./app/api/bots/[id]/conversations/route.ts');
-const detailRoute = jiti('./app/api/bots/[id]/conversations/[conversationId]/route.ts');
-const legacyThreadRoute = jiti('./app/threads/[id]/route.ts');
-const exchangeView = jiti('./lib/exchange-view.ts');
+const dbModule = jiti('../lib/db.ts');
+const projection = jiti('../lib/owner-conversations.ts');
+const listRoute = jiti('../app/api/bots/[id]/conversations/route.ts');
+const detailRoute = jiti('../app/api/bots/[id]/conversations/[conversationId]/route.ts');
+const legacyThreadRoute = jiti('../app/threads/[id]/route.ts');
+const exchangeView = jiti('../lib/exchange-view.ts');
 
 let passed = 0;
 async function test(name, fn) {

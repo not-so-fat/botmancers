@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const SCENARIO = process.env.WAKE_ROUTER_SCENARIO || 'main';
 const DB_PATH = process.env.WAKE_ROUTER_DB || path.join(os.tmpdir(), `botmancers-wake-router-${process.pid}.db`);
 function removeDb(file) {
@@ -50,9 +50,9 @@ function throwsCode(fn, code, label) {
   return assert(false, `${label} (did not throw)`);
 }
 
-const db = jiti('./lib/db.ts');
-const router = jiti('./lib/wake-router.ts');
-const wake = jiti('./lib/wake.ts');
+const db = jiti('../lib/db.ts');
+const router = jiti('../lib/wake-router.ts');
+const wake = jiti('../lib/wake.ts');
 const raw = db.default;
 const { bots, conversations, messages, groups, engine } = db;
 
@@ -103,7 +103,7 @@ function runMain() {
   });
   // NOT-475: edit Wakes need an owner-approved pair grant (lib/wake-safety;
   // test-wake-safety.js covers asking for one).
-  const safety = jiti('./lib/wake-safety.ts');
+  const safety = jiti('../lib/wake-safety.ts');
   for (const target of [dev, unconfigured]) {
     safety.ensureEditGrant({ callerAgentId: tank.id, targetAgentId: target.id, grantedBy: safety.OWNER_PRINCIPAL, sourceWakeId: null, now: Date.now() });
   }
@@ -339,13 +339,13 @@ function runMain() {
     targetAgentId: scout.id, intent: scoutAsk.content, executionKind: 'conversation', toolProfile: 'readonly', idempotencyKey: 'scout-ask',
   });
   const [scoutRouted, scoutUnrouted] = router.routeAgentWakes({ sourceEventId: mScout.id, parentRequestId: scoutRoot.id }).map(entry => entry.wake);
-  raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForAgent(raw, scout.id))();
+  raw.transaction(() => jiti('../lib/engine-store.ts').deleteEngineRecordsForAgent(raw, scout.id))();
   // NOT-475: a Wake routes only from a tracked turn of the requester, so
   // its request descends from the requester's own request and goes with it.
   assert(!engine.getWorkRequest(scoutRouted.work_request_id) && !router.getWake(scoutRouted.id), 'deleting the requester removes its lineage and the Wakes in it');
   assert(!router.getWake(scoutUnrouted.id), "deleting the requester removes its unrouted Wakes");
-  raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForConversation(raw, scoutConversation.id))();
-  raw.transaction(() => jiti('./lib/engine-store.ts').deleteEngineRecordsForConversation(raw, conversation.id))();
+  raw.transaction(() => jiti('../lib/engine-store.ts').deleteEngineRecordsForConversation(raw, scoutConversation.id))();
+  raw.transaction(() => jiti('../lib/engine-store.ts').deleteEngineRecordsForConversation(raw, conversation.id))();
   assert(raw.prepare('SELECT COUNT(*) AS n FROM wakes').get().n === 0, 'deleting the conversation removes its Wakes');
 
   router.setWakeAvailabilityProbe(null);
@@ -373,7 +373,7 @@ function runRestart() {
   assert(sameCounts(counts(), ids.counts), 'no rows written after restart');
   assert(engine.listEvents(ids.r1).filter(event => event.type === 'accepted').length === 1, 'still one accepted event');
 
-  const agent = jiti('./lib/agent.ts');
+  const agent = jiti('../lib/agent.ts');
   assert(agent.getDelegationState(ids.conversation) === null, 'a routed Wake writes no UI delegation chain');
   finish();
 }

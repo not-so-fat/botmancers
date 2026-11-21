@@ -21,20 +21,20 @@ process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_FILES_ROOT = FILES_ROOT;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const db = jiti('./lib/db.ts');
-const agent = jiti('./lib/agent.ts');
-const draftLib = jiti('./lib/draft.ts');
-const draftProducer = jiti('./lib/draft-producer.ts');
-const artifacts = jiti('./lib/artifacts.ts');
-const engine = jiti('./lib/approvals.ts');
+const db = jiti('../lib/db.ts');
+const agent = jiti('../lib/agent.ts');
+const draftLib = jiti('../lib/draft.ts');
+const draftProducer = jiti('../lib/draft-producer.ts');
+const artifacts = jiti('../lib/artifacts.ts');
+const engine = jiti('../lib/approvals.ts');
 
-const approveRoute = jiti('./app/api/conversations/[id]/approve/route.ts');
-const denyRoute = jiti('./app/api/conversations/[id]/deny/route.ts');
-const messagesRoute = jiti('./app/api/conversations/[id]/messages/route.ts');
-const filesRoute = jiti('./app/api/files/[name]/route.ts');
+const approveRoute = jiti('../app/api/conversations/[id]/approve/route.ts');
+const denyRoute = jiti('../app/api/conversations/[id]/deny/route.ts');
+const messagesRoute = jiti('../app/api/conversations/[id]/messages/route.ts');
+const filesRoute = jiti('../app/api/files/[name]/route.ts');
 
 const { bots, conversations, messages } = db;
 
@@ -85,7 +85,7 @@ async function drain(cap = 20) {
 
 async function ask(bot, conv, text) {
   messages.create(conv.id, 'user', text);
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, bot.id);
   await drain();
   return messages.getByConversation(conv.id);
 }
@@ -180,7 +180,7 @@ async function main() {
   log('\nCase 4: repeat turn does not rewrite');
   const mtimeBefore = fs.statSync(planPath).mtimeMs;
   await sleep(25);
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(conv.id, drafter.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(conv.id, drafter.id);
   await drain();
   thread = messages.getByConversation(conv.id);
   assert(fileCards(thread, 'plan.txt').length === 1, 'repeat posts no second [file] link');
@@ -188,7 +188,7 @@ async function main() {
   assert(fs.readFileSync(planPath, 'utf8') === 'launch', 'repeat preserves bytes');
   const draftsBeforeRepeat = draftCards(thread).length;
   const draftConv = conversations.getByBotId(drafter.id);
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(draftConv.id, drafter.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(draftConv.id, drafter.id);
   await drain();
   assert(
     draftCards(messages.getByConversation(draftConv.id)).length === draftsBeforeRepeat,
@@ -379,7 +379,7 @@ async function main() {
   assert(gateRow && gateRow.status === 'pending', 'gated request is pending');
   assert(gateRow && gateRow.action_type === 'write_file', 'gated request carries write_file');
   const approvalsBeforeRepeat = gateCards.length;
-  jiti('./lib/ui-turns.ts').uiTurns.enqueue(gateConv.id, gateBot.id);
+  jiti('../lib/ui-turns.ts').uiTurns.enqueue(gateConv.id, gateBot.id);
   await drain();
   assert(
     countWhere(messages.getByConversation(gateConv.id), m => draftLib.parseApprovalCode(m.content)) === approvalsBeforeRepeat,

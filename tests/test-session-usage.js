@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = __dirname;
+const ROOT = require('./support/repo-root');
 const DB_PATH = path.join(os.tmpdir(), `botmancers-session-usage-${process.pid}.db`);
 function removeDb() {
   for (const suffix of ['', '-shm', '-wal']) {
@@ -38,13 +38,13 @@ process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 
 const { createJiti } = require('jiti');
 const jiti = createJiti(__filename, { alias: { '@': ROOT } });
-const usage = jiti('./lib/usage.ts');
-const dbModule = jiti('./lib/db.ts');
-const catalog = jiti('./lib/session-catalog.ts');
-const executor = jiti('./lib/attempt-executor.ts');
-const view = jiti('./lib/session-view.ts');
-const { startRouteHost } = require('./test-support/acceptance/route-host');
-const { EXPECTED, seedSessionUsage } = require('./test-support/session-usage-fixture');
+const usage = jiti('../lib/usage.ts');
+const dbModule = jiti('../lib/db.ts');
+const catalog = jiti('../lib/session-catalog.ts');
+const executor = jiti('../lib/attempt-executor.ts');
+const view = jiti('../lib/session-view.ts');
+const { startRouteHost } = require('./support/acceptance/route-host');
+const { EXPECTED, seedSessionUsage } = require('./support/session-usage-fixture');
 
 const db = dbModule.default;
 const { engine, bots, conversations } = dbModule;
@@ -223,7 +223,7 @@ function storeFixtures() {
   // store (as after a restart) follow the run to its result.
   const Database = require('better-sqlite3');
   const restartedDb = new Database(DB_PATH);
-  const store = jiti('./lib/engine-store.ts');
+  const store = jiti('../lib/engine-store.ts');
   store.migrateEngineSchema(restartedDb);
   const restarted = store.createEngineStore(restartedDb);
   const followed = completed({ input_tokens: 300, output_tokens: 30, cost_usd: 0.03, source: 'result' });
@@ -264,9 +264,9 @@ function storeFixtures() {
 
 async function adapterFixtures() {
   console.log('\nDirect adapter: usage from provider turns (fake session provider)');
-  const spAttempt = jiti('./lib/session-provider-attempt.ts');
-  const contract = jiti('./lib/session-provider.ts');
-  const fake = require('./test-support/fake-session-provider');
+  const spAttempt = jiti('../lib/session-provider-attempt.ts');
+  const contract = jiti('../lib/session-provider.ts');
+  const fake = require('./support/fake-session-provider');
   const statePath = path.join(os.tmpdir(), `botmancers-session-usage-adapter-${process.pid}.json`);
   fs.rmSync(statePath, { force: true });
   const connection = dbModule.runtimeConnections.create({ provider: 'claude', label: 'Usage direct', host: 'This computer' });
@@ -310,9 +310,9 @@ async function adapterFixtures() {
 
 async function providerTurnFixtures() {
   console.log('\nProvider turns (fake session provider)');
-  const contract = jiti('./lib/session-provider.ts');
-  const ps = jiti('./lib/provider-sessions.ts');
-  const fake = require('./test-support/fake-session-provider');
+  const contract = jiti('../lib/session-provider.ts');
+  const ps = jiti('../lib/provider-sessions.ts');
+  const fake = require('./support/fake-session-provider');
   const statePath = path.join(os.tmpdir(), `botmancers-session-usage-provider-${process.pid}.json`);
   fs.rmSync(statePath, { force: true });
   const connection = dbModule.runtimeConnections.create({ provider: 'codex', label: 'Usage native', host: 'This computer' });
@@ -387,7 +387,7 @@ async function catalogFixtures() {
     await host.close();
   }
 
-  const serviceApi = jiti('./lib/service-api.ts');
+  const serviceApi = jiti('../lib/service-api.ts');
   const granted = serviceApi.serviceContext({ kind: 'service', id: 'svc-usage' });
   const page = serviceApi.listServiceSessions(granted, agent.id, { cursor: null, limit: 10, status: 'all' });
   const serviceRow = page.items.find(item => item.ref === sessions.claude.id);
