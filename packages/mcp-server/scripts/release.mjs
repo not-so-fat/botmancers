@@ -4,7 +4,7 @@
 //   node scripts/release.mjs                  full check (requires a clean git tree)
 //   node scripts/release.mjs --tag <tag>      also require the git tag to be v<version> (CI)
 //   node scripts/release.mjs --allow-dirty    skip the clean-tree check (local iteration only)
-//   node scripts/release.mjs --out file       also save the transcript
+//   node scripts/release.mjs --out file       also save the transcript (attach it; never commit it)
 //
 // Checks, in order: version consistency (package.json, CHANGELOG, README pin,
 // tag), clean git state, locked build toolchain (committed package-lock.json,

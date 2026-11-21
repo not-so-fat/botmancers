@@ -212,7 +212,7 @@ are ~8.76 MB of the ~16.9 MB compressed tarball (each `.node` gzips to
 |------|-----------:|---------:|------:|-------------------:|------------:|
 | 0.11.1 registry (operator, Node 24) | 16,486,447 B | 49.47 MB file bytes¹ | 2,563 | ~34.27 MB (1,630 files) | ~13.96 MB (871 files) |
 | local main build (webpack, §2) | 16,916,317 B | 53,050,420 B | 2,674 | 45,241,260 B | 6,563,518 B |
-| 0.7.0 release evidence (Turbopack, `release-evidence/pack-manifest.txt`) | 19,879,721 B | 59,234,879 B | 2,426 | ~35.5 MB | ~23.2 MB |
+| 0.7.0 release evidence (Turbopack, [`release-evidence/pack-manifest.txt`](https://github.com/not-so-fat/botmancers/blob/918166c13afab5a884c8ff3149e4698c9b200b10/packages/mcp-server/release-evidence/pack-manifest.txt)) | 19,879,721 B | 59,234,879 B | 2,426 | ~35.5 MB | ~23.2 MB |
 
 ¹ The operator reports 49.47 MB of file bytes for the registry tarball
 (the gunzipped tar *stream* is 51,494,400 B — file bytes plus tar

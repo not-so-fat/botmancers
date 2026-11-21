@@ -1,5 +1,0 @@
-launch s2-started: work request bd187cb2-03e5-4788-b100-ea189930aff5 (implementation, edit) crash-at=started
-→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-62f49373-6980-48c3-859e-0c41a79744e3]
-    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:6f36ad57b2e9 len:1914>","tools":"edit","prepareFinalization":true}
-  ← 202 {"success":true,"data":{"runId":"run-20261014T152402-a7281c","state":"starting"}}
-!! SIGKILL Botmancers pid 65761 at boundary "started" (before GET /api/agent-runs/run-20261014T152402-a7281c)

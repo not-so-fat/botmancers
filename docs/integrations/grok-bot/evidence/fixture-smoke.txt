@@ -1,3 +1,5 @@
+# Historical transcript (NOT-493): `npm run test:grok-handoff` for botmancers@0.1.0.
+# Not regenerated; new transcripts go to CI artifacts or release attachments (NOT-650).
 Grok Bot templates
   PASS: runbook and bridge template pin exactly botmancers@0.1.0
   PASS: secret scan of docs/integrations/grok-bot/README.md, docs/integrations/grok-bot/botmancers.env.template, docs/integrations/grok-bot/bridge.env.template, docs/integrations/grok-bot/cursor-mcp.template.json, docs/integrations/grok-bot/evidence/fixture-smoke.txt, docs/integrations/grok-bot/evidence/operator-smoke.md: no secret values

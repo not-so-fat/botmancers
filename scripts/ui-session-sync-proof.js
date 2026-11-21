@@ -14,11 +14,12 @@
 // the result announced in role="status"; Retry is Tab-reached (not
 // activated, since it would fire a real provider sync). Writes screenshots,
 // a trace, a receipt, and a summary under --out (default
-// docs/evidence/NOT-547). Refuses to run on a dirty worktree so the receipt
-// binds to exactly the committed HEAD. No mocks.
+// .temporal/NOT-547-proof, outside git: attach it to the ticket or release
+// instead of committing it). Refuses to run on a dirty worktree so the
+// receipt binds to exactly the committed HEAD. No mocks.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/session-sync-fixture.db BOTMANCERS_NO_AUTOPROCESS=1 npx next dev -H 127.0.0.1 -p 43547   (other shell)
-//        node scripts/ui-session-sync-proof.js [--url http://127.0.0.1:43547] [--out docs/evidence/NOT-547] [--db .temporal/session-sync-fixture.db]
+//        node scripts/ui-session-sync-proof.js [--url http://127.0.0.1:43547] [--out .temporal/NOT-547-proof] [--db .temporal/session-sync-fixture.db]
 'use strict';
 
 const crypto = require('crypto');
@@ -32,7 +33,7 @@ const arg = (name, fallback) => {
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
 const URL_BASE = arg('--url', 'http://127.0.0.1:43547');
-const OUT = arg('--out', path.join('docs', 'evidence', 'NOT-547'));
+const OUT = arg('--out', path.join('.temporal', 'NOT-547-proof'));
 const DB_PATH = path.resolve(arg('--db', path.join('.temporal', 'session-sync-fixture.db')));
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const VIEWPORTS = [

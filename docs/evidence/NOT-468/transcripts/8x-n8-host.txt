@@ -1,6 +1,0 @@
-observed running; host: codex processes: 1
-SIGKILL agent deck pid 68950
-live Botmancers launch exited 0 after Agent Deck SIGKILL
-started pid 69412
-restart exit 0
-host: codex processes: 0

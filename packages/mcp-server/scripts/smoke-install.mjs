@@ -8,7 +8,7 @@
 //   node scripts/smoke-install.mjs                    pack this directory and install the tarball (offline)
 //   node scripts/smoke-install.mjs --tarball f.tgz    install a given tarball (offline)
 //   node scripts/smoke-install.mjs --registry 0.1.0   install botmancers@0.1.0 from the registry (post-publish check)
-//   ... --out transcript.txt                          also save the transcript
+//   ... --out /tmp/transcript.txt                     also save the transcript (attach it; never commit it)
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

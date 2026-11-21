@@ -1,5 +1,0 @@
-launch s1-start-response: work request bbd99367-c7bf-49c0-ac4b-b76598640f8e (implementation, edit) crash-at=start-response
-→ POST /api/agent-runs  [Idempotency-Key: botmancers-attempt-3d72377d-75ee-4eca-8220-dc1af3ab3637]
-    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:d9c24caca714 len:1619>","tools":"edit","prepareFinalization":true}
-  ← 202 {"success":true,"data":{"runId":"run-20261014T152347-7e5349","state":"starting"}}
-!! SIGKILL Botmancers pid 65412 at boundary "start-response" (run id received but not yet persisted)

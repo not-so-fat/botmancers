@@ -1,13 +1,16 @@
 # Cursor Grok Bot → Botmancers (NOT-493)
 
 Status: **runbook + fixture smoke**. The real Grok Bot smoke is an operator step; its
-record goes in [`evidence/operator-smoke.md`](evidence/operator-smoke.md).
+record goes to a GitHub Release attachment or CI artifact, not git (see
+[docs/PUBLISHING.md](../../PUBLISHING.md)). The files under `evidence/` are
+historical NOT-493 records from the first (0.1.0) package era, kept as linked
+references only.
 
 Authority: [MCP bridge contract](../../mcp-bridge.md) and the
 [`botmancers` package README](../../../packages/mcp-server/README.md).
 
 This runbook connects Cursor's Grok Bot to a Botmancers coordinator through the
-published MCP bridge, pinned to **`botmancers@0.1.0`**. Grok Bot starts a task,
+published MCP bridge, pinned to **`botmancers@0.11.1`**. Grok Bot starts a task,
 polls it, and reads the coordinator's final reply. That is all it can do. It cannot
 pick a Deck, workspace, runtime, model, or implementation target. Any
 implementation or review comes from the coordinator's own Wakes, under that
@@ -23,8 +26,8 @@ and [MCP in Cursor](https://prod.cursor.com/docs/mcp).
 | [`cursor-mcp.template.json`](cursor-mcp.template.json) | The MCP server entry for Grok Bot: an HTTPS URL and a bearer header taken from an environment variable. |
 | [`bridge.env.template`](bridge.env.template) | The bridge's environment, with the exact package pin. |
 | [`botmancers.env.template`](botmancers.env.template) | The app's service-token digest and coordinator allowlist. |
-| [`evidence/fixture-smoke.txt`](evidence/fixture-smoke.txt) | Transcript of `npm run test:grok-handoff` at this commit. |
-| [`evidence/operator-smoke.md`](evidence/operator-smoke.md) | Record of the real Grok Bot smoke, with secrets redacted. |
+| [`evidence/fixture-smoke.txt`](evidence/fixture-smoke.txt) | Historical transcript of `npm run test:grok-handoff` from the first (0.1.0) package era (NOT-493). New transcripts go to CI artifacts or release attachments. |
+| [`evidence/operator-smoke.md`](evidence/operator-smoke.md) | Historical NOT-493 operator record template (0.1.0 era, never filled in). Do not commit new runs into it. |
 
 Every template contains `<PLACEHOLDER>` values only. `npm run test:grok-handoff`
 scans them for secret-shaped values. It also fails if they pin more than one
@@ -39,7 +42,7 @@ Cursor Grok Bot (remote)
 Operator route: TLS tunnel / reverse proxy (public name, /mcp only)
    │  plain HTTP on loopback, Host rewritten to 127.0.0.1:3332
    ▼
-botmancers@0.1.0 bridge   127.0.0.1:3332   checks the MCP token
+botmancers@0.11.1 bridge   127.0.0.1:3332   checks the MCP token
    │  http://127.0.0.1:3333/api/v0/mcp, Authorization: Bearer <service token>
    ▼
 Botmancers app            127.0.0.1:3333   checks the service-token digest and the coordinator allowlist
@@ -93,8 +96,8 @@ smoke, use a coordinator whose runtime is not production-critical.
 
 ```sh
 set -a; . ~/.config/botmancers/grok-bridge.env; set +a
-npx --yes botmancers@0.1.0
-# botmancers 0.1.0: MCP bridge listening on http://127.0.0.1:3332/mcp ...
+npx --yes botmancers@0.11.1
+# botmancers 0.11.1: MCP bridge listening on http://127.0.0.1:3332/mcp ...
 ```
 
 Always name the exact version. An unpinned `npx botmancers` may resolve a
@@ -225,8 +228,8 @@ Grok Bot should work like this:
 
 ```sh
 npm run test:grok-handoff                                   # packs and installs packages/mcp-server
-npm run test:grok-handoff -- --registry 0.1.0               # the published package (needs network)
-npm run test:grok-handoff -- --out docs/integrations/grok-bot/evidence/fixture-smoke.txt
+npm run test:grok-handoff -- --registry 0.11.1               # the published package (needs network)
+npm run test:grok-handoff -- --out /tmp/grok-handoff-smoke.txt   # attach the transcript; never commit it
 ```
 
 The smoke installs the packed bridge into an empty project, the same way an
@@ -249,9 +252,10 @@ in front of the bridge:
 ### Real Grok Bot smoke (operator)
 
 Use a disposable, read-only objective and an allowlisted, non-production
-coordinator. Record everything in
+coordinator. Record everything in a redacted note attached to the GitHub
+Release (or a CI artifact), using the structure of the historical
 [`evidence/operator-smoke.md`](evidence/operator-smoke.md), with every token and
-digest redacted.
+digest redacted. Do not commit the record.
 
 1. Start the app and the bridge as described above. Check the route with `curl`.
 2. In Grok Bot, list the tools. Capture the four names and the plugin

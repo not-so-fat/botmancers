@@ -46,6 +46,7 @@ published package).
 | Static assets | [public/](../public/) | Static assets served by the Next.js app. |
 | Root tests | [tests/](../tests/) (`test-*.js`, 79 files) | One command: `npm test` runs every deterministic suite via [tests/run.js](../tests/run.js); `npm run test:<name>` runs one suite (e.g. `npm run test:acceptance`); `npm run test:mcp-server` runs the package suite. Live/credentialed/manual checks (`tests/test-import.js`, `test:marketplace-import`, `test:acceptance:live-server`, `test:grok-handoff`, `smoke:*`, `probe:*`, `proof:*`) are listed separately in [tests/README.md](../tests/README.md). |
 | Test support | [tests/support/](../tests/support/) | Fakes, fixtures, and helpers used by the root tests, including the repo-root helper [tests/support/repo-root.js](../tests/support/repo-root.js). |
+| Test fixtures | [tests/fixtures/](../tests/fixtures/) | Reproducible fixture inputs beside their consumers (one named dir per check, e.g. `session-share-preflight/`, `grok-handoff/`), each with a README saying what each file represents and where it came from. |
 | Package source | [packages/mcp-server/src/](../packages/mcp-server/src/) | CLI and server source; `bin.botmancers` = `dist/cli.js` after build. |
 | Package tests | [packages/mcp-server/test/](../packages/mcp-server/test/) | Run with `npm --prefix packages/mcp-server test` (builds first). |
 | Package manifest + `files` | [packages/mcp-server/package.json](../packages/mcp-server/package.json) | Published manifest; `files` ships `dist`, `schemas`, `skills`, `app/`, `CHANGELOG.md`. Tarball contents verified by [packages/mcp-server/scripts/check-pack.mjs](../packages/mcp-server/scripts/check-pack.mjs). |
@@ -57,7 +58,7 @@ published package).
 | Publishing guide | [docs/PUBLISHING.md](PUBLISHING.md) | The release procedure, versioning rules, and publish configuration. |
 | Repo-wide tools | [scripts/](../scripts/) | Install script, smokes, probes, seed/proof helpers. |
 | Package builders | [packages/mcp-server/scripts/](../packages/mcp-server/scripts/) | Build, release, smoke, and check scripts beside their manifest. |
-| Run evidence | [docs/evidence/](evidence/) | Checked-in transcripts. **Planned:** new evidence goes to CI artifacts or release attachments; old evidence becomes commit-pinned links. |
+| Historical evidence | (removed from the tree in NOT-650) | The former `docs/evidence/` + `docs/parity/` bulk and `packages/mcp-server/release-evidence/` transcripts stay reachable at commit-pinned URLs (`918166c`); the only committed captures left are the two `docs/parity/` MATCH screenshots the parity record keeps plus the small captures linked from the Grok Bot and Cursor provider docs. Reproducible fixtures live beside their consumers instead ([tests/fixtures/](../tests/fixtures/)); new run logs and screenshots go to CI artifacts or release attachments, not git. |
 
 ## 3. Where new things go
 
@@ -67,8 +68,8 @@ published package).
   its tests → [packages/mcp-server/test/](../packages/mcp-server/test/).
 - New cross-cutting test or fixture → [tests/](../tests/)
   (`tests/test-*.js` plus [tests/support/](../tests/support/)).
-- New reproducible fixture → beside its consumer ([tests/support/](../tests/support/),
-  `packages/mcp-server/test/fixtures/`).
+- New reproducible fixture → beside its consumer ([tests/fixtures/](../tests/fixtures/)
+  for root checks, `packages/mcp-server/test/fixtures/` for the package suite).
 - New repo-wide tool → [scripts/](../scripts/); new package builder →
   [packages/mcp-server/scripts/](../packages/mcp-server/scripts/).
 - New guide → `docs/`, linked from the [README](../README.md) docs index;

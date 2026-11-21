@@ -703,8 +703,10 @@ copy). The README links to both.
 A document that no longer describes shipped behavior is either deleted or
 carries a dated status line that says so ("retired", "historical", "accepted
 and implemented") and points to its owner. Do not leave a stale document
-unlabeled: it will be mistaken for current. Empirical proof may stay under
-`docs/evidence/` when it is labeled with its date and commit. Delete a
+unlabeled: it will be mistaken for current. Empirical proof goes to CI
+artifacts or release attachments (linked from the ticket), not git; the
+historical `docs/evidence/` captures stay reachable at commit-pinned URLs.
+Delete a
 historical document only after confirming it contains no unique evidence or
 migration context; git history keeps the rest. New core behavior belongs here
 first, then in execution tickets derived from this contract.

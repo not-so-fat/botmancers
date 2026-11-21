@@ -1,8 +1,0 @@
-probe foreign-grant: Botmancers pid 67396
-→ GET /api/agent-runs/run-20261014T152424-74465e
-  ← 403 {"success":false,"error":"Run was started by another grant","error_code":"RESOURCE_OUT_OF_SCOPE"}
-  GET status run-20261014T152424-74465e with foreign-grant: {"code":"agent_deck_forbidden","status":403,"deckCode":"RESOURCE_OUT_OF_SCOPE","message":"Agent Deck refused this run for the Botmancers grant (enable runs and finalization on the grant and allow this deck). (RESOURCE_OUT_OF_SCOPE)"}
-→ GET /api/agent-runs/run-20261014T152424-74465e/events
-  ← 403 {"success":false,"error":"Run was started by another grant","error_code":"RESOURCE_OUT_OF_SCOPE"}
-  GET events run-20261014T152424-74465e with foreign-grant: {"code":"agent_deck_forbidden","status":403,"deckCode":"RESOURCE_OUT_OF_SCOPE","message":"Agent Deck refused this run for the Botmancers grant (enable runs and finalization on the grant and allow this deck). (RESOURCE_OUT_OF_SCOPE)"}
-  decision: manual_attention:grant
