@@ -1,9 +1,10 @@
 # NOT-651: npm runtime tarball size — where the bytes go
 
 Status: investigation. Local measurements are byte-exact for a locally built
-`botmancers@0.11.1` pack; the 0.11.1 registry baseline below is quoted from
-the ticket until the operator re-runs the same script against the real
-tarball (commands in §7).
+`botmancers@0.11.1` pack; the 0.11.1 registry baseline in §4 and the S3
+trial in §5 are operator-measured from the real registry tarball
+(networked host, Linux Node 24, 2026-11-20). Remaining evidence — the
+PR-head smokes and the Linear comment — is tracked in §7.
 
 ## 1. Recommendation
 
@@ -18,37 +19,55 @@ behaviour change; `check-pack` asserts them):
   follows `@img/sharp-wasm32`, which `build-app.mjs` already drops via
   `SKIPPED_MODULES`. Nothing else in the assembly requires it (verified by
   grep over the assembled `app/`).
+- **S3 — `app/.next/**/*.nft.json`**: the 84 per-entry
+  output-file-tracing manifests (6.31 MB unpacked). Operator repack trial
+  on the registry 0.11.1 contents: −6.31 MB unpacked / −1.76 MB
+  compressed (−10.6%), −84 files; the pruned tree serves `/`,
+  `/api/bots`, and `/api/health` (all 200) on Node 24. Nothing at
+  runtime reads them — no reference in the generated `server.js`, in
+  `next/dist/server`, or in our `lib/`/`app/` sources; the sole in-repo
+  reader is the build-time `next internal static-routes-info` analysis
+  command, which never runs against the shipped assembly.
 
 **Proposal for Yusuke** (do not merge; each needs a networked full-product
 smoke and/or changes coverage):
 
-- **P1 — prune build/dev-only weight from the traced `next/` set**
-  (`dist/build`, `dist/server/dev`, compiled babel/devtools/CSS toolchain,
-  `capsize-font-metrics.json`, `caniuse-lite`, …). ~12.7 MB locally, but the
-  release (Turbopack) trace almost certainly omits nearly all of it already,
-  and the runtime statically references into those dirs
-  (`build/output/log`, `lib/typescript/loadTsConfig`,
-  `dev/browser-logs/file-logger`), so pruning needs module-level load proof.
+- **P1 — prune build/dev-only weight from the traced `next/` set.**
+  The registry trace is already much leaner than the local one
+  (`next/` 14.57 MB / 988 files vs 25.28 MB / 1,271 locally), but it
+  still carries `dist/server/capsize-font-metrics.json` (4.30 MB) and
+  `dist/server/dev` (0.41 MB). The local runtime statically references
+  into those dirs (`build/output/log`, `lib/typescript/loadTsConfig`,
+  `dev/browser-logs/file-logger`), so any pruning needs module-level
+  load proof — and per the operator these stay proposal-only for Yusuke
+  (Next internals).
 - **P2 — `better-sqlite3` prebuild subsetting.** All 8 prebuilds
-  (16,896,640 B unpacked, ~8.76 MB of the compressed tarball) ship today;
+  (16,896,640 B unpacked, ~8.76 MB of the compressed tarball; operator
+  confirms 8 prebuilds of 1.90–2.44 MB each in 0.11.1) ship today;
   dropping any platform (e.g. `win32-arm64`, −1.90 MB / −0.94 MB gzip)
   changes native coverage. Decision for Yusuke.
-- **P3 — audit `@slack/web-api` file sweep on the release trace.** The 0.7.0
-  assembly carried 390 `@slack/web-api` files (489,532 B); the local build
-  traces 13 (177,329 B). If 0.11.1 still sweeps the whole `dist/`, tightening
-  the trace could save ~300 KB — but those files may be dynamically
-  required, so this needs instrumented proof, not a blind prune.
+- **P3 — `@slack/web-api` file sweep on the release trace, confirmed.**
+  0.11.1 carries ~0.54 MB of `@slack` (vs 13 files / 177,329 B
+  locally) — the whole-`dist/` sweep persists. Tightening the trace
+  could save ~300 KB unpacked, but those files may be dynamically
+  required (the Slack relay uses `WebClient` methods at runtime), so
+  this needs instrumented proof, not a blind prune.
 
 **Investigated, zero yield (no action):** `*.md`/docs, `*.d.ts`, and
-test/spec files inside `app/node_modules` — the assembly contains none
-(file tracing only copies referenced files); `dist/*.d.ts` are the bridge's
-public API types and stay; `LICENSE` files stay for attribution.
+test/spec files inside `app/node_modules` — the local assembly contains
+none (file tracing only copies referenced files), and the operator
+confirms they total <0.1 MB in the registry build too; `dist/*.d.ts`
+are the bridge's public API types and stay; `LICENSE` files stay for
+attribution.
 
-Expected release impact of shipping S1+S2: **≈ 0 bytes on the Turbopack
-release build** (it emits none of these into `standalone/` — see the 0.7.0
-evidence below), −577,832 B unpacked / −37,048 B compressed on a
-webpack-style assembly. S1+S2 are worth shipping anyway: they make the
-assembly deterministic across builders and make `check-pack` pass on any
+Expected release impact of shipping S1+S2+S3: **S3 saves ~1.76 MB
+compressed (−10.6%) on the Turbopack release build** (operator repack
+trial, §5); S1+S2 are ≈ 0 bytes there (Turbopack emits none of these
+into `standalone/` — see the 0.7.0 evidence below; the §7 grep checks
+on the PR-head tarball close this out),
+−577,832 B unpacked / −37,048 B compressed on a webpack-style
+assembly. S1+S2 are worth shipping anyway: they make the assembly
+deterministic across builders and make `check-pack` pass on any
 `standalone/` input (today a webpack-built assembly fails the gate on
 `app/.next/types/validator.ts` and a checkout path inside `app/.next/trace`).
 
@@ -73,8 +92,11 @@ exclusion deltas:
    helper that binds a port (`binding to a port: Operation not permitted`).
    Effect: the bundler *split* differs (webpack externalises more into
    `app/node_modules`, Turbopack bundles more into `app/.next/server`),
-   but the total is within a few percent and every trialled file class
-   exists in both builds. See §4.
+   but the total is within a few percent; every locally trialled file
+   class exists in both builds. The S3 class (`.nft.json`) is the
+   exception — the Turbopack release emits 84 manifests the local
+   webpack build does not, so S3's delta comes from the operator's
+   repack trial instead. See §4–§5.
 2. **Offline Google-Fonts substitution.** `next/font/google` fetches CSS at
    build time. The local build used Next's own
    `NEXT_FONT_GOOGLE_MOCKED_RESPONSES` hook with the genuine Geist
@@ -101,6 +123,17 @@ a healthy server boots all the way to `listen EPERM` (the sandbox blocks
 the socket); anything less (e.g. `Cannot find module`) is a boot failure.
 Boot success does **not** prove lazy per-route chunks load — full route
 coverage needs the operator's networked smokes.
+
+The §4 registry row and the §5 S3 row are operator-supplied (networked
+host, Linux Node 24, 2026-11-20): `npm pack botmancers@0.11.1` in an
+empty dir for the baseline, then a scratch repack of the 0.11.1
+contents minus `app/.next/**/*.nft.json` with the same gzip settings
+for the trial. Repacking re-gzips with a different byte stream than
+the registry tarball, so the S3 trial compares against a *repacked*
+baseline (16.54 MB) rather than the registry bytes (16.49 MB) — the
+−1.76 MB delta is apples-to-apples. All operator MB figures are 10⁶
+bytes (16,486,447 B ≈ 16.49 MB), and the per-area subtotals reconcile
+exactly (see §4).
 
 ## 3. Where the bytes go (local build, `botmancers-0.11.1.tgz`)
 
@@ -177,32 +210,60 @@ are ~8.76 MB of the ~16.9 MB compressed tarball (each `.node` gzips to
 
 | pack | compressed | unpacked | files | `app/node_modules` | `app/.next` |
 |------|-----------:|---------:|------:|-------------------:|------------:|
-| 0.11.1 registry (ticket-quoted, units TBD) | 16.49 MB | 49.47 MB | 2,563 | ~34.27 MB | ~13.96 MB |
-| 0.11.1 registry (operator re-run — fills this row) | — | — | — | — | — |
+| 0.11.1 registry (operator, Node 24) | 16,486,447 B | 49.47 MB file bytes¹ | 2,563 | ~34.27 MB (1,630 files) | ~13.96 MB (871 files) |
 | local main build (webpack, §2) | 16,916,317 B | 53,050,420 B | 2,674 | 45,241,260 B | 6,563,518 B |
 | 0.7.0 release evidence (Turbopack, `release-evidence/pack-manifest.txt`) | 19,879,721 B | 59,234,879 B | 2,426 | ~35.5 MB | ~23.2 MB |
 
+¹ The operator reports 49.47 MB of file bytes for the registry tarball
+(the gunzipped tar *stream* is 51,494,400 B — file bytes plus tar
+headers and 512-byte padding). `pack-report` sums file bytes, so the
+local unpacked figure compares to 49.47×10⁶, not to the tar stream.
+
+### 0.11.1 registry breakdown (operator)
+
+- Top level: `app` 48.98 MB (2,529 files); `dist` 0.22 MB;
+  `schemas` 0.19 MB; `README.md` 0.03 MB; `skills` 0.03 MB;
+  `CHANGELOG.md` 0.02 MB.
+- `app/`: `node_modules` 34.27 MB (1,630 files); `.next` 13.96 MB
+  (871 files); `public` 0.75 MB (25 files).
+- `app/node_modules`: `better-sqlite3` 16.93 MB (33 files; 8 prebuilds
+  for linux/linuxmusl x64+arm64, darwin x64+arm64, win32 x64+arm64,
+  1.90–2.44 MB each); `next` 14.57 MB (988 files; largest single file
+  `dist/server/capsize-font-metrics.json` 4.30 MB, `compiled/next-server`
+  1.73 MB, `server/dev` 0.41 MB); `react-dom` 1.31 MB; `@slack` 0.54 MB;
+  `axios` 0.24 MB.
+- `app/.next`: `server` 12.71 MB (`server/app/api` alone 6.12 MB),
+  `static` 1.21 MB. By kind: `.js` 7.18 MB (448 files), **`.nft.json`
+  6.31 MB (84 files)**, other JSON 0.09 MB.
+- `.map`, README/LICENSE/`.md`, and `.d.ts` files inside `app/` total
+  <0.1 MB — `build-app.mjs` already filters `.map` and `cache/`.
+
 Notes:
 
-- The ticket's 0.11.1 figures carry no byte counts or units (MB vs MiB);
-  the operator's `pack-report` run on the real tarball (§7) supersedes
-  them. The comparison below uses them as quoted.
+- Units resolved: operator MB are 10⁶ bytes (16,486,447 B ≈ 16.49 MB),
+  and the subtotals reconcile exactly (34.27 + 13.96 + 0.75 = 48.98;
+  1,630 + 871 + 25 + 3 `app` root files = 2,529).
 - Local-vs-0.11.1 totals agree within a few percent
-  (compressed +2.6% vs 16.49×10⁶, unpacked +7.2% vs 49.47×10⁶), but the
-  bundler *split* differs systematically: webpack externalises into
-  `app/node_modules` (local `next/` = 25,283,419 B / 1,271 files) while
-  Turbopack bundles into `app/.next/server` (0.11.1 `app/.next` ≈ 2× the
-  local size; 0.7.0's `next/` was 14,571,161 B / 988 files with the same
-  `next@16.3.8`). Same modules, different suitcases.
-- `better-sqlite3` is byte-identical across all three builds (16,927,356 B
-  / 33 files; prebuilds 16,896,640 B), as are `react`, `react-dom`,
-  `axios`, `mime-db`, and `ws` — the traced runtime core is bundler-stable.
+  (compressed +2.6%, unpacked file bytes +7.2%, files 2,674 vs 2,563),
+  but the bundler *split* differs systematically: webpack externalises
+  into `app/node_modules` (local `next/` = 25,283,419 B / 1,271 files)
+  while Turbopack bundles into `app/.next/server` (registry `next/` =
+  14.57 MB / 988 files; registry `app/.next` = 13.96 MB vs 6.56 MB
+  locally — of which 6.31 MB is the `.nft.json` set the local webpack
+  build does not emit). Same modules, different suitcases.
+- `better-sqlite3` matches across all three builds (locally 16,927,356 B
+  / 33 files with 16,896,640 B of prebuilds; registry 16.93 MB /
+  33 files), as do `react`, `react-dom`, `axios`, `mime-db`, and `ws` —
+  the traced runtime core is bundler-stable.
 - Local-only traced packages (webpack over-tracing, all build-time-only —
   see P1): `caniuse-lite` (339,057 B / 599 files), `source-map-js`
   (111,635 B), `baseline-browser-mapping` (46,438 B), `@emnapi/runtime`
-  (66,477 B). None appears in the 0.7.0 manifest.
-- Opposite direction: 0.7.0 swept 390 `@slack/web-api` files (489,532 B);
-  the local trace holds 13 (177,329 B) — same version (`7.19.0`). See P3.
+  (66,477 B). None appears in the 0.7.0 manifest; the operator's
+  package list cuts off above their sizes, so the §7 grep checks on the
+  PR-head tarball settle S2's release impact (expected: none).
+- Opposite direction: the `@slack/web-api` sweep persists in 0.11.1
+  (~0.54 MB of `@slack`, vs 13 files / 177,329 B locally at the same
+  `7.19.0`). See P3.
 
 ## 5. Trials (scratch copies, real `npm pack`, same script)
 
@@ -214,6 +275,10 @@ Notes:
 | T3 (P1 bulk probe) | T2 + 16 build/dev-only subtrees incl. `next/dist/build` | 14,751,765 | −2,164,552 | 39,725,093 | −13,325,327 | 1793 | **FAIL** (`Cannot find module '../build/output/log'` from `next/dist/server/next.js`) |
 | T3b | T3 minus `next/dist/build` (kept) | 15,048,992 | −1,867,325 | 40,987,727 | −12,062,693 | 1951 | **FAIL** (`Cannot find module '../../lib/typescript/loadTsConfig'`) |
 | T3c | T3b minus `next/dist/lib/typescript` (kept) | 15,068,689 | −1,847,628 | 41,058,877 | −11,991,543 | 1962 | **FAIL** (`Cannot find module '../dev/browser-logs/file-logger'` from `server/node-environment-extensions/console-file.js`) |
+| **S3 (operator repack of registry 0.11.1)** | `app/.next/**/*.nft.json` (84 files) | ~14.78 MB | −1.76 MB (−10.6%)¹ | 43.16 MB | −6.31 MB | 2,479 | ok (`/`, `/api/bots`, `/api/health` all 200 on Node 24) |
+
+¹ Against the *repacked* 0.11.1 baseline (16.54 MB with the same gzip
+settings), not the registry bytes (16.49 MB) — see §2.
 
 T1/T2 boot identically to T0 (server initialises through route/manifest
 load and stops only at the sandbox's `listen` block). T3/T3b/T3c are
@@ -222,6 +287,13 @@ proposal probes, not shippable states: each bulk drop breaks boot on a
 which is exactly why requireable-`.js` pruning stays a proposal (§6 P1).
 No further bisection was run — the pattern is established and the release
 build likely omits these subtrees anyway (§4).
+
+The S3 row is the operator's scratch trial, not a local one: the local
+webpack assembly's whole `app/.next` is 6.56 MB — smaller than the
+registry build's 6.31 MB of `.nft.json` alone — so the S3 filter has
+nothing to drop locally. The operator deleted the 84 manifests from
+the 0.11.1 contents, repacked, and ran `node server.js` from the
+pruned tree: `/`, `/api/bots`, and `/api/health` all returned 200.
 
 ## 6. Candidate catalog and risk classification
 
@@ -235,8 +307,8 @@ managed updater. "Ship" candidates must be zero on all three axes.
 
 - Numbers: −511,355 B unpacked / −22,866 B compressed locally, −8 files
   (T1). Expected release impact ≈ 0 (Turbopack `standalone/` does not
-  contain them — absent from the 0.7.0 assembly; operator confirms on
-  0.11.1 via §7 check 2).
+  contain them — absent from the 0.7.0 assembly; the §7 exclusion greps
+  on the PR-head tarball confirm it).
 - Why safe: none are listed in `.next/required-server-files.json`
   (verified against the built manifest); `trace`/`trace-build` are
   build telemetry the build writes and the server never reads (the
@@ -254,7 +326,8 @@ managed updater. "Ship" candidates must be zero on all three axes.
 **S2 — `app/node_modules/@emnapi`** (whole scope dir, 66,477 B / 4 files).
 
 - Numbers: −66,477 B unpacked / −14,182 B compressed on top of T1 (T2).
-  Expected release impact ≈ 0 (absent from 0.7.0; §7 check 3 confirms).
+  Expected release impact ≈ 0 (absent from 0.7.0; the §7 exclusion
+  greps on the PR-head tarball confirm it).
 - Why safe: `@emnapi/runtime` is required only by `@img/sharp-wasm32`
   (plus packages never traced: `sharp`, `@tailwindcss/oxide`,
   `@napi-rs/wasm-runtime` — reverse-deps checked via `package.json`
@@ -263,6 +336,27 @@ managed updater. "Ship" candidates must be zero on all three axes.
   package's own `index.js`/`package.json` mention `emnapi`). T2 boots
   like T0.
 - Risk: none on all three axes.
+
+**S3 — `app/.next/**/*.nft.json`** (84 files, 6.31 MB unpacked in 0.11.1).
+
+- Numbers: −6.31 MB unpacked / −1.76 MB compressed (−10.6%), −84 files
+  (operator repack trial, §5). This is the only shipped exclusion with
+  a real release impact.
+- Why safe: the manifests are build-time output-file-tracing records —
+  each sits next to the route `.js` it describes and lists that
+  entry's traced dependencies for tooling. Nothing at runtime reads
+  them: the operator confirmed neither the generated `server.js` nor
+  `next/dist/server` references `nft.json` (re-verified by grep over
+  the installed `next` package and our `lib/`/`app/` sources — the
+  sole in-repo reader is the build-time `next internal
+  static-routes-info` analysis command), and the pruned tree serves
+  `/`, `/api/bots`, and `/api/health` (all 200) on Node 24. The
+  shipped `.js` entries themselves are untouched — the filter drops
+  only the `*.nft.json` siblings.
+- Risk: none on all three axes (no install-time code path, no native
+  code, updater untouched). The one residual — lazy per-route chunks
+  beyond the three probed routes — is covered by the operator's
+  PR-head product smoke (§7).
 
 ### Investigated, zero yield — no change
 
@@ -291,21 +385,24 @@ Locally ~12.75 MB / ~870 files look build-only (`dist/build` 1.26 MB,
 1.35 MB, `capsize-font-metrics.json` 4.30 MB, TS tooling ~156 KB,
 `@modelcontextprotocol` 251 KB) plus fellow travelers (`caniuse-lite`
 339 KB / 599 files, `baseline-browser-mapping` 46 KB, `source-map-js`
-112 KB). But: (a) the Turbopack release trace almost certainly omits
-nearly all of it (0.7.0's `next/` is 10.7 MB smaller than the local
-one at the same version), so release impact is likely ≈ 0 — §7 check 4
-settles it; (b) the runtime *statically* requires into those dirs
-(T3/T3b/T3c boot failures), so any pruning must be module-level,
-guided by instrumented load tracing during a full networked smoke
-(boot + every route + middleware), not by directory. Suggested path:
-operator captures `Module._load` during the product smoke on a
-networked host; a follow-up proposes pruning exactly the never-loaded
-subset. Risk if done wrong: install/runtime behaviour change —
-hence proposal-only.
+112 KB). The operator's 0.11.1 numbers confirm the release trace
+omits nearly all of it (`next/` 14.57 MB / 988 files vs 25.28 MB /
+1,271 locally) — but `capsize-font-metrics.json` (4.30 MB, the
+single largest file in the tarball) and `server/dev` (0.41 MB)
+persist in the release trace, and the runtime *statically* requires
+into those dirs (T3/T3b/T3c boot failures), so any pruning must be
+module-level, guided by instrumented load tracing during a full
+networked smoke (boot + every route + middleware), not by directory.
+Per the operator, capsize removal and `server/dev` pruning are
+proposal-only for Yusuke (Next internals). Suggested path: operator
+captures `Module._load` during the product smoke on a networked host;
+a follow-up proposes pruning exactly the never-loaded subset. Risk if
+done wrong: install/runtime behaviour change — hence proposal-only.
 
 **P2 — `better-sqlite3` prebuild subsetting.** Per-platform bytes
 (unpacked → gzip), measured locally (identical to release — the
-package copies `prebuilds/` wholesale):
+package copies `prebuilds/` wholesale; the operator confirms all 8
+prebuilds ship in 0.11.1 at 1.90–2.44 MB each):
 
 | prebuild | unpacked | gzip |
 |----------|---------:|-----:|
@@ -325,38 +422,55 @@ platform coverage — managed installs run on user machines, where
 macOS is common, so `darwin-*` must stay. Any subsetting is Yusuke's
 call; no recommendation to drop is made here.
 
-**P3 — `@slack/web-api` trace sweep.** 0.7.0 shipped 390 files
-(489,532 B) vs 13 locally (177,329 B) at the same version — one of the
-two bundlers sweeps the package's `dist/` (likely Turbopack-NFT
-expanding a dynamic require). If 0.11.1 still carries ~390 files,
-tightening the trace could save ~300 KB unpacked — but only with
-proof those files are never dynamically required (the Slack relay
-uses `WebClient` methods at runtime). §7 check 5 measures it.
+**P3 — `@slack/web-api` trace sweep, confirmed in 0.11.1.** The
+registry build carries ~0.54 MB of `@slack` (0.7.0 shipped 390 files
+/ 489,532 B; the local trace holds 13 / 177,329 B at the same
+`7.19.0`) — Turbopack-NFT sweeps the package's `dist/`, likely by
+expanding a dynamic require. Tightening the trace could save ~300 KB
+unpacked — but only with proof those files are never dynamically
+required (the Slack relay uses `WebClient` methods at runtime).
 
-## 7. Operator confirmation checklist (networked host, Linux Node 24)
+## 7. Operator evidence: received and remaining (networked host, Linux Node 24)
 
-1. **Byte-exact 0.11.1 baseline** (acceptance evidence):
-   `npm pack botmancers@0.11.1` in an empty dir, then from this branch:
-   `node packages/mcp-server/scripts/pack-report.mjs ./botmancers-0.11.1.tgz`.
-   Paste the output in the PR body; it fills the §4 row and supersedes
-   the ticket-quoted figures (record whether MB meant 10⁶ or 2²⁰).
-2. **S1 release impact:** `tar tzf botmancers-0.11.1.tgz | grep -E
-   'package/app/\.next/(trace|trace-build|types|diagnostics|lock|cache)'`
-   — expect no matches (S1 is then release-neutral robustness).
-3. **S2 release impact:** `tar tzf botmancers-0.11.1.tgz | grep
-   'package/app/node_modules/@emnapi'` — expect no matches.
-4. **P1 release impact:** `tar tzf botmancers-0.11.1.tgz | grep -E
-   'package/app/node_modules/next/dist/(build|server/dev|server/capsize-font-metrics.json|compiled/(babel|babel-packages|next-devtools|browserslist|postcss-preset-env|cssnano-simple))|package/app/node_modules/(caniuse-lite|baseline-browser-mapping|source-map-js)/' | head -30`
-   and `... | wc -l` — expect no/near-no matches (P1 is then moot for
-   releases; any matches become a targeted follow-up).
-5. **P3 measurement:** `tar tzf botmancers-0.11.1.tgz | grep -c
-   'package/app/node_modules/@slack/web-api/'`.
-6. **Smokes for the shipped S1+S2 exclusion** (candidate tarball built
-   from this branch on the networked host, stock `npm run build &&
-   npm run build:app` then `npm pack`): bridge smoke, full-product
-   install smoke (`setup`/`start`/`doctor`), and the managed
-   install/upgrade suite from a clean prefix. Paste transcripts in the
-   PR body.
+### Received 2026-11-20 (in this report and the PR body)
+
+- **0.11.1 baseline** from `npm pack botmancers@0.11.1` in an empty
+  dir: 16,486,447 B compressed; 49.47 MB file bytes in 2,563 files;
+  full per-area breakdown in §4. MB are 10⁶ bytes.
+- **S3 scratch trial**: 0.11.1 contents minus the 84 `.nft.json` files,
+  repacked with the same gzip: ~14.78 MB compressed (−1.76 MB,
+  −10.6% vs the 16.54 MB repacked baseline), 43.16 MB unpacked
+  (−6.31 MB), 2,479 files; `node server.js` from the pruned tree
+  serves `/`, `/api/bots`, `/api/health` (all 200). Neither the
+  generated `server.js` nor `next/dist/server` references `nft.json`.
+- **P1/P2/P3 scoping**: `next/` is 14.57 MB / 988 files in 0.11.1
+  (bulk already omitted) but keeps `capsize-font-metrics.json`
+  (4.30 MB) and `server/dev` (0.41 MB); all 8 prebuilds ship
+  (1.90–2.44 MB each); `@slack` is 0.54 MB (sweep persists).
+  Prebuild pruning, capsize removal, and `server/dev` pruning are
+  proposal-only for Yusuke — measured, not shipped.
+
+### Remaining: PR-head tarball (this branch, stock release build)
+
+Build the candidate tarball on the networked host (stock `npm run
+build && npm run build:app` in `packages/mcp-server`, then `npm
+pack`), and:
+
+1. **Pack report**: `node packages/mcp-server/scripts/pack-report.mjs
+   ./botmancers-<version>.tgz` — paste the output in the PR body.
+   Expect ~14.7–14.8 MB compressed and no `.nft.json` rows; the
+   top-level/`app` split should otherwise match §4's 0.11.1 shape.
+2. **Exclusion greps** (expect no matches):
+   `tar tzf <tarball> | grep -E 'package/app/\.next/(trace|trace-build|types|diagnostics|lock|cache)'`;
+   `tar tzf <tarball> | grep 'package/app/node_modules/@emnapi'`;
+   `tar tzf <tarball> | grep -c '\.nft\.json$'` (expect 0).
+3. **Entry points**: `bin.botmancers` is `dist/cli.js`, both schema
+   exports resolve, and `app/server.js` boots (covered by the smokes).
+4. **Smokes from a clean prefix**: bridge smoke, full-product install
+   smoke (`setup`/`start`/`doctor`), and the managed install/upgrade
+   suite. Paste transcripts in the PR body.
+5. **Linear**: record the recommendation + numbers table (§1, §5) as a
+   comment on NOT-651.
 
 ## 8. Shipped change (this PR)
 
@@ -366,17 +480,30 @@ uses `WebClient` methods at runtime). §7 check 5 measures it.
   assembly copy now also skips `trace`, `trace-build`, `types/`,
   `diagnostics/`, `lock`, and the `cache/` dir itself (previously only
   `.map` files and paths *under* `cache/`); S2 — `@emnapi` joins
-  `SKIPPED_MODULES` next to `sharp`/`@img`/`detect-libc`.
-- `packages/mcp-server/scripts/check-pack.mjs`: asserts the S1/S2
+  `SKIPPED_MODULES` next to `sharp`/`@img`/`detect-libc`; S3 — the
+  `.next` copy drops `*.nft.json` via the exported `keepNextEntry`
+  predicate (unit-tested in
+  `packages/mcp-server/test/build-app.test.mjs`).
+- `packages/mcp-server/scripts/check-pack.mjs`: asserts the S1/S2/S3
   patterns stay out (`app/.next/trace*`, `app/.next/{types,
   diagnostics}/`, `app/.next/lock`, `app/.next/cache`,
-  `app/node_modules/@emnapi/`) while the required entry points
-  (`dist/cli.js`, both schema exports, `app/server.js`,
-  `app/BUILD_INFO.json`, prebuilds, …) stay in.
+  `*.nft.json`, `app/node_modules/@emnapi/`) while the required entry
+  points (`dist/cli.js`, both schema exports, `app/server.js`,
+  `app/BUILD_INFO.json`, prebuilds, …) stay in; the S3 assertion is
+  pinned in `packages/mcp-server/test/package.test.mjs`.
 - This report.
 
-Post-change verification on the local build: re-assembled via
-`build-app.mjs --skip-next`, re-packed, `pack-report` matches the T2
-prediction (16,879,269 / 52,472,588 / 2,662), `check-pack` passes, the
-server boots to `listen EPERM` exactly like T0, and `bin.botmancers`
-plus both schema exports are unchanged.
+Post-change verification. S1+S2 were verified on the local build in
+the prior session: re-assembled via `build-app.mjs --skip-next`,
+re-packed, `pack-report` matches the T2 prediction (16,879,269 /
+52,472,588 / 2,662), `check-pack` passes, the server boots to `listen
+EPERM` exactly like T0, and `bin.botmancers` plus both schema exports
+are unchanged. S3 is verified by the `keepNextEntry` unit tests (3),
+the `check-pack` forbidden-pattern test with a synthetic `.nft.json`
+path, and the operator's repack + route smokes on the real 0.11.1
+contents — the sandbox webpack assembly contains no `.nft.json` to
+drop, so the filter is locally a no-op and its release impact comes
+from the operator measurement. The full package suite (`npm run
+test:mcp-server`), `check:pack` on the release build, and the
+bridge/product/managed smokes run on CI and the networked operator
+host (§7).
