@@ -43,4 +43,4 @@ Protocol (MSP v1) to `muse serve` over stdio.
   for example `["--provider","echo"]`).
 - **Smoke.** `node scripts/muse-msp-smoke.js` imports and resumes a real
   past session through a real `muse serve` across a Botmancers restart
-  (transcript: [evidence/NOT-508/muse-msp-smoke.md](../evidence/NOT-508/muse-msp-smoke.md)).
+  (transcript: [`evidence/NOT-508/muse-msp-smoke.md`](https://github.com/not-so-fat/botmancers/blob/918166c13afab5a884c8ff3149e4698c9b200b10/docs/evidence/NOT-508/muse-msp-smoke.md)).

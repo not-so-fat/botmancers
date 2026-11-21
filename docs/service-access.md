@@ -351,7 +351,7 @@ as `invalid_arguments`):
 
 Operator smoke (real CLI, spends a little usage): `npm run
 smoke:not-517-share-current -- claude` or `-- codex`; evidence in
-[`evidence/NOT-517/probe-results.md`](evidence/NOT-517/probe-results.md).
+[`evidence/NOT-517/probe-results.md`](https://github.com/not-so-fat/botmancers/blob/918166c13afab5a884c8ff3149e4698c9b200b10/docs/evidence/NOT-517/probe-results.md).
 
 Recovery for `session_context_required`: share explicitly with
 `botmancers_list_sessions` → `botmancers_create_share { session_ref }`.

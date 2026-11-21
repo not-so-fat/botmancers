@@ -12,7 +12,7 @@
 // local owner process has exited, or a running request with no lease at
 // all is taken over (one compare-and-set) and reconciled from the persisted
 // Attempt and public runtime evidence through the accepted NOT-468 decision
-// table (docs/evidence/NOT-468/decision-record.md). An ambiguous run is
+// table (https://github.com/not-so-fat/botmancers/blob/918166c13afab5a884c8ff3149e4698c9b200b10/docs/evidence/NOT-468/decision-record.md). An ambiguous run is
 // never relaunched: it is reattached, deferred, or stopped for operator
 // attention.
 //
@@ -545,7 +545,7 @@ export function createDispatcher(db: Db, store: EngineStore, options: Dispatcher
 export type Dispatcher = ReturnType<typeof createDispatcher>;
 
 // ---------------------------------------------------------------------
-// Accepted NOT-468 decision table (docs/evidence/NOT-468/decision-record.md).
+// Accepted NOT-468 decision table (https://github.com/not-so-fat/botmancers/blob/918166c13afab5a884c8ff3149e4698c9b200b10/docs/evidence/NOT-468/decision-record.md).
 // Pure: the caller gathers evidence, these choose the action.
 
 export type ReconcileDecision =

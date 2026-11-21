@@ -140,8 +140,11 @@ ends a good run.
 
 The transcript replaces the workspace, channel, user, and bot ids and every
 message ts, never prints a token, and reports question and answer text by
-length only; it starts with the exact `HEAD` SHA. Commit it as
-`docs/evidence/NOT-518/slack-relay-smoke.txt` after reading it once more for
-anything workspace-specific. (`--slack-api-url` points the smoke at a local
+length only; it starts with the exact `HEAD` SHA. Save it outside the tree
+and attach it to the ticket or release after reading it once more for
+anything workspace-specific — never commit transcripts to git. (The NOT-518
+transcript lives at
+[`docs/evidence/NOT-518/slack-relay-smoke.txt`](https://github.com/not-so-fat/botmancers/blob/918166c13afab5a884c8ff3149e4698c9b200b10/docs/evidence/NOT-518/slack-relay-smoke.txt).)
+(`--slack-api-url` points the smoke at a local
 fake Slack to rehearse the script; such a transcript says `REHEARSAL` and is
 not a workspace proof.)
