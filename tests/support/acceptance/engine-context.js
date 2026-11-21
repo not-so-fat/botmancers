@@ -188,7 +188,26 @@ function createContext(scenarioName, options = {}) {
   const startsFor = agentRow => providerCalls(agentRow, 'startSession');
   const sendsFor = agentRow => providerCalls(agentRow, 'sendTurn');
   const cancelsFor = agentRow => providerCalls(agentRow, 'cancelTurn');
-  const turnState = (agentRow, turnId) => providerTurns(agentRow)[turnId]?.state ?? null;
+  // Attempts carry the catalog turn ref (provider_session_turns.id), not
+  // the provider's own turn id; resolve it so callers can read provider
+  // state from an attempt's external_run_id.
+  function providerTurnId(agentRow, turnRef) {
+    if (!turnRef) return null;
+    if (providerTurns(agentRow)[turnRef]) return turnRef;
+    const row = one('SELECT provider_turn_id AS id FROM provider_session_turns WHERE id = ? AND agent_id = ?', turnRef, agentRow.id);
+    return (row && row.id) || null;
+  }
+  const turnState = (agentRow, turnId) => {
+    const resolved = providerTurnId(agentRow, turnId);
+    return resolved ? (providerTurns(agentRow)[resolved]?.state ?? null) : null;
+  };
+  // Same indirection for sessions: bindings carry the catalog session ref
+  // (provider_sessions.id); the provider saw its own session id.
+  function providerSessionId(agentRow, sessionRef) {
+    if (!sessionRef) return null;
+    const row = one('SELECT provider_session_id AS id FROM provider_sessions WHERE id = ? AND agent_id = ?', sessionRef, agentRow.id);
+    return (row && row.id) || null;
+  }
   // Releases the Agent's earliest still-running held turn with a verbatim
   // output, so an observer (possibly another process) sees it complete.
   function release(agentRow, result = null) {
@@ -232,9 +251,13 @@ function createContext(scenarioName, options = {}) {
   const workspace = process.env.BOTMANCERS_ACCEPTANCE_WORKSPACE;
   const PERSON = { kind: 'person', id: 'acceptance-owner' };
   function agent(name, kind, fields = {}) {
+    // A fresh runtime connection per fixture Agent: providers register per
+    // connection, so sharing the local connection would share one fake
+    // provider (and its script) between same-kind Agents.
+    const connection = db.runtimeConnections.create({ provider: kind, label: `${name} (acceptance fixture)`, host: 'This computer' });
     const bot = bots.create({
       name, title: name, description: `${name} (acceptance fixture)`, agent: kind,
-      runtime_connection_id: db.runtimeConnections.ensureLocal(kind),
+      runtime_connection_id: connection.id,
       session_scope_kind: 'workspaces',
       session_scope_items: JSON.stringify([workspace]),
       policy_mode: 'read_only',
@@ -260,12 +283,15 @@ function createContext(scenarioName, options = {}) {
 
   // Waits (bounded) until every named request has left queued/running, as
   // work started by a route handler finishes, then for dispatch to idle.
+  // Sweeps while waiting, as the production daemon does: an eligible retry
+  // whose in-process timer misfired still starts on the next sweep.
   async function settle(requestIds, { timeoutMs = 10_000, until = ['completed', 'failed', 'cancelled', 'blocked'] } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const pending = requestIds.filter(id => !until.includes((engine.getWorkRequest(id) || {}).state));
       if (pending.length === 0) break;
       if (Date.now() > deadline) throw new Error(`requests did not settle within ${timeoutMs}ms: ${pending.join(', ')}`);
+      await service.sweepDispatch();
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     await service.waitForAgentDispatchIdle();
@@ -291,7 +317,7 @@ function createContext(scenarioName, options = {}) {
   return {
     REPO_ROOT, jiti, lastEntry, lib, db, raw, service, dispatch, router, safety, engine, projector, bots, conversations, UI_OWNER_PRINCIPAL,
     providerDir, plans, hermesScripts, coordinatorLaunches, PERSON, workspace,
-    script, startsFor, sendsFor, cancelsFor, turnState, release, registerProvidersFromManifest, providerCalls, providerTurns,
+    script, startsFor, sendsFor, cancelsFor, turnState, providerTurnId, providerSessionId, release, registerProvidersFromManifest, providerCalls, providerTurns,
     check, engineCheck, conversationCheck, isolationCheck, results,
     one, all, requestsIn, attemptsOf, wakesIn, messagesIn, eventTypes, counts, sameCounts, projection, projectedKinds, inOrder,
     agent, block, ask, settle, routeHost, close,

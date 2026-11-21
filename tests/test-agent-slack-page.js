@@ -146,7 +146,10 @@ try {
     const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci.yml'), 'utf8');
     assert.match(overview, /Share a session to Slack/);
     assert.match(overview, /\/agents\/\$\{encodeURIComponent\(id\)\}\/slack/);
-    assert.match(workflow, /npm run test:agent-slack-page/);
+    assert.match(workflow, /run: npm test/);
+    const scripts = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts;
+    const target = (scripts['test:agent-slack-page'].match(/node\s+(\S+)/) || [])[1];
+    assert.ok(target && fs.existsSync(path.join(ROOT, target)), `test:agent-slack-page still resolves to an existing suite (${target})`);
   });
 } finally {
   db.close();

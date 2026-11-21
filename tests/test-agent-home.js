@@ -193,10 +193,14 @@ try {
     assert.match(overviewPage, /if \(await copyText\(setupCommand\(id\)\)\) \{\s*setCopied\(id\)/);
   });
 
-  test('release-check workflow runs the focused Agent-home and roster suites', () => {
-    assert.match(workflow, /npm run test:agent-home/);
-    assert.match(workflow, /npm run test:roster-a11y/);
+  test('release-check workflow runs the Agent-home and roster suites via npm test', () => {
+    assert.match(workflow, /run: npm test/);
     assert.match(workflow, /npm run release:check/);
+    const scripts = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts;
+    for (const alias of ['test:agent-home', 'test:roster-a11y']) {
+      const target = (scripts[alias].match(/node\s+(\S+)/) || [])[1];
+      assert.ok(target && fs.existsSync(path.join(ROOT, target)), `${alias} still resolves to an existing suite (${target})`);
+    }
   });
 } finally {
   dbModule.default.close();

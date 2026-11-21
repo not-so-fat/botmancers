@@ -41,7 +41,7 @@ execFileSync(process.execPath, ['-e', `
   const { createJiti } = require('jiti');
   const jiti = createJiti(${JSON.stringify(path.join(ROOT, 'seed.js'))}, { alias: { '@': ${JSON.stringify(ROOT)} } });
   const db = jiti('../lib/db.ts');
-  const { seedSessionCatalog } = require('./support/session-catalog-fixture.js');
+  const { seedSessionCatalog } = require('./tests/support/session-catalog-fixture.js');
   seedSessionCatalog(db);
   const raw = db.default;
   const t = Date.now();

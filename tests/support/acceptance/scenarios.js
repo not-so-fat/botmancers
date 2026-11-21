@@ -50,7 +50,7 @@ scenario('talk-answer', 'The owner talks to a coding Agent over the real UI rout
   ctx.engineCheck(request.state === 'completed' && request.execution_kind === 'conversation' && request.tool_profile === 'readonly',
     `request completed as a read-only conversation turn (got ${request.state}/${request.execution_kind}/${request.tool_profile})`);
   const attempts = ctx.attemptsOf(request.id);
-  ctx.engineCheck(attempts.length === 1 && attempts[0].outcome === 'succeeded' && /^fake-turn-/.test(attempts[0].external_run_id || ''),
+  ctx.engineCheck(attempts.length === 1 && attempts[0].outcome === 'succeeded' && /^fake-turn-/.test(ctx.providerTurnId(codex, attempts[0].external_run_id) || ''),
     `one succeeded Attempt carrying the provider turn id (got ${attempts.map(a => `${a.outcome}:${a.external_run_id}`)})`);
   const starts = ctx.startsFor(codex);
   ctx.engineCheck(starts.length === 1 && starts[0].authority === 'read_only' && starts[0].workspace === ctx.workspace,
@@ -223,7 +223,7 @@ scenario('composed-review', 'Implementation, independent review, and revision co
   'scripted providers: Dev implements, then revises in the same session; Reviewer finds one gap, then none',
 ], async ctx => {
   const tank = ctx.agent('Tank', 'hermes');
-  const dev = ctx.agent('Dev', 'claude');
+  const dev = ctx.agent('Dev', 'claude', { policy_mode: 'workspace_write', allow_resume_with_edits: 1 });
   const reviewer = ctx.agent('Reviewer', 'codex');
   ctx.script(dev, { results: ['Implemented: retry for the uploader.', 'Revised: added the missing retry tests.'] });
   ctx.script(reviewer, { results: ['Finding: missing tests for the retry path.', 'Looks good. No findings.'] });
@@ -268,7 +268,7 @@ scenario('composed-review', 'Implementation, independent review, and revision co
   const devStarts = ctx.startsFor(dev);
   const devSends = ctx.sendsFor(dev);
   ctx.engineCheck(devStarts.length === 1 && devStarts[0].authority === 'workspace_write', 'one Dev session start, workspace-write');
-  ctx.engineCheck(devSends.length === 1 && devSends[0].session === binding.external_session_id && devSends[0].authority === 'workspace_write',
+  ctx.engineCheck(devSends.length === 1 && devSends[0].session === ctx.providerSessionId(dev, binding.external_session_id) && devSends[0].authority === 'workspace_write',
     'the revision sent its turn to the implementation session, workspace-write');
   const reviewerStarts = ctx.startsFor(reviewer);
   ctx.engineCheck(reviewerStarts.length === 2 && reviewerStarts.every(call => call.authority === 'read_only'), 'two read-only Reviewer sessions');
@@ -286,7 +286,7 @@ scenario('composed-review', 'Implementation, independent review, and revision co
 scenario('lifecycle-controls', 'Cancellation, deadline timeout, and bounded retry of running work', [
   'Holdout (codex): held provider turn, cancelled by the person through the Agent API service',
   'Slowpoke (codex): held turn under BOTMANCERS_REQUEST_DEADLINE_MS=300, enforced by the recovery sweep',
-  'Flaky (codex): BOTMANCERS_RETRY_MAX_ATTEMPTS=2; first start fails unavailable, second succeeds',
+  'Flaky (codex): BOTMANCERS_RETRY_MAX_ATTEMPTS=2; first start fails retryable, second succeeds',
 ], async ctx => {
   const send = (agent, content, key) => ctx.service.acceptAgentMessage(ctx.PERSON, { agentId: agent.id, content, idempotencyKey: key }).accepted;
   const launched = requestId => () => ctx.attemptsOf(requestId).some(a => a.external_run_id && a.finished_at === null);
@@ -333,9 +333,12 @@ scenario('lifecycle-controls', 'Cancellation, deadline timeout, and bounded retr
 
   // A retryable failure is retried once under the stored policy.
   const flaky = ctx.agent('Flaky', 'codex');
+  // The engine pages the owner (manual attention) for an 'unavailable'
+  // start; an 'unsupported' start is the retryable launch failure, so the
+  // bounded-retry path is exercised with it.
   ctx.script(flaky, {
     failStarts: 1,
-    startError: { code: 'unavailable', message: 'transient failure' },
+    startError: { code: 'unsupported', message: 'transient failure' },
     results: ['Second time lucky.'],
   });
   process.env.BOTMANCERS_RETRY_MAX_ATTEMPTS = '2';

@@ -629,7 +629,7 @@ check('option sheet artifact is generated', () => {
   }
 
   check('config page renders the four avatar choice groups (no toggle buttons)', () => {
-    const source = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
+    const source = fs.readFileSync(path.join(ROOT, 'app', 'agents', '[id]', 'config', 'page.tsx'), 'utf8');
     assert.ok(!source.includes('aria-pressed'), 'config page must not use aria-pressed avatar toggles');
     for (const group of GROUPS) {
       assert.ok(

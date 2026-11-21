@@ -13,6 +13,7 @@ const zlib = require('zlib');
 
 const ROOT = require('./support/repo-root');
 const page = fs.readFileSync(path.join(ROOT, 'app/page.tsx'), 'utf8');
+const rail = fs.readFileSync(path.join(ROOT, 'app', 'components', 'AgentRail.tsx'), 'utf8');
 const css = fs.readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8');
 
 let failures = 0;
@@ -78,14 +79,14 @@ function inspectPng(file) {
   return { ...info, corners };
 }
 
-// Rail lockup markup.
-const brandBlock = page.slice(page.indexOf('<div className="brand">'), page.indexOf('<div className="bar">'));
+// Rail lockup markup (the rail lives in AgentRail, mounted by the page).
+const brandBlock = rail.slice(rail.indexOf('className="brand agent-brand"'), rail.indexOf('<div className="bar">'));
 const filledSrc = (brandBlock.match(/src="(\/brand\/botmancers-logo-filled-(\d+)\.png)"/) || []);
 check('rail lockup uses a filled brand asset', Boolean(filledSrc[1]), filledSrc[1]);
 check('rail filled source asset is >= 64 px', Number(filledSrc[2]) >= 64, `${filledSrc[2]} px`);
 check('rail lockup renders the mark at 40 px', /width=\{40\}/.test(brandBlock) && /height=\{40\}/.test(brandBlock));
 check('rail lockup has the botmancers wordmark', /className="logo-word">botmancers</.test(brandBlock));
-check('rail lockup sits above the New/Settings bar', page.indexOf('<div className="brand">') < page.indexOf('<div className="bar">'));
+check('rail lockup sits above the New/Settings bar', rail.indexOf('className="brand agent-brand"') < rail.indexOf('<div className="bar">'));
 
 // Rail lockup CSS.
 const shape = rule('.logo-shape img');
@@ -106,7 +107,7 @@ const outlineSrc = (welcomeBlock.match(/src="(\/brand\/botmancers-logo-outline-(
 check('zero-bot state is gated on noBots', /: noBots \? \(\s*<div className="welcome">/.test(page));
 check('noBots requires a completed bots load', /const noBots = botsLoaded && bots\.length === 0;/.test(page));
 check('botsLoaded is set only after loadBots stores the list', /setBots\(list\);\s*setBotsLoaded\(true\);/.test(page) && /useState\(false\)/.test(page.slice(page.indexOf('botsLoaded'), page.indexOf('botsLoaded') + 80)));
-check('rail roster is gated on noBots, not raw bots.length', /\{noBots \? null : \(/.test(page) && !/\{bots\.length === 0 \? null/.test(page));
+check('rail roster renders only with agents and keeps a status line', /\{agents\.length \? <div className=\{rowMenu/.test(rail) && /className="roster-status" role="status"/.test(rail));
 check('zero-bot state uses an outline brand asset', Boolean(outlineSrc[1]), outlineSrc[1]);
 const welcomeW = Number((welcomeBlock.match(/width=\{(\d+)\}/) || [])[1]);
 check('zero-bot mark renders at >= 128 px', welcomeW >= 128 && px(rule('.welcome-mark'), 'width') >= 128, `${welcomeW} px`);

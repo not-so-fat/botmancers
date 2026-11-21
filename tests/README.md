@@ -11,7 +11,7 @@ npm test
 ```
 
 runs every deterministic root suite via `node tests/run.js`: each
-`tests/test-*.js` file except the three documented exclusions below, in
+`tests/test-*.js` file except the four documented exclusions below, in
 sorted order from the repository root, failing fast on the first failure
 with the suite name. A passing run ends with `N passed, 0 failed`.
 
@@ -47,6 +47,7 @@ assume; run them individually.
 | `node tests/test-import.js` (no alias; historical import suite) | A running dev server on port 43123 (`npm run dev`), then run the file directly |
 | `npm run test:marketplace-import` (`tests/test-import-marketplace-ui.js`) | A running dev server (`npm run dev`; `BOTMANCERS_TEST_PORT` or 3333), then run the alias |
 | `npm run test:acceptance:live-server` (`tests/test-acceptance-steps-1-7.js`; historical walkthrough, kept as evidence) | A developer server serving this checkout (`BOTMANCERS_TEST_PORT` or 43123); see `ACCEPTANCE.md` |
+| `npm run test:grok-handoff` (`tests/test-grok-handoff.js`) | Release time: it packs and installs the release tarball and requires the bytes identical to `packages/mcp-server/release-evidence/` (plus loopback for its MCP scenario); any working tree that is not the recorded release commit fails the integrity check by design |
 | `npm run smoke:direct` | A disposable Git workdir (`--workdir`, guarded by `tests/support/acceptance/smoke-guard.js`); real provider CLIs unless `BOTMANCERS_SMOKE_PROVIDER=fake` |
 | `npm run smoke:cursor-session` | Installed, logged-in `cursor-agent` (or `BOTMANCERS_CURSOR_CLI`) plus network for Cursor |
 | `npm run smoke:claude-provider` | Real, logged-in `claude` CLI (`--approve-write` for the write turn) |

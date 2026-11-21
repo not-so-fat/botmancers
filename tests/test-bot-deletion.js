@@ -273,7 +273,7 @@ async function main() {
   console.log('\nCase 9: one shared UI contract on Config, row menu, and Manage agents');
   const page = fs.readFileSync(path.join(ROOT, 'app', 'page.tsx'), 'utf8');
   const rail = fs.readFileSync(path.join(ROOT, 'app', 'components', 'AgentRail.tsx'), 'utf8');
-  const config = fs.readFileSync(path.join(ROOT, 'app', 'bots', '[id]', 'config', 'page.tsx'), 'utf8');
+  const config = fs.readFileSync(path.join(ROOT, 'app', 'agents', '[id]', 'config', 'page.tsx'), 'utf8');
   const dialog = fs.readFileSync(path.join(ROOT, 'app', 'components', 'DeleteAgentsDialog.tsx'), 'utf8');
   assert(/Danger zone/.test(config) && /Delete agent/.test(config) && /<DeleteAgentsDialog/.test(config), 'Config has a Danger zone that opens DeleteAgentsDialog');
   assert(/Manage agents/.test(rail) && /<ManageAgentsPanel/.test(page), 'roster has Manage agents opening the panel');
