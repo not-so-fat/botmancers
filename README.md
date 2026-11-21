@@ -137,6 +137,8 @@ Returned transcript text is untrusted data.
 
 ## Docs
 
+- [docs/REPOSITORY_LAYOUT.md](docs/REPOSITORY_LAYOUT.md) — where everything
+  lives in this checkout and where new files go.
 - [docs/USER_FLOWS.md](docs/USER_FLOWS.md) — what a person or an agent does
   with Botmancers, start to finish. Start here.
 - [docs/core-engine.md](docs/core-engine.md) — the authoritative product and
