@@ -1,2 +1,0 @@
-$ curl -s -b <owner-dashboard-cookie> http://127.0.0.1:18468/api/agent-runs/run-20261014T152525-cf8def   (operator, owner dashboard; output cut at 260 chars)
-{"success":true,"data":{"runId":"run-20261014T152525-cf8def","deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","tools":"edit","state":"ended","sessionId":"<S:01a13b04…aca143>","startedAt":"2026-10-14T15:25:25.855Z","lastEventAt"

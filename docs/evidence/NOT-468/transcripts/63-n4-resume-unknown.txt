@@ -1,6 +1,0 @@
-probe resume-unknown-session: Botmancers pid 67411
-→ POST /api/agent-runs  [Idempotency-Key: not468-probe-resume-unknown-1791991508081]
-    body: {"deckId":"3ebff0f9-df41-4b11-b362-acefc9a72d60","client":"codex","cwd":"/tmp/not468/ws","prompt":"<prompt sha256:f4d960247b7a len:4>","tools":"edit","resumeSessionId":"<S:00000000…000000>"}
-  ← 422 {"success":false,"error":"resumeSessionId was not started by a matching codex run on this deck, cwd, and tools profile","error_code":"RESUME_UNVERIFIED"}
-  POST resume with an unknown session id: {"code":"agent_deck_rejected","status":422,"deckCode":"RESUME_UNVERIFIED","message":"Agent Deck rejected the request (422 RESUME_UNVERIFIED)."}
-  start POSTs: 13 -> 14 (a refused resume launches nothing)
