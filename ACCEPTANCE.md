@@ -18,7 +18,7 @@
 
 ## Test results without HERMES_API_SERVER_KEY
 
-Run `node test-acceptance-steps-1-7.js` without API key:
+Run `node tests/test-acceptance-steps-1-7.js` without API key:
 
 ### What works ✅
 
@@ -81,7 +81,7 @@ const wakeMatch = responseContent.match(/WAKE\s+(\w+):\s*(.+)/s);
 Set environment variable and run test:
 ```bash
 export HERMES_API_SERVER_KEY=your-key-here
-node test-acceptance-steps-1-7.js
+node tests/test-acceptance-steps-1-7.js
 ```
 
 Expected output:
@@ -144,7 +144,7 @@ npm run dev
 git clone <repo>
 npm install
 npm run dev
-node test-acceptance-steps-1-7.js
+node tests/test-acceptance-steps-1-7.js
 ```
 
 Output shows:
@@ -156,7 +156,7 @@ Output shows:
 ```bash
 export HERMES_API_SERVER_KEY=your-key
 npm run dev
-node test-acceptance-steps-1-7.js
+node tests/test-acceptance-steps-1-7.js
 ```
 
 Output shows:

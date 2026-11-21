@@ -44,8 +44,8 @@ published package).
 | Next.js routes | [app/](../app/) | Routes and UI of the Next.js app; app shell is [proxy.ts](../proxy.ts), [instrumentation.ts](../instrumentation.ts), [next.config.ts](../next.config.ts). |
 | Core engine | [lib/](../lib/) | Engine source; contract in [docs/core-engine.md](core-engine.md). |
 | Static assets | [public/](../public/) | Static assets served by the Next.js app. |
-| Root tests | `test-*.js` (79 files at root) | Commands today: `npm run test:<name>` per file (e.g. `npm run test:acceptance`), `npm run test:mcp-server` for the package suite. **Planned:** move to `tests/` with one root `npm test`. |
-| Test support | [test-support/](../test-support/) | Fakes, fixtures, and helpers used by the root tests. |
+| Root tests | [tests/](../tests/) (`test-*.js`, 79 files) | One command: `npm test` runs every deterministic suite via [tests/run.js](../tests/run.js); `npm run test:<name>` runs one suite (e.g. `npm run test:acceptance`); `npm run test:mcp-server` runs the package suite. Live/credentialed/manual checks (`tests/test-import.js`, `test:marketplace-import`, `test:acceptance:live-server`, `smoke:*`, `probe:*`, `proof:*`) are listed separately in [tests/README.md](../tests/README.md). |
+| Test support | [tests/support/](../tests/support/) | Fakes, fixtures, and helpers used by the root tests, including the repo-root helper [tests/support/repo-root.js](../tests/support/repo-root.js). |
 | Package source | [packages/mcp-server/src/](../packages/mcp-server/src/) | CLI and server source; `bin.botmancers` = `dist/cli.js` after build. |
 | Package tests | [packages/mcp-server/test/](../packages/mcp-server/test/) | Run with `npm --prefix packages/mcp-server test` (builds first). |
 | Package manifest + `files` | [packages/mcp-server/package.json](../packages/mcp-server/package.json) | Published manifest; `files` ships `dist`, `schemas`, `skills`, `app/`, `CHANGELOG.md`. Tarball contents verified by [packages/mcp-server/scripts/check-pack.mjs](../packages/mcp-server/scripts/check-pack.mjs). |
@@ -65,9 +65,9 @@ published package).
   new static asset → [public/](../public/).
 - New CLI/server code → [packages/mcp-server/src/](../packages/mcp-server/src/);
   its tests → [packages/mcp-server/test/](../packages/mcp-server/test/).
-- New cross-cutting test or fixture → `tests/` (**planned**; today: root
-  `test-*.js` plus [test-support/](../test-support/)).
-- New reproducible fixture → beside its consumer ([test-support/](../test-support/),
+- New cross-cutting test or fixture → [tests/](../tests/)
+  (`tests/test-*.js` plus [tests/support/](../tests/support/)).
+- New reproducible fixture → beside its consumer ([tests/support/](../tests/support/),
   `packages/mcp-server/test/fixtures/`).
 - New repo-wide tool → [scripts/](../scripts/); new package builder →
   [packages/mcp-server/scripts/](../packages/mcp-server/scripts/).

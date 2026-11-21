@@ -106,7 +106,7 @@ tokens are not folded into `input_tokens`.
 
 `lib/claude-session-store.ts` is the only parser of Claude Code's on-disk
 format, `claude-code-projects-jsonl/v1` (Claude Code 2.1.x), pinned by the
-fixtures in `test-support/fixtures/claude-code/store-v2.1/`:
+fixtures in `tests/support/fixtures/claude-code/store-v2.1/`:
 
 - `$CLAUDE_CONFIG_DIR` (default `~/.claude`)`/projects/<slug>/<uuid>.jsonl`,
   one record per line. The workspace is the `cwd` the records state (the slug
@@ -141,7 +141,7 @@ unavailable; only the history import is skipped.
 ## Verification
 
 - `npm run test:claude-session-provider`: spawn-boundary tests against
-  `test-support/fake-claude-cli.js` (argv, environment, cwd, stdin,
+  `tests/support/fake-claude-cli.js` (argv, environment, cwd, stdin,
   cancellation, structured events), store fixtures (multiple workspaces,
   repeated sync, malformed records, removed sessions), negative resume
   fixtures with process-call and row/event counts, usage fixtures, and a

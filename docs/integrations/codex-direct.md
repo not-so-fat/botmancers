@@ -103,6 +103,6 @@ turn is started.
 ## Tests
 
 `npm run test:codex-session-provider` drives the provider through the
-registry against `test-support/fake-codex.js`, a fake `codex` binary that
+registry against `tests/support/fake-codex.js`, a fake `codex` binary that
 speaks the app-server subset and the exec JSONL stream, and asserts the exact
-request payloads. Usage fixtures live in `test-support/codex-fixtures/`.
+request payloads. Usage fixtures live in `tests/support/codex-fixtures/`.
