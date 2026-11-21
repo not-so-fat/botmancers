@@ -12,7 +12,8 @@
 // replaced by its full package so every platform's prebuilt binary ships;
 // sharp is left out (the package build serves images unoptimized), along
 // with its wasm runtime and the .next/ build artifacts (trace, types,
-// diagnostics, lock, cache) the server never reads. Symlinks, which npm
+// diagnostics, lock, cache, per-entry output-file-tracing manifests) the
+// server never reads. Symlinks, which npm
 // drops from tarballs, become require shims, and the checkout's absolute
 // path is scrubbed from the output.
 import { execFileSync } from 'node:child_process';
@@ -31,6 +32,16 @@ const SKIPPED_MODULES = new Set(['sharp', '@img', 'detect-libc', '@emnapi']);
 // server never reads: the build trace, generated route types, analyzer
 // diagnostics, the build lock, and the build cache (NOT-651).
 const SKIPPED_NEXT_TOP = new Set(['trace', 'trace-build', 'types', 'diagnostics', 'lock', 'cache']);
+
+// Whether a .next/standalone/.next entry ships: source maps and the
+// per-entry output-file-tracing manifests (*.nft.json) never do — the
+// manifests only feed the build-time `next internal static-routes-info`
+// analysis command, never the standalone server (NOT-651).
+export function keepNextEntry(standaloneNext, src) {
+  if (src.endsWith('.map') || src.endsWith('.nft.json') || src.includes(`${sep}cache${sep}`)) return false;
+  const rel = relative(standaloneNext, src);
+  return rel === '' || !SKIPPED_NEXT_TOP.has(rel.split(sep)[0]);
+}
 const BETTER_SQLITE3_FILES = ['package.json', 'LICENSE', 'lib', 'prebuilds'];
 const TEXT_FILE = /\.(?:js|cjs|mjs|json|html|rsc|txt|css|meta|body)$/;
 
@@ -131,11 +142,7 @@ export function assemble({ version, commit, dirty }) {
   const standaloneNext = join(standalone, '.next');
   cpSync(standaloneNext, join(APP_DIR, '.next'), {
     recursive: true,
-    filter: src => {
-      if (src.endsWith('.map') || src.includes(`${sep}cache${sep}`)) return false;
-      const rel = relative(standaloneNext, src);
-      return rel === '' || !SKIPPED_NEXT_TOP.has(rel.split(sep)[0]);
-    },
+    filter: src => keepNextEntry(standaloneNext, src),
   });
   mkdirSync(join(APP_DIR, 'node_modules'));
   for (const name of readdirSync(join(standalone, 'node_modules'))) {

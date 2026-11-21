@@ -37,10 +37,12 @@ export const FORBIDDEN = [
   [/(?:^|\/)(?:id_rsa|id_ed25519)[^/]*$|\.pem$|\.key$/, 'key material'],
   // NOT-651 safe exclusions: .next/ build artifacts the server never reads
   // (trace telemetry, generated route types, analyzer diagnostics, the
-  // build lock, the build cache) and the sharp wasm runtime, whose only
-  // requirer (sharp) is already excluded.
+  // build lock, the build cache, per-entry output-file-tracing manifests)
+  // and the sharp wasm runtime, whose only requirer (sharp) is already
+  // excluded.
   [/^app\/\.next\/(?:trace(?:-build)?|types|diagnostics|cache)(?:\/|$)/, '.next build artifact'],
   [/^app\/\.next\/lock$/, '.next build lock'],
+  [/\.nft\.json$/, 'output file-tracing manifest'],
   [/^app\/node_modules\/@emnapi\//, 'sharp wasm runtime without sharp'],
 ];
 
