@@ -23,7 +23,7 @@ Both backends share one provider kind (`cursor`) and one state directory, so a
 session never changes identity when the backend does. The SDK runs only in a
 child process; Botmancers never loads it. The SDK surface above is what the
 probe requires. No SDK was installed when this provider was written, so that
-path is tested only against `test-support/fake-cursor-sdk.mjs`.
+path is tested only against `tests/support/fake-cursor-sdk.mjs`.
 
 Configuration (all optional): `BOTMANCERS_CURSOR_CLI` (default
 `cursor-agent` on `PATH`), `BOTMANCERS_CURSOR_SDK_MODULE` (default
@@ -99,7 +99,7 @@ the import is not readable and is never reconstructed.
 ## Tests and smoke
 
 - `npm run test:cursor-session-provider`: fake CLI (both capability sets),
-  fake SDK, fixtures in `test-support/cursor-stream-fixtures/` (redacted from a
+  fake SDK, fixtures in `tests/support/cursor-stream-fixtures/` (redacted from a
   real 2026.10.16 capture), restart in a second process, and checks that
   there is no Cursor-store access and no network.
 - `node scripts/cursor-session-smoke.js`: a real Cursor CLI smoke. See

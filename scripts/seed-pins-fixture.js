@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // NOT-507: seed an isolated DB for the session-actions proof
 // (scripts/ui-session-pins-proof.js). A Codex Agent "Forge" on the
-// deterministic fake codex binary (test-support/fake-codex.js) whose past
+// deterministic fake codex binary (tests/support/fake-codex.js) whose past
 // sessions cover the action states: an open session (Ask from this context
 // and Resume work here), an archived one that still resumes, and one the
 // runtime no longer has (missing). Forge's policy allows workspace write and
@@ -25,14 +25,14 @@ const WORK = path.resolve(DIR, 'pins-fixture-work');
 fs.mkdirSync(WORK, { recursive: true });
 for (const suffix of ['', '-shm', '-wal']) fs.rmSync(DB_PATH + suffix, { force: true });
 fs.rmSync(STATE, { force: true });
-fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.resolve(__dirname, '..', 'test-support', 'fake-codex.js')}' "$@"\n`);
+fs.writeFileSync(BIN, `#!/bin/sh\nFAKE_CODEX_STATE='${STATE}' exec '${process.execPath}' '${path.resolve(__dirname, '..', 'tests', 'support', 'fake-codex.js')}' "$@"\n`);
 fs.chmodSync(BIN, 0o755);
 process.env.BOTMANCERS_DB_PATH = DB_PATH;
 process.env.BOTMANCERS_NO_AUTOPROCESS = '1';
 process.env.BOTMANCERS_CODEX_BIN = BIN;
 process.env.FAKE_CODEX_STATE = STATE;
 
-const { seedFakeCodex } = require('../test-support/fake-codex');
+const { seedFakeCodex } = require('../tests/support/fake-codex');
 seedFakeCodex(STATE, [
   { id: 'thr-uploader-SECRET', cwd: WORK, name: 'Fix the uploader retry', turns: [['Fix the uploader retry', 'Retry now backs off; tests pending'], ['Which tests?', 'upload.test.ts']] },
   { id: 'thr-spike-SECRET', cwd: WORK, name: 'Archived parser spike', archived: true, turns: [['Spike the parser', 'Spike notes saved']] },

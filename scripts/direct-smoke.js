@@ -9,7 +9,7 @@
 //
 // The workdir guardrails (disposable marker, clean Git root, outside the
 // repo/home/data) and evidence rules come from
-// test-support/acceptance/smoke-guard.js. BOTMANCERS_SMOKE_PROVIDER=fake
+// tests/support/acceptance/smoke-guard.js. BOTMANCERS_SMOKE_PROVIDER=fake
 // (test-only) swaps the real CLIs for scripted in-process providers; the
 // operator run uses the real installed, signed-in CLIs.
 'use strict';
@@ -21,8 +21,8 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const guard = require('../test-support/acceptance/smoke-guard.js');
-const harnessLib = require('../test-support/acceptance/harness.js');
+const guard = require('../tests/support/acceptance/smoke-guard.js');
+const harnessLib = require('../tests/support/acceptance/harness.js');
 
 function usage() {
   return [
@@ -110,7 +110,11 @@ async function main() {
 
   const headBefore = gitHead(workdir);
   const statusBefore = gitStatus(workdir);
-  const productionBefore = harnessLib.snapshotProductionState();
+  // The production paths as seen before the harness environment exists;
+  // both snapshots cover this same list (the harness's own disposable
+  // paths are supposed to change).
+  const productionPaths = harnessLib.productionPaths();
+  const productionBefore = harnessLib.snapshotProductionState(productionPaths);
   const harness = harnessLib.createHarness('direct-smoke');
   Object.assign(process.env, harness.env());
 
@@ -132,15 +136,14 @@ async function main() {
   const jiti = createJiti(path.join(REPO_ROOT, 'scripts', 'direct-smoke.js'), { alias: { '@': REPO_ROOT } });
   const lib = name => jiti(path.join(REPO_ROOT, 'lib', name));
   const db = lib('db.ts');
-  const { bots, conversations, messages, runtimeConnections, UI_OWNER_PRINCIPAL } = db;
-  const { engine } = lib('engine-store.ts');
+  const { bots, messages, runtimeConnections, engine, UI_OWNER_PRINCIPAL } = db;
   const { routeAgentWakes, decideWakeGrant } = lib('wake-router.ts');
   const { acceptAgentMessage, startAgentDispatch, waitForAgentDispatchIdle } = lib('agent-conversations.ts');
 
   const adaptersUsed = [];
   let fakeStates = null;
   if (FAKE) {
-    const fake = require('../test-support/fake-session-provider.js');
+    const fake = require('../tests/support/fake-session-provider.js');
     const { registerSessionProvider } = lib('session-provider.ts');
     fakeStates = {
       fake,
@@ -181,7 +184,7 @@ async function main() {
   try {
     const register = (name, provider, policy) => {
       const created = bots.create({
-        name, title: `${name} (direct smoke)`, agent: provider,
+        name, title: `${name} (direct smoke)`, description: `${name} (direct smoke)`, agent: provider,
         runtime_connection_id: runtimeConnections.ensureLocal(provider),
         session_scope_kind: 'workspaces',
         session_scope_items: JSON.stringify([workdir]),
@@ -229,11 +232,12 @@ async function main() {
       return engine.getWorkRequest(accepted.requestId);
     }
 
-    // Posts one wake block as the Agent's reply and routes it.
+    // Posts one wake block as the Agent's reply and routes it. The reply
+    // goes in the parent turn's conversation: Wake lineage requires the
+    // parent to have run by this Agent in this conversation.
     function sendWake(agent, parent, envelope, idempotencyNote) {
-      const conversation = conversations.getByBotId(agent.id);
       const block = '```botmancers-wake\n' + JSON.stringify({ version: 1, ...envelope }, null, 2) + '\n```';
-      const reply = messages.create(conversation.id, 'bot', `${idempotencyNote}\n${block}`, agent.id);
+      const reply = messages.create(parent.source_conversation_id, 'bot', `${idempotencyNote}\n${block}`, agent.id);
       const [routed] = routeAgentWakes({ sourceEventId: reply.id, parentRequestId: parent.id });
       if (!routed) fail(`${agent.name} Wake was not routed`);
       return routed.wake;
@@ -279,8 +283,13 @@ async function main() {
       resumeWorkRequest: impl.id,
       contextWorkRequests: [review.id],
     }, 'Dev, please revise.');
-    if (revisionWake.status !== 'blocked') fail(`revision Wake did not wait for the owner grant (${revisionWake.status})`);
-    decideWakeGrant({ wakeId: revisionWake.id, decision: 'allow', caller: owner });
+    // Edit grants cover the (caller, target) pair, so the implementation's
+    // Allow already admits this revision; a fresh pair would wait instead.
+    if (revisionWake.status === 'blocked') {
+      decideWakeGrant({ wakeId: revisionWake.id, decision: 'allow', caller: owner });
+    } else if (revisionWake.status !== 'accepted') {
+      fail(`revision Wake was neither granted nor waiting (${revisionWake.status}/${revisionWake.reason_code})`);
+    }
     await startAgentDispatch(revisionWake.work_request_id);
     const revision = await settle(revisionWake.work_request_id, 'revision');
     if (revision.state !== 'completed') fail(`revision did not complete (${revision.state}/${revision.error_code}: ${revision.error_message})`);
@@ -289,14 +298,14 @@ async function main() {
     const revisionAttempts = engine.listAttempts(revision.id);
     const binding = engine.getActiveSessionBinding({
       agentId: dev.id, adapter: args.agent,
-      conversationId: conversations.getByBotId(dev.id).id, requestId: revision.id,
+      conversationId: impl.source_conversation_id, requestId: impl.id,
     });
     const sameSession = revisionAttempts.length === 1 && revisionAttempts[0].kind === 'resume' && !!binding
       && revisionAttempts[0].resumed_session_binding_id === binding.id;
     if (!sameSession) fail('the revision did not resume the implementation session');
 
-    const threadOf = agent => messages.listByConversation(conversations.getByBotId(agent.id).id)
-      .filter(entry => entry.role === 'bot' && entry.agent_id === agent.id)
+    const threadOf = agent => messages.getByConversation(impl.source_conversation_id)
+      .filter(entry => entry.sender_type === 'bot' && entry.sender_id === agent.id)
       .map(entry => entry.content);
     evidence.run.requests = [
       { kind: 'implementation', state: impl.state, attempts: engine.listAttempts(impl.id).length },
@@ -327,8 +336,8 @@ async function main() {
     evidence.workdir.statusAfter = statusAfter.trim();
     evidence.workdir.unchangedExceptNote = headAfter === headBefore
       && (FAKE ? statusAfter.trim() === '' : statusAfter.trim() === '?? smoke-note.txt');
-    if (!FAKE && !evidence.workdir.unchangedExceptNote) fail(`the workdir changed beyond smoke-note.txt: ${statusAfter.slice(0, 500)}`);
-    evidence.productionStateUnchanged = harnessLib.diffSnapshots(productionBefore, harnessLib.snapshotProductionState()).length === 0;
+    if (!evidence.workdir.unchangedExceptNote) fail(`the workdir changed beyond smoke-note.txt: ${statusAfter.slice(0, 500)}`);
+    evidence.productionStateUnchanged = harnessLib.diffSnapshots(productionBefore, harnessLib.snapshotProductionState(productionPaths)).length === 0;
     if (!evidence.productionStateUnchanged) fail('production state changed');
     if (blockedConnections.length > 0) fail(`non-loopback connections were attempted: ${blockedConnections.join(', ')}`);
 

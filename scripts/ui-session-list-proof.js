@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // NOT-548: real-browser proof of the paged, searchable Sessions drawer.
-// Seeds the 788-row session-list fixture (test-support/session-list-fixture.js,
+// Seeds the 788-row session-list fixture (tests/support/session-list-fixture.js,
 // Agent "Claude") into the running app's database (via --db, the same
 // BOTMANCERS_DB_PATH the app serves), then drives headless Chrome over the
 // DevTools protocol at desktop and narrow widths:
@@ -71,7 +71,7 @@ function seed() {
   const existing = db.prepare(`SELECT id FROM bots WHERE name IN (${names.map(() => '?').join(',')})`).all(...names);
   for (const row of existing) db.prepare('DELETE FROM provider_sessions WHERE agent_id = ?').run(row.id);
   if (existing.length > 0) dbModule.bots.removeMany(existing.map(row => row.id));
-  const { seedSessionList } = require('../test-support/session-list-fixture');
+  const { seedSessionList } = require('../tests/support/session-list-fixture');
   const fixture = seedSessionList(dbModule);
   const filtered = fixture.sessions.filter(s => s.workspace === FILTER_WORKSPACE).length;
   db.close();

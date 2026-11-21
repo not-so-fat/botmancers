@@ -1,7 +1,7 @@
 # Slack relay core: one thread asks one shared session
 
 Status: NOT-516. Code: `lib/slack-relay.ts` (normalization, ledgers, routing,
-replies, the `SlackTransport` interface), `test-support/fake-slack-transport.js`
+replies, the `SlackTransport` interface), `tests/support/fake-slack-transport.js`
 (deterministic fake). Contract test: `npm run test:slack-relay`. Design:
 [`design/2026-10-24-session-share-preflight.md`](design/2026-10-24-session-share-preflight.md)
 §4 and §5; fixtures:

@@ -4,7 +4,7 @@ Status: **accepted decision record for NOT-514** (investigation), now implemente
 
 - **HEAD:** `8e19aa24e51aeb4a26bf4d9a057ae2012daadc3b`. The ticket's `2bcf469` is not in this clone.
 - **Evidence:** [identity matrix](../evidence/NOT-514/identity-matrix.json), [probe results](../evidence/NOT-514/probe-results.md), [contract sketch](../contracts/session-share-v0.sketch.json), [Slack fixtures](../contracts/slack-relay-v0.fixtures.json).
-- **Test:** `npm run test:session-share-preflight` ([`test-session-share-preflight.js`](../../test-session-share-preflight.js), using [`test-support/session-share-model.js`](../../test-support/session-share-model.js)).
+- **Test:** `npm run test:session-share-preflight` ([`test-session-share-preflight.js`](../../tests/test-session-share-preflight.js), using [`tests/support/session-share-model.js`](../../tests/support/session-share-model.js)).
 - **Builds on:** NOT-499 (grants, audit, redaction), NOT-500/NOT-507 (MCP v2, exact-session pins), NOT-503–506 (providers).
 
 ## Question

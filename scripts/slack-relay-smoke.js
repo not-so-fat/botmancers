@@ -54,7 +54,7 @@ if (flag('help') || !option('session')) {
 const SESSION = option('session');
 const WAIT_MS = Number(option('wait', '600')) * 1000;
 const OUT = option('out');
-// Rehearsal only: a local fake Slack (test-support/fake-slack-server.js).
+// Rehearsal only: a local fake Slack (tests/support/fake-slack-server.js).
 const API_URL = option('slack-api-url');
 
 const { createJiti } = require('jiti');

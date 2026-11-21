@@ -38,7 +38,7 @@ under the system temp directory, named `botmancers-acceptance-<scenario>-XXXXXX`
 The harness builds the scenario's environment from scratch. Nothing is
 inherited from your shell, so no Hermes, Cursor, or other credentials
 reach it, and neither does your Git config. Inside the scenario process,
-test-support/acceptance/engine-context.js does the following before any
+tests/support/acceptance/engine-context.js does the following before any
 engine module loads:
 
 - It refuses every network connection that is not to loopback and records the
@@ -48,13 +48,13 @@ engine module loads:
   process never starts; the call throws, the attempt is recorded, and the run
   fails.
 - It drives coding Agents through the real direct session-provider adapter,
-  pointed at scripted in-process fakes (`test-support/fake-session-provider.js`)
+  pointed at scripted in-process fakes (`tests/support/fake-session-provider.js`)
   over shared state files, so restart workers observe the same turns.
 - It runs coordinator (Hermes transport) turns from per-conversation scripts.
 
 When a scenario covers routes, the context serves the real `app/api/**/route.ts`
 handlers behind the real owner boundary (`proxy.ts`) on a loopback port that the
-OS assigns (`test-support/acceptance/route-host.js`). It never starts `next dev`,
+OS assigns (`tests/support/acceptance/route-host.js`). It never starts `next dev`,
 because that would write `.next/`, `next-env.d.ts`, and `AGENTS.md` into the
 working tree. It never assumes a developer server on port 3333.
 

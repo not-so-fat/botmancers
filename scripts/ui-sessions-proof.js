@@ -30,7 +30,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
-const { EXTERNAL_IDS } = require('../test-support/session-catalog-fixture');
+const { EXTERNAL_IDS } = require('../tests/support/session-catalog-fixture');
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(name);

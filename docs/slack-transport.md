@@ -4,7 +4,7 @@ Status: NOT-518. Code: `lib/slack-transport.ts` (the four-method
 `SlackTransport` over `@slack/socket-mode` and `@slack/web-api`),
 `lib/slack-runtime.ts` (configuration, states, lifecycle), `instrumentation.ts`
 (start/stop in the core server process). Tests: `npm run test:slack-transport`
-(with `test-support/fake-slack-server.js`). Operator smoke:
+(with `tests/support/fake-slack-server.js`). Operator smoke:
 `npm run smoke:slack-relay`. Design:
 [`design/2026-10-24-session-share-preflight.md`](design/2026-10-24-session-share-preflight.md)
 §5. Relay: [`slack-relay.md`](slack-relay.md). Owner lifecycle and the

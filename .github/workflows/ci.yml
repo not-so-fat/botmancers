@@ -9,10 +9,11 @@ on:
       - 'packages/mcp-server/**'
       - 'app/**'
       - 'lib/**'
+      - 'public/**'
+      - 'proxy.ts'
       - 'package.json'
       - 'package-lock.json'
-      - 'test-*.js'
-      - 'test-support/**'
+      - 'tests/**'
       - 'docs/contracts/**'
       - 'docs/evidence/NOT-514/**'
       - 'scripts/not-514-*'
@@ -46,124 +47,16 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Install the locked package-local build tools
         run: npm ci --no-audit --no-fund
-      - name: Focused Agent registration/migration suites (NOT-502)
+      - name: Root deterministic suites (npm test)
+        # Every suite the old hand-selected steps ran is in `npm test`
+        # (tests/run.js runs all tests/test-*.js except the documented
+        # live/manual exclusions), plus the rest of the deterministic
+        # suites. The package skill check keeps its own step below.
         working-directory: .
-        run: |
-          npm run test:agent-registration
-          npm run test:agent-registration-ui
-          npm run test:bot-definition
-      - name: Focused session provider/catalog suites (NOT-503)
+        run: npm test
+      - name: Package skill check
         working-directory: .
-        run: |
-          npm run test:session-provider
-          npm run test:muse-session-provider
-          npm run test:session-catalog
-          npm run test:engine-store
-          npm run test:service-access
-          npm run test:mcp-bridge
-      - name: Focused registration session sync suite (NOT-544)
-        working-directory: .
-        run: |
-          npm run test:registration-session-sync
-      - name: Focused session sync refresh suite (NOT-545)
-        working-directory: .
-        run: |
-          npm run test:session-sync-refresh
-      - name: Focused session reconcile suite (NOT-546)
-        working-directory: .
-        run: |
-          npm run test:session-reconcile
-      - name: Focused session sync UI suite (NOT-547)
-        working-directory: .
-        run: |
-          npm run test:session-sync-ui
-      - name: Focused session list paging suite (NOT-548)
-        working-directory: .
-        run: |
-          npm run test:session-list-paging
-      - name: Agent Sessions review page (NOT-550)
-        working-directory: .
-        run: |
-          npm run test:agent-sessions-page
-      - name: Focused Claude provider and direct cutover suites (NOT-506, NOT-543)
-        working-directory: .
-        run: |
-          npm run test:claude-session-provider
-          npm run test:direct-cutover
-          npm run test:direct-migration
-      - name: Focused Cursor and direct Codex providers and attempt adapter suites (NOT-505, NOT-504, NOT-542)
-        working-directory: .
-        run: |
-          npm run test:cursor-session-provider
-          npm run test:codex-session-provider
-          npm run test:attempt-adapter
-      - name: Focused session usage suites (NOT-509)
-        working-directory: .
-        run: |
-          npm run test:session-usage
-      - name: Focused session pin, service-access, MCP, exchange, and skill suites (NOT-507)
-        working-directory: .
-        run: |
-          npm run test:session-pins
-          npm run test:service-access
-          npm run test:mcp-bridge
-          npm run test:agent-exchanges
-          npm run test:exchange-ui
-          npm run test:session-catalog
-          npm --prefix packages/mcp-server run check:skill
-      - name: Session share preflight fixtures (NOT-514)
-        working-directory: .
-        run: |
-          npm run test:session-share-preflight
-      - name: Focused SessionShare core, service-access, session-pin, and MCP suites (NOT-515)
-        working-directory: .
-        run: |
-          npm run test:session-shares
-          npm run test:service-access
-          npm run test:session-pins
-          npm run test:mcp-bridge
-      - name: SessionContext share-current and Claude/Codex/Cursor launch injection (NOT-517)
-        working-directory: .
-        run: |
-          npm run test:session-context
-          npm run test:claude-session-provider
-          npm run test:codex-session-provider
-          npm run test:cursor-session-provider
-      - name: Slack relay core with the real SessionShare store (NOT-516)
-        working-directory: .
-        run: |
-          npm run test:slack-relay
-      - name: Slack Socket Mode transport, managed start, and secret redaction (NOT-518)
-        working-directory: .
-        run: |
-          npm run test:slack-transport
-          npm run test:slack-relay
-          npm run test:session-shares
-      - name: Owner share lifecycle, policy, expiry sweeper, and Slack revoke/expiry end to end (NOT-519)
-        working-directory: .
-        run: |
-          npm run test:session-share-owner
-          npm run test:session-share-ui
-      - name: Agent Overview and shared roster navigation (NOT-549)
-        working-directory: .
-        run: |
-          npm run test:agent-home
-          npm run test:runtime-capacity
-          npm run test:roster-a11y
-      - name: Agent conversation history and owner routes (NOT-551)
-        working-directory: .
-        run: npm run test:agent-conversations-ui-api
-      - name: Agent Slack relay health and shared-session deployments (NOT-552)
-        working-directory: .
-        run: |
-          npm run test:slack-transport
-          npm run test:slack-relay
-          npm run test:session-share-owner
-          npm run test:session-share-ui
-          npm run test:agent-slack-page
-      - name: Agent operational activity projection and UI (NOT-553)
-        working-directory: .
-        run: npm run test:agent-activity
+        run: npm --prefix packages/mcp-server run check:skill
       - name: Release check (dry run, no registry mutation)
         run: |
           npm run build && npm run build:app
