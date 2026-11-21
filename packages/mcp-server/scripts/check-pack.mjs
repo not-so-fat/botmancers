@@ -3,7 +3,8 @@
 // runtime (standalone Next.js server, .next build, static/public assets, and
 // the bundled node_modules it needs), with no TypeScript source, tests,
 // checkout docs, databases, logs, environment files, credentials, user
-// state, secret-looking content, or the build machine's checkout path.
+// state, secret-looking content, .next build artifacts, or the build
+// machine's checkout path.
 // Usage: node scripts/check-pack.mjs [--out file]
 // (run after `npm run build` and `npm run build:app`; the dry run skips
 // lifecycle scripts).
@@ -34,6 +35,13 @@ export const FORBIDDEN = [
   [/(?:^|\/)(?:core|bridge)\.env$/, 'generated credentials'],
   [/(?:^|\/)\.npmrc$/, 'npm configuration'],
   [/(?:^|\/)(?:id_rsa|id_ed25519)[^/]*$|\.pem$|\.key$/, 'key material'],
+  // NOT-651 safe exclusions: .next/ build artifacts the server never reads
+  // (trace telemetry, generated route types, analyzer diagnostics, the
+  // build lock, the build cache) and the sharp wasm runtime, whose only
+  // requirer (sharp) is already excluded.
+  [/^app\/\.next\/(?:trace(?:-build)?|types|diagnostics|cache)(?:\/|$)/, '.next build artifact'],
+  [/^app\/\.next\/lock$/, '.next build lock'],
+  [/^app\/node_modules\/@emnapi\//, 'sharp wasm runtime without sharp'],
 ];
 
 // TypeScript source must not ship outside third-party node_modules.
