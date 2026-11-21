@@ -33,7 +33,8 @@ test('the tarball carries the production UI/core runtime next to the bridge', ()
 });
 
 test('the allowlist rejects unrelated content', () => {
-  const extra = ['src/server.ts', '.env', 'botmancers.db', 'app/botmancers.db', 'app/.env.local', 'app/lib/db.ts', 'app/files/x.txt', 'app/.next/server/x.js.map', 'app/node_modules/x/logs/a.log', 'app/.next/core.env'];
+  const extra = ['src/server.ts', '.env', 'botmancers.db', 'app/botmancers.db', 'app/.env.local', 'app/lib/db.ts', 'app/files/x.txt', 'app/.next/server/x.js.map', 'app/node_modules/x/logs/a.log', 'app/.next/core.env',
+    'app/.next/trace', 'app/.next/trace-build', 'app/.next/types/validator.ts', 'app/.next/diagnostics/build-diagnostics.json', 'app/.next/lock', 'app/.next/cache/x.json', 'app/.next/server/app/api/bots/route.js.nft.json', 'app/node_modules/@emnapi/runtime/index.js'];
   const problems = checkManifest({ ...entry, files: [...entry.files, ...extra.map(path => ({ path }))] });
   for (const path of ['src/server.ts', '.env', 'botmancers.db', 'app/botmancers.db', 'app/.env.local', 'app/lib/db.ts', 'app/files/x.txt']) {
     assert.ok(problems.includes(`not allowlisted: ${path}`), path);
@@ -42,6 +43,16 @@ test('the allowlist rejects unrelated content', () => {
     assert.ok(problems.some(problem => problem.startsWith('forbidden') && problem.endsWith(`: ${path}`)), path);
   }
   assert.ok(problems.includes('forbidden (TypeScript source): app/lib/db.ts'));
+  // NOT-651 safe exclusions stay out even though they sit under allowlisted roots.
+  for (const [path, label] of [
+    ['app/.next/trace', '.next build artifact'], ['app/.next/trace-build', '.next build artifact'],
+    ['app/.next/types/validator.ts', '.next build artifact'], ['app/.next/diagnostics/build-diagnostics.json', '.next build artifact'],
+    ['app/.next/cache/x.json', '.next build artifact'], ['app/.next/lock', '.next build lock'],
+    ['app/.next/server/app/api/bots/route.js.nft.json', 'output file-tracing manifest'],
+    ['app/node_modules/@emnapi/runtime/index.js', 'sharp wasm runtime without sharp'],
+  ]) {
+    assert.ok(problems.includes(`forbidden (${label}): ${path}`), path);
+  }
 });
 
 test('the bridge library surface is unchanged', async () => {

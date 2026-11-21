@@ -10,9 +10,12 @@
 // touches the filesystem dynamically, so only server.js, .next, the traced
 // node_modules, static assets and public/ are taken. better-sqlite3 is
 // replaced by its full package so every platform's prebuilt binary ships;
-// sharp is left out (the package build serves images unoptimized). Symlinks,
-// which npm drops from tarballs, become require shims, and the checkout's
-// absolute path is scrubbed from the output.
+// sharp is left out (the package build serves images unoptimized), along
+// with its wasm runtime and the .next/ build artifacts (trace, types,
+// diagnostics, lock, cache, per-entry output-file-tracing manifests) the
+// server never reads. Symlinks, which npm
+// drops from tarballs, become require shims, and the checkout's absolute
+// path is scrubbed from the output.
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
@@ -22,8 +25,23 @@ export const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 export const REPO_ROOT = join(PACKAGE_DIR, '..', '..');
 export const APP_DIR = join(PACKAGE_DIR, 'app');
 
-// Traced packages that are not shipped: sharp and its platform binaries.
-const SKIPPED_MODULES = new Set(['sharp', '@img', 'detect-libc']);
+// Traced packages that are not shipped: sharp and its platform binaries,
+// plus the sharp wasm runtime (only @img/sharp-wasm32 requires it).
+const SKIPPED_MODULES = new Set(['sharp', '@img', 'detect-libc', '@emnapi']);
+// Top-level .next/ entries that are build-time artifacts the standalone
+// server never reads: the build trace, generated route types, analyzer
+// diagnostics, the build lock, and the build cache (NOT-651).
+const SKIPPED_NEXT_TOP = new Set(['trace', 'trace-build', 'types', 'diagnostics', 'lock', 'cache']);
+
+// Whether a .next/standalone/.next entry ships: source maps and the
+// per-entry output-file-tracing manifests (*.nft.json) never do — the
+// manifests only feed the build-time `next internal static-routes-info`
+// analysis command, never the standalone server (NOT-651).
+export function keepNextEntry(standaloneNext, src) {
+  if (src.endsWith('.map') || src.endsWith('.nft.json') || src.includes(`${sep}cache${sep}`)) return false;
+  const rel = relative(standaloneNext, src);
+  return rel === '' || !SKIPPED_NEXT_TOP.has(rel.split(sep)[0]);
+}
 const BETTER_SQLITE3_FILES = ['package.json', 'LICENSE', 'lib', 'prebuilds'];
 const TEXT_FILE = /\.(?:js|cjs|mjs|json|html|rsc|txt|css|meta|body)$/;
 
@@ -121,7 +139,11 @@ export function assemble({ version, commit, dirty }) {
   mkdirSync(APP_DIR, { recursive: true });
 
   cpSync(join(standalone, 'server.js'), join(APP_DIR, 'server.js'));
-  cpSync(join(standalone, '.next'), join(APP_DIR, '.next'), { recursive: true, filter: src => !src.endsWith('.map') && !src.includes(`${sep}cache${sep}`) });
+  const standaloneNext = join(standalone, '.next');
+  cpSync(standaloneNext, join(APP_DIR, '.next'), {
+    recursive: true,
+    filter: src => keepNextEntry(standaloneNext, src),
+  });
   mkdirSync(join(APP_DIR, 'node_modules'));
   for (const name of readdirSync(join(standalone, 'node_modules'))) {
     if (SKIPPED_MODULES.has(name) || name.startsWith('.')) continue;
