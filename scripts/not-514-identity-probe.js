@@ -9,7 +9,7 @@
 //       A minimal stdio MCP server with one tool, `identity_probe`, that
 //       returns the same report as seen by the MCP subprocess. Register it
 //       in Claude Code, Codex, or Cursor and call the tool once per case in
-//       docs/evidence/NOT-514/probe-results.md (new session, exact resume,
+//       tests/fixtures/session-share-preflight/probe-results.md (new session, exact resume,
 //       implicit continue, clear/reset, client restart, launched outside
 //       Botmancers). With NOT514_PROBE_OUT set, the report seen at
 //       `initialize` is also appended to that file as one JSON line.

@@ -23,7 +23,7 @@ const EXCLUDED = new Map([
   ['test-import.js', 'manual: needs a running dev server on port 43123'],
   ['test-import-marketplace-ui.js', 'manual: needs a running dev server (BOTMANCERS_TEST_PORT or 3333)'],
   ['test-acceptance-steps-1-7.js', 'live-server: historical walkthrough needing a developer server'],
-  ['test-grok-handoff.js', 'release-process: packs and installs the release tarball and requires it byte-identical to recorded release evidence; run at release time, not per commit'],
+  ['test-grok-handoff.js', 'release-process: packs and installs the bridge and runs a loopback MCP scenario; run at release time, not per commit'],
 ]);
 
 function main() {

@@ -64,7 +64,7 @@ const SECRET = /SECRET/;
 const LEAK = /\/Users\/|\/home\/[a-z]|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|xox[abp]-|xapp-|sk-[A-Za-z0-9]{8}|key_[A-Za-z0-9]{16}/i;
 
 async function main() {
-  const matrix = readJson('docs/evidence/NOT-514/identity-matrix.json');
+  const matrix = readJson('tests/fixtures/session-share-preflight/identity-matrix.json');
   const sketch = readJson('docs/contracts/session-share-v0.sketch.json');
   const fixtures = readJson('docs/contracts/slack-relay-v0.fixtures.json');
 
@@ -84,7 +84,7 @@ async function main() {
   }
   assert(Object.values(matrix.clients).every(c => c.ambient_identity_adopted === false), 'no client\'s ambient provider identity is adopted as authority');
   assert(matrix.head && /^[0-9a-f]{40}$/.test(matrix.head), 'the matrix names the exact HEAD it was probed at');
-  const docText = ['docs/evidence/NOT-514/identity-matrix.json', 'docs/evidence/NOT-514/probe-results.md', 'docs/design/2026-10-24-session-share-preflight.md',
+  const docText = ['tests/fixtures/session-share-preflight/identity-matrix.json', 'tests/fixtures/session-share-preflight/probe-results.md', 'docs/design/2026-10-24-session-share-preflight.md',
     'docs/contracts/session-share-v0.sketch.json', 'docs/contracts/slack-relay-v0.fixtures.json'].map(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8')).join('\n');
   assert(!LEAK.test(docText), 'committed evidence holds no user path, raw UUID, or credential');
 

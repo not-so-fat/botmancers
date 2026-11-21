@@ -13,11 +13,12 @@
 // Every state checks the row count, no horizontal overflow or clipped drawer
 // content (especially at 390 px), and captures a screenshot. Writes
 // screenshots, a trace, a receipt, and a summary under --out (default
-// docs/evidence/NOT-548). Refuses to run on a dirty worktree so the receipt
-// binds to exactly the committed HEAD. No mocks.
+// .temporal/NOT-548-proof, outside git: attach it to the ticket or release
+// instead of committing it). Refuses to run on a dirty worktree so the
+// receipt binds to exactly the committed HEAD. No mocks.
 //
 // Usage: BOTMANCERS_DB_PATH=.temporal/session-list-fixture.db BOTMANCERS_NO_AUTOPROCESS=1 npx next dev -H 127.0.0.1 -p 43548   (other shell)
-//        node scripts/ui-session-list-proof.js [--url http://127.0.0.1:43548] [--out docs/evidence/NOT-548] [--db .temporal/session-list-fixture.db]
+//        node scripts/ui-session-list-proof.js [--url http://127.0.0.1:43548] [--out .temporal/NOT-548-proof] [--db .temporal/session-list-fixture.db]
 'use strict';
 
 const crypto = require('crypto');
@@ -31,7 +32,7 @@ const arg = (name, fallback) => {
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
 const URL_BASE = arg('--url', 'http://127.0.0.1:43548');
-const OUT = arg('--out', path.join('docs', 'evidence', 'NOT-548'));
+const OUT = arg('--out', path.join('.temporal', 'NOT-548-proof'));
 const DB_PATH = path.resolve(arg('--db', path.join('.temporal', 'session-list-fixture.db')));
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const VIEWPORTS = [

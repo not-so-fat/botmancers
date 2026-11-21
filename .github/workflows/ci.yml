@@ -15,7 +15,7 @@ on:
       - 'package-lock.json'
       - 'tests/**'
       - 'docs/contracts/**'
-      - 'docs/evidence/NOT-514/**'
+      - 'tests/fixtures/session-share-preflight/**'
       - 'scripts/not-514-*'
       - 'scripts/slack-relay-smoke.js'
       - 'instrumentation.ts'

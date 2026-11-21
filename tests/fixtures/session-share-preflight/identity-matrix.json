@@ -7,7 +7,7 @@
   "legend": {
     "classification": "supported | supported_when_botmancers_launches | unsupported (for the share_current_session convenience; the explicit session_ref path is supported for every client)",
     "share_current": "exact = resolves to exactly one session_ref; fail_closed = session_context_required",
-    "evidence": "probe:<script>#<case> (docs/evidence/NOT-514/probe-results.md) | doc:<source> | code:<path> | inference"
+    "evidence": "probe:<script>#<case> (tests/fixtures/session-share-preflight/probe-results.md) | doc:<source> | code:<path> | inference"
   },
   "clients": {
     "claude_code": {

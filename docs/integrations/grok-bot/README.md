@@ -7,7 +7,7 @@ Authority: [MCP bridge contract](../../mcp-bridge.md) and the
 [`botmancers` package README](../../../packages/mcp-server/README.md).
 
 This runbook connects Cursor's Grok Bot to a Botmancers coordinator through the
-published MCP bridge, pinned to **`botmancers@0.1.0`**. Grok Bot starts a task,
+published MCP bridge, pinned to **`botmancers@0.11.1`**. Grok Bot starts a task,
 polls it, and reads the coordinator's final reply. That is all it can do. It cannot
 pick a Deck, workspace, runtime, model, or implementation target. Any
 implementation or review comes from the coordinator's own Wakes, under that
@@ -39,7 +39,7 @@ Cursor Grok Bot (remote)
 Operator route: TLS tunnel / reverse proxy (public name, /mcp only)
    │  plain HTTP on loopback, Host rewritten to 127.0.0.1:3332
    ▼
-botmancers@0.1.0 bridge   127.0.0.1:3332   checks the MCP token
+botmancers@0.11.1 bridge   127.0.0.1:3332   checks the MCP token
    │  http://127.0.0.1:3333/api/v0/mcp, Authorization: Bearer <service token>
    ▼
 Botmancers app            127.0.0.1:3333   checks the service-token digest and the coordinator allowlist
@@ -93,8 +93,8 @@ smoke, use a coordinator whose runtime is not production-critical.
 
 ```sh
 set -a; . ~/.config/botmancers/grok-bridge.env; set +a
-npx --yes botmancers@0.1.0
-# botmancers 0.1.0: MCP bridge listening on http://127.0.0.1:3332/mcp ...
+npx --yes botmancers@0.11.1
+# botmancers 0.11.1: MCP bridge listening on http://127.0.0.1:3332/mcp ...
 ```
 
 Always name the exact version. An unpinned `npx botmancers` may resolve a
@@ -225,8 +225,8 @@ Grok Bot should work like this:
 
 ```sh
 npm run test:grok-handoff                                   # packs and installs packages/mcp-server
-npm run test:grok-handoff -- --registry 0.1.0               # the published package (needs network)
-npm run test:grok-handoff -- --out docs/integrations/grok-bot/evidence/fixture-smoke.txt
+npm run test:grok-handoff -- --registry 0.11.1               # the published package (needs network)
+npm run test:grok-handoff -- --out /tmp/grok-handoff-smoke.txt   # attach the transcript; never commit it
 ```
 
 The smoke installs the packed bridge into an empty project, the same way an
