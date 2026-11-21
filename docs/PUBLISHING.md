@@ -76,6 +76,13 @@ exact-tarball smoke. `npm run publish:packages` (from the repository root, a
 fresh clone of the tag, the maintainer's npm login) stays as the documented
 manual fallback for when CI cannot publish.
 
+Evidence convention: release transcripts (dry runs, install smokes,
+integrity values, operator check records) go to the GitHub Release
+attachments or CI artifacts and are linked from the release ticket — never
+committed to the tree. Historical transcripts stay reachable at
+commit-pinned URLs. Every `--out` below therefore points outside the
+checkout (for example `/tmp/`).
+
 Two rules:
 
 - A failed release keeps its version. While `botmancers@X.Y.Z` is not on npm,
@@ -174,8 +181,8 @@ Two rules:
 5. **Registry smoke**, from any machine:
 
    ```sh
-   node packages/mcp-server/scripts/smoke-install.mjs --registry X.Y.Z --out smoke.txt
-   node packages/mcp-server/scripts/smoke-product-install.mjs --registry X.Y.Z --out product-smoke.txt
+   node packages/mcp-server/scripts/smoke-install.mjs --registry X.Y.Z --out /tmp/smoke.txt
+   node packages/mcp-server/scripts/smoke-product-install.mjs --registry X.Y.Z --out /tmp/product-smoke.txt
    npm view botmancers@X.Y.Z dist.integrity
    ```
 
@@ -186,8 +193,9 @@ Two rules:
    `botmancers start --daemon --open`, create a conversation, call
    `botmancers_health` and `tools/list`; once N+1 is on `latest`, confirm
    background staging, activate at one restart, and roll back with
-   `botmancers install --to N`. Keep the redacted transcript, health
-   responses, and before/after hashes.
+   `botmancers install --to N`. Attach the redacted transcript, health
+   responses, and before/after hashes to the GitHub Release (or the
+   release ticket); never commit them to the tree.
 7. Record the npm URL (`https://www.npmjs.com/package/botmancers/v/X.Y.Z`),
    the integrity value, the GitHub Release URL, and the redacted smoke
    transcript on the release ticket.
